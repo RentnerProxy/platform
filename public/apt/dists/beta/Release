@@ -4,8 +4,8 @@ Suite: beta
 Codename: beta
 Architectures: amd64 arm64
 Components: main
-Valid-Until: Sat, 19 Dec 2026 16:40:03 GMT
-Date: Sat, 14 Nov 2026 16:40:05 +0000
+Valid-Until: Mon, 21 Dec 2026 12:51:11 GMT
+Date: Mon, 16 Nov 2026 12:51:11 +0000
 MD5Sum:
  415aa3e3b92397363ac51b2d1715b62e             2669 main/binary-amd64/Packages
  bfbf6cf1a88422666705cb1ea1ce840a             1013 main/binary-amd64/Packages.gz
