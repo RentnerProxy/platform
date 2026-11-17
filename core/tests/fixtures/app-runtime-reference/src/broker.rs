@@ -64,26 +64,23 @@ async fn respond(
             ),
             (&Method::POST, Some(NOTIFICATIONS)) => {
                 // Consume the bounded request body before reusing the connection.
-                match timeout(
+                let body = timeout(
                     IO_TIMEOUT,
                     Limited::new(request.into_body(), 4096).collect(),
                 )
                 .await
-                {
-                    Ok(Ok(body))
-                        if serde_json::from_slice::<Value>(&body.to_bytes()).ok()
-                            == Some(json!({ "message": "fixture" })) =>
-                    {
-                        if generation_current(context) {
-                            (StatusCode::ACCEPTED, json!({ "accepted": true }))
-                        } else {
-                            (StatusCode::FORBIDDEN, json!({ "error": CONTEXT_REJECTED }))
-                        }
-                    }
-                    _ => (
+                .ok()
+                .and_then(|result| result.ok())
+                .and_then(|body| serde_json::from_slice::<Value>(&body.to_bytes()).ok());
+                if body != Some(json!({ "message": "fixture" })) {
+                    (
                         StatusCode::BAD_REQUEST,
                         json!({ "error": "invalidFixtureBody" }),
-                    ),
+                    )
+                } else if generation_current(context) {
+                    (StatusCode::ACCEPTED, json!({ "accepted": true }))
+                } else {
+                    (StatusCode::FORBIDDEN, json!({ "error": CONTEXT_REJECTED }))
                 }
             }
             _ => (StatusCode::FORBIDDEN, json!({ "error": "scopeDenied" })),
