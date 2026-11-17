@@ -10,7 +10,7 @@ if (!outputDirectory || !isAbsolute(outputDirectory)) {
 await mkdir(outputDirectory, { recursive: true })
 const source = join(import.meta.dir, 'ui')
 const bundle = await Bun.build({
-    entrypoints: [join(source, 'app.js')],
+    entrypoints: [join(source, 'app.ts')],
     outdir: outputDirectory,
     target: 'browser',
     format: 'iife',

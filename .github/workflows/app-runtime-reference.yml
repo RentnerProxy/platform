@@ -4,14 +4,14 @@ on:
     pull_request:
         paths:
             - .github/workflows/app-runtime-reference.yml
-            - '.github/scripts/ci/app-runtime-reference/**'
+            - '.github/scripts/ci/fixtures/app-runtime-reference/**'
             - 'core/tests/fixtures/app-runtime-reference/**'
             - 'web/src/tests/fixtures/app-runtime-reference/**'
     push:
         branches: [main]
         paths:
             - .github/workflows/app-runtime-reference.yml
-            - '.github/scripts/ci/app-runtime-reference/**'
+            - '.github/scripts/ci/fixtures/app-runtime-reference/**'
             - 'core/tests/fixtures/app-runtime-reference/**'
             - 'web/src/tests/fixtures/app-runtime-reference/**'
     workflow_dispatch:
@@ -70,7 +70,7 @@ jobs:
             - name: Verify the native app runtime reference
               shell: bash
               run: |
-                  bun --no-env-file --no-orphans .github/scripts/ci/app-runtime-reference/run.ts "$ARCHITECTURE" "$RUNNER_TEMP/app-runtime-reference"
+                  bun --no-env-file --no-orphans .github/scripts/ci/fixtures/app-runtime-reference/run.ts "$ARCHITECTURE" "$RUNNER_TEMP/app-runtime-reference"
                   test -s "$RUNNER_TEMP/app-runtime-reference/native.json"
                   test -s "$RUNNER_TEMP/app-runtime-reference/browser.json"
 

@@ -1,11 +1,12 @@
 import { readFile } from 'node:fs/promises'
-import { isAbsolute, join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import {
     chromium,
     expect as playwrightExpect,
     type FrameLocator,
     type Page,
 } from '@playwright/test'
+import { isRecord } from './protocol.ts'
 import { uiAssets } from './ui-assets.ts'
 
 const timeout = 5_000
@@ -31,8 +32,11 @@ async function gatewayHealth(gatewayPort: number | undefined) {
             redirect: 'error',
             signal: AbortSignal.timeout(3_000),
         })
-        if (response.status === 200 && (await response.json())?.ready === true) {
-            return Response.json({ ready: true }, { headers: { 'Cache-Control': 'no-store' } })
+        if (response.status === 200) {
+            const body: unknown = await response.json()
+            if (isRecord(body) && body.ready === true) {
+                return Response.json({ ready: true }, { headers: { 'Cache-Control': 'no-store' } })
+            }
         }
     } catch {
         // The browser must see the backend as unavailable if the loopback broker fails.
@@ -176,6 +180,16 @@ async function assertInteractions(page: Page, app: FrameLocator) {
     await expect(dialog).toBeHidden()
     await expect(dialogTrigger).toBeFocused()
 
+    await dialogTrigger.click()
+    await dialog.getByRole('button', { name: 'Confirm' }).click()
+    await expect(dialog).toBeHidden()
+    await expect(dialogTrigger).toBeFocused()
+
+    await dialogTrigger.click()
+    await dialog.getByRole('button', { name: 'Dismiss' }).click()
+    await expect(dialog).toBeHidden()
+    await expect(dialogTrigger).toBeFocused()
+
     await app.getByRole('button', { name: 'Details öffnen' }).click()
     await expect(page).toHaveURL(/#\/details$/)
     await expect(app.locator('#route')).toHaveText('Details')
@@ -199,7 +213,7 @@ async function assertNavigationReplayRejected(page: Page, app: FrameLocator) {
     ).toEqual({ transfers: 0, ports: 0 })
 }
 
-async function asset(directory: string, filename: string, contentType: string, policy?: string) {
+function asset(body: BodyInit, contentType: string, policy?: string) {
     const headers = new Headers({
         'Content-Type': contentType,
         'Cache-Control': 'no-store',
@@ -208,7 +222,7 @@ async function asset(directory: string, filename: string, contentType: string, p
     if (policy) {
         headers.set('Content-Security-Policy', policy)
     }
-    return new Response(await readFile(join(directory, filename)), { headers })
+    return new Response(body, { headers })
 }
 
 const [uiDirectory, evidenceFile, gatewayPortArgument] = Bun.argv.slice(2)
@@ -229,13 +243,28 @@ const assets = new Map<string, Response>(
     await Promise.all(
         Object.entries(uiAssets).map(
             async ([filename, contentType]) =>
-                [`/app/${filename}`, await asset(uiDirectory, filename, contentType)] as const,
+                [
+                    `/app/${filename}`,
+                    asset(await readFile(join(uiDirectory, filename)), contentType),
+                ] as const,
         ),
     ),
 )
-assets.set('/', await asset(import.meta.dir, 'host.html', 'text/html; charset=utf-8', hostPolicy))
-assets.set('/host.js', await asset(import.meta.dir, 'host.js', uiAssets['app.js']))
-assets.set('/spoof.js', await asset(import.meta.dir, 'spoof.js', uiAssets['app.js']))
+assets.set(
+    '/',
+    asset(await readFile(join(import.meta.dir, 'host.html')), uiAssets['index.html'], hostPolicy),
+)
+const harness = await Bun.build({
+    entrypoints: ['host.ts', 'spoof.ts'].map((file) => join(import.meta.dir, file)),
+    target: 'browser',
+    format: 'iife',
+})
+if (!harness.success) {
+    throw new AggregateError(harness.logs, 'The reference browser harness build failed')
+}
+for (const output of harness.outputs) {
+    assets.set(`/${basename(output.path)}`, asset(output, uiAssets['app.js']))
+}
 assets.set(
     '/spoof.html',
     new Response('<!doctype html><script src="/spoof.js" defer></script>', {
