@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Runtime reference app</title>
+        <link rel="stylesheet" href="app.css" />
+        <script src="app.js" defer></script>
+    </head>
+    <body>
+        <main>
+            <img src="icon.svg" alt="Reference app icon" width="24" height="24" />
+            <h1>Runtime reference app</h1>
+            <p id="route" aria-live="polite"></p>
+            <p id="readiness" aria-live="polite" hidden>Backend ready</p>
+            <button id="open-dialog" type="button" disabled>Open dialog</button>
+            <button id="open-details" type="button" disabled>Open details</button>
+            <dialog aria-labelledby="dialog-title">
+                <form method="dialog">
+                    <h2 id="dialog-title">App dialog</h2>
+                    <button type="submit" autofocus>Confirm</button>
+                    <button type="submit">Dismiss</button>
+                </form>
+            </dialog>
+        </main>
+    </body>
+</html>

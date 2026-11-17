@@ -1,0 +1,8 @@
+{
+    "name": "rentnerproxy-app-runtime-browser-fixture",
+    "private": true,
+    "type": "module",
+    "devDependencies": {
+        "@playwright/test": "1.64.1"
+    }
+}
