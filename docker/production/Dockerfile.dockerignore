@@ -2,6 +2,9 @@
 
 !package.json
 !bun.lock
+!patches/
+patches/**
+!patches/picomatch@4.0.7.patch
 !vite.config.ts
 !tsconfig.json
 !tsconfig.scripts.json

@@ -117,5 +117,8 @@
             "esbuild": "0.28.2"
         }
     },
+    "patchedDependencies": {
+        "picomatch@4.0.7": "patches/picomatch@4.0.7.patch"
+    },
     "packageManager": "bun@1.4.4"
 }

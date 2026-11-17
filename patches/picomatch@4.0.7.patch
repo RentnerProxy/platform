@@ -1,0 +1,17 @@
+diff --git a/lib/parse.js b/lib/parse.js
+index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..2dcac7ae2a5ac32930d75da58d477a711f732df0 100644
+--- a/lib/parse.js
++++ b/lib/parse.js
+@@ -521,6 +521,12 @@ const parse = (input, options) => {
+   };
+ 
+   const extglobOpen = (type, value) => {
++    // Reject repeated extglobs before they reach the regex compiler.
++    // Remove this guard when the upstream fix for GHSA-fc5q-39xc-vjpf is released.
++    if (type === 'plus' || type === 'star') {
++      throw new SyntaxError('Repeated extglobs are disabled in this picomatch build');
++    }
++
+     const token = { ...EXTGLOB_CHARS[value], conditions: 1, inner: '' };
+ 
+     token.prev = prev;

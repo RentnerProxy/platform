@@ -4,7 +4,7 @@ umask 077
 archive="${1:?}"
 destination="${2:?}"
 expected="${3:?}"
-case "$expected" in Cargo.lock|bun.lock|package.json) ;; *) exit 1 ;; esac
+case "$expected" in Cargo.lock|bun.lock|package.json|picomatch@4.0.7.patch|parse.js) ;; *) exit 1 ;; esac
 [[ -f "$archive" && ! -L "$archive" && ! -e "$destination" && ! -L "$destination" ]] || exit 1
 (( $(stat --format=%s -- "$archive") <= 8388608 )) || exit 1
 entries="$(tar --list --file="$archive" --quoting-style=escape)"
