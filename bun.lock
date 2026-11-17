@@ -72,6 +72,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "picomatch@4.0.7": "patches/picomatch@4.0.7.patch",
+  },
   "overrides": {
     "@esbuild-kit/core-utils": {
       "esbuild": "0.28.2",
