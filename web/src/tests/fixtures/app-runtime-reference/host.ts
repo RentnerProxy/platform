@@ -22,7 +22,6 @@ let activeChannel: Channel | undefined
 let generation = 0
 let theme: ContextMessage['theme'] = 'light'
 let locale: ContextMessage['locale'] = 'en'
-let route: ContextMessage['route'] = location.hash === '#/details' ? 'details' : 'overview'
 let ready = false
 let rejectedSources = 0
 let rejectedMessages = 0
@@ -35,7 +34,7 @@ function sendContext() {
         generation,
         theme,
         locale,
-        route,
+        route: location.hash === '#/details' ? 'details' : 'overview',
         ready,
     } satisfies ContextMessage)
 }
@@ -81,7 +80,6 @@ function openChannel() {
                 })
                 .catch(() => {})
         } else if (data.type === 'navigate' && data.route === 'details') {
-            route = data.route
             history.pushState(null, '', '#/details')
             sendContext()
         } else {
@@ -117,6 +115,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     openChannel()
 })
 
+window.addEventListener('popstate', sendContext)
 appearance.addEventListener('click', () => {
     theme = 'dark'
     locale = 'de'

@@ -193,6 +193,12 @@ async function assertInteractions(page: Page, app: FrameLocator) {
     await app.getByRole('button', { name: 'Details öffnen' }).click()
     await expect(page).toHaveURL(/#\/details$/)
     await expect(app.locator('#route')).toHaveText('Details')
+    await page.goBack()
+    expect(new URL(page.url()).hash).toBe('')
+    await expect(app.locator('#route')).toHaveText('Overview')
+    await page.goForward()
+    await expect(page).toHaveURL(/#\/details$/)
+    await expect(app.locator('#route')).toHaveText('Details')
     await page.reload()
     await page.getByRole('button', { name: 'Load app' }).click()
     await expect(app.locator('#route')).toHaveText('Details')
@@ -329,6 +335,7 @@ try {
                         'theme-and-locale',
                         'dialog-keyboard-and-focus',
                         'deep-link',
+                        'browser-history-navigation',
                         ...(gatewayPort === undefined ? [] : ['unix-health-through-bridge']),
                     ],
                 },
