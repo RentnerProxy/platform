@@ -4,6 +4,7 @@ FROM mirror.gcr.io/oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060b
 
 WORKDIR /app
 COPY package.json bun.lock ./
+COPY patches/picomatch@4.0.7.patch ./patches/
 RUN bun install --frozen-lockfile
 
 FROM web-dependencies AS web-build
@@ -22,6 +23,7 @@ FROM mirror.gcr.io/oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060b
 
 WORKDIR /app
 COPY package.json bun.lock ./
+COPY patches/picomatch@4.0.7.patch ./patches/
 COPY docker/web/prune-build-tools.sh /tmp/prune-build-tools.sh
 RUN bun install --frozen-lockfile --production \
     && /bin/sh /tmp/prune-build-tools.sh \

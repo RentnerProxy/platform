@@ -13,7 +13,8 @@ cleanup() {
     rm -rf -- "$work_directory"
 }
 trap cleanup EXIT
-rm -f "$REPORT_DIRECTORY/assessment.json" "$REPORT_DIRECTORY/blocked-assessment.json"
+rm -f "$REPORT_DIRECTORY/assessment.json" "$REPORT_DIRECTORY/blocked-assessment.json" \
+    "$REPORT_DIRECTORY/picomatch-mitigation.json"
 case "$architecture" in amd64|arm64) ;; *) echo 'Unsupported assessment architecture.' >&2; exit 1 ;; esac
 manifest="$REPORT_DIRECTORY/manifest.json"
 skopeo inspect --raw "$IMAGE_SOURCE" > "$manifest"
@@ -53,7 +54,17 @@ SOURCE_DIRECTORY="$locked_source_directory" REPORT_DIRECTORY="$controller_report
     assess bash "$AUTOMATION_DIRECTORY/.github/scripts/security/audit-cargo.sh"
 copy_input /opt/rentnerproxy/web/bun.lock "$locked_source_directory/web/bun.lock" bun.lock
 copy_input /opt/rentnerproxy/web/package.json "$locked_source_directory/web/package.json" package.json
-SOURCE_DIRECTORY="$locked_source_directory/web" \
+parser="$work_directory/picomatch-parse.js"
+patch_file='picomatch@4.0.7.patch'
+if jq --exit-status --arg patch "patches/$patch_file" \
+    '.patchedDependencies["picomatch@4.0.7"] == $patch' \
+    "$locked_source_directory/web/package.json" >/dev/null 2>&1; then
+    mkdir -p "$locked_source_directory/web/patches"
+    copy_input "/opt/rentnerproxy/web/patches/$patch_file" \
+        "$locked_source_directory/web/patches/$patch_file" "$patch_file"
+    copy_input /opt/rentnerproxy/web/node_modules/picomatch/lib/parse.js "$parser" parse.js
+fi
+BUN_AUDIT_INSTALLED_PARSER="$parser" SOURCE_DIRECTORY="$locked_source_directory/web" \
     assess bash "$AUTOMATION_DIRECTORY/.github/scripts/security/audit-bun.sh"
 if (( status == 3 )); then
     bun --no-env-file "$policy" blocked "$REPORT_DIRECTORY/identity.json" "$REPORT_DIRECTORY/blocked-assessment.json"

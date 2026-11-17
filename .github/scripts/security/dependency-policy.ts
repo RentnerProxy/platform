@@ -1,4 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises'
+import { isMitigatedPicomatchAdvisory, verifyPicomatchMitigation } from './picomatch-mitigation.ts'
+import type { PicomatchMitigationProof } from './picomatch-mitigation.ts'
 
 const policy = 'moderate-and-above Bun; all RustSec findings'
 const scope = 'rentnerproxy-locked-cargo-and-bun'
@@ -38,13 +40,16 @@ export function evaluateBunAudit(
     report: unknown,
     scannerStatus: number,
     diagnostics: string,
-): void {
+    mitigation: PicomatchMitigationProof | null = null,
+): boolean {
     if (scannerStatus !== 0 && scannerStatus !== 1)
         throw new Error('Unexpected Bun audit exit status')
     // Bun can retain JSON from one registry while warning that another was
     // unaudited. Neither partial coverage nor transport errors are a verdict.
     if (diagnostics.trim()) throw new Error('Bun audit coverage is incomplete')
-    let blocked = false
+    let scannerBlocked = false
+    let unmitigated = false
+    let mitigated = false
     for (const [packageName, entries] of Object.entries(object(report))) {
         text(packageName)
         const advisories = array(entries).map(object)
@@ -62,14 +67,22 @@ export function evaluateBunAudit(
             const severity = text(advisory.severity)
             if (!['info', 'low', 'moderate', 'high', 'critical'].includes(severity))
                 throw new Error('Unknown Bun advisory severity')
-            if (['moderate', 'high', 'critical'].includes(severity)) blocked = true
+            if (['moderate', 'high', 'critical'].includes(severity)) {
+                scannerBlocked = true
+                if (mitigation && isMitigatedPicomatchAdvisory(packageName, advisory)) {
+                    mitigated = true
+                } else {
+                    unmitigated = true
+                }
+            }
         }
     }
     // --json includes advisories below --audit-level. The raw exit must agree
     // with the validated moderate-and-above findings before classification.
-    if (scannerStatus !== Number(blocked))
+    if (scannerStatus !== Number(scannerBlocked))
         throw new Error('Bun audit report and exit status are inconsistent')
-    if (blocked) throw new AdvisoryPolicyError('Locked JavaScript graph contains an advisory')
+    if (unmitigated) throw new AdvisoryPolicyError('Locked JavaScript graph contains an advisory')
+    return mitigated
 }
 
 export function evaluateCargo(report: unknown, databaseEvidence: unknown, now = Date.now()): void {
@@ -159,7 +172,8 @@ export function evaluateBlockedAssessment(
 
 if (import.meta.main) {
     try {
-        const [mode, path, output, diagnosticsPath] = process.argv.slice(2)
+        const [mode, path, output, diagnosticsPath, sourceDirectory, installedParser, proofPath] =
+            process.argv.slice(2)
         if (!path) throw new Error('A structured scanner report is required')
         if (mode === 'cargo-diagnostics') {
             evaluateCargoDiagnostics(await readFile(path, 'utf8'))
@@ -168,7 +182,20 @@ if (import.meta.main) {
         const report: unknown = JSON.parse(await readFile(path, 'utf8'))
         if (mode === 'bun-audit' && output !== undefined && diagnosticsPath) {
             if (!/^[01]$/.test(output)) throw new Error('Unexpected Bun audit exit status')
-            evaluateBunAudit(report, Number(output), await readFile(diagnosticsPath, 'utf8'))
+            const mitigation =
+                output === '1' && sourceDirectory && proofPath
+                    ? await verifyPicomatchMitigation(sourceDirectory, installedParser || undefined)
+                    : null
+            const mitigated = evaluateBunAudit(
+                report,
+                Number(output),
+                await readFile(diagnosticsPath, 'utf8'),
+                mitigation,
+            )
+            if (mitigated && proofPath && mitigation) {
+                await writeFile(proofPath, JSON.stringify(mitigation, null, 2) + '\n')
+                console.log('Verified the pinned picomatch mitigation for ' + mitigation.advisory)
+            }
         } else if (mode === 'cargo' && output)
             evaluateCargo(report, JSON.parse(await readFile(output, 'utf8')) as unknown)
         else if ((mode === 'identity' || mode === 'blocked') && output) {

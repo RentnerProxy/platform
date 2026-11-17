@@ -148,6 +148,7 @@ jobs:
                       ${{ runner.temp }}/dependency-image-report/controller/rustsec-database.json
                       ${{ runner.temp }}/dependency-image-report/bun-lock.sha256
                       ${{ runner.temp }}/dependency-image-report/bun-audit.json
+                      ${{ runner.temp }}/dependency-image-report/picomatch-mitigation.json
                       ${{ runner.temp }}/dependency-image-report/bun-audit-diagnostics.txt
                       ${{ runner.temp }}/dependency-image-report/bun-audit-status.txt
                   retention-days: 30
