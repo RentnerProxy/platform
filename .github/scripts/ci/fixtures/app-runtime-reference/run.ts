@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { waitForSmoke } from '../../../../../scripts/smoke/wait.ts'
@@ -32,6 +32,14 @@ async function command(file: string, args: string[], timeout = 20_000) {
 const docker = (args: string[], timeout?: number) => command('docker', args, timeout)
 const inAppliance = (container: string, ...args: string[]) => docker(['exec', container, ...args])
 
+async function removeContainer(name: string) {
+    try {
+        await docker(['rm', '--force', '--volumes', name])
+    } catch (error) {
+        if (!/no such container/iu.test(String(error))) throw error
+    }
+}
+
 async function buildApp(work: string, arch: Architecture) {
     const source = join(work, 'app-source')
     await mkdir(source)
@@ -40,32 +48,35 @@ async function buildApp(work: string, arch: Architecture) {
             cp(join(import.meta.dir, name), join(source, name)),
         ),
     )
-    const id = await docker(
-        [
-            'create',
-            '--network',
-            'none',
-            '--platform',
-            'linux/' + arch,
-            '--entrypoint',
-            '/bin/sh',
-            appliance,
-            '-ceu',
-            'cd /reference; test "$(bun --version)" = "$1"; ' +
-                'bun --no-env-file build --compile ./app.ts --outfile /reference/app',
-            'build-native-app',
-            bunVersion,
-        ],
-        180_000,
-    )
+    const id = 'app-reference-build-' + randomUUID()
     try {
+        await docker(
+            [
+                'create',
+                '--name',
+                id,
+                '--network',
+                'none',
+                '--platform',
+                'linux/' + arch,
+                '--entrypoint',
+                '/bin/sh',
+                appliance,
+                '-ceu',
+                'cd /reference; test "$(bun --version)" = "$1"; ' +
+                    'bun --no-env-file build --compile ./app.ts --outfile /reference/app',
+                'build-native-app',
+                bunVersion,
+            ],
+            180_000,
+        )
         await docker(['cp', source, id + ':/reference'])
         await docker(['start', '--attach', id], 120_000)
         const backend = join(work, 'app')
         await docker(['cp', id + ':/reference/app', backend])
         return backend
     } finally {
-        await docker(['rm', '--force', '--volumes', id])
+        await removeContainer(id)
     }
 }
 
@@ -79,27 +90,30 @@ async function buildRuntime(work: string, arch: Architecture) {
         ),
     )
     const executable = 'target/release/app-runtime-reference'
-    const id = await docker(
-        [
-            'create',
-            '--platform',
-            'linux/' + arch,
-            '--env',
-            'RUSTFLAGS=-C target-cpu=generic',
-            builder,
-            'sh',
-            '-ceu',
-            [
-                'cd /reference',
-                'cargo build --release --locked',
-                'rustc -vV',
-                'readelf --wide --version-info ./app',
-                'readelf --notes ./app',
-            ].join('\n'),
-        ],
-        180_000,
-    )
+    const id = 'app-reference-broker-build-' + randomUUID()
     try {
+        await docker(
+            [
+                'create',
+                '--name',
+                id,
+                '--platform',
+                'linux/' + arch,
+                '--env',
+                'RUSTFLAGS=-C target-cpu=generic',
+                builder,
+                'sh',
+                '-ceu',
+                [
+                    'cd /reference',
+                    'cargo build --release --locked',
+                    'rustc -vV',
+                    'readelf --wide --version-info ./app',
+                    'readelf --notes ./app',
+                ].join('\n'),
+            ],
+            180_000,
+        )
         await docker(['cp', source, id + ':/reference'])
         await docker(['cp', backend, id + ':/reference/app'])
         const build = await docker(['start', '--attach', id], 240_000)
@@ -132,7 +146,7 @@ async function buildRuntime(work: string, arch: Architecture) {
             },
         }
     } finally {
-        await docker(['rm', '--force', id])
+        await removeContainer(id)
     }
 }
 
@@ -142,31 +156,34 @@ async function withAppliance<T>(
     offline: boolean,
     exercise: (container: string) => Promise<T>,
 ) {
-    const id = await docker(
-        [
-            'run',
-            '--detach',
-            '--platform',
-            'linux/' + arch,
-            '--network',
-            'none',
-            '--mount',
-            'type=volume,src=' + volume + ',dst=' + installed + (offline ? ',readonly' : ''),
-            '--env',
-            'PUBLIC_ORIGIN=https://fixture.invalid',
-            '--env',
-            'SMTP_FROM=fixture@fixture.invalid',
-            '--env',
-            'SMTP_HOST=127.0.0.1',
-            '--env',
-            'SMTP_PORT=2525',
-            '--env',
-            'SMTP_SECURE=false',
-            appliance,
-        ],
-        180_000,
-    )
+    const id = 'app-reference-appliance-' + randomUUID()
     try {
+        await docker(
+            [
+                'run',
+                '--name',
+                id,
+                '--detach',
+                '--platform',
+                'linux/' + arch,
+                '--network',
+                'none',
+                '--mount',
+                'type=volume,src=' + volume + ',dst=' + installed + (offline ? ',readonly' : ''),
+                '--env',
+                'PUBLIC_ORIGIN=https://fixture.invalid',
+                '--env',
+                'SMTP_FROM=fixture@fixture.invalid',
+                '--env',
+                'SMTP_HOST=127.0.0.1',
+                '--env',
+                'SMTP_PORT=2525',
+                '--env',
+                'SMTP_SECURE=false',
+                appliance,
+            ],
+            180_000,
+        )
         assert.equal(
             await docker(['inspect', '--format', '{{.HostConfig.NetworkMode}}', id]),
             'none',
@@ -196,7 +213,7 @@ async function withAppliance<T>(
         console.error(await docker(['logs', '--tail', '24', id]).catch(() => 'No appliance log'))
         throw error
     } finally {
-        await docker(['rm', '--force', '--volumes', id])
+        await removeContainer(id)
     }
 }
 
@@ -232,7 +249,6 @@ async function probeAppliance(container: string, arch: Architecture) {
 async function exerciseBrowser(
     container: string,
     work: string,
-    output: string,
     ready: () => Promise<{ status: number; body: unknown }>,
 ) {
     const assets = join(work, 'installed-ui')
@@ -248,7 +264,7 @@ async function exerciseBrowser(
         },
     })
     try {
-        const evidence = join(output, 'browser.json')
+        const evidence = join(work, 'browser.json')
         await command(
             process.execPath,
             [
@@ -274,6 +290,8 @@ async function run(arch: Architecture, output: string) {
     const revision = await command('git', ['rev-parse', 'HEAD'])
     const hostKernel = process.platform === 'linux' ? await command('uname', ['-r']) : undefined
     await mkdir(output, { recursive: true })
+    const reports = ['native.json', 'browser.json']
+    await Promise.all(reports.map((name) => rm(join(output, name), { force: true })))
     const work = await mkdtemp(join(output, 'run-'))
     assert.equal(dirname(work), output)
     const volume = 'app-runtime-reference-' + randomUUID()
@@ -349,7 +367,7 @@ async function run(arch: Architecture, output: string) {
                 2,
                 bunVersion,
             )
-            await exerciseBrowser(id, work, output, sockets.ready)
+            await exerciseBrowser(id, work, sockets.ready)
             const revocation = await sockets.verifyRevocation()
             assert.equal((await sockets.ready()).status, 503, 'A retired app reported healthy')
             return { native, socket: sockets.evidence, revocation }
@@ -380,7 +398,8 @@ async function run(arch: Architecture, output: string) {
                 installedReadOnly: true,
             },
         }
-        await writeFile(join(output, 'native.json'), JSON.stringify(evidence, null, 2) + '\n')
+        await writeFile(join(work, 'native.json'), JSON.stringify(evidence, null, 2) + '\n')
+        await Promise.all(reports.map((name) => rename(join(work, name), join(output, name))))
         console.log(JSON.stringify(evidence, null, 2))
     } finally {
         try {

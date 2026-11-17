@@ -71,7 +71,11 @@ async function prepare(
     const files = {
         app: JSON.stringify(app),
         manager: JSON.stringify(manager),
-        wrongApp: JSON.stringify({ ...app, appSocket: wrongSocket }),
+        wrongApp: JSON.stringify({
+            ...app,
+            appSocket: wrongSocket,
+            appCredential: randomBytes(32).toString('hex'),
+        }),
         wrongManager: JSON.stringify({ ...manager, appSocket: wrongSocket }),
         active: generation + '\n',
     }
