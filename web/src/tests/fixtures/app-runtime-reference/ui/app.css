@@ -1,0 +1,16 @@
+:root {
+    color-scheme: light;
+    font-family: system-ui, sans-serif;
+}
+
+:root[data-theme='dark'] {
+    color-scheme: dark;
+}
+
+body {
+    background: rgb(250 249 246);
+}
+
+:root[data-theme='dark'] body {
+    background: rgb(21 29 35);
+}

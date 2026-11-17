@@ -1,0 +1,87 @@
+name: App Runtime Reference
+
+on:
+    pull_request:
+        paths:
+            - .github/workflows/app-runtime-reference.yml
+            - '.github/scripts/ci/fixtures/app-runtime-reference/**'
+            - 'core/tests/fixtures/app-runtime-reference/**'
+            - scripts/smoke/wait.ts
+            - 'web/src/tests/fixtures/app-runtime-reference/**'
+    push:
+        branches: [main]
+        paths:
+            - .github/workflows/app-runtime-reference.yml
+            - '.github/scripts/ci/fixtures/app-runtime-reference/**'
+            - 'core/tests/fixtures/app-runtime-reference/**'
+            - scripts/smoke/wait.ts
+            - 'web/src/tests/fixtures/app-runtime-reference/**'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: app-runtime-reference-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    native:
+        name: Native app runtime reference (${{ matrix.architecture }})
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 15
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - architecture: amd64
+                      runner: ubuntu-24.04
+                      host: Linux/x86_64
+                    - architecture: arm64
+                      runner: ubuntu-24.04-arm
+                      host: Linux/aarch64
+        env:
+            ARCHITECTURE: ${{ matrix.architecture }}
+        steps:
+            - name: Check out exact tested commit
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+                  ref: ${{ github.sha }}
+
+            - name: Require native Linux and Docker execution
+              shell: bash
+              env:
+                  EXPECTED_HOST: ${{ matrix.host }}
+              run: |
+                  test "$(uname -s)/$(uname -m)" = "$EXPECTED_HOST"
+                  test "$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" = "linux/$ARCHITECTURE"
+
+            - name: Set up Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: 1.4.4
+
+            - name: Install locked browser fixture dependencies and Chromium
+              shell: bash
+              working-directory: web/src/tests/fixtures/app-runtime-reference
+              run: |
+                  bun install --no-env-file --frozen-lockfile
+                  node node_modules/@playwright/test/cli.js install --with-deps --only-shell chromium
+
+            - name: Verify the native app runtime reference
+              shell: bash
+              run: |
+                  bun --no-env-file --no-orphans .github/scripts/ci/fixtures/app-runtime-reference/run.ts "$ARCHITECTURE" "$RUNNER_TEMP/app-runtime-reference"
+                  test -s "$RUNNER_TEMP/app-runtime-reference/native.json"
+                  test -s "$RUNNER_TEMP/app-runtime-reference/browser.json"
+
+            - name: Upload native and browser evidence
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: app-runtime-reference-${{ matrix.architecture }}-${{ github.run_attempt }}
+                  if-no-files-found: error
+                  retention-days: 14
+                  path: |
+                      ${{ runner.temp }}/app-runtime-reference/native.json
+                      ${{ runner.temp }}/app-runtime-reference/browser.json
