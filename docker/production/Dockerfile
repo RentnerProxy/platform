@@ -111,6 +111,10 @@ RUN test "$(go env GOOS)/$(go env GOARCH)" = "$TARGETOS/$TARGETARCH" \
 FROM ghcr.io/crowdsecurity/crowdsec:v1.8.2-debian@sha256:a5642c72127ee93aaac830e9f66891573fa7851b2c721987d9fef13d7d05fdfe AS crowdsec-assets
 
 COPY docker/crowdsec/hub/data.sha256 /tmp/rentnerproxy-crowdsec-hub-data.sha256
+# The pinned Hub scenario fetches a moving upstream list. Use the revision selected by the manifest.
+ADD --checksum=sha256:be1fad9b6d99346c07fd5f7f6110d497397383c14fdfa6fe59236fa6e52c3a13 \
+    https://raw.githubusercontent.com/crowdsecurity/sec-lists/f9df076079c31e50bf3fcd8abd0b25d4a1e1c904/web/sensitive_data.txt \
+    /tmp/rentnerproxy-crowdsec-sensitive-data.txt
 RUN set -eux; \
     mkdir -p /etc/crowdsec /var/lib/crowdsec /opt/rentnerproxy/crowdsec-config; \
     cp -a /staging/etc/crowdsec/. /etc/crowdsec/; \
@@ -124,6 +128,7 @@ RUN set -eux; \
         crowdsecurity/syslog-logs crowdsecurity/whitelists --force --error >/dev/null; \
     cscli -c /etc/crowdsec/config.yaml collections install crowdsecurity/caddy --force --error >/dev/null; \
     cd /var/lib/crowdsec/data; \
+    install -m 0644 /tmp/rentnerproxy-crowdsec-sensitive-data.txt sensitive_data.txt; \
     sha256sum --check /tmp/rentnerproxy-crowdsec-hub-data.sha256; \
     rm -f /etc/crowdsec/local_api_credentials.yaml \
         /etc/crowdsec/online_api_credentials.yaml; \
