@@ -7,25 +7,20 @@ import { promisify } from 'node:util'
 import { waitForSmoke } from '../../../../../scripts/smoke/wait.ts'
 import { appEntrypoint, architecture, makeBootstrap, runtimeProfile } from './catalog.ts'
 import type { Architecture } from './catalog.ts'
-import { exerciseProviders } from './providers.ts'
+import { exerciseSockets } from './sockets.ts'
 
 const appliance =
     'ghcr.io/rentnerproxy/platform@sha256:6a9ecb2330c20f366590f4c6c1c32441104a44c8435d7858cbef4d9496e07b46'
 const builder =
     'mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31'
-const backendSource = 'core/tests/fixtures/app-runtime-reference'
+const brokerSource = 'core/tests/fixtures/app-runtime-reference'
 const uiSource = 'web/src/tests/fixtures/app-runtime-reference'
 const installed = '/reference-install'
 const bootstrapPath = '/tmp/reference-bootstrap'
 const rootPath = '/tmp/reference-root.pem'
 const installer = '/tmp/reference-catalog.ts'
-const socketDirectory = '/tmp/reference-app'
-const socket = socketDirectory + '/app.sock'
-const appUid = '21001'
-const brokerUid = '21002'
-const installation = 'reference-install'
-const cpu = 'generic'
-const minimumGlibc = '2.41'
+const bunVersion = '1.4.4'
+const applianceGlibc = '2.41'
 
 const execute = promisify(execFile)
 
@@ -37,12 +32,50 @@ async function command(file: string, args: string[], timeout = 20_000) {
 const docker = (args: string[], timeout?: number) => command('docker', args, timeout)
 const inAppliance = (container: string, ...args: string[]) => docker(['exec', container, ...args])
 
-async function buildBackend(work: string, arch: Architecture) {
-    const source = join(work, 'backend-source')
+async function buildApp(work: string, arch: Architecture) {
+    const source = join(work, 'app-source')
+    await mkdir(source)
+    await Promise.all(
+        ['app.ts', 'app-providers.ts'].map((name) =>
+            cp(join(import.meta.dir, name), join(source, name)),
+        ),
+    )
+    const id = await docker(
+        [
+            'create',
+            '--network',
+            'none',
+            '--platform',
+            'linux/' + arch,
+            '--entrypoint',
+            '/bin/sh',
+            appliance,
+            '-ceu',
+            'cd /reference; test "$(bun --version)" = "$1"; ' +
+                'bun --no-env-file build --compile ./app.ts --outfile /reference/app',
+            'build-native-app',
+            bunVersion,
+        ],
+        180_000,
+    )
+    try {
+        await docker(['cp', source, id + ':/reference'])
+        await docker(['start', '--attach', id], 120_000)
+        const backend = join(work, 'app')
+        await docker(['cp', id + ':/reference/app', backend])
+        return backend
+    } finally {
+        await docker(['rm', '--force', '--volumes', id])
+    }
+}
+
+async function buildRuntime(work: string, arch: Architecture) {
+    const backend = await buildApp(work, arch)
+    const source = join(work, 'broker-source')
     await mkdir(source)
     await Promise.all(
         ['Cargo.toml', 'Cargo.lock', 'src'].map((path) =>
-            cp(join(backendSource, path), join(source, path), { recursive: true }),
+            cp(join(brokerSource, path), join(source, path), { recursive: true }),
         ),
     )
     const executable = 'target/release/app-runtime-reference'
@@ -52,7 +85,7 @@ async function buildBackend(work: string, arch: Architecture) {
             '--platform',
             'linux/' + arch,
             '--env',
-            'RUSTFLAGS=-C target-cpu=' + cpu,
+            'RUSTFLAGS=-C target-cpu=generic',
             builder,
             'sh',
             '-ceu',
@@ -60,15 +93,15 @@ async function buildBackend(work: string, arch: Architecture) {
                 'cd /reference',
                 'cargo build --release --locked',
                 'rustc -vV',
-                'rustc --print cfg -C target-cpu=' + cpu,
-                'readelf --wide --version-info ' + executable,
-                'readelf --notes ' + executable,
+                'readelf --wide --version-info ./app',
+                'readelf --notes ./app',
             ].join('\n'),
         ],
         180_000,
     )
     try {
         await docker(['cp', source, id + ':/reference'])
+        await docker(['cp', backend, id + ':/reference/app'])
         const build = await docker(['start', '--attach', id], 240_000)
         const target = arch === 'amd64' ? 'x86_64-unknown-linux-gnu' : 'aarch64-unknown-linux-gnu'
         assert.ok(build.split('\n').includes('host: ' + target), 'Rust builder is not native')
@@ -77,19 +110,20 @@ async function buildBackend(work: string, arch: Architecture) {
         )
         const newestGlibc = requiredGlibc.at(-1)
         assert.ok(
-            newestGlibc && newestGlibc.localeCompare(minimumGlibc, 'en', { numeric: true }) <= 0,
+            newestGlibc && newestGlibc.localeCompare(applianceGlibc, 'en', { numeric: true }) <= 0,
             'Fixture exceeds the Debian 13 glibc baseline',
         )
-        const backend = join(work, 'app')
-        await docker(['cp', id + ':/reference/' + executable, backend])
+        const broker = join(work, 'broker')
+        await docker(['cp', id + ':/reference/' + executable, broker])
         return {
             backend,
+            broker,
             toolchain: {
-                image: builder,
-                rustc: build.split('\n').find((line) => line.startsWith('rustc ')),
-                target,
-                cpu,
-                features: build.split('\n').filter((line) => line.startsWith('target_feature=')),
+                bunVersion,
+                bunImage: appliance,
+                target: 'linux-' + arch,
+                brokerImage: builder,
+                brokerRustc: build.split('\n').find((line) => line.startsWith('rustc ')),
                 elfAbi: build
                     .split('\n')
                     .find((line) => line.includes('OS: Linux, ABI:'))
@@ -166,142 +200,41 @@ async function withAppliance<T>(
     }
 }
 
-async function rpc(
-    container: string,
-    generation: number,
-    request?: Record<string, unknown>,
-    uid = brokerUid,
-    installId = installation,
-) {
-    const curl = [
-        'curl',
-        '--silent',
-        '--show-error',
-        '--noproxy',
-        '*',
-        '--max-time',
-        '3',
-        '--unix-socket',
-        socket,
-        '--header',
-        'x-app-installation: ' + installId,
-        '--header',
-        'x-app-generation: ' + generation,
-        '--write-out',
-        '\n%{http_code}',
-    ]
-    if (request) curl.push('--json', JSON.stringify(request))
-    const response = await docker(
-        [
-            'exec',
-            '--user',
-            uid + ':' + brokerUid,
-            container,
-            ...curl,
-            'http://localhost/v1/' + (request ? 'probe' : 'ready'),
-        ],
-        5_000,
-    )
-    const separator = response.lastIndexOf('\n')
-    assert.ok(separator > 0, 'Socket response is missing its body or status')
-    const status = Number(response.slice(separator + 1))
-    assert.ok(Number.isInteger(status) && status >= 100 && status <= 599)
-    const text = response.slice(0, separator)
-    const body: unknown = text.startsWith('{') ? JSON.parse(text) : text
-    return { status, body }
-}
-
-async function exerciseSocket(container: string, generation: number) {
-    await inAppliance(
-        container,
-        'install',
-        '-d',
-        '-m',
-        '0710',
-        '-o',
-        appUid,
-        '-g',
-        brokerUid,
-        socketDirectory,
-    )
-    await docker([
-        'exec',
-        '--detach',
-        '--user',
-        appUid + ':' + brokerUid,
-        container,
-        'sh',
-        '-c',
-        'exec "$@" 2>/tmp/reference-app/startup-error',
-        'reference-backend',
-        installed + '/' + appEntrypoint,
-        socket,
-        installation,
-        String(generation),
-        brokerUid,
-    ])
-    let readinessError: unknown
-    try {
-        await waitForSmoke(async () => (await rpc(container, generation)).status === 200, {
-            timeoutMs: 10_000,
-            intervalMs: 200,
-            retryOnError(error) {
-                readinessError = error
-                return true
-            },
-            timeoutError: () =>
-                new Error('Reference backend socket did not become ready', {
-                    cause: readinessError,
-                }),
-        })
-    } catch (error) {
-        console.error(await inAppliance(container, 'cat', socketDirectory + '/startup-error'))
-        throw error
-    }
-    const expected = { status: 403, body: { error: 'installationContextRejected' } }
-    const [spoof, foreign, stale, mode] = await Promise.all([
-        rpc(container, generation, undefined, '21003'),
-        rpc(container, generation, undefined, brokerUid, 'another-installation'),
-        rpc(container, generation - 1),
-        inAppliance(container, 'stat', '-c', '%u:%g:%a', socket),
-    ])
-    assert.deepEqual(spoof, expected, 'Wrong peer UID reached the app')
-    assert.deepEqual(foreign, expected, 'Wrong installation reached the app')
-    assert.deepEqual(stale, expected, 'Stale generation reached the app')
-    assert.equal(mode, appUid + ':' + brokerUid + ':660')
-    return {
-        providers: await exerciseProviders((request) => rpc(container, generation, request)),
-        socket: {
-            generation,
-            wrongPeer: spoof.status,
-            wrongInstall: foreign.status,
-            stale: stale.status,
-        },
-    }
-}
-
 async function probeAppliance(container: string, arch: Architecture) {
-    const [kernelMachine, kernel, packageArchitecture, libc, libraries] = await Promise.all([
-        inAppliance(container, 'uname', '-m'),
-        inAppliance(container, 'uname', '-r'),
-        inAppliance(container, 'dpkg', '--print-architecture'),
-        inAppliance(container, 'getconf', 'GNU_LIBC_VERSION'),
-        inAppliance(container, 'ldd', installed + '/' + appEntrypoint),
-    ])
+    const [kernelMachine, kernel, packageArchitecture, libc, libraries, cpuInfo] =
+        await Promise.all([
+            inAppliance(container, 'uname', '-m'),
+            inAppliance(container, 'uname', '-r'),
+            inAppliance(container, 'dpkg', '--print-architecture'),
+            inAppliance(container, 'getconf', 'GNU_LIBC_VERSION'),
+            inAppliance(container, 'ldd', installed + '/' + appEntrypoint),
+            inAppliance(container, 'cat', '/proc/cpuinfo'),
+        ])
     assert.equal(kernelMachine, arch === 'amd64' ? 'x86_64' : 'aarch64')
     assert.equal(packageArchitecture, arch)
-    assert.equal(libc, 'glibc ' + minimumGlibc)
+    assert.equal(libc, 'glibc ' + applianceGlibc)
     assert.ok(libraries.includes('libc.so.6') && !libraries.includes('not found'))
+    const observedCpuFeatures = /^(?:flags|Features)[\t ]*:[\t ]*(.+)$/mu
+        .exec(cpuInfo)?.[1]
+        ?.trim()
+        .split(/\s+/u)
+    assert.ok(observedCpuFeatures?.includes(arch === 'amd64' ? 'sse4_2' : 'asimd'))
     return {
         kernelMachine,
         kernel,
         packageArchitecture,
         libc,
+        observedCpuFeatures,
         libraries: libraries.split('\n').map((line) => line.trim()),
     }
 }
 
-async function exerciseBrowser(container: string, work: string, output: string) {
+async function exerciseBrowser(
+    container: string,
+    work: string,
+    output: string,
+    ready: () => Promise<{ status: number; body: unknown }>,
+) {
     const assets = join(work, 'installed-ui')
     await docker(['cp', container + ':' + installed + '/ui', assets])
     const gateway = Bun.serve({
@@ -310,7 +243,7 @@ async function exerciseBrowser(container: string, work: string, output: string) 
         async fetch(request) {
             if (request.method !== 'GET' || new URL(request.url).pathname !== '/health')
                 return new Response(null, { status: 404 })
-            const response = await rpc(container, 2)
+            const response = await ready()
             return Response.json(response.body, { status: response.status })
         },
     })
@@ -348,12 +281,12 @@ async function run(arch: Architecture, output: string) {
         console.log('Building the independent app backend and browser assets')
         const ui = join(work, 'ui')
         const [backendBuild, uiBuild] = await Promise.allSettled([
-            buildBackend(work, arch),
+            buildRuntime(work, arch),
             command(process.execPath, ['--no-env-file', join(uiSource, 'build.ts'), ui]),
         ])
         if (backendBuild.status === 'rejected') throw backendBuild.reason
         if (uiBuild.status === 'rejected') throw uiBuild.reason
-        const { backend, toolchain } = backendBuild.value
+        const { backend, broker, toolchain } = backendBuild.value
         const { bootstrap, trustRoot } = await makeBootstrap(work, arch, backend, ui, revision)
         await docker(['volume', 'create', volume])
 
@@ -380,7 +313,16 @@ async function run(arch: Architecture, output: string) {
                 rootPath,
                 bootstrapPath,
             )
-            return { catalog, socket: await exerciseSocket(id, 1) }
+            const sockets = await exerciseSockets(
+                docker,
+                id,
+                work,
+                broker,
+                installed + '/' + appEntrypoint,
+                1,
+                bunVersion,
+            )
+            return { catalog, socket: sockets.evidence }
         })
         console.log('Restarting from the verified installation with the catalog and package absent')
         const offline = await withAppliance(arch, volume, true, async (id) => {
@@ -398,9 +340,19 @@ async function run(arch: Architecture, output: string) {
             )
             assert.equal(catalog, checks.catalog, 'Offline verification changed the installation')
             const native = await probeAppliance(id, arch)
-            const socketCheck = await exerciseSocket(id, 2)
-            await exerciseBrowser(id, work, output)
-            return { native, socket: socketCheck }
+            const sockets = await exerciseSockets(
+                docker,
+                id,
+                work,
+                broker,
+                installed + '/' + appEntrypoint,
+                2,
+                bunVersion,
+            )
+            await exerciseBrowser(id, work, output, sockets.ready)
+            const revocation = await sockets.verifyRevocation()
+            assert.equal((await sockets.ready()).status, 503, 'A retired app reported healthy')
+            return { native, socket: sockets.evidence, revocation }
         })
         if (hostKernel) assert.equal(offline.native.kernel, hostKernel)
         const evidence = {
@@ -421,7 +373,12 @@ async function run(arch: Architecture, output: string) {
                 ],
                 socket: checks.socket,
             },
-            offline: { socket: offline.socket, catalogAbsent: true, installedReadOnly: true },
+            offline: {
+                socket: offline.socket,
+                revocation: offline.revocation,
+                catalogAbsent: true,
+                installedReadOnly: true,
+            },
         }
         await writeFile(join(output, 'native.json'), JSON.stringify(evidence, null, 2) + '\n')
         console.log(JSON.stringify(evidence, null, 2))

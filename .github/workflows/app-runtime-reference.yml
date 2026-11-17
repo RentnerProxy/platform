@@ -6,6 +6,7 @@ on:
             - .github/workflows/app-runtime-reference.yml
             - '.github/scripts/ci/fixtures/app-runtime-reference/**'
             - 'core/tests/fixtures/app-runtime-reference/**'
+            - scripts/smoke/wait.ts
             - 'web/src/tests/fixtures/app-runtime-reference/**'
     push:
         branches: [main]
@@ -13,6 +14,7 @@ on:
             - .github/workflows/app-runtime-reference.yml
             - '.github/scripts/ci/fixtures/app-runtime-reference/**'
             - 'core/tests/fixtures/app-runtime-reference/**'
+            - scripts/smoke/wait.ts
             - 'web/src/tests/fixtures/app-runtime-reference/**'
     workflow_dispatch:
 

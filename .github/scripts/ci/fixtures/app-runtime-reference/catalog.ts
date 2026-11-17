@@ -129,8 +129,10 @@ export async function makeBootstrap(
             openapi: '3.1.0',
             info: { title: 'Internal socket fixture', version },
             paths: {
-                '/v1/ready': { get: { responses: { '200': { description: 'Socket ready' } } } },
-                '/v1/probe': { post: { responses: { '200': { description: 'Fixture reply' } } } },
+                '/app/v1/ready': { get: { responses: { '200': { description: 'Socket ready' } } } },
+                '/app/v1/probe': {
+                    post: { responses: { '200': { description: 'Fixture reply' } } },
+                },
             },
         }),
     )
