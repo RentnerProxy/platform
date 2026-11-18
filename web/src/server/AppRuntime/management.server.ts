@@ -5,6 +5,7 @@ import { z } from 'zod'
 import {
     deleteAppRuntimeSecretInTransaction,
     putAppRuntimeSecretInTransaction,
+    readAppRuntimeLeaseInTransaction,
 } from './authority.server.ts'
 import {
     appCapabilitySchema,
@@ -31,6 +32,7 @@ const identitySchema = z.strictObject({
     uid: appUidSchema,
 })
 const leaseDeadlineSchema = z.iso.datetime({ precision: 3 }).transform((value) => new Date(value))
+const generationRequest = z.strictObject({ identity: identitySchema })
 const lease = z.strictObject({ identity: identitySchema, leaseExpiresAt: leaseDeadlineSchema })
 const permissionKeySchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/u)
 const registration = lease.extend({
@@ -66,8 +68,12 @@ const secretUpdate = secretReference.extend({ value: z.string().min(1).max(16_38
 /** These controls are reachable only on the platform-owned bridge, outside the app route allowlist. */
 export function manageAppRuntime(action: string, body: unknown, signal: AbortSignal) {
     return withAppRuntimeErrors(async () => {
-        await appRuntimeTransaction(signal, async (transaction) => {
+        const result = await appRuntimeTransaction(signal, async (transaction) => {
             switch (action) {
+                case 'lease': {
+                    const input = parseAppInput(generationRequest, body)
+                    return readAppRuntimeLeaseInTransaction(transaction, input.identity)
+                }
                 case 'register': {
                     const { identity, leaseExpiresAt, capabilities, permissionKeys, hasUi } =
                         parseAppInput(registration, body)
@@ -89,7 +95,7 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
                     return update(transaction, input.identity, input.leaseExpiresAt)
                 }
                 case 'revoke': {
-                    const input = parseAppInput(z.strictObject({ identity: identitySchema }), body)
+                    const input = parseAppInput(generationRequest, body)
                     return revokeAppRuntimeGenerationInTransaction(transaction, input.identity)
                 }
                 case 'grants': {
@@ -140,6 +146,8 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
                     )
             }
         })
-        return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } })
+        const headers = { 'Cache-Control': 'no-store' }
+        if (result !== undefined) return Response.json(result, { headers })
+        return new Response(null, { status: 204, headers })
     })
 }

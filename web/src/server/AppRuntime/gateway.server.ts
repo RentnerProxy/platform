@@ -141,6 +141,25 @@ async function readBody(request: Request, hasBody: boolean, signal: AbortSignal)
     }
 }
 
+async function replyWithinDeadline(run: () => Promise<Response>, signal: AbortSignal) {
+    signal.throwIfAborted()
+    const aborted = Promise.withResolvers<never>()
+    const onAbort = () => aborted.reject(timedOut)
+    signal.addEventListener('abort', onAbort, { once: true })
+    try {
+        const work = run().then((response) => {
+            if (signal.aborted) {
+                void response.body?.cancel().catch(() => undefined)
+                throw timedOut
+            }
+            return response
+        })
+        return await Promise.race([work, aborted.promise])
+    } finally {
+        signal.removeEventListener('abort', onAbort)
+    }
+}
+
 export function createAppRuntimeGateway(
     bridgeToken: string,
     shutdown: AbortSignal,
@@ -162,13 +181,18 @@ export function createAppRuntimeGateway(
             const url = new URL(request.url)
             const management = /^\/internal\/v1\/app-generations\/([a-z-]+)$/u.exec(url.pathname)
             if (management?.[1] && request.method === 'POST' && !url.search && manage) {
-                return await manage(management[1], await readBody(request, true, signal), signal)
+                const action = management[1]
+                const body = await readBody(request, true, signal)
+                return await replyWithinDeadline(() => manage(action, body, signal), signal)
             }
             const route = identifyOperation(request)
             const context = readHeaders(request, route.operation)
             const hasBody = request.method === 'POST' && route.operation !== 'cancelOperation'
             const body = await readBody(request, hasBody, signal)
-            return await execute({ ...route, ...context, signal, streamSignal, requestId, body })
+            return await replyWithinDeadline(
+                () => execute({ ...route, ...context, signal, streamSignal, requestId, body }),
+                signal,
+            )
         } catch (error) {
             if (error instanceof AppRuntimeProblem) return error.response(requestId)
             if (signal.aborted) return timedOut.response(requestId)

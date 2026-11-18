@@ -23,6 +23,7 @@ const TOKEN: &str = "Bearer manager-test-token";
 const CREDENTIAL: &str = "Bearer native-app-test-token";
 const CONTEXT: &str = "/platform/v1/context";
 const NOTIFY: &str = "/platform/v1/notifications";
+const LEASE: &str = "/internal/v1/app-generations/lease";
 const TEST_UID: u32 = 20_451;
 
 struct Scratch(PathBuf);
@@ -62,12 +63,34 @@ fn launch(uid: u32, executable: PathBuf, data_directory: PathBuf) -> LaunchConfi
         executable,
         data_directory,
         database_url_file: None,
-        lease_seconds: 25,
         runtime_profile: PROFILE.into(),
         app_protocol: ">=1.0.0 <2.0.0".into(),
         platform_api: ">=1.0.0 <1.1.0".into(),
         ui_bridge: None,
     }
+}
+
+fn lease_expiry(remaining: Duration) -> Value {
+    let expires = std::time::SystemTime::now() + remaining;
+    json!({ "expiresAt": u64::try_from(expires.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()).unwrap() })
+}
+
+async fn fixture_lease(
+    request: Request<hyper::body::Incoming>,
+    duration: Duration,
+    generation: u64,
+) -> Response<Full<Bytes>> {
+    assert_eq!(request.uri(), LEASE);
+    assert_eq!(request.method(), Method::POST);
+    assert_eq!(request.headers()["authorization"], TOKEN);
+    let body = request.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        body,
+        json!({"identity": {"appId": "test.native", "installationId": "installation",
+        "generation": generation, "uid": TEST_UID}})
+    );
+    Response::new(Full::new(Bytes::from(lease_expiry(duration).to_string())))
 }
 
 fn request(
@@ -419,6 +442,75 @@ async fn closing_generation_cancels_event_stream_in_both_directions() {
 }
 
 #[tokio::test]
+async fn database_renewal_extends_the_broker_lease_until_authority_revokes_it() {
+    let scratch = Scratch::create(&env::temp_dir());
+    let socket = scratch.path("lease.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let authority = tokio::spawn(async move {
+        for (status, remaining_ms) in [
+            (StatusCode::OK, 800),
+            (StatusCode::OK, 1600),
+            (StatusCode::SERVICE_UNAVAILABLE, 0),
+            (StatusCode::UNAUTHORIZED, 0),
+        ] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let service = service_fn(|request| async move {
+                let mut response =
+                    fixture_lease(request, Duration::from_millis(remaining_ms), 9).await;
+                *response.status_mut() = status;
+                Ok::<_, Infallible>(response)
+            });
+            server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .unwrap();
+        }
+    });
+    let generation = test_generation(TEST_UID, socket, uid());
+    let initial = lease::check(&generation).await.unwrap().unwrap();
+    let broker = tokio::spawn(async move { lease::maintain(&generation, initial).await });
+    tokio::time::sleep_until(initial + Duration::from_millis(100)).await;
+    assert!(
+        !broker.is_finished(),
+        "the verified renewal must extend the original deadline"
+    );
+    timeout(Duration::from_secs(3), broker)
+        .await
+        .unwrap()
+        .unwrap();
+    authority.await.unwrap();
+}
+
+#[tokio::test]
+async fn an_unreachable_lease_authority_cannot_keep_an_expired_broker_alive() {
+    let scratch = Scratch::create(&env::temp_dir());
+    let socket = scratch.path("lease.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let authority = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let service = service_fn(|request| async {
+            Ok::<_, Infallible>(fixture_lease(request, Duration::from_millis(500), 9).await)
+        });
+        server::conn::http1::Builder::new()
+            .serve_connection(TokioIo::new(stream), service)
+            .await
+            .unwrap();
+        let (_stream, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let generation = test_generation(TEST_UID, socket, uid());
+    let initial = lease::check(&generation).await.unwrap().unwrap();
+    timeout(
+        Duration::from_secs(2),
+        lease::maintain(&generation, initial),
+    )
+    .await
+    .unwrap();
+    assert!(tokio::time::Instant::now() >= initial);
+    authority.abort();
+}
+
+#[tokio::test]
 #[ignore = "requires root inside the isolated IPC test container"]
 async fn privileged_generation_launches_restricted_child_and_revokes_listener() {
     assert_eq!(uid(), 0);
@@ -444,9 +536,29 @@ async fn privileged_generation_launches_restricted_child_and_revokes_listener() 
     config.validate().unwrap();
 
     let app_root = scratch.path("apps");
+    let uid_root = app_root.join(TEST_UID.to_string());
+    fs::create_dir(&app_root).unwrap();
+    fs::set_permissions(&app_root, fs::Permissions::from_mode(0o711)).unwrap();
+    fs::create_dir(&uid_root).unwrap();
+    fs::set_permissions(&uid_root, fs::Permissions::from_mode(0o700)).unwrap();
+    unix_fs::chown(&uid_root, Some(0), Some(TEST_UID)).unwrap();
+    let unpublished = uid_root.join(".identity.pending");
+    fs::write(&unpublished, "test.na").unwrap();
+    fs::set_permissions(&unpublished, fs::Permissions::from_mode(0o600)).unwrap();
     let backend = scratch.path("gateway.sock");
+    let controller = PathBuf::from(env::var_os("RENTNERPROXY_TEST_CONTROLLER").unwrap());
     let listener = UnixListener::bind(&backend).unwrap();
     let backend_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        server::conn::http1::Builder::new()
+            .serve_connection(
+                TokioIo::new(stream),
+                service_fn(|request| async {
+                    Ok::<_, Infallible>(fixture_lease(request, Duration::from_secs(25), 9).await)
+                }),
+            )
+            .await
+            .unwrap();
         let (stream, _) = listener.accept().await.unwrap();
         assert_eq!(stream.peer_cred().unwrap().uid(), 0);
         let service = service_fn(|request: Request<hyper::body::Incoming>| async move {
@@ -471,9 +583,12 @@ async fn privileged_generation_launches_restricted_child_and_revokes_listener() 
     let mut task = tokio::spawn(async move {
         run_generation(
             config,
-            &app_root,
-            &backend,
-            uid(),
+            RuntimePaths {
+                app_root: &app_root,
+                gateway_socket: &backend,
+                gateway_uid: uid(),
+                controller: &controller,
+            },
             HeaderValue::from_static(TOKEN),
             async {
                 let _ = stopped.await;
@@ -498,6 +613,15 @@ async fn privileged_generation_launches_restricted_child_and_revokes_listener() 
         .unwrap();
     assert!(UnixStream::connect(core).await.is_err());
     backend_task.await.unwrap();
+    assert_eq!(
+        fs::metadata(&uid_root).unwrap().permissions().mode() & 0o777,
+        0o710
+    );
+    assert_eq!(
+        fs::read_to_string(uid_root.join("identity")).unwrap(),
+        "test.native\ninstallation\n"
+    );
+    assert!(!unpublished.exists());
 }
 
 #[tokio::test]
@@ -527,14 +651,30 @@ async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
     let runtime = PathBuf::from("/run/rentnerproxy");
     fs::create_dir(&runtime).unwrap();
     let _runtime = Scratch(runtime);
+    let socket = Path::new(GATEWAY_SOCKET);
+    let gateway_directory = socket.parent().unwrap();
+    fs::create_dir(gateway_directory).unwrap();
+    unix_fs::chown(gateway_directory, Some(WEB_UID), Some(WEB_UID)).unwrap();
+    let mut authority = Command::new(env::current_exe().unwrap())
+        .args(["--exact", "app_ipc::tests::lease_authority_fixture"])
+        .env("RENTNERPROXY_TEST_LEASE_AUTHORITY", "1")
+        .env_remove("LLVM_PROFILE_FILE")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .uid(WEB_UID)
+        .gid(WEB_UID)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    wait_for_fixture_path(socket).await;
 
     let launch = json!({
         "appId": "test.native", "installationId": "installation", "generation": 10,
         "uid": TEST_UID, "gid": TEST_UID, "executable": executable, "dataDirectory": data,
-        "databaseUrlFile": database, "leaseSeconds": 15, "runtimeProfile": PROFILE,
+        "databaseUrlFile": database, "runtimeProfile": PROFILE,
         "appProtocol": ">=1.0.0 <2.0.0", "platformApi": ">=1.0.0 <1.0.1", "uiBridge": ">=1.0.0 <2.0.0",
     });
-    let send = async |input: String| {
+    let start = async |input: String| {
         let mut child = Command::new(&controller)
             .arg("--app-ipc")
             .env("RENTNERPROXY_CONTROLLER_TOKEN_FILE", &token)
@@ -546,6 +686,10 @@ async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
             .unwrap();
         let mut writer = child.stdin.take().unwrap();
         writer.write_all(input.as_bytes()).await.unwrap();
+        (child, writer)
+    };
+    let send = async |input: String| {
+        let (child, _writer) = start(input).await;
         // Hold the manager pipe until the child exits rather than revoking the launch.
         let output = timeout(Duration::from_secs(8), child.wait_with_output())
             .await
@@ -577,7 +721,7 @@ async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
     assert!(
         send(format!("{invalid_uid}\n"))
             .await
-            .contains("Invalid app launch identity or lease")
+            .contains("Invalid app launch identity")
     );
     let linked = scratch.path("linked-data");
     unix_fs::symlink(&data, &linked).unwrap();
@@ -599,6 +743,13 @@ async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
     assert!(
         send(format!("{launch}\n"))
             .await
+            .contains("App generation has no live lease")
+    );
+    assert!(!data.join("descriptor.json").exists());
+    fs::write(gateway_directory.join("admitted"), []).unwrap();
+    assert!(
+        send(format!("{launch}\n"))
+            .await
             .contains("Native app exited before readiness")
     );
     let descriptor: Value =
@@ -607,6 +758,60 @@ async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
     assert_eq!(descriptor["generation"], 10);
     assert_eq!(descriptor["versions"]["uiBridge"], VERSION);
     assert!(!Path::new(descriptor["coreSocket"].as_str().unwrap()).exists());
+
+    fs::write(&executable, "#!/bin/sh\ncat >/dev/null\nsleep 20 &\nprintf '%s\\n' \"$!\" > descendant.tmp\nmv descendant.tmp descendant.pid\nwait\n").unwrap();
+    let (mut broker, _writer) = start(format!("{launch}\n")).await;
+    let marker = data.join("descendant.pid");
+    wait_for_fixture_path(&marker).await;
+    let descendant = fs::read_to_string(marker).unwrap();
+    let descendant = descendant.trim().parse::<u32>().unwrap();
+    let process = PathBuf::from(format!("/proc/{descendant}"));
+    assert!(process.exists());
+    broker.kill().await.unwrap();
+    timeout(Duration::from_secs(5), async {
+        while process.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the independent watchdog should kill and reap the descendant");
+    authority.kill().await.unwrap();
+}
+
+async fn wait_for_fixture_path(path: &Path) {
+    timeout(Duration::from_secs(8), async {
+        while !path.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn lease_authority_fixture() {
+    if env::var_os("RENTNERPROXY_TEST_LEASE_AUTHORITY").is_none() {
+        return;
+    }
+    assert_eq!(uid(), WEB_UID);
+    let listener = UnixListener::bind(GATEWAY_SOCKET).unwrap();
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        let service = service_fn(|request| async {
+            let mut reply = fixture_lease(request, Duration::from_secs(30), 10).await;
+            if !Path::new(GATEWAY_SOCKET)
+                .with_file_name("admitted")
+                .is_file()
+            {
+                *reply.status_mut() = StatusCode::UNAUTHORIZED;
+            }
+            Ok::<_, Infallible>(reply)
+        });
+        server::conn::http1::Builder::new()
+            .serve_connection(TokioIo::new(stream), service)
+            .await
+            .unwrap();
+    }
 }
 
 #[tokio::test]

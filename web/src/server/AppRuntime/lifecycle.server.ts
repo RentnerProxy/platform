@@ -219,6 +219,16 @@ export async function revokeAppRuntimeGenerationInTransaction(
         )
 }
 
+function serializeGrant(entry: typeof appRuntimeGrants.$inferSelect): string {
+    return JSON.stringify([
+        entry.capabilityId,
+        entry.scope,
+        entry.resourceId,
+        entry.allowService,
+        entry.permissionKey,
+    ])
+}
+
 export async function replaceAppRuntimeGrantsInTransaction(
     transaction: AuthTransaction,
     identity: AppRuntimeIdentity,
@@ -246,9 +256,19 @@ export async function replaceAppRuntimeGrantsInTransaction(
             scope: capability.scope,
             resourceId,
             allowService,
-            ...(permissionKey === undefined ? {} : { permissionKey }),
+            permissionKey: permissionKey ?? null,
         }
     })
+    const stored = await transaction
+        .select()
+        .from(appRuntimeGrants)
+        .where(eq(appRuntimeGrants.installationId, identity.installationId))
+    const currentPolicy = new Set(stored.map(serializeGrant))
+    if (
+        currentPolicy.size === entries.length &&
+        entries.every((entry) => currentPolicy.has(serializeGrant(entry)))
+    )
+        return
     await transaction
         .delete(appRuntimeGrants)
         .where(eq(appRuntimeGrants.installationId, identity.installationId))
@@ -281,14 +301,15 @@ export async function setAppRuntimeRolePermissionInTransaction(
     if (!role) throw new AppRuntimeAuthorityError('not_found')
     const { installationId } = identity
     if (allowed) {
-        await transaction
+        const inserted = await transaction
             .insert(appRuntimeRolePermissions)
             .values({ installationId, roleId, key: permissionKey })
             .onConflictDoNothing()
-        await bumpAuthorizationEpoch(transaction, installationId)
+            .returning({ key: appRuntimeRolePermissions.key })
+        if (inserted.length > 0) await bumpAuthorizationEpoch(transaction, installationId)
         return
     }
-    await transaction
+    const deleted = await transaction
         .delete(appRuntimeRolePermissions)
         .where(
             and(
@@ -297,5 +318,6 @@ export async function setAppRuntimeRolePermissionInTransaction(
                 eq(appRuntimeRolePermissions.key, permissionKey),
             ),
         )
-    await bumpAuthorizationEpoch(transaction, installationId)
+        .returning({ key: appRuntimeRolePermissions.key })
+    if (deleted.length > 0) await bumpAuthorizationEpoch(transaction, installationId)
 }

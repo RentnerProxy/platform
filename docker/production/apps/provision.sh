@@ -28,12 +28,22 @@ install -d -m 0700 -o "$uid" -g "$uid" -- "$data"
 readonly role="rp_app_$uid"
 readonly migration_role="rp_migrate_$uid"
 readonly password_path="$installation/database-password"
-if [[ ! -e $password_path ]]; then
-    openssl rand -hex 32 >"$password_path"
+temporary=''
+trap 'if [[ -n $temporary ]]; then rm -f -- "$temporary"; fi' EXIT
+password=''
+if [[ -e $password_path || -L $password_path ]]; then
+    [[ -f $password_path && ! -L $password_path ]] || fail
+    [[ $(stat -c '%u:%h:%a' -- "$password_path") =~ ^0:1:[46]00$ ]] || fail
+    password=$(<"$password_path")
 fi
-[[ -f $password_path && ! -L $password_path ]] || fail
-password=$(<"$password_path")
-[[ $password =~ ^[0-9a-f]{64}$ ]] || fail
+if [[ ! $password =~ ^[0-9a-f]{64}$ ]]; then
+    temporary=$(mktemp "$installation/.database-password.XXXXXXXX")
+    openssl rand -hex 32 >"$temporary"
+    password=$(<"$temporary")
+    [[ $password =~ ^[0-9a-f]{64}$ ]] || fail
+    mv -Tf -- "$temporary" "$password_path"
+    temporary=''
+fi
 
 psql() {
     gosu postgres /usr/lib/postgresql/18/bin/psql --no-psqlrc --no-password --quiet \
@@ -92,10 +102,10 @@ fi
 
 # Publish the app's file atomically from outside its writable subtree.
 temporary=$(mktemp "$installation/.database-url.XXXXXXXX")
-trap 'rm -f -- "$temporary"' EXIT
 printf 'postgresql://%s:%s@localhost/%s?socket=/run/rentnerproxy/app-db&max=4\n' \
     "$role" "$password" "$role" >"$temporary"
 unset password
 chown "$uid:$uid" -- "$temporary"
 chmod 0400 -- "$temporary"
 mv -Tf -- "$temporary" "$data/database-url"
+temporary=''

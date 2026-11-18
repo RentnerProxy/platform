@@ -26,7 +26,9 @@ import {
     resolveAppRuntimePrincipalInTransaction,
 } from '@/server/AppRuntime/authority.server.ts'
 import {
+    appRuntimeEventCursorContext,
     appendAppRuntimeEventInTransaction,
+    readAppRuntimeEventCursor,
     replayAppRuntimeEventsInTransaction,
 } from '@/server/AppRuntime/events.server.ts'
 import {
@@ -224,19 +226,60 @@ integrationTest(
                         resourceId: 'managed-host-a',
                         revision: 'v2',
                     })
+                    const trailingHiddenEvent = await appendAppRuntimeEventInTransaction(
+                        transaction,
+                        {
+                            installationId,
+                            type: 'proxyHostChanged',
+                            capability: read,
+                            resourceId: 'managed-host-b',
+                            revision: 'v2',
+                        },
+                    )
                     const initial = await replayAppRuntimeEventsInTransaction(
                         transaction,
                         credentials,
                     )
                     expect(initial.events.map(({ id }) => id)).toEqual([firstEvent, secondEvent])
+                    expect(initial.events.at(-1)?.cursor).toBe(initial.cursor)
                     const firstCursor = initial.events.at(0)?.cursor
                     expect(firstCursor).toBeDefined()
+                    await replaceAppRuntimeGrantsInTransaction(
+                        transaction,
+                        identity,
+                        granted.toReversed(),
+                    )
+                    await setAppRuntimeRolePermissionInTransaction(
+                        transaction,
+                        identity,
+                        roleId,
+                        'use-secret',
+                        true,
+                    )
                     const resumed = await replayAppRuntimeEventsInTransaction(
                         transaction,
                         credentials,
                         firstCursor,
                     )
                     expect(resumed.events.map(({ id }) => id)).toEqual([secondEvent])
+                    expect(resumed.events.at(-1)?.cursor).toBe(resumed.cursor)
+                    const empty = await replayAppRuntimeEventsInTransaction(
+                        transaction,
+                        credentials,
+                        resumed.cursor,
+                    )
+                    const [trailing] = await transaction
+                        .select({ sequence: appRuntimeEvents.sequence })
+                        .from(appRuntimeEvents)
+                        .where(eq(appRuntimeEvents.id, trailingHiddenEvent))
+                    expect(empty.events).toEqual([])
+                    expect(trailing?.sequence).toBe(
+                        await readAppRuntimeEventCursor(
+                            empty.cursor,
+                            Date.now(),
+                            appRuntimeEventCursorContext(user),
+                        ),
+                    )
 
                     await transaction
                         .update(appRuntimeEvents)
@@ -561,6 +604,8 @@ integrationTest(
 
             const stream = await api('events')
             expect(stream.headers.get('Content-Type')).toBe('text/event-stream')
+            // The opening transaction already delivered its authorized page to the stream.
+            expect((await control('revoke')).status).toBe(204)
             const reader = stream.body?.getReader()
             if (!reader) throw new Error('Missing app event stream')
             try {
@@ -569,10 +614,10 @@ integrationTest(
                 const firstPage = decoder.decode((await reader.read()).value)
                 expect(firstPage.match(/appNotificationPublished/gu)).toHaveLength(1)
                 expect(firstPage.match(/appAuditRecorded/gu)).toHaveLength(1)
+                expect((await reader.read()).done).toBe(true)
             } finally {
                 await reader.cancel()
             }
-            expect((await control('revoke')).status).toBe(204)
             expect((await api('events')).status).toBe(401)
             const replacement = { ...identity, generation: 2 }
             expect(

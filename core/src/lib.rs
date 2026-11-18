@@ -19,7 +19,7 @@ pub use application::{healthcheck, run};
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-pub use app_ipc::run_app_ipc;
+pub use app_ipc::{run_app_ipc, run_app_watchdog};
 
 #[cfg(test)]
 #[path = "../tests/private/mod.rs"]

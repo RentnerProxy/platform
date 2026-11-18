@@ -1,6 +1,7 @@
 #!/usr/local/bin/bun
 
 import assert from 'node:assert/strict'
+import { writeFile } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 
 interface Bootstrap {
@@ -24,6 +25,7 @@ const dataDirectory = '/var/lib/rentnerproxy/apps/20991/data'
 const databaseUrlFile = dataDirectory + '/database-url'
 const progressFile = dataDirectory + '/fixture-progress'
 const controllerTokenFile = '/run/rentnerproxy/controller-token/value'
+const managerProgressFile = '/run/rentnerproxy/app-api/fixture-progress'
 
 async function waitFor<T>(probe: () => Promise<T | undefined>): Promise<T> {
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -100,12 +102,20 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
         try {
             const [database] = await local<{ name: string }[]>`SELECT current_database() AS name`
             assert.equal(database?.name, 'rp_app_20991')
-            await assert.rejects(async () => {
-                await local`CREATE TABLE app.fixture_forbidden (id bigint)`
-            })
-            await assert.rejects(async () => {
-                await foreign`SELECT current_database()`
-            })
+            await assert.rejects(
+                async () => {
+                    await local`CREATE TABLE app.fixture_forbidden (id bigint)`
+                },
+                (error: unknown) =>
+                    error instanceof Error && 'errno' in error && error.errno === '42501',
+            )
+            await assert.rejects(
+                async () => {
+                    await foreign`SELECT current_database()`
+                },
+                (error: unknown) =>
+                    error instanceof Error && 'errno' in error && error.errno === '28000',
+            )
         } finally {
             await Promise.allSettled([local.close(), foreign.close()])
         }
@@ -126,30 +136,53 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
         )
         const events = await request('events')
         assert.equal(events.headers.get('Content-Type'), 'text/event-stream')
-        await events.body?.cancel()
+        const eventReader = events.body?.getReader()
+        assert.ok(eventReader)
+        try {
+            const decoder = new TextDecoder()
+            let frames = ''
+            for (
+                let frame = 0;
+                frame < 8 && !frames.includes('"message":"App notification"');
+                frame += 1
+            ) {
+                // oxlint-disable-next-line no-await-in-loop -- Preserve the order of the streamed frames.
+                const chunk = await eventReader.read()
+                if (chunk.done) break
+                frames += decoder.decode(chunk.value, { stream: true })
+                assert.ok(frames.length < 65_536)
+            }
+            assert.match(frames, /"type":"appNotificationPublished"/u)
+            assert.match(frames, /"message":"App notification"/u)
+        } finally {
+            await eventReader.cancel()
+        }
         await Bun.write(progressFile, 'ready')
-
-        stage = 'revocation'
-        await waitFor(async () => ((await request('context')).status === 401 ? true : undefined))
-        await Bun.write(progressFile, 'revoked')
     } catch {
         await Bun.write(progressFile, 'failed at ' + stage)
         process.exit(1)
     }
 }
 
-async function verifyManager() {
+async function verifyManager(setStage: (stage: string) => void) {
     const token = (await Bun.file(controllerTokenFile).text()).trim()
-    const control = async (action: string, body: unknown) => {
-        const response = await fetch('http://app-runtime/internal/v1/app-generations/' + action, {
+    const controlRequest = (action: string, body: unknown) =>
+        fetch('http://app-runtime/internal/v1/app-generations/' + action, {
             unix: '/run/rentnerproxy/app-api/web.sock',
             signal: AbortSignal.timeout(4_000),
             method: 'POST',
             headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         })
+    await waitFor(async () => {
+        const response = await controlRequest('lease', { identity }).catch(() => null)
+        return response?.status === 401 ? true : undefined
+    })
+    const control = async (action: string, body: unknown) => {
+        const response = await controlRequest(action, body)
         assert.equal(response.status, 204, 'App manager control rejected ' + action)
     }
+    setStage('registration')
     const lease = { identity, leaseExpiresAt: new Date(Date.now() + 120_000).toISOString() }
     await control('register', { ...lease, capabilities: [notifyCapability] })
     await control('grants', {
@@ -168,14 +201,19 @@ async function verifyManager() {
         ],
     })
 
-    const provision = Bun.spawn(
-        ['/usr/local/bin/rentnerproxy-provision-app', String(identity.uid), 'database'],
-        {
+    setStage('provisioning')
+    const provision = (storage: 'files' | 'database') =>
+        Bun.spawn(['/usr/local/bin/rentnerproxy-provision-app', String(identity.uid), storage], {
             stdout: 'ignore',
             stderr: 'ignore',
-        },
-    )
-    assert.equal(await provision.exited, 0, 'Could not provision the isolated app')
+        }).exited
+    assert.equal(await provision('files'), 0, 'Could not create isolated app paths')
+    await writeFile('/var/lib/rentnerproxy/apps/20991/database-password', '', {
+        flag: 'wx',
+        mode: 0o600,
+    })
+    assert.equal(await provision('database'), 0, 'Could not provision the isolated app database')
+    setStage('launch')
     const broker = Bun.spawn(['/usr/local/bin/rentnerproxy-controller', '--app-ipc'], {
         stdin: 'pipe',
         stdout: 'pipe',
@@ -191,7 +229,6 @@ async function verifyManager() {
                 executable: '/usr/local/lib/rentnerproxy-app-runtime-fixture.ts',
                 dataDirectory,
                 databaseUrlFile,
-                leaseSeconds: 60,
                 runtimeProfile: 'rentnerproxy-linux-v1',
                 appProtocol: '>=1.0.0 <2.0.0',
                 platformApi: '>=1.0.0 <2.0.0',
@@ -204,6 +241,7 @@ async function verifyManager() {
                 .text()
                 .catch(() => '')
         assert.equal(new TextDecoder().decode(readiness.value), 'ready\n', await progress())
+        setStage('activation')
         await control('activate', lease)
         const awaitProgress = (target: string) =>
             waitFor(async () => {
@@ -211,12 +249,15 @@ async function verifyManager() {
                 if (current.startsWith('failed at ')) throw new Error(current)
                 return current === target ? true : undefined
             })
+        setStage('app checks')
         await awaitProgress('ready')
+        setStage('revocation')
         await control('revoke', { identity })
-        await awaitProgress('revoked')
+        assert.equal((await controlRequest('lease', { identity })).status, 401)
+        assert.equal(await broker.exited, 0, 'Lease revocation did not stop the broker')
     } finally {
         ready.releaseLock()
-        await broker.stdin.end()
+        await Promise.resolve(broker.stdin.end()).catch(() => undefined)
         assert.equal(await broker.exited, 0, 'App broker failed')
     }
 }
@@ -224,5 +265,13 @@ async function verifyManager() {
 if (process.env.RENTNERPROXY_APP_BOOTSTRAP_FD === '0') {
     await verifyApp(JSON.parse(await Bun.stdin.text()) as Bootstrap)
 } else {
-    await verifyManager()
+    let stage = 'bridge readiness'
+    try {
+        await verifyManager((next) => {
+            stage = next
+        })
+    } catch (error) {
+        await Bun.write(managerProgressFile, stage).catch(() => undefined)
+        throw error
+    }
 }

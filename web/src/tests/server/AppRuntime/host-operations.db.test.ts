@@ -9,6 +9,7 @@ import {
     appRuntimeOperations,
     appRuntimeOwnedProxyHosts,
     auditEvents,
+    hostDomains,
     proxyHosts,
 } from '@/db/schema.ts'
 import {
@@ -35,6 +36,8 @@ import type { AppOperation } from '@/server/AppRuntime/Types/operations.types.ts
 import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
+import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
+import { getProxyRuntimeSnapshotService } from '@/server/ProxyRuntime/proxy-runtime.service.ts'
 
 const integrationTest =
     process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() !== null
@@ -42,6 +45,11 @@ const integrationTest =
         : test.skip
 const readHosts = { id: 'proxy.hosts.read.v1', scope: 'proxyHosts' }
 const probeHosts = { id: 'diagnostics.upstream.probe.v1', scope: 'proxyHosts' }
+
+async function acknowledgeCurrentProxySnapshot() {
+    const { revision } = await getProxyRuntimeSnapshotService()
+    return { available: true, running: true, activeRevision: revision, lastApplyAt: null }
+}
 
 async function install(identity: AppRuntimeIdentity, grants: readonly AppRuntimeGrant[]) {
     const leaseExpiresAt = new Date(Date.now() + 60_000)
@@ -121,7 +129,8 @@ integrationTest(
         const recoveredWorker = createAppProxyOperationWorker(() => {
             recoveredAttempts += 1
             return Promise.resolve(recoveredAttempts === 1 ? 'pending' : 'applied')
-        })
+        }, acknowledgeCurrentProxySnapshot)
+        const recreatedHostIds: string[] = []
 
         const [foreignPending] = await db
             .select({ id: appRuntimeOperations.id })
@@ -149,6 +158,14 @@ integrationTest(
             ).rejects.toMatchObject({ code: 'forbidden' })
             const accepted = await updateAppOwnedProxyHost(owner, change, 'owned-change', 'r2')
             expect(accepted.status).toBe('accepted')
+            const cancelledRead = new Error('Cancelled read')
+            const cancelledSignal = AbortSignal.abort(cancelledRead)
+            await expect(getAppOperation(owner, accepted.id, cancelledSignal)).rejects.toBe(
+                cancelledRead,
+            )
+            await expect(listAppProxyHosts(owner, { limit: 10 }, cancelledSignal)).rejects.toBe(
+                cancelledRead,
+            )
             expect(await updateAppOwnedProxyHost(owner, change, 'owned-change', 'r3')).toEqual(
                 accepted,
             )
@@ -274,6 +291,86 @@ integrationTest(
             await expect(
                 probeAppProxyUpstream(foreign, { hostId: change.hostId, timeoutMs: 1 }),
             ).rejects.toMatchObject({ code: 'not_found' })
+
+            await recoveredWorker.stop()
+            const changed = {
+                ...change,
+                expectedRevision: revision,
+                upstream: { ...change.upstream, port: 8081 },
+            }
+            const queuedUpdate = await updateAppOwnedProxyHost(
+                owner,
+                changed,
+                'superseded-update',
+                'r12',
+            )
+            const editingWorker = createAppProxyOperationWorker(async () => {
+                await db.transaction(async (transaction) => {
+                    await lockProxyRuntimeSettings(transaction)
+                    await transaction
+                        .update(proxyHosts)
+                        .set({ forwardPort: 8082, updatedAt: new Date() })
+                        .where(eq(proxyHosts.id, platformHostId))
+                })
+                return 'applied'
+            }, acknowledgeCurrentProxySnapshot)
+            editingWorker.start()
+            try {
+                const failed = await waitForOperation(
+                    () => getAppOperation(owner, queuedUpdate.id),
+                    'failed',
+                )
+                expect(failed).toMatchObject({
+                    problem: { status: 409, code: 'hostRevisionConflict' },
+                })
+                expect(
+                    await updateAppOwnedProxyHost(owner, changed, 'superseded-update', 'r13'),
+                ).toEqual(failed)
+            } finally {
+                await editingWorker.stop()
+            }
+
+            const [ownedHost] = (await listAppProxyHosts(owner, { limit: 10 })).hosts
+            const [restoredHost] = await db
+                .select()
+                .from(proxyHosts)
+                .where(eq(proxyHosts.id, platformHostId))
+            if (!ownedHost || !restoredHost) throw new Error('Expected the superseding host')
+            expect(restoredHost.forwardPort).toBe(8082)
+            const queuedRemove = await updateAppOwnedProxyHost(
+                owner,
+                {
+                    action: 'remove',
+                    hostId: ownedHost.id,
+                    expectedRevision: ownedHost.revision,
+                },
+                'superseded-remove',
+                'r14',
+            )
+            recreatedHostIds.push(platformHostId)
+            const restoringWorker = createAppProxyOperationWorker(async () => {
+                await db.transaction(async (transaction) => {
+                    await lockProxyRuntimeSettings(transaction)
+                    await transaction.insert(proxyHosts).values(restoredHost)
+                    await transaction.insert(hostDomains).values({
+                        proxyHostId: platformHostId,
+                        domain: change.hostname,
+                    })
+                })
+                return 'applied'
+            }, acknowledgeCurrentProxySnapshot)
+            restoringWorker.start()
+            try {
+                const failed = await waitForOperation(
+                    () => getAppOperation(owner, queuedRemove.id),
+                    'failed',
+                )
+                expect(failed).toMatchObject({
+                    problem: { status: 409, code: 'hostRevisionConflict' },
+                })
+            } finally {
+                await restoringWorker.stop()
+            }
         } finally {
             await firstWorker.stop()
             releaseReconcile('pending')
@@ -283,7 +380,7 @@ integrationTest(
                     .select({ id: appRuntimeOwnedProxyHosts.proxyHostId })
                     .from(appRuntimeOwnedProxyHosts)
                     .where(inArray(appRuntimeOwnedProxyHosts.installationId, installationIds))
-                const ids = owned.map(({ id }) => id)
+                const ids = [...new Set([...owned.map(({ id }) => id), ...recreatedHostIds])]
                 if (ids.length) {
                     await transaction.delete(auditEvents).where(inArray(auditEvents.targetId, ids))
                     await transaction.delete(proxyHosts).where(inArray(proxyHosts.id, ids))

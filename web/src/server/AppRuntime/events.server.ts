@@ -264,12 +264,27 @@ export async function replayAppRuntimeEventsInTransaction(
             return event
         }),
     )
+    let nextCursor = events.at(-1)?.cursor
+    if (nextCursor === undefined) {
+        // The authorized page is empty. Advance past the filtered rows in this locked prefix.
+        const [latest] = await transaction
+            .select({ position: appRuntimeEvents.sequence })
+            .from(appRuntimeEvents)
+            .where(
+                and(
+                    eq(appRuntimeEvents.installationId, installationId),
+                    gt(appRuntimeEvents.sequence, position),
+                ),
+            )
+            .orderBy(desc(appRuntimeEvents.sequence))
+            .limit(1)
+        nextCursor = await createAppRuntimeEventCursor(
+            latest?.position ?? position,
+            expiresAt,
+            context,
+        )
+    }
     if (principal.expiresAt.getTime() <= Date.now())
         throw new AppRuntimeAuthorityError('unauthorized')
-    return {
-        events,
-        cursor:
-            events.at(-1)?.cursor ??
-            (await createAppRuntimeEventCursor(position, expiresAt, context)),
-    }
+    return { events, cursor: nextCursor }
 }

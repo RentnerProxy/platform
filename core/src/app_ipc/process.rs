@@ -9,20 +9,22 @@ use std::{
             process::CommandExt,
         },
     },
-    process::{ExitStatus, Stdio},
+    path::Path,
+    process::{ExitCode, ExitStatus, Stdio},
     time::Duration,
 };
 
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::{
     io::AsyncWriteExt,
     net::{UnixStream, unix::pipe::Receiver},
-    process::{Child, Command},
+    process::{Child, ChildStdin, Command},
     time::timeout,
 };
 
-use super::LaunchConfig;
+use super::{LAUNCH_TIMEOUT, LaunchConfig};
 
-const MAX_LAUNCH_BYTES: usize = 8192;
+const MAX_WATCHDOG_REQUEST_BYTES: usize = 24_576;
 
 pub(super) enum ManagerPipe {
     Pipe(Receiver),
@@ -72,13 +74,13 @@ impl ManagerPipe {
         }
     }
 
-    pub(super) async fn launch(&self) -> io::Result<LaunchConfig> {
+    pub(super) async fn launch<T: DeserializeOwned>(&self, limit: usize) -> io::Result<T> {
         let error = || io::Error::other("Invalid manager launch request");
         let mut launch = Vec::new();
         let mut chunk = [0; 1024];
         loop {
             let count = self.read(&mut chunk).await?;
-            if count == 0 || launch.len() + count > MAX_LAUNCH_BYTES {
+            if count == 0 || launch.len() + count > limit {
                 return Err(error());
             }
             let chunk = &chunk[..count];
@@ -98,7 +100,125 @@ impl ManagerPipe {
     }
 }
 
-pub(super) fn start_child(config: &LaunchConfig) -> io::Result<Child> {
+#[derive(Serialize, Deserialize)]
+struct WatchdogRequest<Config, Bootstrap> {
+    config: Config,
+    bootstrap: Bootstrap,
+}
+
+pub(super) struct Watchdog {
+    child: Child,
+    pipe: ChildStdin,
+}
+
+impl Watchdog {
+    pub(super) async fn start(
+        controller: &Path,
+        config: &LaunchConfig,
+        bootstrap: &str,
+    ) -> io::Result<Self> {
+        let request = WatchdogRequest { config, bootstrap };
+        let mut frame = serde_json::to_vec(&request)
+            .map_err(|_| io::Error::other("Unable to encode the app watchdog request"))?;
+        frame.push(b'\n');
+        if frame.len() > MAX_WATCHDOG_REQUEST_BYTES {
+            return Err(io::Error::other("App watchdog request is too large"));
+        }
+        let mut child = Command::new(controller)
+            .arg("--app-ipc-watchdog")
+            .env_remove(crate::config::CONTROLLER_TOKEN_FILE_ENV)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()?;
+        let mut pipe = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("Unable to open the app watchdog pipe"))?;
+        pipe.write_all(&frame).await?;
+        Ok(Self { child, pipe })
+    }
+
+    pub(super) async fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.child.wait().await
+    }
+
+    pub(super) async fn stop(self) -> io::Result<()> {
+        let Self { mut child, pipe } = self;
+        // The independent process must finish its cleanup even if this broker dies.
+        drop(pipe);
+        app_exit(timeout(Duration::from_secs(8), child.wait()).await??)
+    }
+}
+
+/// Run the isolated process-group owner for one native app generation.
+#[tokio::main(flavor = "current_thread")]
+pub async fn run_app_watchdog() -> ExitCode {
+    if let Err(error) = supervise_app_group().await {
+        eprintln!("Native app watchdog stopped: {error}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+async fn supervise_app_group() -> io::Result<()> {
+    let manager = ManagerPipe::open()?;
+    let launch: WatchdogRequest<LaunchConfig, String> =
+        timeout(LAUNCH_TIMEOUT, manager.launch(MAX_WATCHDOG_REQUEST_BYTES)).await??;
+    launch.config.validate()?;
+    // SAFETY: The watchdog owns one app group and adopts its orphaned descendants.
+    if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut child = start_child(&launch.config)?;
+    let pid = child
+        .id()
+        .ok_or_else(|| io::Error::other("App child has no process ID"))?;
+
+    let bootstrap = async {
+        timeout(
+            LAUNCH_TIMEOUT,
+            deliver_bootstrap(&mut child, launch.bootstrap.as_bytes()),
+        )
+        .await??;
+        observe_exit(pid).await
+    };
+    let child_exited = tokio::select! {
+        biased;
+        _ = manager.revoked() => Ok(false),
+        result = bootstrap => result.map(|()| true),
+    };
+    let status = stop_child(pid, &mut child).await?;
+    timeout(Duration::from_secs(3), reap_descendants()).await??;
+    if child_exited? {
+        app_exit(status)?;
+    }
+    Ok(())
+}
+
+async fn reap_descendants() -> io::Result<()> {
+    loop {
+        // SAFETY: This watchdog has no children outside its app process tree.
+        let result = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
+        if result > 0 {
+            continue;
+        }
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ECHILD) {
+                return Ok(());
+            }
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn start_child(config: &LaunchConfig) -> io::Result<Child> {
     let mut command = Command::new(&config.executable);
     command
         .current_dir(&config.data_directory)
@@ -123,7 +243,7 @@ pub(super) fn start_child(config: &LaunchConfig) -> io::Result<Child> {
     command.spawn()
 }
 
-pub(super) async fn deliver_bootstrap(child: &mut Child, descriptor: &[u8]) -> io::Result<()> {
+async fn deliver_bootstrap(child: &mut Child, descriptor: &[u8]) -> io::Result<()> {
     let mut pipe = child
         .stdin
         .take()
@@ -132,7 +252,7 @@ pub(super) async fn deliver_bootstrap(child: &mut Child, descriptor: &[u8]) -> i
     pipe.shutdown().await
 }
 
-pub(super) async fn observe_exit(pid: u32) -> io::Result<()> {
+async fn observe_exit(pid: u32) -> io::Result<()> {
     while !has_exited(pid)? {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -159,7 +279,7 @@ fn has_exited(pid: u32) -> io::Result<bool> {
     Ok(unsafe { information.assume_init().si_pid() } != 0)
 }
 
-pub(super) async fn stop_child(pid: u32, child: &mut Child) -> io::Result<ExitStatus> {
+async fn stop_child(pid: u32, child: &mut Child) -> io::Result<ExitStatus> {
     let group = i32::try_from(pid).map_err(io::Error::other)?;
     // SAFETY: The original PID is still reserved since the child was not reaped.
     // process_group(0) assigned its PID as the group and the filter bars escape.

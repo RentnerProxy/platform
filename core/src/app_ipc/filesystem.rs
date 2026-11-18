@@ -192,8 +192,10 @@ fn create_checked_directory(path: &Path, gid: u32, mode: u32) -> io::Result<()> 
     if metadata.uid() != 0 {
         return Err(invalid_path());
     }
-    if metadata.gid() == 0 && metadata.mode() & 0o7777 == 0o700 {
-        unix_fs::chown(path, Some(0), Some(gid))?;
+    if metadata.mode() & 0o7777 == 0o700 && (metadata.gid() == 0 || metadata.gid() == gid) {
+        if metadata.gid() != gid {
+            unix_fs::chown(path, Some(0), Some(gid))?;
+        }
         directory.set_permissions(fs::Permissions::from_mode(mode))?;
     } else if metadata.gid() != gid || metadata.mode() & 0o7777 != mode {
         return Err(invalid_path());
@@ -219,8 +221,13 @@ fn reserve_uid(path: &Path, config: &LaunchConfig) -> io::Result<()> {
     let identity_path = path.join("identity");
     let expected = format!("{}\n{}\n", config.app_id, config.installation_id);
     let mut identity = String::new();
-    match File::open(&identity_path) {
+    match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&identity_path)
+    {
         Ok(file) => {
+            require_identity_file(&file.metadata()?)?;
             file.take(256).read_to_string(&mut identity)?;
             if identity != expected {
                 return Err(io::Error::other(
@@ -229,16 +236,44 @@ fn reserve_uid(path: &Path, config: &LaunchConfig) -> io::Result<()> {
             }
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(identity_path)?
-                .write_all(expected.as_bytes())?;
+            publish_identity(path, &identity_path, &expected)?;
         }
         Err(error) => return Err(error),
     }
     Ok(())
+}
+
+fn require_identity_file(metadata: &fs::Metadata) -> io::Result<()> {
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.nlink() != 1
+        || metadata.mode() & 0o7777 != 0o600
+    {
+        return Err(invalid_path());
+    }
+    Ok(())
+}
+
+fn publish_identity(path: &Path, identity: &Path, contents: &str) -> io::Result<()> {
+    // Hold the allocation lock across recovery and publication. A previous
+    // process may have died after opening or writing the unpublished file.
+    let pending = path.join(".identity.pending");
+    match fs::symlink_metadata(&pending) {
+        Ok(metadata) => {
+            require_identity_file(&metadata)?;
+            fs::remove_file(&pending)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&pending)?;
+    file.write_all(contents.as_bytes())?;
+    fs::rename(&pending, identity)
 }
 
 pub(super) async fn connect_peer(path: &Path, uid: u32) -> io::Result<UnixStream> {

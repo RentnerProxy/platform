@@ -14,7 +14,7 @@ export interface AppOperationHost extends AppProxyHost {
 
 export type AppOperationResult =
     | { readonly action: 'upsert'; readonly host: AppOperationHost }
-    | { readonly action: 'remove'; readonly hostId: string }
+    | { readonly action: 'remove'; readonly hostId: string; readonly platformHostId?: string }
 
 export type AppOperation =
     | {

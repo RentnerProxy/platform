@@ -73,14 +73,18 @@ function projectHost(host: ProxyHostSummary, id: string, hostname: string) {
 export async function listAppProxyHosts(
     credentials: AppRuntimeCredentials,
     raw: AppProxyHostQuery,
+    signal?: AbortSignal,
 ): Promise<AppProxyHostPage> {
     const input = appProxyHostQuery.safeParse(raw)
     if (!input.success) throw new AppRuntimeAuthorityError('invalid_input')
     const { limit, cursor } = input.data
     if (cursor !== undefined && !platformHostId.safeParse(cursor).success)
         throw new AppRuntimeAuthorityError('invalid_input')
-    return getAuthDatabase().transaction(async (transaction) => {
+    signal?.throwIfAborted()
+    const { page, expiresAt } = await getAuthDatabase().transaction(async (transaction) => {
+        signal?.throwIfAborted()
         await setAppRuntimeTransactionTimeout(transaction)
+        signal?.throwIfAborted()
         const principal = await resolveAppRuntimePrincipalInTransaction(transaction, credentials)
         const allowed = principal.grants.flatMap((grant) =>
             grant.capability.id === readHosts.id &&
@@ -89,7 +93,10 @@ export async function listAppProxyHosts(
                 ? [grant.resourceId]
                 : [],
         )
-        if (allowed.length === 0) return { hosts: [] }
+        signal?.throwIfAborted()
+        if (principal.expiresAt.getTime() <= Date.now())
+            throw new AppRuntimeAuthorityError('unauthorized')
+        if (allowed.length === 0) return { page: { hosts: [] }, expiresAt: principal.expiresAt }
         const rows = await transaction
             .select({
                 ...proxyHostSummaryColumns,
@@ -133,8 +140,14 @@ export async function listAppProxyHosts(
                 : []
         })
         const nextCursor = rows.at(limit - 1)?.id
-        return rows.length > limit && nextCursor ? { hosts, nextCursor } : { hosts }
+        return {
+            page: rows.length > limit && nextCursor ? { hosts, nextCursor } : { hosts },
+            expiresAt: principal.expiresAt,
+        }
     })
+    signal?.throwIfAborted()
+    if (expiresAt.getTime() <= Date.now()) throw new AppRuntimeAuthorityError('unauthorized')
+    return page
 }
 
 export function ownedHostPermission(input: AppOwnedProxyHostChange): PermissionKey {
@@ -163,6 +176,39 @@ function upsertValues(
     }
 }
 
+async function readOwnedProxyHostId(
+    transaction: AuthTransaction,
+    installationId: string,
+    hostId: string,
+): Promise<string | null> {
+    const [owner] = await transaction
+        .select({ proxyHostId: appRuntimeOwnedProxyHosts.proxyHostId })
+        .from(appRuntimeOwnedProxyHosts)
+        .where(
+            and(
+                eq(appRuntimeOwnedProxyHosts.installationId, installationId),
+                eq(appRuntimeOwnedProxyHosts.hostId, hostId),
+            ),
+        )
+    return owner?.proxyHostId ?? null
+}
+
+async function readOwnedProxyHostSummary(
+    transaction: AuthTransaction,
+    proxyHostId: string,
+): Promise<ProxyHostSummary | null> {
+    const host = await loadProxyHostForUpdate(transaction, proxyHostId)
+    if (!host) return null
+    const domains = await transaction
+        .select({ domain: hostDomains.domain })
+        .from(hostDomains)
+        .where(eq(hostDomains.proxyHostId, proxyHostId))
+    return toProxyHostSummary(
+        host,
+        domains.map(({ domain }) => domain),
+    )
+}
+
 /** Call under the proxy settings lock so a concurrent write cannot replace the revision. */
 export async function checkAppOwnedProxyHostChange(
     transaction: AuthTransaction,
@@ -172,16 +218,12 @@ export async function checkAppOwnedProxyHostChange(
     requireAppRuntimeAuthorization(principal, manageOwnedHosts, input.hostId, [
         ownedHostPermission(input),
     ])
-    const [owner] = await transaction
-        .select({ proxyHostId: appRuntimeOwnedProxyHosts.proxyHostId })
-        .from(appRuntimeOwnedProxyHosts)
-        .where(
-            and(
-                eq(appRuntimeOwnedProxyHosts.installationId, principal.identity.installationId),
-                eq(appRuntimeOwnedProxyHosts.hostId, input.hostId),
-            ),
-        )
-    if (!owner) {
+    const proxyHostId = await readOwnedProxyHostId(
+        transaction,
+        principal.identity.installationId,
+        input.hostId,
+    )
+    if (!proxyHostId) {
         if (input.expectedRevision !== null)
             throw new AppRuntimeProblem(409, 'hostRevisionConflict', 'Proxy host revision changed')
         // A UUID-shaped app ID cannot shadow an existing Platform host or its grants.
@@ -199,17 +241,7 @@ export async function checkAppOwnedProxyHostChange(
     }
     if (input.expectedRevision === null)
         throw new AppRuntimeProblem(409, 'hostRevisionConflict', 'Proxy host revision changed')
-    const host = await loadProxyHostForUpdate(transaction, owner.proxyHostId)
-    const domains = await transaction
-        .select({ domain: hostDomains.domain })
-        .from(hostDomains)
-        .where(eq(hostDomains.proxyHostId, owner.proxyHostId))
-    const summary = host
-        ? toProxyHostSummary(
-              host,
-              domains.map(({ domain }) => domain),
-          )
-        : null
+    const summary = await readOwnedProxyHostSummary(transaction, proxyHostId)
     if (!summary || appProxyHostRevision(summary) !== input.expectedRevision)
         throw new AppRuntimeProblem(409, 'hostRevisionConflict', 'Proxy host revision changed')
     if (input.action === 'upsert')
@@ -249,7 +281,7 @@ export async function applyAppOwnedProxyHostChange(
             type: 'proxyHostRemoved',
             resourceId: input.hostId,
         })
-        return { action: 'remove', hostId: input.hostId }
+        return { action: 'remove', hostId: input.hostId, platformHostId: previous.id }
     }
     const values = upsertValues(input, previous)
     const saved = previous
@@ -273,6 +305,28 @@ export async function applyAppOwnedProxyHostChange(
         revision: host.revision,
     })
     return { action: 'upsert', host }
+}
+
+/** Under the proxy settings lock, compare the committed result with the current desired target. */
+export async function readAppOwnedProxyHostResultState(
+    transaction: AuthTransaction,
+    installationId: string,
+    result: AppOperationResult,
+): Promise<'current' | 'superseded' | 'unconfirmed'> {
+    if (result.action === 'remove') {
+        if (await readOwnedProxyHostId(transaction, installationId, result.hostId))
+            return 'superseded'
+        if (!result.platformHostId) return 'unconfirmed'
+        return (await loadProxyHostForUpdate(transaction, result.platformHostId))
+            ? 'superseded'
+            : 'current'
+    }
+    const proxyHostId = await readOwnedProxyHostId(transaction, installationId, result.host.id)
+    if (proxyHostId !== result.host.platformHostId) return 'superseded'
+    const summary = await readOwnedProxyHostSummary(transaction, proxyHostId)
+    return summary && appProxyHostRevision(summary) === result.host.revision
+        ? 'current'
+        : 'superseded'
 }
 
 async function authorizeProbeSelection(

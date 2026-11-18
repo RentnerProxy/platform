@@ -29,6 +29,24 @@ function fixture() {
 }
 
 describe('private app gateway', () => {
+    test('finishes a cancelled request while its handler still waits for admission', async () => {
+        const shutdown = new AbortController()
+        const client = new AbortController()
+        const entered = Promise.withResolvers<void>()
+        const work = Promise.withResolvers<Response>()
+        const gateway = createAppRuntimeGateway(token, shutdown.signal, () => {
+            entered.resolve()
+            return work.promise
+        })
+        const response = gateway(
+            new Request('http://app-api/platform/v1/context', { headers, signal: client.signal }),
+        )
+        await entered.promise
+        client.abort()
+        expect((await response).status).toBe(504)
+        work.resolve(new Response(null, { status: 204 }))
+    })
+
     test('takes identity from the trusted broker and ignores arbitrary user headers', async () => {
         const { gateway, calls } = fixture()
         const response = await gateway(

@@ -1,15 +1,19 @@
 import '@tanstack/react-start/server-only'
 
 import { createHash, randomUUID } from 'node:crypto'
-import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, eq, gte, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
 import {
     appRuntimeInstallations,
     appRuntimeOperationRequests,
     appRuntimeOperations,
+    auditEvents,
 } from '@/db/schema.ts'
-import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
+import type {
+    ProxyRuntimeMutationStatus,
+    ProxyRuntimeStatus,
+} from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
 import { CertificateDomainError } from '@/server/Admin/CertificateManagement/certificates.errors.ts'
 import {
     mapProxyHostDomainUniqueViolation,
@@ -19,10 +23,14 @@ import { TrustedCaDomainError } from '@/server/Admin/TrustedCaManagement/trusted
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { isAuthDomainError } from '@/server/Auth/Core/errors.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { getProxyRuntimeStatus } from '@/server/Controller/proxy.server.ts'
 import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import { readProxyRuntimeSnapshot } from '@/server/ProxyRuntime/proxy-runtime-data.ts'
 import { reconcileProxyConfigurationService } from '@/server/ProxyRuntime/proxy-runtime.service.ts'
-import { ProxyRuntimeSnapshotError } from '@/server/ProxyRuntime/proxy-runtime-snapshot.ts'
+import {
+    compareProxyRuntimeStatus,
+    ProxyRuntimeSnapshotError,
+} from '@/server/ProxyRuntime/proxy-runtime-snapshot.ts'
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import {
     isAppRuntimeAuthorized,
@@ -36,6 +44,7 @@ import {
     checkAppOwnedProxyHostChange,
     manageOwnedHosts,
     ownedHostPermission,
+    readAppOwnedProxyHostResultState,
     setAppRuntimeTransactionTimeout,
 } from './hosts.server.ts'
 import { AppRuntimeProblem } from './problem.ts'
@@ -63,6 +72,11 @@ const reconcileUnconfirmed = new AppRuntimeProblem(
     503,
     'proxyApplyUnconfirmed',
     'Proxy configuration apply could not be confirmed',
+)
+const reconcileSuperseded = new AppRuntimeProblem(
+    409,
+    'hostRevisionConflict',
+    'Proxy host changed before its apply could be confirmed',
 )
 
 function digest(value: string): string {
@@ -268,12 +282,21 @@ export async function updateAppOwnedProxyHost(
 export async function getAppOperation(
     credentials: AppRuntimeCredentials,
     operationId: string,
+    signal?: AbortSignal,
 ): Promise<AppOperation> {
-    return getAuthDatabase().transaction(async (transaction) => {
+    signal?.throwIfAborted()
+    const { operation, expiresAt } = await getAuthDatabase().transaction(async (transaction) => {
+        signal?.throwIfAborted()
         await setAppRuntimeTransactionTimeout(transaction)
+        signal?.throwIfAborted()
         const principal = await resolveAppRuntimePrincipalInTransaction(transaction, credentials)
-        return operationDocument(await readAuthorizedOperation(transaction, principal, operationId))
+        signal?.throwIfAborted()
+        const row = await readAuthorizedOperation(transaction, principal, operationId)
+        return { operation: row, expiresAt: principal.expiresAt }
     })
+    signal?.throwIfAborted()
+    if (expiresAt.getTime() <= Date.now()) throw new AppRuntimeAuthorityError('unauthorized')
+    return operationDocument(operation)
 }
 
 export async function cancelAppOperation(
@@ -457,31 +480,99 @@ function reconcileWhileRunning(
     })
 }
 
+async function resultForConfirmation(transaction: AuthTransaction, operation: OperationRow) {
+    const result = operation.result
+    if (result?.action !== 'remove' || result.platformHostId) return result
+
+    // Older removes recorded the target only in the atomic, operation-correlated audit event.
+    const [event] = await transaction
+        .select({ targetId: auditEvents.targetId })
+        .from(auditEvents)
+        .where(
+            and(
+                eq(auditEvents.resource, 'proxy-host'),
+                eq(auditEvents.action, 'delete'),
+                eq(auditEvents.result, 'success'),
+                gte(auditEvents.createdAt, operation.createdAt),
+                sql`${auditEvents.metadata}->>'operationId' = ${operation.id}`,
+            ),
+        )
+        .limit(1)
+    return event?.targetId ? { ...result, platformHostId: event.targetId } : result
+}
+
+async function readReconciliationConfirmation(
+    transaction: AuthTransaction,
+    claim: AppOperationWorkerClaim,
+    runtime: ProxyRuntimeStatus | null,
+): Promise<'confirmed' | 'superseded' | 'unconfirmed'> {
+    await lockProxyRuntimeSettings(transaction)
+    const [operation] = await transaction
+        .select()
+        .from(appRuntimeOperations)
+        .where(
+            and(
+                eq(appRuntimeOperations.id, claim.id),
+                eq(appRuntimeOperations.status, 'running'),
+                eq(appRuntimeOperations.leaseToken, claim.leaseToken),
+            ),
+        )
+    if (!operation) return 'unconfirmed'
+    const result = await resultForConfirmation(transaction, operation)
+    if (!result) return 'unconfirmed'
+    const target = await readAppOwnedProxyHostResultState(
+        transaction,
+        operation.installationId,
+        result,
+    )
+    if (target === 'superseded') return 'superseded'
+    if (target !== 'current' || !runtime?.activeRevision) return 'unconfirmed'
+    try {
+        const snapshot = await readProxyRuntimeSnapshot(transaction)
+        return compareProxyRuntimeStatus(snapshot.revision, runtime).state === 'synced'
+            ? 'confirmed'
+            : 'unconfirmed'
+    } catch (error) {
+        if (error instanceof ProxyRuntimeSnapshotError || error instanceof z.ZodError)
+            return 'unconfirmed'
+        throw error
+    }
+}
+
 async function reconcileClaim(
     claim: AppOperationWorkerClaim,
     reconcile: () => Promise<ProxyRuntimeMutationStatus>,
+    readRuntime: (signal: AbortSignal) => Promise<ProxyRuntimeStatus | null>,
     signal: AbortSignal,
 ): Promise<void> {
-    let state: ProxyRuntimeMutationStatus = 'pending'
+    let runtime: ProxyRuntimeStatus | null = null
     try {
-        state = await reconcileWhileRunning(reconcile, signal)
+        const state = await reconcileWhileRunning(reconcile, signal)
+        if (state === 'applied' && !signal.aborted) runtime = await readRuntime(signal)
     } finally {
         const failure = failureFields(reconcileUnconfirmed)
         await getBackgroundDatabase('critical').transaction(async (transaction) => {
             await setAppRuntimeTransactionTimeout(transaction)
+            const confirmation = signal.aborted
+                ? 'unconfirmed'
+                : await readReconciliationConfirmation(transaction, claim, runtime)
             const confirmationExpired = sql`${appRuntimeOperations.startedAt}
                 <= statement_timestamp() - ${reconcileConfirmationMs} * interval '1 millisecond'`
+            const superseded = failureFields(reconcileSuperseded)
             await transaction
                 .update(appRuntimeOperations)
                 .set({
                     leaseToken: null,
                     leaseExpiresAt: null,
-                    ...(state === 'applied' && { status: 'succeeded' as const }),
-                    ...(state === 'pending' &&
-                        !signal.aborted && {
-                            status: sql`case when ${confirmationExpired} then 'failed' else 'running' end`,
-                            failure: sql`case when ${confirmationExpired} then ${failure}::jsonb end`,
-                        }),
+                    ...(!signal.aborted &&
+                        (confirmation === 'confirmed'
+                            ? { status: 'succeeded' as const }
+                            : confirmation === 'superseded'
+                              ? { status: 'failed' as const, failure: sql`${superseded}` }
+                              : {
+                                    status: sql`case when ${confirmationExpired} then 'failed' else 'running' end`,
+                                    failure: sql`case when ${confirmationExpired} then ${failure}::jsonb end`,
+                                })),
                 })
                 .where(
                     and(
@@ -496,6 +587,9 @@ async function reconcileClaim(
 /** Poll from persistent state so process restarts resume both accepted and committed work. */
 export function createAppProxyOperationWorker(
     reconcile: () => Promise<ProxyRuntimeMutationStatus> = reconcileProxyConfigurationService,
+    readRuntime: (
+        signal: AbortSignal,
+    ) => Promise<ProxyRuntimeStatus | null> = getProxyRuntimeStatus,
 ) {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -508,7 +602,7 @@ export function createAppProxyOperationWorker(
             controller.signal,
             'critical',
         )
-        if (claim) await reconcileClaim(claim, reconcile, controller.signal)
+        if (claim) await reconcileClaim(claim, reconcile, readRuntime, controller.signal)
     }
 
     function tick() {

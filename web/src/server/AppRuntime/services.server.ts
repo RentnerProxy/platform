@@ -30,7 +30,7 @@ import {
     updateAppOwnedProxyHost,
 } from './operations.server.ts'
 import { AppRuntimeProblem } from './problem.ts'
-import { AppRuntimeAuthorityError } from './Types/authority.types.ts'
+import { AppRuntimeAuthorityError, type AppRuntimeEvent } from './Types/authority.types.ts'
 import type { AppRuntimeCall } from './Types/gateway.types.ts'
 
 const authorityProblems = {
@@ -81,7 +81,9 @@ export function appRuntimeTransaction<T>(
             set_config('statement_timeout', ${budget}, true),
             set_config('lock_timeout', '2000ms', true)`)
         signal.throwIfAborted()
-        return run(transaction)
+        const result = await run(transaction)
+        signal.throwIfAborted()
+        return result
     })
 }
 
@@ -97,53 +99,68 @@ function required(value: string | undefined): string {
 async function subscribe(call: AppRuntimeCall): Promise<Response> {
     const disconnect = new AbortController()
     const keepAlive = AbortSignal.any([call.streamSignal, disconnect.signal])
-    await appRuntimeTransaction(call.signal, (transaction) =>
-        replayAppRuntimeEventsInTransaction(transaction, call.credentials, call.cursor),
-    )
     let cursor = call.cursor
     const encoder = new TextEncoder()
-    const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-            controller.enqueue(encoder.encode(': connected\n\n'))
-        },
-        async pull(controller) {
-            try {
-                if (keepAlive.aborted) return controller.close()
-                for (let poll = 0; poll < 5; poll += 1) {
-                    const signal = AbortSignal.any([
-                        keepAlive,
-                        AbortSignal.timeout(appRpcLimits.requestMs),
-                    ])
-                    // oxlint-disable-next-line no-await-in-loop -- Each poll resumes at the latest durable cursor.
-                    const sent = await appRuntimeTransaction(signal, async (transaction) => {
-                        const page = await replayAppRuntimeEventsInTransaction(
-                            transaction,
-                            call.credentials,
-                            cursor,
-                        )
-                        keepAlive.throwIfAborted()
-                        cursor = page.cursor
-                        if (page.events.length === 0) return false
-                        const batch = page.events.map(
-                            (event) =>
-                                'id: ' + event.cursor + '\ndata: ' + JSON.stringify(event) + '\n\n',
-                        )
-                        // Recheck in this pull and enqueue before releasing authorization locks.
-                        controller.enqueue(encoder.encode(batch.join('')))
-                        return true
-                    })
-                    if (sent) return
-                    // oxlint-disable-next-line no-await-in-loop -- Bound idle polling without concurrent transactions.
-                    await delay(1_000, undefined, { signal: keepAlive })
-                }
-                controller.enqueue(encoder.encode(': keepalive\n\n'))
-            } catch {
-                if (!disconnect.signal.aborted) controller.close()
+    function enqueueEvents(
+        controller: ReadableStreamDefaultController<Uint8Array>,
+        events: readonly AppRuntimeEvent[],
+    ): boolean {
+        if (events.length === 0) return false
+        const batch = events.map(
+            (event) => 'id: ' + event.cursor + '\ndata: ' + JSON.stringify(event) + '\n\n',
+        )
+        controller.enqueue(encoder.encode(batch.join('')))
+        return true
+    }
+
+    async function pull(controller: ReadableStreamDefaultController<Uint8Array>) {
+        try {
+            if (keepAlive.aborted) return controller.close()
+            for (let poll = 0; poll < 5; poll += 1) {
+                const signal = AbortSignal.any([
+                    keepAlive,
+                    AbortSignal.timeout(appRpcLimits.requestMs),
+                ])
+                // oxlint-disable-next-line no-await-in-loop -- Each poll resumes at the latest durable cursor.
+                const sent = await appRuntimeTransaction(signal, async (transaction) => {
+                    const page = await replayAppRuntimeEventsInTransaction(
+                        transaction,
+                        call.credentials,
+                        cursor,
+                    )
+                    signal.throwIfAborted()
+                    cursor = page.cursor
+                    return enqueueEvents(controller, page.events)
+                })
+                if (sent) return
+                // oxlint-disable-next-line no-await-in-loop -- Bound idle polling without concurrent transactions.
+                await delay(1_000, undefined, { signal: keepAlive })
             }
-        },
-        cancel() {
-            disconnect.abort()
-        },
+            controller.enqueue(encoder.encode(': keepalive\n\n'))
+        } catch {
+            if (!disconnect.signal.aborted) controller.close()
+        }
+    }
+
+    const stream = await appRuntimeTransaction(call.signal, async (transaction) => {
+        const initialPage = await replayAppRuntimeEventsInTransaction(
+            transaction,
+            call.credentials,
+            cursor,
+        )
+        call.signal.throwIfAborted()
+        cursor = initialPage.cursor
+        return new ReadableStream<Uint8Array>({
+            start(controller) {
+                // Commit this delivery while the initial authority and sequence locks are held.
+                controller.enqueue(encoder.encode(': connected\n\n'))
+                enqueueEvents(controller, initialPage.events)
+            },
+            pull,
+            cancel() {
+                disconnect.abort()
+            },
+        })
     })
     return new Response(stream, {
         headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' },
@@ -182,7 +199,11 @@ export function executeAppRuntimeCall(call: AppRuntimeCall): Promise<Response> {
             }
             case 'listHosts':
                 return json(
-                    await listAppProxyHosts(credentials, parseAppInput(appProxyHostQuery, body)),
+                    await listAppProxyHosts(
+                        credentials,
+                        parseAppInput(appProxyHostQuery, body),
+                        signal,
+                    ),
                 )
             case 'updateHost':
                 return json(
@@ -242,7 +263,7 @@ export function executeAppRuntimeCall(call: AppRuntimeCall): Promise<Response> {
                 )
                 throw authorityProblems.not_found
             case 'operation':
-                return json(await getAppOperation(credentials, required(resourceId)))
+                return json(await getAppOperation(credentials, required(resourceId), signal))
             case 'cancelOperation':
                 return json(
                     await cancelAppOperation(

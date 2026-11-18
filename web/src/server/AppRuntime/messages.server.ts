@@ -13,6 +13,7 @@ import type { AppAuditEventInput, AppNotificationInput } from './contract.ts'
 import { appendAppRuntimeEventInTransaction } from './events.server.ts'
 import { AppRuntimeProblem } from './problem.ts'
 import type { AppRuntimeCredentials } from './Types/authority.types.ts'
+import { AppRuntimeAuthorityError } from './Types/authority.types.ts'
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1_000
 const MAX_MESSAGES_PER_INSTALLATION = 10_000
@@ -87,4 +88,6 @@ export async function recordAppRuntimeMessageInTransaction(
         type: message.kind === 'audit' ? 'appAuditRecorded' : 'appNotificationPublished',
         payload: { ...message.payload },
     })
+    if (principal.expiresAt.getTime() <= Date.now())
+        throw new AppRuntimeAuthorityError('unauthorized')
 }

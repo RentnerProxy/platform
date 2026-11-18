@@ -2,6 +2,25 @@ import { describe, expect, test } from 'bun:test'
 
 import { smokeProgress } from '../../../../../.github/scripts/ci/production-smoke-ci.ts'
 
+test('forwards only fixed native app smoke stages', () => {
+    const progress = smokeProgress('production')
+    expect(progress.consume('Native app manager failed at bridge readiness')).toBe(
+        'Native app manager failed at bridge readiness',
+    )
+    expect(progress.consume('Native app fixture failed at database')).toBe(
+        'Native app fixture failed at database',
+    )
+    expect(progress.consume('Native app smoke command failed at copy')).toBe(
+        'Native app smoke command failed at copy',
+    )
+    expect(
+        progress.consume('Native app fixture failed at database: unexpected data'),
+    ).toBeUndefined()
+    expect(
+        smokeProgress('backups').consume('Native app manager failed at bridge readiness'),
+    ).toBeUndefined()
+})
+
 test('backup health diagnostics reject incidental private output and invalid process facts', () => {
     for (const line of [
         'Managed backup health: interrupted-backup-restart running=false exitCode=1 health=unhealthy',

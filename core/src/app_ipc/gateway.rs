@@ -59,6 +59,7 @@ pub(super) struct Generation {
     gateway_socket: PathBuf,
     gateway_uid: u32,
     bridge_auth: HeaderValue,
+    lease_identity: Bytes,
 }
 
 impl Generation {
@@ -79,7 +80,50 @@ impl Generation {
             gateway_socket,
             gateway_uid,
             bridge_auth,
+            lease_identity: Bytes::from(
+                json!({
+                    "identity": {
+                        "appId": config.app_id,
+                        "installationId": config.installation_id,
+                        "generation": config.generation,
+                        "uid": config.uid,
+                    }
+                })
+                .to_string(),
+            ),
         })
+    }
+
+    pub(super) async fn lease_expires_at(&self) -> io::Result<Option<u64>> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Lease {
+            expires_at: u64,
+        }
+
+        let unavailable = || io::Error::other("App lease authority unavailable");
+        let request = Request::post("/internal/v1/app-generations/lease")
+            .header(header::HOST, "localhost")
+            .header(header::CONNECTION, "close")
+            .header(header::AUTHORIZATION, &self.bridge_auth)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Full::new(self.lease_identity.clone()))
+            .map_err(|_| unavailable())?;
+        let (response, _connection) =
+            send_to_peer(&self.gateway_socket, self.gateway_uid, request).await?;
+        match response.status() {
+            StatusCode::UNAUTHORIZED => Ok(None),
+            StatusCode::OK => {
+                let body = Limited::new(response.into_body(), 4096)
+                    .collect()
+                    .await
+                    .map_err(|_| unavailable())?
+                    .to_bytes();
+                let lease: Lease = serde_json::from_slice(&body).map_err(|_| unavailable())?;
+                Ok(Some(lease.expires_at))
+            }
+            _ => Err(unavailable()),
+        }
     }
 
     fn authorize(&self, peer: Option<u32>, headers: &HeaderMap) -> Result<(), Problem> {

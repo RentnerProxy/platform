@@ -143,6 +143,16 @@ async function readGrants(
     })
 }
 
+export async function readAppRuntimeLeaseInTransaction(
+    transaction: AuthTransaction,
+    identity: AppRuntimeIdentity,
+): Promise<{ expiresAt: number }> {
+    const generation = await readAppRuntimeGeneration(transaction, identity, {
+        allowPreparing: true,
+    })
+    return { expiresAt: generation.leaseExpiresAt.getTime() }
+}
+
 export async function readAppRuntimeContextInTransaction(
     transaction: AuthTransaction,
     identity: AppRuntimeIdentity,

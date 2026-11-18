@@ -67,6 +67,7 @@ export function smokeProgress(suite: Suite) {
                   'context',
                   'startup',
                   'management-and-persistence',
+                  'app-runtime',
                   'proxy-traffic',
                   'runtime-faults',
                   'runtime-traffic',
@@ -102,6 +103,15 @@ export function smokeProgress(suite: Suite) {
             if (suite === 'backups' && isManagedBackupSmokeDiagnostic(line)) {
                 if (!line.startsWith('Managed backup stage=')) diagnostic = line
                 return line
+            }
+            if (
+                suite === 'production' &&
+                /^Native app (?:fixture failed at (?:preparation|activation|database|notification)|manager failed at (?:bridge readiness|registration|provisioning|launch|activation|app checks|revocation)|smoke command failed at (?:copy|permissions|execution))$/u.test(
+                    line,
+                )
+            ) {
+                diagnostic = line
+                return diagnostic
             }
             if (
                 suite === 'production' &&

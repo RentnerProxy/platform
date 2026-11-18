@@ -1,5 +1,6 @@
 mod filesystem;
 mod gateway;
+mod lease;
 mod process;
 mod wire_json;
 
@@ -15,7 +16,9 @@ use aws_lc_rs::{digest, rand};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hyper::header::HeaderValue;
 use serde::{Deserialize, Serialize};
-use tokio::{process::Child, time::timeout};
+use tokio::time::{timeout, timeout_at};
+
+pub use process::run_app_watchdog;
 
 const APP_ROOT: &str = "/run/rentnerproxy/apps";
 const GATEWAY_SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
@@ -24,9 +27,8 @@ const PROFILE: &str = "rentnerproxy-linux-v1";
 const VERSION: &str = "1.0.0";
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_LEASE_SECONDS: u64 = 7 * 24 * 60 * 60;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct LaunchConfig {
     app_id: String,
@@ -37,7 +39,6 @@ struct LaunchConfig {
     executable: PathBuf,
     data_directory: PathBuf,
     database_url_file: Option<PathBuf>,
-    lease_seconds: u64,
     runtime_profile: String,
     app_protocol: String,
     platform_api: String,
@@ -67,9 +68,8 @@ impl LaunchConfig {
             || !(1..=9_007_199_254_740_991).contains(&self.generation)
             || !(20_000..=59_999).contains(&self.uid)
             || self.gid != self.uid
-            || !(1..=MAX_LEASE_SECONDS).contains(&self.lease_seconds)
         {
-            return Err(io::Error::other("Invalid app launch identity or lease"));
+            return Err(io::Error::other("Invalid app launch identity"));
         }
         filesystem::validate_child_paths(self)
     }
@@ -158,7 +158,7 @@ pub async fn run_app_ipc() -> ExitCode {
 
 async fn run() -> io::Result<()> {
     let manager = process::ManagerPipe::open()?;
-    let config = timeout(LAUNCH_TIMEOUT, manager.launch()).await??;
+    let config: LaunchConfig = timeout(LAUNCH_TIMEOUT, manager.launch(8192)).await??;
     config.validate()?;
     let token_path = env::var_os(crate::config::CONTROLLER_TOKEN_FILE_ENV)
         .ok_or_else(|| io::Error::other("Missing protected controller token file"))?;
@@ -169,31 +169,48 @@ async fn run() -> io::Result<()> {
             _ = crate::shutdown::wait_for_shutdown() => {},
         }
     };
-    run_generation(
-        config,
-        Path::new(APP_ROOT),
-        Path::new(GATEWAY_SOCKET),
-        WEB_UID,
-        token,
-        stop,
-    )
-    .await
+    let controller = env::current_exe()?;
+    let paths = RuntimePaths {
+        app_root: Path::new(APP_ROOT),
+        gateway_socket: Path::new(GATEWAY_SOCKET),
+        gateway_uid: WEB_UID,
+        controller: &controller,
+    };
+    run_generation(config, paths, token, stop).await
+}
+
+struct RuntimePaths<'a> {
+    app_root: &'a Path,
+    gateway_socket: &'a Path,
+    gateway_uid: u32,
+    controller: &'a Path,
 }
 
 async fn run_generation(
     config: LaunchConfig,
-    app_root: &Path,
-    gateway_socket: &Path,
-    gateway_uid: u32,
+    paths: RuntimePaths<'_>,
     token: HeaderValue,
     stop: impl Future<Output = ()>,
 ) -> io::Result<()> {
-    let (sockets, listener) = filesystem::GenerationSockets::bind(app_root, &config)?;
     let core_credential = credential()?;
     let mut app_credential = credential()?;
     while core_credential == app_credential {
         app_credential = credential()?;
     }
+    let state = Arc::new(gateway::Generation::new(
+        &config,
+        digest::digest(&digest::SHA256, core_credential.as_bytes()),
+        paths.gateway_socket.to_owned(),
+        paths.gateway_uid,
+        token,
+    )?);
+    tokio::pin!(stop);
+    let deadline = tokio::select! {
+        biased;
+        _ = &mut stop => return Ok(()),
+        initial = lease::check(&state) => initial?.ok_or_else(|| io::Error::other("App generation has no live lease"))?,
+    };
+    let (sockets, listener) = filesystem::GenerationSockets::bind(paths.app_root, &config)?;
     let bootstrap = Bootstrap {
         format_version: 1,
         app_id: &config.app_id,
@@ -210,53 +227,36 @@ async fn run_generation(
         app_credential: &app_credential,
         core_credential: &core_credential,
     };
-    let descriptor = serde_json::to_vec(&bootstrap)
+    let descriptor = serde_json::to_string(&bootstrap)
         .map_err(|_| io::Error::other("Unable to encode app bootstrap descriptor"))?;
-    let state = Arc::new(gateway::Generation::new(
-        &config,
-        digest::digest(&digest::SHA256, core_credential.as_bytes()),
-        gateway_socket.to_owned(),
-        gateway_uid,
-        token,
-    )?);
-    let mut child = process::start_child(&config)?;
-    let pid = child
-        .id()
-        .ok_or_else(|| io::Error::other("App child has no process ID"))?;
+    let launch_deadline = deadline.min(tokio::time::Instant::now() + LAUNCH_TIMEOUT);
+    let mut watchdog = tokio::select! {
+        biased;
+        _ = &mut stop => return Ok(()),
+        result = timeout_at(launch_deadline, process::Watchdog::start(paths.controller, &config, &descriptor)) => result??,
+    };
 
     let mut ready = false;
     let child_exited = tokio::select! {
         biased;
-        _ = stop => Ok(false),
-        _ = tokio::time::sleep(Duration::from_secs(config.lease_seconds)) => Ok(false),
-        result = process::observe_exit(pid) => result.map(|()| true),
-        result = gateway::serve(listener, state) => result.map(|()| false),
-        result = supervise(&mut child, descriptor, &bootstrap, config.uid, &mut ready) => result.map(|()| false),
+        _ = &mut stop => Ok(false),
+        _ = lease::maintain(&state, deadline) => Ok(false),
+        result = watchdog.wait() => result.and_then(process::app_exit).map(|()| true),
+        result = gateway::serve(listener, Arc::clone(&state)) => result.map(|()| false),
+        result = announce_when_ready(&bootstrap, config.uid, &mut ready) => result.map(|()| false),
     };
-    let status = process::stop_child(pid, &mut child).await;
-    if child_exited? {
-        process::app_exit(status?)?;
-        if !ready {
-            return Err(io::Error::other("Native app exited before readiness"));
-        }
-        Ok(())
-    } else {
-        status.map(|_| ())
+    let stopped = watchdog.stop().await;
+    if child_exited? && !ready {
+        return Err(io::Error::other("Native app exited before readiness"));
     }
+    stopped
 }
 
-async fn supervise(
-    child: &mut Child,
-    descriptor: Vec<u8>,
+async fn announce_when_ready(
     bootstrap: &Bootstrap<'_>,
     uid: u32,
     ready: &mut bool,
 ) -> io::Result<()> {
-    timeout(
-        LAUNCH_TIMEOUT,
-        process::deliver_bootstrap(child, &descriptor),
-    )
-    .await??;
     timeout(STARTUP_TIMEOUT, gateway::app_ready(bootstrap, uid)).await??;
     // The supervisor consumes this line. App stdout and stderr are discarded.
     use std::io::Write as _;
