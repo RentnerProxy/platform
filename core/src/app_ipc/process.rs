@@ -19,7 +19,7 @@ use tokio::{
     io::AsyncWriteExt,
     net::{UnixStream, unix::pipe::Receiver},
     process::{Child, ChildStdin, Command},
-    time::timeout,
+    time::{Instant, timeout},
 };
 
 use super::{
@@ -28,6 +28,47 @@ use super::{
 };
 
 const MAX_WATCHDOG_REQUEST_BYTES: usize = 24_576;
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub(super) struct LaunchDeadline(Duration);
+
+impl LaunchDeadline {
+    pub(super) fn from_instant(deadline: Instant) -> io::Result<Self> {
+        // Sample the shared clock first so conversion can only shorten the
+        // remaining lifetime. Both processes share this Linux time namespace.
+        let sample = monotonic_now()?;
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::ETIMEDOUT))?;
+        let absolute = sample
+            .checked_add(remaining)
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+        Ok(Self(absolute))
+    }
+
+    fn require_live(self) -> io::Result<()> {
+        if monotonic_now()? >= self.0 {
+            return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
+        }
+        Ok(())
+    }
+}
+
+fn monotonic_now() -> io::Result<Duration> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime fills a live timespec and is async-signal-safe.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let invalid = |_| io::Error::from_raw_os_error(libc::EOVERFLOW);
+    let seconds = u64::try_from(time.tv_sec).map_err(invalid)?;
+    let nanos = u32::try_from(time.tv_nsec).map_err(invalid)?;
+    Ok(Duration::new(seconds, nanos))
+}
 
 pub(super) enum ManagerPipe {
     Pipe(Receiver),
@@ -129,6 +170,7 @@ struct WatchdogRequest<Config, Bootstrap> {
     config: Config,
     bootstrap: Bootstrap,
     lock_fd: RawFd,
+    deadline: LaunchDeadline,
 }
 
 pub(super) struct Watchdog {
@@ -142,12 +184,14 @@ impl Watchdog {
         config: &LaunchConfig,
         bootstrap: &str,
         lock: &File,
+        deadline: LaunchDeadline,
     ) -> io::Result<Self> {
         let lock_fd = lock.as_raw_fd();
         let request = WatchdogRequest {
             config,
             bootstrap,
             lock_fd,
+            deadline,
         };
         let mut frame = serde_json::to_vec(&request)
             .map_err(|_| io::Error::other("Unable to encode the app watchdog request"))?;
@@ -170,6 +214,7 @@ impl Watchdog {
                 .as_std_mut()
                 .pre_exec(move || set_close_on_exec(lock_fd, false));
         }
+        deadline.require_live()?;
         let mut child = command.spawn()?;
         let mut pipe = child
             .stdin
@@ -214,7 +259,8 @@ async fn supervise_app_group() -> io::Result<()> {
     if manager.revocation_pending()? {
         return Ok(());
     }
-    let mut child = start_child(&launch.config)?;
+    launch.deadline.require_live()?;
+    let mut child = start_child(&launch.config, launch.deadline)?;
     let pid = child
         .id()
         .ok_or_else(|| io::Error::other("App child has no process ID"))?;
@@ -261,7 +307,7 @@ async fn reap_descendants() -> io::Result<()> {
     }
 }
 
-fn start_child(config: &LaunchConfig) -> io::Result<Child> {
+fn start_child(config: &LaunchConfig, deadline: LaunchDeadline) -> io::Result<Child> {
     let mut command = Command::new(&config.executable);
     command
         .current_dir(&config.data_directory)
@@ -279,9 +325,10 @@ fn start_child(config: &LaunchConfig) -> io::Result<Child> {
     // SAFETY: Only async-signal-safe direct syscalls and stack-only setup run
     // between fork and exec. The child is single-threaded and owns its FD table.
     unsafe {
-        command
-            .as_std_mut()
-            .pre_exec(move || restrict_child(uid, gid, parent));
+        command.as_std_mut().pre_exec(move || {
+            restrict_child(uid, gid, parent)?;
+            deadline.require_live()
+        });
     }
     command.spawn()
 }

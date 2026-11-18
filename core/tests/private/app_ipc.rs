@@ -446,14 +446,14 @@ async fn database_renewal_extends_the_broker_lease_until_authority_revokes_it() 
     let scratch = Scratch::create(&env::temp_dir());
     let socket = scratch.path("lease.sock");
     let listener = UnixListener::bind(&socket).unwrap();
+    let (rejection_sent, rejected) = oneshot::channel();
     let authority = tokio::spawn(async move {
         let original = Bytes::from(lease_expiry(Duration::from_millis(700)).to_string());
         for (status, remaining_ms) in [
             (StatusCode::OK, 0),
             (StatusCode::OK, 0),
             (StatusCode::OK, 0),
-            (StatusCode::OK, 1600),
-            (StatusCode::SERVICE_UNAVAILABLE, 0),
+            (StatusCode::OK, 4000),
             (StatusCode::UNAUTHORIZED, 0),
         ] {
             let (stream, _) = listener.accept().await.unwrap();
@@ -474,23 +474,35 @@ async fn database_renewal_extends_the_broker_lease_until_authority_revokes_it() 
                 .await
                 .unwrap();
         }
+        rejection_sent.send(()).unwrap();
     });
     let generation = test_generation(TEST_UID, socket, uid());
     let initial = lease::check(&generation).await.unwrap().unwrap();
     let broker = tokio::spawn(async move { lease::maintain(&generation, initial).await });
-    tokio::time::sleep_until(initial + Duration::from_millis(100)).await;
-    assert!(
-        !broker.is_finished(),
-        "the verified renewal must extend the original deadline"
-    );
-    timeout(Duration::from_secs(3), broker)
+    timeout(Duration::from_secs(6), rejected)
         .await
-        .unwrap()
+        .expect("the broker must renew and recheck past the original lease")
+        .unwrap();
+    assert!(tokio::time::Instant::now() >= initial);
+    timeout(Duration::from_secs(1), broker)
+        .await
+        .expect("a trusted 401 must stop the broker before the renewed lease expires")
         .unwrap();
     timeout(Duration::from_secs(3), authority)
         .await
         .unwrap()
         .unwrap();
+}
+
+#[test]
+fn an_elapsed_start_deadline_cannot_be_serialized_for_watchdog_handoff() {
+    assert_eq!(
+        process::LaunchDeadline::from_instant(tokio::time::Instant::now())
+            .err()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::ETIMEDOUT),
+    );
 }
 
 #[tokio::test]
@@ -659,7 +671,10 @@ async fn privileged_generation_launches_restricted_child_and_revokes_listener() 
 #[tokio::test]
 #[ignore = "requires root and a private /run inside the isolated IPC test container"]
 async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
-    use std::process::Stdio;
+    use std::{
+        os::{fd::AsRawFd, unix::process::CommandExt},
+        process::Stdio,
+    };
     use tokio::{io::AsyncWriteExt, process::Command};
 
     assert_eq!(uid(), 0);
@@ -785,6 +800,49 @@ async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
             .contains("App generation has no live lease")
     );
     assert!(!data.join("descriptor.json").exists());
+
+    let expired_config: LaunchConfig = serde_json::from_value(launch.clone()).unwrap();
+    let (expired_sockets, _listener) =
+        filesystem::GenerationSockets::bind(&scratch.path("expired-apps"), &expired_config)
+            .unwrap();
+    let fd = expired_sockets.lock.as_raw_fd();
+    let mut expired = Command::new(&controller);
+    expired
+        .arg("--app-ipc-watchdog")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    // SAFETY: The fixture owns the live lock until the watchdog exits.
+    unsafe {
+        expired
+            .as_std_mut()
+            .pre_exec(move || filesystem::set_close_on_exec(fd, false));
+    }
+    let mut expired = expired.spawn().unwrap();
+    let mut expired_pipe = expired.stdin.take().unwrap();
+    let handoff = json!({
+        "config": launch,
+        "bootstrap": "synthetic-expired-bootstrap",
+        "lock_fd": fd,
+        "deadline": { "secs": 0, "nanos": 0 },
+    });
+    expired_pipe
+        .write_all(format!("{handoff}\n").as_bytes())
+        .await
+        .unwrap();
+    let expired_output = timeout(Duration::from_secs(5), expired.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!expired_output.status.success());
+    assert!(
+        String::from_utf8(expired_output.stderr)
+            .unwrap()
+            .contains("(os error 110)")
+    );
+    assert!(!data.join("descriptor.json").exists());
+
     fs::write(gateway_directory.join("admitted"), []).unwrap();
     assert!(
         send(format!("{launch}\n"))

@@ -5,7 +5,7 @@ export async function verifyApplianceAppRuntime(context: ApplianceProxyTrafficCo
     const source = fileURLToPath(new URL('../fixtures/production-app-runtime.ts', import.meta.url))
     const target = '/usr/local/lib/rentnerproxy-app-runtime-fixture.ts'
     const exec = ['docker', 'exec', context.recreatedId]
-    const managerProgress = '/run/rentnerproxy/app-api/fixture-progress'
+    const managerProgress = '/run/rentnerproxy-app-fixture-progress'
     let phase = 'copy'
     try {
         await context.command(['docker', 'cp', source, context.recreatedId + ':' + target])

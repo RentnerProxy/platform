@@ -25,7 +25,7 @@ const dataDirectory = '/var/lib/rentnerproxy/apps/20991/data'
 const databaseUrlFile = dataDirectory + '/database-url'
 const progressFile = dataDirectory + '/fixture-progress'
 const controllerTokenFile = '/run/rentnerproxy/controller-token/value'
-const managerProgressFile = '/run/rentnerproxy/app-api/fixture-progress'
+const managerProgressFile = '/run/rentnerproxy-app-fixture-progress'
 
 async function waitFor<T>(probe: () => Promise<T | undefined>): Promise<T> {
     for (let attempt = 0; attempt < 100; attempt += 1) {

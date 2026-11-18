@@ -210,7 +210,9 @@ async fn run_generation(
         _ = &mut stop => return Ok(()),
         initial = lease::check(&state) => initial?.ok_or_else(|| io::Error::other("App generation has no live lease"))?,
     };
+    let launch_deadline = deadline.min(tokio::time::Instant::now() + LAUNCH_TIMEOUT);
     let (sockets, listener) = filesystem::GenerationSockets::bind(paths.app_root, &config)?;
+    let handoff_deadline = process::LaunchDeadline::from_instant(launch_deadline)?;
     let bootstrap = Bootstrap {
         format_version: 1,
         app_id: &config.app_id,
@@ -229,11 +231,10 @@ async fn run_generation(
     };
     let descriptor = serde_json::to_string(&bootstrap)
         .map_err(|_| io::Error::other("Unable to encode app bootstrap descriptor"))?;
-    let launch_deadline = deadline.min(tokio::time::Instant::now() + LAUNCH_TIMEOUT);
     let mut watchdog = tokio::select! {
         biased;
         _ = &mut stop => return Ok(()),
-        result = timeout_at(launch_deadline, process::Watchdog::start(paths.controller, &config, &descriptor, &sockets.lock)) => result??,
+        result = timeout_at(launch_deadline, process::Watchdog::start(paths.controller, &config, &descriptor, &sockets.lock, handoff_deadline)) => result??,
     };
 
     let mut ready = false;
