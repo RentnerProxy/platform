@@ -44,7 +44,7 @@ COPY --from=web-build /app/docker/web/static-assets.ts ./docker/web/static-asset
 COPY --from=web-build /app/docker/web/serve.ts ./docker/web/serve.ts
 COPY --from=web-build /app/docker/web/healthcheck.ts ./docker/web/healthcheck.ts
 
-FROM mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31 AS controller-build
+FROM mirror.gcr.io/library/rust:1.100-trixie@sha256:223cc32ddca8f3ee90c436dbc94b6b5f052ea7f9653c5201e9612f08ad7d21b8 AS controller-build
 
 ARG TARGETOS
 ARG TARGETARCH
