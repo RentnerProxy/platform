@@ -8,6 +8,7 @@ export const backgroundWorkerIds = [
     'host_monitoring',
     'docker_discovery',
     'npm_import_cleanup',
+    'app_runtime',
 ] as const
 
 export const backgroundWorkerStates = [

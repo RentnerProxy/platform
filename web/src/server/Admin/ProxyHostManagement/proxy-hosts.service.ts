@@ -1,13 +1,9 @@
-import {
-    readResponseCacheSettingsMap,
-    writeResponseCacheSettings,
-} from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
+import { readResponseCacheSettingsMap } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import type { ProxyHostMutationSummary } from './Types/proxy-hosts.types.ts'
 import { proxyHostSummaryColumns } from './proxy-hosts.storage.server.ts'
 import '@tanstack/react-start/server-only'
 import { tagsForHost } from '@/lib/HostTags/hostTags.ts'
 import { readHostTags } from '@/server/Admin/HostTags/host-tags.storage.server.ts'
-import { assignHostTagsInTransaction } from '@/server/Admin/HostTags/host-tags.storage.server.ts'
 import { QUICK_SEARCH_LIMIT } from '@/config/quick-search.config.ts'
 import type { AuthenticatedUser } from '@/lib/Auth/Types/auth.types.ts'
 import type {
@@ -31,7 +27,6 @@ import {
     readProxyHostHttpSettingsMap,
     readProxyHostHttpSettings,
     lockProxyRuntimeSettings,
-    writeProxyHostHttpSettings,
 } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import { requirePermissionService } from '@/server/Auth/Access/authorization.service.ts'
 import { validateCertificateAssignmentInTransaction } from '@/server/Admin/CertificateManagement/certificates.service.ts'
@@ -49,12 +44,10 @@ import { appendAuditEventInTransactionService } from '@/server/Audit/audit.servi
 import { recordMutationFailureBestEffort } from '@/server/ProxyRuntime/audit-mutation.ts'
 import { certificateJobSummary } from './certificate-jobs.storage.server.ts'
 import { invalidateHostMonitoringForHostsInTransaction } from '@/server/HostMonitoring/host-monitoring.repository.ts'
-import {
-    assertDiscoveryHostEditable,
-    readDiscoveryRegistry,
-} from '@/server/Admin/DockerDiscovery/discovery-storage.server.ts'
+import { readDiscoveryRegistry } from '@/server/Admin/DockerDiscovery/discovery-storage.server.ts'
 import {
     createProxyHostInTransaction,
+    deleteProxyHostInTransaction,
     parseCreateProxyHostInput,
     parseUpdateProxyHostInput,
     loadProxyHostForUpdate,
@@ -246,34 +239,9 @@ export async function deleteProxyHostService(
     const actor = await requirePermissionService(PERMISSIONS.PROXY_HOSTS_DELETE)
 
     try {
-        await getAuthDatabase().transaction(async (transaction) => {
-            await lockProxyRuntimeSettings(transaction)
-            await requirePermissionInTransaction(
-                transaction,
-                actor.id,
-                PERMISSIONS.PROXY_HOSTS_DELETE,
-            )
-            const proxyHost = await loadProxyHostForUpdate(transaction, id)
-
-            if (!proxyHost) {
-                throw new ProxyHostDomainError('proxy_host_not_found', 'Proxy host was not found.')
-            }
-
-            await writeProxyHostHttpSettings(transaction, proxyHost.id, {})
-            await writeResponseCacheSettings(transaction, proxyHost.id, null)
-            await assertDiscoveryHostEditable(transaction, proxyHost.id)
-            await assignHostTagsInTransaction(transaction, 'proxy', proxyHost.id, [])
-            await transaction.delete(proxyHosts).where(eq(proxyHosts.id, proxyHost.id))
-            await invalidateHostMonitoringForHostsInTransaction(transaction, [proxyHost.id])
-            await appendAuditEventInTransactionService(transaction, {
-                actorUserId: actor.id,
-                actorKind: 'user',
-                action: 'delete',
-                resource: 'proxy-host',
-                targetId: proxyHost.id,
-                result: 'success',
-            })
-        })
+        await getAuthDatabase().transaction((transaction) =>
+            deleteProxyHostInTransaction(transaction, actor.id, id),
+        )
     } catch (error) {
         await recordMutationFailureBestEffort({
             actorId: actor.id,

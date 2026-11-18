@@ -26,6 +26,19 @@ if (typeof window === 'undefined') validateProductionEnvironmentAtStartup()
 const startRealtimeEvents = createServerOnlyFn(startRealtimeValkey)
 if (typeof window === 'undefined') startRealtimeEvents()
 
+const startAppRuntimeLifecycle = createServerOnlyFn(async () => {
+    if (process.env.RENTNERPROXY_APP_RUNTIME !== '1') return
+    await startWorkerLifecycle(async () => {
+        const { createAppRuntimeWorker } = await import('@/server/AppRuntime/appliance.server.ts')
+        return createAppRuntimeWorker()
+    }, 'app_runtime')
+})
+if (typeof window === 'undefined')
+    runDetachedTask(
+        () => startAppRuntimeLifecycle(),
+        () => console.error('[startup] Background operation failed'),
+    )
+
 const startProxyRuntimeLifecycle = createServerOnlyFn(() =>
     startWorkerLifecycle(async () => {
         const { reconcileProxyConfigurationService } =

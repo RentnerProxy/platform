@@ -195,6 +195,11 @@ initialize_layout() {
     chown rentnerproxy:rentnerproxy "$crowdsec_control_directory/desired-mode"
     chmod 0600 "$crowdsec_control_directory/desired-mode"
     install -d -m 0700 -o root -g root "$bootstrap_directory"
+    [[ ! -L $data_directory/apps && ! -L /run/rentnerproxy/app-api && ! -L /run/rentnerproxy/app-db ]] \
+        || fatal 'an app runtime directory is a symbolic link'
+    install -d -m 0711 -o root -g root "$data_directory/apps"
+    install -d -m 0700 -o rentnerproxy-web -g rentnerproxy-web /run/rentnerproxy/app-api
+    install -d -m 0755 -o postgres -g postgres /run/rentnerproxy/app-db
     install -d -m 0700 -o postgres -g postgres /var/run/postgresql
     chmod 00700 /var/run/postgresql
 }
@@ -303,7 +308,9 @@ start_postgres() {
         -D "$postgres_directory" \
         -c listen_addresses=127.0.0.1 \
         -c port=5432 \
-        -c unix_socket_directories=/var/run/postgresql
+        -c unix_socket_directories=/var/run/postgresql,/run/rentnerproxy/app-db \
+        -c hba_file=/usr/local/etc/rentnerproxy/pg_hba.conf \
+        -c ident_file=/usr/local/etc/rentnerproxy/pg_ident.conf
     wait_for_command 'PostgreSQL' gosu postgres pg_isready \
         --host=/var/run/postgresql \
         --username=postgres \
@@ -366,6 +373,7 @@ run_web() {
         NODE_ENV=production \
         PORT=3000 \
         VALKEY_URL=redis://127.0.0.1:6379 \
+        RENTNERPROXY_APP_RUNTIME=1 \
         RENTNERPROXY_CONTROLLER_TOKEN_FILE="$controller_token_file" \
         RENTNERPROXY_CONTROLLER_URL=http://127.0.0.1:8081 \
         RENTNERPROXY_TRUST_PROXY_HEADERS="${RENTNERPROXY_TRUST_PROXY_HEADERS:-false}" \

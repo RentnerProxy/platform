@@ -61,8 +61,22 @@ const applySchema = z.object({
 export async function getProxyRuntimeStatus(
     signal?: AbortSignal,
 ): Promise<ProxyRuntimeStatus | null> {
-    const payload = await controllerRequest('/internal/v1/proxy/status', {
-        timeoutMs: STATUS_TIMEOUT_MS,
+    return readProxyRuntimeStatus('/internal/v1/proxy/status', STATUS_TIMEOUT_MS, signal)
+}
+
+export async function getStableProxyRuntimeStatus(
+    signal: AbortSignal,
+): Promise<ProxyRuntimeStatus | null> {
+    return readProxyRuntimeStatus('/internal/v1/proxy/status?stable=true', 750, signal)
+}
+
+async function readProxyRuntimeStatus(
+    path: '/internal/v1/proxy/status' | '/internal/v1/proxy/status?stable=true',
+    timeoutMs: number,
+    signal?: AbortSignal,
+): Promise<ProxyRuntimeStatus | null> {
+    const payload = await controllerRequest(path, {
+        timeoutMs,
         ...(signal ? { signal } : {}),
         privileged: true,
     })

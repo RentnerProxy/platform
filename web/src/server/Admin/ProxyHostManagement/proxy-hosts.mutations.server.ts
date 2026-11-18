@@ -4,7 +4,8 @@ import {
     writeResponseCacheSettings,
 } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import type { ResponseCacheSettings } from '@/lib/ResponseCache/Types/response-cache.types.ts'
-import type { ProxyHostRow } from './Types/proxy-hosts-mutations.types.ts'
+import type { ProxyHostMutationActor, ProxyHostRow } from './Types/proxy-hosts-mutations.types.ts'
+import type { PermissionKey } from '@/config/Types/permissions-config.types.ts'
 import '@tanstack/react-start/server-only'
 import { assignHostTagsInTransaction } from '@/server/Admin/HostTags/host-tags.storage.server.ts'
 
@@ -39,6 +40,32 @@ import { invalidateHostMonitoringForHostsInTransaction } from '@/server/HostMoni
 
 function invalidInput(): ProxyHostDomainError {
     return new ProxyHostDomainError('invalid_input', 'Proxy host input is invalid.')
+}
+
+/** Existing administration callers keep their transaction-local RBAC checks. */
+async function authorizeProxyHostMutation(
+    transaction: AuthTransaction,
+    actor: ProxyHostMutationActor,
+    permission: PermissionKey,
+): Promise<readonly PermissionKey[]> {
+    if (typeof actor === 'string')
+        return (await requirePermissionInTransaction(transaction, actor, permission)).permissions
+    actor.authorize(permission)
+    return []
+}
+
+function mutationAuditActor(actor: ProxyHostMutationActor) {
+    return {
+        actorUserId: typeof actor === 'string' ? actor : actor.userId,
+        actorKind:
+            typeof actor === 'string' || actor.userId !== null
+                ? ('user' as const)
+                : ('system' as const),
+    }
+}
+
+function mutationAuditMetadata(actor: ProxyHostMutationActor) {
+    return typeof actor === 'string' ? {} : { operationId: actor.operationId }
 }
 
 /**
@@ -148,34 +175,30 @@ export function parseUpdateProxyHostInput(input: UpdateProxyHostInput) {
  */
 export async function createProxyHostInTransaction(
     transaction: AuthTransaction,
-    actorId: string,
+    actor: ProxyHostMutationActor,
     input: CreateProxyHostInput,
 ): Promise<ProxyHostSummary> {
     const parsedInput = parseCreateProxyHostInput(input)
     const domains = parsedInput.domains.toSorted()
     await lockProxyRuntimeSettings(transaction)
-    const actor = await requirePermissionInTransaction(
+    const permissions = await authorizeProxyHostMutation(
         transaction,
-        actorId,
+        actor,
         PERMISSIONS.PROXY_HOSTS_CREATE,
     )
     if (parsedInput.browserCache !== undefined)
-        await requirePermissionInTransaction(transaction, actorId, PERMISSIONS.PROXY_HOSTS_APPLY)
+        await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.PROXY_HOSTS_APPLY)
     if (parsedInput.tagIds !== undefined)
-        await requirePermissionInTransaction(transaction, actorId, PERMISSIONS.PROXY_HOSTS_VIEW)
+        await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.PROXY_HOSTS_VIEW)
     if (parsedInput.responseCompression != null)
-        await requirePermissionInTransaction(transaction, actorId, PERMISSIONS.PROXY_HOSTS_APPLY)
+        await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.PROXY_HOSTS_APPLY)
     await assertDomainsAvailableInTransaction(transaction, domains)
     const certificateId = parsedInput.certificateId?.toLowerCase() ?? null
     const forceHttps = parsedInput.forceHttps ?? false
     const upstreamTls = normalizeUpstreamTlsSettings(parsedInput)
     const accessPolicyId = parsedInput.accessPolicyId?.toLowerCase() ?? null
     if (accessPolicyId) {
-        await requirePermissionInTransaction(
-            transaction,
-            actorId,
-            PERMISSIONS.ACCESS_POLICIES_ASSIGN,
-        )
+        await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.ACCESS_POLICIES_ASSIGN)
         const policy = await transaction
             .select({ id: accessPolicies.id })
             .from(accessPolicies)
@@ -195,6 +218,7 @@ export async function createProxyHostInTransaction(
     const rows = await transaction
         .insert(proxyHosts)
         .values({
+            ...(typeof actor !== 'string' && actor.proxyHostId ? { id: actor.proxyHostId } : {}),
             enabled: parsedInput.enabled,
             certificateId,
             forceHttps,
@@ -226,12 +250,12 @@ export async function createProxyHostInTransaction(
     if (parsedInput.responseCache !== undefined)
         await writeAuthorizedResponseCacheSettings(
             transaction,
-            actorId,
+            actor,
             proxyHost.id,
             parsedInput.responseCache,
         )
     const tags =
-        parsedInput.tagIds !== undefined || actor.permissions.includes(PERMISSIONS.PROXY_HOSTS_VIEW)
+        parsedInput.tagIds !== undefined || permissions.includes(PERMISSIONS.PROXY_HOSTS_VIEW)
             ? await assignHostTagsInTransaction(
                   transaction,
                   'proxy',
@@ -248,16 +272,18 @@ export async function createProxyHostInTransaction(
         })
     }
     await appendAuditEventInTransactionService(transaction, {
-        actorUserId: actorId,
-        actorKind: 'user',
+        ...mutationAuditActor(actor),
         action: 'create',
         resource: 'proxy-host',
         targetId: proxyHost.id,
         result: 'success',
-        ...(parsedInput.responseCompression == null && parsedInput.browserCache === undefined
+        ...(typeof actor === 'string' &&
+        parsedInput.responseCompression == null &&
+        parsedInput.browserCache === undefined
             ? {}
             : {
                   metadata: {
+                      ...mutationAuditMetadata(actor),
                       changedFields: [
                           ...(parsedInput.responseCompression == null
                               ? []
@@ -291,22 +317,22 @@ export async function createProxyHostInTransaction(
  */
 export async function updateProxyHostInTransaction(
     transaction: AuthTransaction,
-    actorId: string,
+    actor: ProxyHostMutationActor,
     input: UpdateProxyHostInput,
     discoveryKey?: string,
 ): Promise<ProxyHostSummary> {
     const parsedInput = parseUpdateProxyHostInput(input)
     const domains = parsedInput.domains.toSorted()
     await lockProxyRuntimeSettings(transaction)
-    const actor = await requirePermissionInTransaction(
+    const permissions = await authorizeProxyHostMutation(
         transaction,
-        actorId,
+        actor,
         PERMISSIONS.PROXY_HOSTS_UPDATE,
     )
     if (parsedInput.browserCache !== undefined)
-        await requirePermissionInTransaction(transaction, actorId, PERMISSIONS.PROXY_HOSTS_APPLY)
+        await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.PROXY_HOSTS_APPLY)
     if (parsedInput.tagIds !== undefined)
-        await requirePermissionInTransaction(transaction, actorId, PERMISSIONS.PROXY_HOSTS_VIEW)
+        await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.PROXY_HOSTS_VIEW)
     await assertDiscoveryHostEditable(transaction, parsedInput.proxyHostId, discoveryKey)
     const proxyHost = await loadProxyHostForUpdate(transaction, parsedInput.proxyHostId)
 
@@ -315,9 +341,9 @@ export async function updateProxyHostInTransaction(
     }
 
     if (parsedInput.enabled !== proxyHost.enabled) {
-        await requirePermissionInTransaction(
+        await authorizeProxyHostMutation(
             transaction,
-            actorId,
+            actor,
             parsedInput.enabled ? PERMISSIONS.PROXY_HOSTS_ENABLE : PERMISSIONS.PROXY_HOSTS_DISABLE,
         )
     }
@@ -347,11 +373,7 @@ export async function updateProxyHostInTransaction(
             : (parsedInput.accessPolicyId?.toLowerCase() ?? null)
     if (accessPolicyId) {
         if (accessPolicyId !== proxyHost.accessPolicyId) {
-            await requirePermissionInTransaction(
-                transaction,
-                actorId,
-                PERMISSIONS.ACCESS_POLICIES_ASSIGN,
-            )
+            await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.ACCESS_POLICIES_ASSIGN)
         }
         const policy = await transaction
             .select({ id: accessPolicies.id })
@@ -362,11 +384,7 @@ export async function updateProxyHostInTransaction(
             throw new ProxyHostDomainError('invalid_input', 'Access policy was not found.')
         }
     } else if (parsedInput.accessPolicyId !== undefined && proxyHost.accessPolicyId !== null) {
-        await requirePermissionInTransaction(
-            transaction,
-            actorId,
-            PERMISSIONS.ACCESS_POLICIES_ASSIGN,
-        )
+        await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.ACCESS_POLICIES_ASSIGN)
     }
     await validateTrustedCaAssignmentInTransaction(transaction, upstreamTls.trustedCaId)
     await validateCertificateAssignmentInTransaction(
@@ -420,11 +438,7 @@ export async function updateProxyHostInTransaction(
         JSON.stringify(parsedInput.browserCache) !== JSON.stringify(httpSettings.browserCache)
     if (parsedInput.responseCompression !== undefined) {
         if (parsedInput.responseCompression !== previousCompression)
-            await requirePermissionInTransaction(
-                transaction,
-                actorId,
-                PERMISSIONS.PROXY_HOSTS_APPLY,
-            )
+            await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.PROXY_HOSTS_APPLY)
         if (parsedInput.responseCompression === null) delete httpSettings.responseCompression
         else httpSettings.responseCompression = parsedInput.responseCompression
         await writeProxyHostHttpSettings(transaction, proxyHost.id, httpSettings)
@@ -439,12 +453,12 @@ export async function updateProxyHostInTransaction(
     if (parsedInput.responseCache !== undefined)
         await writeAuthorizedResponseCacheSettings(
             transaction,
-            actorId,
+            actor,
             proxyHost.id,
             parsedInput.responseCache,
         )
     const tags =
-        parsedInput.tagIds !== undefined || actor.permissions.includes(PERMISSIONS.PROXY_HOSTS_VIEW)
+        parsedInput.tagIds !== undefined || permissions.includes(PERMISSIONS.PROXY_HOSTS_VIEW)
             ? await assignHostTagsInTransaction(
                   transaction,
                   'proxy',
@@ -461,13 +475,13 @@ export async function updateProxyHostInTransaction(
         })
     }
     await appendAuditEventInTransactionService(transaction, {
-        actorUserId: actorId,
-        actorKind: 'user',
+        ...mutationAuditActor(actor),
         action: 'update',
         resource: 'proxy-host',
         targetId: proxyHost.id,
         result: 'success',
         metadata: {
+            ...mutationAuditMetadata(actor),
             changedFields: [
                 'domains',
                 'upstream',
@@ -508,22 +522,46 @@ export async function updateProxyHostInTransaction(
 
 async function writeAuthorizedResponseCacheSettings(
     transaction: AuthTransaction,
-    actorId: string,
+    actor: ProxyHostMutationActor,
     proxyHostId: string,
     settings: ResponseCacheSettings | null,
 ): Promise<void> {
     const existing =
         (await readResponseCacheSettingsMap(transaction, [proxyHostId])).get(proxyHostId) ?? null
     if (JSON.stringify(existing) === JSON.stringify(settings)) return
-    await requirePermissionInTransaction(transaction, actorId, PERMISSIONS.PROXY_HOSTS_APPLY)
+    await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.PROXY_HOSTS_APPLY)
     await writeResponseCacheSettings(transaction, proxyHostId, settings)
     await appendAuditEventInTransactionService(transaction, {
-        actorUserId: actorId,
-        actorKind: 'user',
+        ...mutationAuditActor(actor),
         action: 'save',
         resource: 'proxy-host-settings',
         targetId: proxyHostId,
         result: 'success',
-        metadata: { enabled: settings !== null },
+        metadata: { ...mutationAuditMetadata(actor), enabled: settings !== null },
+    })
+}
+
+export async function deleteProxyHostInTransaction(
+    transaction: AuthTransaction,
+    actor: ProxyHostMutationActor,
+    proxyHostId: string,
+): Promise<void> {
+    await lockProxyRuntimeSettings(transaction)
+    await authorizeProxyHostMutation(transaction, actor, PERMISSIONS.PROXY_HOSTS_DELETE)
+    const host = await loadProxyHostForUpdate(transaction, proxyHostId)
+    if (!host) throw new ProxyHostDomainError('proxy_host_not_found', 'Proxy host was not found.')
+    await writeProxyHostHttpSettings(transaction, host.id, {})
+    await writeResponseCacheSettings(transaction, host.id, null)
+    await assertDiscoveryHostEditable(transaction, host.id)
+    await assignHostTagsInTransaction(transaction, 'proxy', host.id, [])
+    await transaction.delete(proxyHosts).where(eq(proxyHosts.id, host.id))
+    await invalidateHostMonitoringForHostsInTransaction(transaction, [host.id])
+    await appendAuditEventInTransactionService(transaction, {
+        ...mutationAuditActor(actor),
+        action: 'delete',
+        resource: 'proxy-host',
+        targetId: host.id,
+        result: 'success',
+        ...(typeof actor === 'string' ? {} : { metadata: mutationAuditMetadata(actor) }),
     })
 }

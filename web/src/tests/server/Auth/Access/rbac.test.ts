@@ -9,13 +9,23 @@ import {
 } from '@/server/Auth/Access/rbac.service.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 
-function transactionWithPermissions(keys: ReadonlyArray<string>): AuthTransaction {
-    const query = {
-        from: () => query,
-        innerJoin: () => query,
-        where: async () => keys.map((key) => ({ key })),
-    }
-    return { select: () => query } as unknown as AuthTransaction
+function transactionWithPermissions(
+    keys: ReadonlyArray<string>,
+    selectedAppPermissions: ReadonlyArray<{ installationId: string; key: string }> = [],
+    actorAppPermissions: ReadonlyArray<{ installationId: string; key: string }> = [],
+): AuthTransaction {
+    const results = [keys.map((key) => ({ key })), selectedAppPermissions, actorAppPermissions]
+    return {
+        select: () => {
+            const rows = results.shift() ?? []
+            const query = {
+                from: () => query,
+                innerJoin: () => query,
+                where: async () => rows,
+            }
+            return query
+        },
+    } as unknown as AuthTransaction
 }
 
 function actorWithPermissions(permissions: ReadonlyArray<PermissionKey>): AuthenticatedUser {
@@ -54,6 +64,30 @@ describe('role assignment with retired permissions', () => {
                 [{ id: 'legacy-role', key: 'custom' }],
             ),
         ).rejects.toMatchObject({ code: 'permission_denied' })
+    })
+
+    test('requires the same installed app permission when assigning a role', async () => {
+        const actor = actorWithPermissions([PERMISSIONS.APP_ACCESS])
+        const role = { id: 'integration-role', key: 'integration' }
+        const required = { installationId: 'instance-a', key: 'edit' }
+        await expect(
+            assertRoleAssignmentAllowedInTransaction(
+                transactionWithPermissions(
+                    [],
+                    [required],
+                    [{ ...required, installationId: 'instance-b' }],
+                ),
+                actor,
+                [role],
+            ),
+        ).rejects.toMatchObject({ code: 'permission_denied' })
+        await expect(
+            assertRoleAssignmentAllowedInTransaction(
+                transactionWithPermissions([], [required], [required]),
+                actor,
+                [role],
+            ),
+        ).resolves.toBeUndefined()
     })
 
     test('still restricts owner-role assignment to owners', async () => {

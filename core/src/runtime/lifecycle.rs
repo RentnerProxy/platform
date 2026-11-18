@@ -372,6 +372,14 @@ impl ProxyRuntime {
         }
     }
 
+    /// Samples the active revision at a point when no engine apply can be in progress.
+    pub(crate) async fn stable_status(&self) -> Result<ProxyRuntimeStatus, RuntimeError> {
+        let _guard = self.apply_lock.try_lock().map_err(|_| RuntimeError::Busy)?;
+        timeout(Duration::from_millis(500), self.status())
+            .await
+            .map_err(|_| RuntimeError::Busy)
+    }
+
     /// Requires healthy certificate storage, an available child, and a successful active-revision probe.
     pub(crate) async fn is_ready(&self) -> bool {
         if self.recovery_health.snapshot(Instant::now()).circuit_open {

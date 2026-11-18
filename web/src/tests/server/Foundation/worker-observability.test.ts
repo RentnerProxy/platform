@@ -239,7 +239,7 @@ describe('bounded worker observability', () => {
                 metrics.count(id, event)
         }
         const snapshot = metrics.snapshot()
-        expect(snapshot.workers).toHaveLength(9)
+        expect(snapshot.workers.map(({ id }) => id)).toEqual([...backgroundWorkerIds])
         for (const worker of snapshot.workers) {
             expect(worker.backlog).toBe(maximum)
             expect(worker.lastFinishedAt).toBe(maximum)

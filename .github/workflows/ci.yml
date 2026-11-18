@@ -391,6 +391,10 @@ jobs:
               run: cargo llvm-cov --locked --manifest-path core/Cargo.toml --all-features --no-report
               if: "${{ needs.changes.outputs.rust == 'true' }}"
 
+            - name: Run privileged IPC fixtures with coverage
+              run: bash .github/scripts/ci/rust-coverage.sh --privileged-app-ipc
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
+
             - name: Run Rust documentation tests
               run: cargo test --locked --manifest-path core/Cargo.toml --doc
               if: "${{ needs.changes.outputs.rust == 'true' }}"

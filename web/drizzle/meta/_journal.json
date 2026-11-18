@@ -246,6 +246,13 @@
       "when": 1794534597358,
       "tag": "0034_audit_retention_cardinality_v1",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1795026016161,
+      "tag": "0035_app_runtime",
+      "breakpoints": true
     }
   ]
 }

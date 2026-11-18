@@ -401,7 +401,7 @@ pub(crate) fn app_with_state(state: AppState) -> Router {
             "/internal/v1/proxy/status",
             get({
                 let state = state.clone();
-                move || proxy_status(state.clone())
+                move |query| proxy_status(state.clone(), query)
             }),
         )
         .route(

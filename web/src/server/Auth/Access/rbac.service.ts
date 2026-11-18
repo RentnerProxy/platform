@@ -14,6 +14,7 @@ import { parseStoredNavigationGroupPreferences } from '@/lib/Navigation/navigati
 import { DEFAULT_USER_THEME_MODE } from '@/config/theme.config.ts'
 import { isUserThemeMode } from '@/lib/Theme/themeMode.ts'
 import {
+    appRuntimeRolePermissions,
     permissions,
     rolePermissions,
     roles,
@@ -213,12 +214,46 @@ export async function assertRoleAssignmentAllowedInTransaction(
                 selectedRoles.map((role) => role.id),
             ),
         )
+    const selectedAppPermissions = await transaction
+        .select({
+            installationId: appRuntimeRolePermissions.installationId,
+            key: appRuntimeRolePermissions.key,
+        })
+        .from(appRuntimeRolePermissions)
+        .where(
+            inArray(
+                appRuntimeRolePermissions.roleId,
+                selectedRoles.map(({ id }) => id),
+            ),
+        )
+    const actorAppPermissions =
+        selectedAppPermissions.length === 0
+            ? []
+            : await transaction
+                  .select({
+                      installationId: appRuntimeRolePermissions.installationId,
+                      key: appRuntimeRolePermissions.key,
+                  })
+                  .from(userRoles)
+                  .innerJoin(
+                      appRuntimeRolePermissions,
+                      eq(userRoles.roleId, appRuntimeRolePermissions.roleId),
+                  )
+                  .where(eq(userRoles.userId, actor.id))
     const actorPermissions = new Set<string>(actor.permissions)
 
     if (
         assignedPermissionRows.some(
             (permission) =>
                 isRegisteredPermissionKey(permission.key) && !actorPermissions.has(permission.key),
+        ) ||
+        selectedAppPermissions.some(
+            (permission) =>
+                !actorAppPermissions.some(
+                    (owned) =>
+                        owned.installationId === permission.installationId &&
+                        owned.key === permission.key,
+                ),
         )
     ) {
         throw new AuthDomainError(
