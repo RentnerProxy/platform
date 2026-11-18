@@ -202,6 +202,8 @@ COPY docker/licenses/Valkey-LICENSE /usr/share/licenses/valkey/LICENSE
 COPY docker/licenses/Valkey-NOTICE /usr/share/licenses/valkey/NOTICE
 COPY --from=valkey-runtime /usr/local/bin/valkey-server /usr/local/bin/valkey-cli /opt/rentnerproxy/valkey/bin/
 COPY docker/production/entrypoint.sh /usr/local/bin/rentnerproxy-production
+COPY docker/production/apps/provision.sh /usr/local/bin/rentnerproxy-provision-app
+COPY docker/production/apps/pg_hba.conf docker/production/apps/pg_ident.conf /usr/local/etc/rentnerproxy/
 COPY docker/production/verify-platform.sh /tmp/verify-platform.sh
 COPY docker/production/backups/supervisor.sh /usr/local/lib/rentnerproxy-backups.sh
 COPY docker/production/fault-supervisor.sh /usr/local/lib/rentnerproxy-fault-supervisor.sh
@@ -216,6 +218,7 @@ RUN install -d -m 0755 /usr/share/rentnerproxy \
     && chmod 0444 /usr/local/lib/rentnerproxy-backups.sh /usr/local/lib/rentnerproxy-fault-supervisor.sh
 
 RUN chmod 0555 /usr/local/bin/rentnerproxy-production \
+    && chmod 0555 /usr/local/bin/rentnerproxy-provision-app \
     && chmod 0555 /usr/local/bin/rentnerproxy-crowdsec-supervisor \
     && chmod 0555 /usr/local/bin/rentnerproxy-controller \
     && chmod 0555 /usr/local/bin/crowdsec /usr/local/bin/cscli \
