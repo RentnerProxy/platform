@@ -669,6 +669,8 @@ integrationTest(
             ).toBe(204)
         } finally {
             shutdown.abort()
+            if (originalEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY
+            else process.env.APP_ENCRYPTION_KEY = originalEncryptionKey
             await db.transaction(async (tx) => {
                 const { installationId } = identity
                 await tx
@@ -684,8 +686,6 @@ integrationTest(
                     .delete(appRuntimeInstallations)
                     .where(eq(appRuntimeInstallations.id, installationId))
             })
-            if (originalEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY
-            else process.env.APP_ENCRYPTION_KEY = originalEncryptionKey
         }
     },
 )

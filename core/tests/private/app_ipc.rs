@@ -728,6 +728,13 @@ async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
     let mut linked_launch = launch.clone();
     linked_launch["dataDirectory"] = json!(linked);
     assert!(
+        linked_launch
+            .as_object_mut()
+            .unwrap()
+            .remove("databaseUrlFile")
+            .is_some()
+    );
+    assert!(
         send(format!("{linked_launch}\n"))
             .await
             .contains("Unsafe application runtime path or ownership")
@@ -757,7 +764,11 @@ async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
     assert_eq!(descriptor["appId"], "test.native");
     assert_eq!(descriptor["generation"], 10);
     assert_eq!(descriptor["versions"]["uiBridge"], VERSION);
-    assert!(!Path::new(descriptor["coreSocket"].as_str().unwrap()).exists());
+    let expected_socket = Path::new(APP_ROOT)
+        .join(TEST_UID.to_string())
+        .join("10/core.sock");
+    assert_eq!(descriptor["coreSocket"].as_str(), expected_socket.to_str());
+    assert!(!expected_socket.exists());
 
     fs::write(&executable, "#!/bin/sh\ncat >/dev/null\nsleep 20 &\nprintf '%s\\n' \"$!\" > descendant.tmp\nmv descendant.tmp descendant.pid\nwait\n").unwrap();
     let (mut broker, _writer) = start(format!("{launch}\n")).await;

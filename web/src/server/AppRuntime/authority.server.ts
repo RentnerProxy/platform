@@ -410,6 +410,10 @@ function secretContext(installationId: string, secretId: string): string {
     return `app-runtime-secret:v1:${installationId}:${secretId}`
 }
 
+function assertLiveSecretLease(expiresAt: Date): void {
+    if (expiresAt.getTime() <= Date.now()) throw new AppRuntimeAuthorityError('unauthorized')
+}
+
 export async function putAppRuntimeSecretInTransaction(
     transaction: AuthTransaction,
     identity: AppRuntimeIdentity,
@@ -418,9 +422,13 @@ export async function putAppRuntimeSecretInTransaction(
 ): Promise<void> {
     if (!appRecordId.safeParse(secretId).success || value.length === 0 || value.length > 16_384)
         throw new AppRuntimeAuthorityError('invalid_input')
-    await readAppRuntimeGeneration(transaction, identity, { allowPreparing: true, write: true })
+    const { leaseExpiresAt } = await readAppRuntimeGeneration(transaction, identity, {
+        allowPreparing: true,
+        write: true,
+    })
     const { installationId } = identity
     const { ciphertext, iv } = await encryptSecret(value, secretContext(installationId, secretId))
+    assertLiveSecretLease(leaseExpiresAt)
     await transaction
         .insert(appRuntimeSecrets)
         .values({ installationId, id: secretId, ciphertext, iv })
@@ -428,6 +436,7 @@ export async function putAppRuntimeSecretInTransaction(
             target: [appRuntimeSecrets.installationId, appRuntimeSecrets.id],
             set: { ciphertext, iv },
         })
+    assertLiveSecretLease(leaseExpiresAt)
 }
 
 export async function deleteAppRuntimeSecretInTransaction(
@@ -437,7 +446,10 @@ export async function deleteAppRuntimeSecretInTransaction(
 ): Promise<void> {
     if (!appRecordId.safeParse(secretId).success)
         throw new AppRuntimeAuthorityError('invalid_input')
-    await readAppRuntimeGeneration(transaction, identity, { allowPreparing: true, write: true })
+    const { leaseExpiresAt } = await readAppRuntimeGeneration(transaction, identity, {
+        allowPreparing: true,
+        write: true,
+    })
     await transaction
         .delete(appRuntimeSecrets)
         .where(
@@ -446,6 +458,7 @@ export async function deleteAppRuntimeSecretInTransaction(
                 eq(appRuntimeSecrets.id, secretId),
             ),
         )
+    assertLiveSecretLease(leaseExpiresAt)
 }
 
 export async function readAppRuntimeSecretInTransaction(
@@ -467,7 +480,6 @@ export async function readAppRuntimeSecretInTransaction(
         )
     if (!secret) throw new AppRuntimeAuthorityError('not_found')
     const value = await decryptSecret(secret, secretContext(installationId, secretId))
-    if (principal.expiresAt.getTime() <= Date.now())
-        throw new AppRuntimeAuthorityError('unauthorized')
+    assertLiveSecretLease(principal.expiresAt)
     return { value }
 }
