@@ -90,6 +90,7 @@ CREATE TABLE "rentnerproxy"."app_runtime_operations" (
 	"failure" jsonb,
 	"lease_token" uuid,
 	"lease_expires_at" timestamp with time zone,
+	"started_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "app_runtime_operations_state_check" CHECK ("rentnerproxy"."app_runtime_operations"."status" in ('accepted', 'running', 'cancelled', 'succeeded', 'failed') and
                 ("rentnerproxy"."app_runtime_operations"."status" = 'failed') = ("rentnerproxy"."app_runtime_operations"."failure" is not null) and

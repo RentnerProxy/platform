@@ -117,7 +117,11 @@ integrationTest(
         const { promise: heldReconcile, resolve: releaseReconcile } =
             Promise.withResolvers<ProxyRuntimeMutationStatus>()
         const firstWorker = createAppProxyOperationWorker(() => heldReconcile)
-        const recoveredWorker = createAppProxyOperationWorker(() => Promise.resolve('applied'))
+        let recoveredAttempts = 0
+        const recoveredWorker = createAppProxyOperationWorker(() => {
+            recoveredAttempts += 1
+            return Promise.resolve(recoveredAttempts === 1 ? 'pending' : 'applied')
+        })
 
         const [foreignPending] = await db
             .select({ id: appRuntimeOperations.id })
@@ -177,8 +181,27 @@ integrationTest(
             expect(await cancelAppOperation(owner, other.id, 'cancel', 'r7')).toEqual(cancelled)
             expect(await cancelAppOperation(owner, other.id, 'cancel', 'r8')).toEqual(cancelled)
 
+            // Simulate an operation that spent longer than the apply budget in the queue.
+            const [queued] = await db
+                .update(appRuntimeOperations)
+                .set({ createdAt: sql`clock_timestamp() - interval '5 minutes'` })
+                .where(eq(appRuntimeOperations.id, accepted.id))
+                .returning({
+                    createdAt: appRuntimeOperations.createdAt,
+                    startedAt: appRuntimeOperations.startedAt,
+                })
+            if (!queued) throw new Error('Expected queued operation')
+            expect(queued.startedAt).toBeNull()
             firstWorker.start()
             await waitForOperation(() => getAppOperation(owner, accepted.id), 'running')
+            const [running] = await db
+                .select({ startedAt: appRuntimeOperations.startedAt })
+                .from(appRuntimeOperations)
+                .where(eq(appRuntimeOperations.id, accepted.id))
+            if (!running?.startedAt) throw new Error('Expected durable confirmation start')
+            expect(running.startedAt.getTime() - queued.createdAt.getTime()).toBeGreaterThan(
+                120_000,
+            )
             await firstWorker.stop()
             releaseReconcile('pending')
             recoveredWorker.start()
@@ -186,6 +209,12 @@ integrationTest(
                 () => getAppOperation(owner, accepted.id),
                 'succeeded',
             )
+            expect(recoveredAttempts).toBe(2)
+            const [settled] = await db
+                .select({ startedAt: appRuntimeOperations.startedAt })
+                .from(appRuntimeOperations)
+                .where(eq(appRuntimeOperations.id, accepted.id))
+            expect(settled?.startedAt).toEqual(running.startedAt)
             expect(await updateAppOwnedProxyHost(owner, change, 'owned-change', 'r9')).toEqual(
                 result,
             )

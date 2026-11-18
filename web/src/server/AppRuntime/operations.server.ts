@@ -360,11 +360,16 @@ async function claimAppProxyOperation(
         const { id, installationId, generation, delegationId } = operation
         const leaseToken = randomUUID()
         const leaseExpiresAt = sql`clock_timestamp() + ${reconcileLeaseMs} * interval '1 millisecond'`
-        const claimed = { id, leaseToken, acceptedAt: operation.createdAt }
+        const claimed = { id, leaseToken }
         if (operation.status === 'running') {
             const [row] = await transaction
                 .update(appRuntimeOperations)
-                .set({ leaseToken, leaseExpiresAt })
+                .set({
+                    leaseToken,
+                    leaseExpiresAt,
+                    // Running operations from before this column get one confirmation window.
+                    startedAt: sql`coalesce(${appRuntimeOperations.startedAt}, clock_timestamp())`,
+                })
                 .where(
                     and(
                         eq(appRuntimeOperations.id, id),
@@ -412,6 +417,7 @@ async function claimAppProxyOperation(
                     .update(appRuntimeOperations)
                     .set({
                         status: 'running',
+                        startedAt: sql`clock_timestamp()`,
                         leaseToken,
                         leaseExpiresAt,
                         result: sql`${result}`,
@@ -461,22 +467,21 @@ async function reconcileClaim(
         state = await reconcileWhileRunning(reconcile, signal)
     } finally {
         const failure = failureFields(reconcileUnconfirmed)
-        const confirmationExpired =
-            state === 'pending' &&
-            !signal.aborted &&
-            claim.acceptedAt.getTime() + reconcileConfirmationMs <= Date.now()
         await getBackgroundDatabase('critical').transaction(async (transaction) => {
             await setAppRuntimeTransactionTimeout(transaction)
+            const confirmationExpired = sql`${appRuntimeOperations.startedAt}
+                <= statement_timestamp() - ${reconcileConfirmationMs} * interval '1 millisecond'`
             await transaction
                 .update(appRuntimeOperations)
                 .set({
                     leaseToken: null,
                     leaseExpiresAt: null,
                     ...(state === 'applied' && { status: 'succeeded' as const }),
-                    ...(confirmationExpired && {
-                        status: 'failed' as const,
-                        failure: sql`${failure}`,
-                    }),
+                    ...(state === 'pending' &&
+                        !signal.aborted && {
+                            status: sql`case when ${confirmationExpired} then 'failed' else 'running' end`,
+                            failure: sql`case when ${confirmationExpired} then ${failure}::jsonb end`,
+                        }),
                 })
                 .where(
                     and(

@@ -6,6 +6,8 @@ import {
     appRuntimeDelegations,
     appRuntimeEvents,
     appRuntimeGenerations,
+    appRuntimeGrants,
+    appRuntimeInstallations,
     appRuntimeSecrets,
     permissions,
     rolePermissions,
@@ -378,6 +380,265 @@ integrationTest(
                 }),
             ).rejects.toBe(rolledBack)
         } finally {
+            if (originalEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY
+            else process.env.APP_ENCRYPTION_KEY = originalEncryptionKey
+        }
+    },
+)
+
+integrationTest(
+    'v1 gateway commits scoped mutations and resumes only authorized events',
+    async () => {
+        const { db } = await import('@/db/index.ts')
+        const { createAppRuntimeGateway } = await import('@/server/AppRuntime/gateway.server.ts')
+        const { manageAppRuntime } = await import('@/server/AppRuntime/management.server.ts')
+        const { executeAppRuntimeCall } = await import('@/server/AppRuntime/services.server.ts')
+        const originalEncryptionKey = process.env.APP_ENCRYPTION_KEY
+        process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 63).toString('base64')
+
+        const identity = {
+            appId: 'test.gateway',
+            installationId: crypto.randomUUID(),
+            generation: 1,
+            uid: 40_453,
+        }
+        const shutdown = new AbortController()
+        const token = 'gateway-test-bridge'
+        const gateway = createAppRuntimeGateway(
+            token,
+            shutdown.signal,
+            executeAppRuntimeCall,
+            manageAppRuntime,
+        )
+        const send = (
+            path: string,
+            body?: unknown,
+            headers: Readonly<Record<string, string>> = {},
+            emptyPost = false,
+        ) =>
+            gateway(
+                new Request('http://app-api' + path, {
+                    method: body === undefined && !emptyPost ? 'GET' : 'POST',
+                    headers: {
+                        Authorization: 'Bearer ' + token,
+                        'X-App-Installation': identity.installationId,
+                        'X-App-Generation': String(identity.generation),
+                        'X-RentnerProxy-App-Uid': String(identity.uid),
+                        'X-RentnerProxy-App-Id': identity.appId,
+                        ...(body !== undefined && { 'Content-Type': 'application/json' }),
+                        ...headers,
+                    },
+                    ...(body !== undefined && { body: JSON.stringify(body) }),
+                }),
+            )
+        const control = (action: string, fields: Record<string, unknown> = {}) =>
+            send('/internal/v1/app-generations/' + action, { identity, ...fields })
+        const api = (path: string, body?: unknown, key?: string, emptyPost = false) =>
+            send('/platform/v1/' + path, body, key ? { 'Idempotency-Key': key } : {}, emptyPost)
+        const publish = { id: 'notifications.publish.v1', scope: 'installation' }
+        const manage = { id: 'proxy.hosts.manage-owned.v1', scope: 'ownedProxyHosts' }
+        const leaseExpiresAt = new Date(Date.now() + 60_000).toISOString()
+
+        try {
+            expect((await control('unknown')).status).toBe(404)
+            expect(
+                (await control('register', { leaseExpiresAt, capabilities: [publish, manage] }))
+                    .status,
+            ).toBe(204)
+            expect((await api('context')).status).toBe(200)
+            const authorization = { capability: publish, resourceId: identity.installationId }
+            expect((await api('authorization', authorization)).status).toBe(401)
+            const { events, audit, secret } = APP_RUNTIME_SUPPORT_CAPABILITIES
+            expect(
+                (
+                    await control('grants', {
+                        grants: [
+                            {
+                                capability: publish,
+                                resourceId: identity.installationId,
+                                allowService: true,
+                            },
+                            {
+                                capability: events,
+                                resourceId: identity.installationId,
+                                allowService: true,
+                            },
+                            {
+                                capability: audit,
+                                resourceId: identity.installationId,
+                                allowService: true,
+                            },
+                            {
+                                capability: secret,
+                                resourceId: 'locally-assigned',
+                                allowService: true,
+                            },
+                            { capability: manage, resourceId: 'app-host', allowService: true },
+                        ],
+                    })
+                ).status,
+            ).toBe(204)
+            expect((await control('activate', { leaseExpiresAt })).status).toBe(204)
+            expect((await control('renew', { leaseExpiresAt })).status).toBe(204)
+            expect(await (await api('authorization', authorization)).json()).toEqual({
+                allowed: true,
+            })
+            expect((await api('proxy-hosts/query', { limit: 0 })).status).toBe(400)
+            expect(await (await api('proxy-hosts/query', { limit: 20 })).json()).toEqual({
+                hosts: [],
+            })
+            expect((await api('providers/unregistered')).status).toBe(404)
+            expect((await api('secrets/foreign')).status).toBe(404)
+            expect(
+                (
+                    await control('put-secret', {
+                        secretId: 'locally-assigned',
+                        value: 'fixture-value',
+                    })
+                ).status,
+            ).toBe(204)
+            expect(await (await api('secrets/locally-assigned')).json()).toEqual({
+                value: 'fixture-value',
+            })
+            expect((await control('delete-secret', { secretId: 'locally-assigned' })).status).toBe(
+                204,
+            )
+            expect((await api('secrets/locally-assigned')).status).toBe(404)
+
+            const update = await api(
+                'proxy-hosts/owned',
+                {
+                    action: 'upsert',
+                    hostId: 'app-host',
+                    expectedRevision: null,
+                    hostname: 'runtime-gateway.test',
+                    upstream: { scheme: 'http', address: '127.0.0.1', port: 8080 },
+                },
+                'change-one',
+            )
+            expect(update.status).toBe(202)
+            const operation: unknown = await update.json()
+            if (
+                typeof operation !== 'object' ||
+                operation === null ||
+                !('id' in operation) ||
+                typeof operation.id !== 'string'
+            )
+                throw new Error('Missing operation identity')
+            expect(await (await api('operations/' + operation.id)).json()).toMatchObject({
+                status: 'accepted',
+            })
+            const cancel = await api(
+                'operations/' + operation.id + '/cancel',
+                undefined,
+                'cancel-one',
+                true,
+            )
+            expect(cancel.status).toBe(202)
+            expect(await cancel.json()).toMatchObject({ status: 'cancelled' })
+
+            const notification = {
+                category: 'fixture',
+                severity: 'warning',
+                title: 'Fixture',
+                message: 'One',
+            }
+            expect((await api('notifications', notification, 'notice-one')).status).toBe(204)
+            expect((await api('notifications', notification, 'notice-one')).status).toBe(204)
+            expect(
+                (await api('notifications', { ...notification, message: 'Two' }, 'notice-one'))
+                    .status,
+            ).toBe(409)
+            expect(
+                (
+                    await api(
+                        'audit-events',
+                        { action: 'validate', outcome: 'succeeded' },
+                        'audit-one',
+                    )
+                ).status,
+            ).toBe(204)
+
+            const stream = await api('events')
+            expect(stream.headers.get('Content-Type')).toBe('text/event-stream')
+            const reader = stream.body?.getReader()
+            if (!reader) throw new Error('Missing app event stream')
+            try {
+                const decoder = new TextDecoder()
+                expect(decoder.decode((await reader.read()).value)).toContain(': connected')
+                const firstPage = decoder.decode((await reader.read()).value)
+                expect(firstPage.match(/appNotificationPublished/gu)).toHaveLength(1)
+                expect(firstPage.match(/appAuditRecorded/gu)).toHaveLength(1)
+            } finally {
+                await reader.cancel()
+            }
+            expect((await control('revoke')).status).toBe(204)
+            expect((await api('events')).status).toBe(401)
+            const replacement = { ...identity, generation: 2 }
+            expect(
+                (
+                    await control('register', {
+                        identity: replacement,
+                        leaseExpiresAt,
+                        capabilities: [publish, manage],
+                    })
+                ).status,
+            ).toBe(204)
+            expect(
+                (await control('activate', { identity: replacement, leaseExpiresAt })).status,
+            ).toBe(204)
+            expect(
+                (
+                    await control('put-secret', {
+                        identity: replacement,
+                        secretId: 'locally-assigned',
+                        value: 'replacement-value',
+                    })
+                ).status,
+            ).toBe(204)
+            expect(
+                (
+                    await control('put-secret', {
+                        secretId: 'locally-assigned',
+                        value: 'stale-update',
+                    })
+                ).status,
+            ).toBe(401)
+            expect((await control('delete-secret', { secretId: 'locally-assigned' })).status).toBe(
+                401,
+            )
+            expect(
+                await (
+                    await send('/platform/v1/secrets/locally-assigned', undefined, {
+                        'X-App-Generation': '2',
+                    })
+                ).json(),
+            ).toEqual({ value: 'replacement-value' })
+            expect(
+                (
+                    await control('delete-secret', {
+                        identity: replacement,
+                        secretId: 'locally-assigned',
+                    })
+                ).status,
+            ).toBe(204)
+        } finally {
+            shutdown.abort()
+            await db.transaction(async (tx) => {
+                const { installationId } = identity
+                await tx
+                    .delete(appRuntimeEvents)
+                    .where(eq(appRuntimeEvents.installationId, installationId))
+                await tx
+                    .delete(appRuntimeGrants)
+                    .where(eq(appRuntimeGrants.installationId, installationId))
+                await tx
+                    .delete(appRuntimeGenerations)
+                    .where(eq(appRuntimeGenerations.installationId, installationId))
+                await tx
+                    .delete(appRuntimeInstallations)
+                    .where(eq(appRuntimeInstallations.id, installationId))
+            })
             if (originalEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY
             else process.env.APP_ENCRYPTION_KEY = originalEncryptionKey
         }

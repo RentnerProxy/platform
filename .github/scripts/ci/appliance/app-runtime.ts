@@ -30,6 +30,20 @@ export async function verifyApplianceAppRuntime(context: ApplianceManagementAndP
             65_000,
         )
         context.passed('native app IPC, isolated database and generation revocation')
+    } catch (error) {
+        const stage = await context
+            .command([
+                ...context.compose,
+                'exec',
+                '-T',
+                'rentnerproxy',
+                'cat',
+                '/var/lib/rentnerproxy/apps/20991/data/fixture-progress',
+            ])
+            .catch(() => '')
+        if (/^failed at (?:preparation|activation|database|notification|revocation)$/u.test(stage))
+            console.error('Native app fixture ' + stage)
+        throw error
     } finally {
         await context.command([
             ...context.compose,

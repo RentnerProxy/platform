@@ -1,5 +1,5 @@
 {
-  "id": "74773ad3-0d25-4c44-8be9-b61556c64bf2",
+  "id": "ed862c9a-6782-49ac-8c17-3b80f3f387a6",
   "prevId": "df6033c4-e46b-419a-9519-4c4e8a076644",
   "version": "7",
   "dialect": "postgresql",
@@ -1020,6 +1020,12 @@
         },
         "lease_expires_at": {
           "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

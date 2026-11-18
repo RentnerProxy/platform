@@ -36,5 +36,4 @@ export type AppOperationPayload = AppOwnedProxyHostChange
 export interface AppOperationWorkerClaim {
     readonly id: string
     readonly leaseToken: string
-    readonly acceptedAt: Date
 }

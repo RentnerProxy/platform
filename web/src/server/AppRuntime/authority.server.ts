@@ -89,9 +89,9 @@ export async function lockAppRuntimeInstallation(
 async function readAppRuntimeGeneration(
     transaction: AuthTransaction,
     identity: AppRuntimeIdentity,
-    allowPreparing = false,
+    { allowPreparing = false, write = false } = {},
 ) {
-    const installation = await lockAppRuntimeInstallation(transaction, identity)
+    const installation = await lockAppRuntimeInstallation(transaction, identity, write)
     const [generation] = await transaction
         .select()
         .from(appRuntimeGenerations)
@@ -147,7 +147,9 @@ export async function readAppRuntimeContextInTransaction(
     transaction: AuthTransaction,
     identity: AppRuntimeIdentity,
 ) {
-    const generation = await readAppRuntimeGeneration(transaction, identity, true)
+    const generation = await readAppRuntimeGeneration(transaction, identity, {
+        allowPreparing: true,
+    })
     const grants = await readGrants(transaction, generation)
     const capabilities = new Map(
         grants
@@ -406,7 +408,7 @@ export async function putAppRuntimeSecretInTransaction(
 ): Promise<void> {
     if (!appRecordId.safeParse(secretId).success || value.length === 0 || value.length > 16_384)
         throw new AppRuntimeAuthorityError('invalid_input')
-    await lockAppRuntimeInstallation(transaction, identity, true)
+    await readAppRuntimeGeneration(transaction, identity, { allowPreparing: true, write: true })
     const { installationId } = identity
     const { ciphertext, iv } = await encryptSecret(value, secretContext(installationId, secretId))
     await transaction
@@ -423,7 +425,9 @@ export async function deleteAppRuntimeSecretInTransaction(
     identity: AppRuntimeIdentity,
     secretId: string,
 ): Promise<void> {
-    await lockAppRuntimeInstallation(transaction, identity, true)
+    if (!appRecordId.safeParse(secretId).success)
+        throw new AppRuntimeAuthorityError('invalid_input')
+    await readAppRuntimeGeneration(transaction, identity, { allowPreparing: true, write: true })
     await transaction
         .delete(appRuntimeSecrets)
         .where(

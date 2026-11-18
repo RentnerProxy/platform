@@ -1,6 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ ${1:-} == --privileged-app-ipc ]]; then
+    target_directory=$(cargo metadata --manifest-path core/Cargo.toml --no-deps --format-version 1 | jq -er .target_directory)
+    # show-env does not append cargo llvm-cov test's target subdirectory.
+    export CARGO_TARGET_DIR="$target_directory/llvm-cov-target"
+    coverage_environment=$(cargo llvm-cov show-env --manifest-path core/Cargo.toml --sh)
+    eval "$coverage_environment"
+    artifacts=$(cargo test --locked --manifest-path core/Cargo.toml --all-features --no-run --message-format=json)
+    ipc_tests=$(jq -r 'select(.reason == "compiler-artifact" and .target.kind == ["lib"] and .profile.test) | .executable // empty' <<< "$artifacts")
+    controller=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "rentnerproxy-controller" and .target.kind == ["bin"] and (.profile.test | not)) | .executable // empty' <<< "$artifacts")
+    test -x "$ipc_tests"
+    test -x "$controller"
+    profiles=$(mktemp -d)
+    trap 'rm -rf -- "$profiles"' EXIT
+
+    # Run only the app IPC fixtures that need real UID changes. The container
+    # receives test executables and a profile directory, with no network or source tree.
+    docker run --rm --network none --read-only --user 0:0 \
+        --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add KILL --cap-add SETGID --cap-add SETUID \
+        --security-opt no-new-privileges \
+        --tmpfs /run:rw,exec,mode=0755,size=512m \
+        --mount "type=bind,source=$ipc_tests,target=/ipc-tests,readonly" \
+        --mount "type=bind,source=$controller,target=/controller,readonly" \
+        --mount "type=bind,source=$profiles,target=/profiles" \
+        --env LLVM_PROFILE_FILE=/profiles/app-ipc-%p-%m.profraw \
+        --env RENTNERPROXY_TEST_CONTROLLER=/controller \
+        mirror.gcr.io/library/ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8 \
+        /ipc-tests --ignored app_ipc::tests::privileged_
+    cp -- "$profiles"/*.profraw "$(dirname "$LLVM_PROFILE_FILE")/"
+    exit
+fi
+
 report_directory=core/target/coverage
 mkdir -p "$report_directory"
 rm -f "$report_directory/groups.json" "$report_directory/summary.json"

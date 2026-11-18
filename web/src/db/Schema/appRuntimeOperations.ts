@@ -51,6 +51,7 @@ export const appRuntimeOperations = rentnerProxySchema.table(
         failure: jsonb('failure').$type<AppOperationFailure>(),
         leaseToken: uuid('lease_token'),
         leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+        startedAt: timestamp('started_at', { withTimezone: true }),
         createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     },
     (table) => [

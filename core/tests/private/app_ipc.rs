@@ -419,10 +419,9 @@ async fn closing_generation_cancels_event_stream_in_both_directions() {
 }
 
 #[tokio::test]
+#[ignore = "requires root inside the isolated IPC test container"]
 async fn privileged_generation_launches_restricted_child_and_revokes_listener() {
-    if env::var_os("RENTNERPROXY_APP_BOOTSTRAP_FD").is_some() || uid() != 0 {
-        return;
-    }
+    assert_eq!(uid(), 0);
     let scratch = Scratch::create(Path::new("/run"));
     fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o711)).unwrap();
     let fixture = scratch.path("fixture-binary");
@@ -499,6 +498,115 @@ async fn privileged_generation_launches_restricted_child_and_revokes_listener() 
         .unwrap();
     assert!(UnixStream::connect(core).await.is_err());
     backend_task.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires root and a private /run inside the isolated IPC test container"]
+async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
+    use std::process::Stdio;
+    use tokio::{io::AsyncWriteExt, process::Command};
+
+    assert_eq!(uid(), 0);
+    let controller = env::var_os("RENTNERPROXY_TEST_CONTROLLER").unwrap();
+    let scratch = Scratch::create(Path::new("/run"));
+    fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o711)).unwrap();
+    let executable = scratch.path("app");
+    fs::write(&executable, "#!/bin/sh\ncat > descriptor.json\n").unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o555)).unwrap();
+    let data = scratch.path("data");
+    fs::create_dir(&data).unwrap();
+    unix_fs::chown(&data, Some(TEST_UID), Some(TEST_UID)).unwrap();
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).unwrap();
+    let database = data.join("database-url");
+    fs::write(&database, "synthetic-database-url").unwrap();
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o400)).unwrap();
+    unix_fs::chown(&database, Some(TEST_UID), Some(TEST_UID)).unwrap();
+    let token = scratch.path("bridge-token");
+    fs::write(&token, "manager-test-token\n").unwrap();
+    fs::set_permissions(&token, fs::Permissions::from_mode(0o400)).unwrap();
+    let runtime = PathBuf::from("/run/rentnerproxy");
+    fs::create_dir(&runtime).unwrap();
+    let _runtime = Scratch(runtime);
+
+    let launch = json!({
+        "appId": "test.native", "installationId": "installation", "generation": 10,
+        "uid": TEST_UID, "gid": TEST_UID, "executable": executable, "dataDirectory": data,
+        "databaseUrlFile": database, "leaseSeconds": 15, "runtimeProfile": PROFILE,
+        "appProtocol": ">=1.0.0 <2.0.0", "platformApi": ">=1.0.0 <1.0.1", "uiBridge": ">=1.0.0 <2.0.0",
+    });
+    let send = async |input: String| {
+        let mut child = Command::new(&controller)
+            .arg("--app-ipc")
+            .env("RENTNERPROXY_CONTROLLER_TOKEN_FILE", &token)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut writer = child.stdin.take().unwrap();
+        writer.write_all(input.as_bytes()).await.unwrap();
+        // Hold the manager pipe until the child exits rather than revoking the launch.
+        let output = timeout(Duration::from_secs(8), child.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        String::from_utf8(output.stderr).unwrap()
+    };
+    assert!(
+        send("{}\n".into())
+            .await
+            .contains("Invalid manager launch request")
+    );
+    assert!(
+        send(format!("{launch}\nextra"))
+            .await
+            .contains("Invalid manager launch request")
+    );
+    let mut incompatible = launch.clone();
+    incompatible["uiBridge"] = json!(">=1.2.0 <2.0.0");
+    assert!(
+        send(format!("{incompatible}\n"))
+            .await
+            .contains("Unsupported app runtime profile or protocol range")
+    );
+    let mut invalid_uid = launch.clone();
+    invalid_uid["gid"] = json!(TEST_UID + 1);
+    assert!(
+        send(format!("{invalid_uid}\n"))
+            .await
+            .contains("Invalid app launch identity or lease")
+    );
+    let linked = scratch.path("linked-data");
+    unix_fs::symlink(&data, &linked).unwrap();
+    let mut linked_launch = launch.clone();
+    linked_launch["dataDirectory"] = json!(linked);
+    assert!(
+        send(format!("{linked_launch}\n"))
+            .await
+            .contains("Unsafe application runtime path or ownership")
+    );
+    fs::set_permissions(&token, fs::Permissions::from_mode(0o444)).unwrap();
+    assert!(
+        send(format!("{launch}\n"))
+            .await
+            .contains("Unsafe protected controller token file")
+    );
+    fs::set_permissions(&token, fs::Permissions::from_mode(0o400)).unwrap();
+
+    assert!(
+        send(format!("{launch}\n"))
+            .await
+            .contains("Native app exited before readiness")
+    );
+    let descriptor: Value =
+        serde_json::from_slice(&fs::read(data.join("descriptor.json")).unwrap()).unwrap();
+    assert_eq!(descriptor["appId"], "test.native");
+    assert_eq!(descriptor["generation"], 10);
+    assert_eq!(descriptor["versions"]["uiBridge"], VERSION);
+    assert!(!Path::new(descriptor["coreSocket"].as_str().unwrap()).exists());
 }
 
 #[tokio::test]

@@ -98,11 +98,14 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
         const local = new Bun.SQL({ url, connectionTimeout: 2 })
         const foreign = new Bun.SQL({ url, database: 'rentnerproxy', connectionTimeout: 2 })
         try {
-            assert.deepEqual(await local`SELECT current_database() AS name`, [
-                { name: 'rp_app_20991' },
-            ])
-            await assert.rejects(local`CREATE TABLE app.fixture_forbidden (id bigint)`)
-            await assert.rejects(foreign`SELECT current_database()`)
+            const [database] = await local<{ name: string }[]>`SELECT current_database() AS name`
+            assert.equal(database?.name, 'rp_app_20991')
+            await assert.rejects(async () => {
+                await local`CREATE TABLE app.fixture_forbidden (id bigint)`
+            })
+            await assert.rejects(async () => {
+                await foreign`SELECT current_database()`
+            })
         } finally {
             await Promise.allSettled([local.close(), foreign.close()])
         }
