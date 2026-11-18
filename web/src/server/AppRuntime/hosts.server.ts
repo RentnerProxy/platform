@@ -392,6 +392,8 @@ export async function probeAppProxyUpstream(
         return authorizeProbeSelection(transaction, credentials, hostId)
     })
     signal?.throwIfAborted()
+    if (selection.expiresAt.getTime() <= Date.now())
+        throw new AppRuntimeAuthorityError('unauthorized')
     if (!selection.enabled) return { outcome: 'unreachable' }
     // The controller admits native work with a minimum 1s budget.
     if (timeoutMs < 1_000) return { outcome: 'timedOut' }
@@ -413,8 +415,8 @@ export async function probeAppProxyUpstream(
     signal?.throwIfAborted()
     const before = await readProbeContext(credentials, hostId)
     signal?.throwIfAborted()
-    if (!before.context.enabled) return { outcome: 'unreachable' }
     if (before.expiresAt.getTime() <= Date.now()) throw new AppRuntimeAuthorityError('unauthorized')
+    if (!before.context.enabled) return { outcome: 'unreachable' }
     const timeout = AbortSignal.timeout(timeoutMs)
     const probeSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
     const request = { ...before.input, expectedRevision: before.context.revision }
@@ -426,6 +428,8 @@ export async function probeAppProxyUpstream(
         signal?.throwIfAborted()
         const after = await readProbeContext(credentials, hostId)
         signal?.throwIfAborted()
+        if (after.expiresAt.getTime() <= Date.now())
+            throw new AppRuntimeAuthorityError('unauthorized')
         if (
             !after.context.enabled ||
             after.context.proof !== before.context.proof ||

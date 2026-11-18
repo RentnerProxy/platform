@@ -2,6 +2,7 @@ import '@tanstack/react-start/server-only'
 
 import { lstat, unlink } from 'node:fs/promises'
 import { getControllerToken } from '@/server/env.server.ts'
+import { settleWorkerTasks } from '@/server/Foundation/worker-lifecycle.server.ts'
 import { appRpcLimits } from './contract.ts'
 import { createAppRuntimeGateway } from './gateway.server.ts'
 import { manageAppRuntime } from './management.server.ts'
@@ -41,9 +42,12 @@ export function createAppRuntimeWorker() {
             const server = Bun.serve({
                 unix: socketPath,
                 maxRequestBodySize: appRpcLimits.jsonBytes,
-                fetch(request, listener) {
+                async fetch(request, listener) {
                     listener.timeout(request, 15)
-                    return gateway(request)
+                    const response = await gateway(request)
+                    if (response.ok && response.headers.get('Content-Type') === 'text/event-stream')
+                        listener.timeout(request, 0)
+                    return response
                 },
             })
             stopServer = async () => {
@@ -54,7 +58,7 @@ export function createAppRuntimeWorker() {
         },
         async stop() {
             shutdown.abort()
-            await Promise.all([stopServer?.(), operationWorker.stop()])
+            await settleWorkerTasks([stopServer?.() ?? null, operationWorker.stop()])
         },
     }
 }

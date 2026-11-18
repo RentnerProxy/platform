@@ -9,6 +9,7 @@ import {
     appRuntimeGenerations,
     appRuntimeGrants,
     appRuntimeInstallations,
+    appRuntimePendingSecrets,
     appRuntimeRolePermissions,
     appRuntimeSecrets,
     roles,
@@ -114,15 +115,17 @@ async function readGrants(
     transaction: AuthTransaction,
     generation: typeof appRuntimeGenerations.$inferSelect,
 ) {
-    const rows = await transaction
-        .select()
-        .from(appRuntimeGrants)
-        .where(eq(appRuntimeGrants.installationId, generation.installationId))
-        .orderBy(
-            asc(appRuntimeGrants.capabilityId),
-            asc(appRuntimeGrants.scope),
-            asc(appRuntimeGrants.resourceId),
-        )
+    const rows =
+        generation.pendingGrants ??
+        (await transaction
+            .select()
+            .from(appRuntimeGrants)
+            .where(eq(appRuntimeGrants.installationId, generation.installationId))
+            .orderBy(
+                asc(appRuntimeGrants.capabilityId),
+                asc(appRuntimeGrants.scope),
+                asc(appRuntimeGrants.resourceId),
+            ))
     return rows.flatMap(({ capabilityId, scope, resourceId, allowService, permissionKey }) => {
         const capability = { id: capabilityId, scope }
         if (
@@ -414,6 +417,25 @@ function assertLiveSecretLease(expiresAt: Date): void {
     if (expiresAt.getTime() <= Date.now()) throw new AppRuntimeAuthorityError('unauthorized')
 }
 
+async function stageAppRuntimeSecretChange(
+    transaction: AuthTransaction,
+    { installationId, generation }: AppRuntimeIdentity,
+    id: string,
+    envelope: Pick<typeof appRuntimePendingSecrets.$inferSelect, 'ciphertext' | 'iv'>,
+): Promise<void> {
+    await transaction
+        .insert(appRuntimePendingSecrets)
+        .values({ installationId, generation, id, ...envelope })
+        .onConflictDoUpdate({
+            target: [
+                appRuntimePendingSecrets.installationId,
+                appRuntimePendingSecrets.generation,
+                appRuntimePendingSecrets.id,
+            ],
+            set: envelope,
+        })
+}
+
 export async function putAppRuntimeSecretInTransaction(
     transaction: AuthTransaction,
     identity: AppRuntimeIdentity,
@@ -422,20 +444,23 @@ export async function putAppRuntimeSecretInTransaction(
 ): Promise<void> {
     if (!appRecordId.safeParse(secretId).success || value.length === 0 || value.length > 16_384)
         throw new AppRuntimeAuthorityError('invalid_input')
-    const { leaseExpiresAt } = await readAppRuntimeGeneration(transaction, identity, {
+    const { leaseExpiresAt, state } = await readAppRuntimeGeneration(transaction, identity, {
         allowPreparing: true,
         write: true,
     })
     const { installationId } = identity
     const { ciphertext, iv } = await encryptSecret(value, secretContext(installationId, secretId))
     assertLiveSecretLease(leaseExpiresAt)
-    await transaction
-        .insert(appRuntimeSecrets)
-        .values({ installationId, id: secretId, ciphertext, iv })
-        .onConflictDoUpdate({
-            target: [appRuntimeSecrets.installationId, appRuntimeSecrets.id],
-            set: { ciphertext, iv },
-        })
+    if (state === 'preparing')
+        await stageAppRuntimeSecretChange(transaction, identity, secretId, { ciphertext, iv })
+    else
+        await transaction
+            .insert(appRuntimeSecrets)
+            .values({ installationId, id: secretId, ciphertext, iv })
+            .onConflictDoUpdate({
+                target: [appRuntimeSecrets.installationId, appRuntimeSecrets.id],
+                set: { ciphertext, iv },
+            })
     assertLiveSecretLease(leaseExpiresAt)
 }
 
@@ -446,18 +471,24 @@ export async function deleteAppRuntimeSecretInTransaction(
 ): Promise<void> {
     if (!appRecordId.safeParse(secretId).success)
         throw new AppRuntimeAuthorityError('invalid_input')
-    const { leaseExpiresAt } = await readAppRuntimeGeneration(transaction, identity, {
+    const { leaseExpiresAt, state } = await readAppRuntimeGeneration(transaction, identity, {
         allowPreparing: true,
         write: true,
     })
-    await transaction
-        .delete(appRuntimeSecrets)
-        .where(
-            and(
-                eq(appRuntimeSecrets.installationId, identity.installationId),
-                eq(appRuntimeSecrets.id, secretId),
-            ),
-        )
+    if (state === 'preparing')
+        await stageAppRuntimeSecretChange(transaction, identity, secretId, {
+            ciphertext: null,
+            iv: null,
+        })
+    else
+        await transaction
+            .delete(appRuntimeSecrets)
+            .where(
+                and(
+                    eq(appRuntimeSecrets.installationId, identity.installationId),
+                    eq(appRuntimeSecrets.id, secretId),
+                ),
+            )
     assertLiveSecretLease(leaseExpiresAt)
 }
 

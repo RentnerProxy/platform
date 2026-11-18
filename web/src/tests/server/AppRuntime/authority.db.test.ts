@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { count, inArray, eq } from 'drizzle-orm'
+import { count, inArray, eq, sql } from 'drizzle-orm'
 
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import {
@@ -481,6 +481,16 @@ integrationTest(
         const publish = { id: 'notifications.publish.v1', scope: 'installation' }
         const manage = { id: 'proxy.hosts.manage-owned.v1', scope: 'ownedProxyHosts' }
         const leaseExpiresAt = new Date(Date.now() + 60_000).toISOString()
+        const assignedSecret = 'locally-assigned'
+        const retiredSecret = 'retired-on-activation'
+        const putSecret = (secretId: string, value: string, target = identity) =>
+            control('put-secret', { identity: target, secretId, value })
+        const deleteSecret = (secretId: string, target = identity) =>
+            control('delete-secret', { identity: target, secretId })
+        const readSecret = (secretId: string, target = identity) =>
+            send('/platform/v1/secrets/' + secretId, undefined, {
+                'X-App-Generation': String(target.generation),
+            })
 
         try {
             expect((await control('unknown')).status).toBe(404)
@@ -492,6 +502,11 @@ integrationTest(
             const authorization = { capability: publish, resourceId: identity.installationId }
             expect((await api('authorization', authorization)).status).toBe(401)
             const { events, audit, secret } = APP_RUNTIME_SUPPORT_CAPABILITIES
+            const secretGrants = [assignedSecret, retiredSecret].map((resourceId) => ({
+                capability: secret,
+                resourceId,
+                allowService: true,
+            }))
             expect(
                 (
                     await control('grants', {
@@ -511,11 +526,7 @@ integrationTest(
                                 resourceId: identity.installationId,
                                 allowService: true,
                             },
-                            {
-                                capability: secret,
-                                resourceId: 'locally-assigned',
-                                allowService: true,
-                            },
+                            ...secretGrants,
                             { capability: manage, resourceId: 'app-host', allowService: true },
                         ],
                     })
@@ -532,21 +543,56 @@ integrationTest(
             })
             expect((await api('providers/unregistered')).status).toBe(404)
             expect((await api('secrets/foreign')).status).toBe(404)
+            expect((await putSecret(assignedSecret, 'fixture-value')).status).toBe(204)
+            expect(await (await readSecret(assignedSecret)).json()).toEqual({
+                value: 'fixture-value',
+            })
+            expect((await deleteSecret(assignedSecret)).status).toBe(204)
+            expect((await readSecret(assignedSecret)).status).toBe(404)
+            expect((await putSecret(assignedSecret, 'active-value')).status).toBe(204)
+            expect((await putSecret(retiredSecret, 'retired-value')).status).toBe(204)
+
+            const abandoned = { ...identity, generation: 2 }
             expect(
                 (
-                    await control('put-secret', {
-                        secretId: 'locally-assigned',
-                        value: 'fixture-value',
+                    await control('register', {
+                        identity: abandoned,
+                        leaseExpiresAt,
+                        capabilities: [publish],
                     })
                 ).status,
             ).toBe(204)
-            expect(await (await api('secrets/locally-assigned')).json()).toEqual({
-                value: 'fixture-value',
+            expect((await control('grants', { identity: abandoned, grants: [] })).status).toBe(204)
+            expect((await putSecret(assignedSecret, 'abandoned-value', abandoned)).status).toBe(204)
+            expect((await deleteSecret(retiredSecret, abandoned)).status).toBe(204)
+            const abandonedContext = await send('/platform/v1/context', undefined, {
+                'X-App-Generation': String(abandoned.generation),
             })
-            expect((await control('delete-secret', { secretId: 'locally-assigned' })).status).toBe(
-                204,
-            )
-            expect((await api('secrets/locally-assigned')).status).toBe(404)
+            expect(await abandonedContext.json()).toMatchObject({ capabilities: [] })
+            expect(await (await api('authorization', authorization)).json()).toEqual({
+                allowed: true,
+            })
+            expect(await (await readSecret(assignedSecret)).json()).toEqual({
+                value: 'active-value',
+            })
+            expect(await (await readSecret(retiredSecret)).json()).toEqual({
+                value: 'retired-value',
+            })
+            expect(
+                (
+                    await control('activate', {
+                        identity: abandoned,
+                        leaseExpiresAt: new Date(0).toISOString(),
+                    })
+                ).status,
+            ).toBe(400)
+            expect((await control('revoke', { identity: abandoned })).status).toBe(204)
+            expect(await (await api('authorization', authorization)).json()).toEqual({
+                allowed: true,
+            })
+            expect(await (await readSecret(assignedSecret)).json()).toEqual({
+                value: 'active-value',
+            })
 
             const update = await api(
                 'proxy-hosts/owned',
@@ -601,6 +647,11 @@ integrationTest(
                     )
                 ).status,
             ).toBe(204)
+            const payloads = await db
+                .select({ kind: sql<string>`jsonb_typeof(${appRuntimeEvents.payload})` })
+                .from(appRuntimeEvents)
+                .where(eq(appRuntimeEvents.installationId, identity.installationId))
+            expect(payloads.map(({ kind }) => kind)).toEqual(['object', 'object'])
 
             const stream = await api('events')
             expect(stream.headers.get('Content-Type')).toBe('text/event-stream')
@@ -619,7 +670,7 @@ integrationTest(
                 await reader.cancel()
             }
             expect((await api('events')).status).toBe(401)
-            const replacement = { ...identity, generation: 2 }
+            const replacement = { ...identity, generation: 3 }
             expect(
                 (
                     await control('register', {
@@ -630,43 +681,29 @@ integrationTest(
                 ).status,
             ).toBe(204)
             expect(
+                (await control('grants', { identity: replacement, grants: secretGrants })).status,
+            ).toBe(204)
+            expect((await putSecret(assignedSecret, 'replacement-value', replacement)).status).toBe(
+                204,
+            )
+            expect((await deleteSecret(retiredSecret, replacement)).status).toBe(204)
+            expect(
                 (await control('activate', { identity: replacement, leaseExpiresAt })).status,
             ).toBe(204)
-            expect(
-                (
-                    await control('put-secret', {
-                        identity: replacement,
-                        secretId: 'locally-assigned',
-                        value: 'replacement-value',
-                    })
-                ).status,
-            ).toBe(204)
-            expect(
-                (
-                    await control('put-secret', {
-                        secretId: 'locally-assigned',
-                        value: 'stale-update',
-                    })
-                ).status,
-            ).toBe(401)
-            expect((await control('delete-secret', { secretId: 'locally-assigned' })).status).toBe(
-                401,
+            expect((await putSecret(assignedSecret, 'stale-update')).status).toBe(401)
+            expect((await deleteSecret(assignedSecret)).status).toBe(401)
+            expect(await (await readSecret(assignedSecret, replacement)).json()).toEqual({
+                value: 'replacement-value',
+            })
+            expect((await readSecret(retiredSecret, replacement)).status).toBe(404)
+            const replacementAuthorization = await send(
+                '/platform/v1/authorization',
+                authorization,
+                {
+                    'X-App-Generation': String(replacement.generation),
+                },
             )
-            expect(
-                await (
-                    await send('/platform/v1/secrets/locally-assigned', undefined, {
-                        'X-App-Generation': '2',
-                    })
-                ).json(),
-            ).toEqual({ value: 'replacement-value' })
-            expect(
-                (
-                    await control('delete-secret', {
-                        identity: replacement,
-                        secretId: 'locally-assigned',
-                    })
-                ).status,
-            ).toBe(204)
+            expect(await replacementAuthorization.json()).toEqual({ allowed: false })
         } finally {
             shutdown.abort()
             if (originalEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY
@@ -679,6 +716,9 @@ integrationTest(
                 await tx
                     .delete(appRuntimeGrants)
                     .where(eq(appRuntimeGrants.installationId, installationId))
+                await tx
+                    .delete(appRuntimeSecrets)
+                    .where(eq(appRuntimeSecrets.installationId, installationId))
                 await tx
                     .delete(appRuntimeGenerations)
                     .where(eq(appRuntimeGenerations.installationId, installationId))

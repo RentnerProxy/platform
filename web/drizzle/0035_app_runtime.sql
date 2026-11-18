@@ -34,6 +34,7 @@ CREATE TABLE "rentnerproxy"."app_runtime_generations" (
 	"capabilities" jsonb NOT NULL,
 	"permission_keys" jsonb NOT NULL,
 	"has_ui" boolean DEFAULT false NOT NULL,
+	"pending_grants" jsonb,
 	CONSTRAINT "app_runtime_generations_installation_id_generation_pk" PRIMARY KEY("installation_id","generation"),
 	CONSTRAINT "app_runtime_generations_number_check" CHECK ("rentnerproxy"."app_runtime_generations"."generation" between 1 and 9007199254740991),
 	CONSTRAINT "app_runtime_generations_state_check" CHECK ("rentnerproxy"."app_runtime_generations"."state" in ('preparing', 'active', 'revoked'))
@@ -106,6 +107,17 @@ CREATE TABLE "rentnerproxy"."app_runtime_owned_proxy_hosts" (
 	CONSTRAINT "app_runtime_owned_proxy_hosts_proxy_host_id_unique" UNIQUE("proxy_host_id")
 );
 --> statement-breakpoint
+CREATE TABLE "rentnerproxy"."app_runtime_pending_secrets" (
+	"installation_id" varchar(64) NOT NULL,
+	"generation" bigint NOT NULL,
+	"id" varchar(64) NOT NULL,
+	"ciphertext" "bytea",
+	"iv" "bytea",
+	CONSTRAINT "app_runtime_pending_secrets_installation_id_generation_id_pk" PRIMARY KEY("installation_id","generation","id"),
+	CONSTRAINT "app_runtime_pending_secrets_envelope_check" CHECK (("rentnerproxy"."app_runtime_pending_secrets"."ciphertext" is null and "rentnerproxy"."app_runtime_pending_secrets"."iv" is null) or
+                ("rentnerproxy"."app_runtime_pending_secrets"."ciphertext" is not null and "rentnerproxy"."app_runtime_pending_secrets"."iv" is not null and octet_length("rentnerproxy"."app_runtime_pending_secrets"."iv") = 12))
+);
+--> statement-breakpoint
 CREATE TABLE "rentnerproxy"."app_runtime_role_permissions" (
 	"installation_id" varchar(64) NOT NULL,
 	"role_id" uuid NOT NULL,
@@ -133,6 +145,7 @@ ALTER TABLE "rentnerproxy"."app_runtime_operation_requests" ADD CONSTRAINT "app_
 ALTER TABLE "rentnerproxy"."app_runtime_operations" ADD CONSTRAINT "app_runtime_operations_installation_id_app_runtime_installations_id_fk" FOREIGN KEY ("installation_id") REFERENCES "rentnerproxy"."app_runtime_installations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rentnerproxy"."app_runtime_owned_proxy_hosts" ADD CONSTRAINT "app_runtime_owned_proxy_hosts_installation_id_app_runtime_installations_id_fk" FOREIGN KEY ("installation_id") REFERENCES "rentnerproxy"."app_runtime_installations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rentnerproxy"."app_runtime_owned_proxy_hosts" ADD CONSTRAINT "app_runtime_owned_proxy_hosts_proxy_host_id_proxy_hosts_id_fk" FOREIGN KEY ("proxy_host_id") REFERENCES "rentnerproxy"."proxy_hosts"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "rentnerproxy"."app_runtime_pending_secrets" ADD CONSTRAINT "app_runtime_pending_secrets_generation_fk" FOREIGN KEY ("installation_id","generation") REFERENCES "rentnerproxy"."app_runtime_generations"("installation_id","generation") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rentnerproxy"."app_runtime_role_permissions" ADD CONSTRAINT "app_runtime_role_permissions_installation_id_app_runtime_installations_id_fk" FOREIGN KEY ("installation_id") REFERENCES "rentnerproxy"."app_runtime_installations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rentnerproxy"."app_runtime_role_permissions" ADD CONSTRAINT "app_runtime_role_permissions_role_id_roles_id_fk" FOREIGN KEY ("role_id") REFERENCES "rentnerproxy"."roles"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rentnerproxy"."app_runtime_secrets" ADD CONSTRAINT "app_runtime_secrets_installation_id_app_runtime_installations_id_fk" FOREIGN KEY ("installation_id") REFERENCES "rentnerproxy"."app_runtime_installations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

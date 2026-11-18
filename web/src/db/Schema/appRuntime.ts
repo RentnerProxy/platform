@@ -18,6 +18,8 @@ import { rentnerProxySchema } from './base.ts'
 import { bytea } from './columns.ts'
 import { roles } from './permissions.ts'
 
+export type AppRuntimeStoredGrant = Omit<typeof appRuntimeGrants.$inferSelect, 'installationId'>
+
 export const appRuntimeInstallations = rentnerProxySchema.table(
     'app_runtime_installations',
     {
@@ -46,6 +48,7 @@ export const appRuntimeGenerations = rentnerProxySchema.table(
         capabilities: jsonb('capabilities').$type<readonly string[]>().notNull(),
         permissionKeys: jsonb('permission_keys').$type<readonly string[]>().notNull(),
         hasUi: boolean('has_ui').notNull().default(false),
+        pendingGrants: jsonb('pending_grants').$type<readonly AppRuntimeStoredGrant[]>(),
     },
     (table) => [
         primaryKey({ columns: [table.installationId, table.generation] }),
@@ -140,6 +143,33 @@ export const appRuntimeSecrets = rentnerProxySchema.table(
     (table) => [
         primaryKey({ columns: [table.installationId, table.id] }),
         check('app_runtime_secrets_iv_check', sql`octet_length(${table.iv}) = 12`),
+    ],
+)
+
+export const appRuntimePendingSecrets = rentnerProxySchema.table(
+    'app_runtime_pending_secrets',
+    {
+        installationId: varchar('installation_id', { length: 64 }).notNull(),
+        generation: bigint('generation', { mode: 'number' }).notNull(),
+        id: varchar('id', { length: 64 }).notNull(),
+        ciphertext: bytea('ciphertext'),
+        iv: bytea('iv'),
+    },
+    (table) => [
+        primaryKey({ columns: [table.installationId, table.generation, table.id] }),
+        foreignKey({
+            name: 'app_runtime_pending_secrets_generation_fk',
+            columns: [table.installationId, table.generation],
+            foreignColumns: [
+                appRuntimeGenerations.installationId,
+                appRuntimeGenerations.generation,
+            ],
+        }).onDelete('cascade'),
+        check(
+            'app_runtime_pending_secrets_envelope_check',
+            sql`(${table.ciphertext} is null and ${table.iv} is null) or
+                (${table.ciphertext} is not null and ${table.iv} is not null and octet_length(${table.iv}) = 12)`,
+        ),
     ],
 )
 

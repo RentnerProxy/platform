@@ -1,6 +1,6 @@
 import '@tanstack/react-start/server-only'
 
-import { and, desc, eq, ne, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 
 import { ACTIVE_OWNER_ADVISORY_LOCK_ID } from '@/config/auth.config.ts'
 import {
@@ -8,8 +8,11 @@ import {
     appRuntimeGenerations,
     appRuntimeGrants,
     appRuntimeInstallations,
+    appRuntimePendingSecrets,
     appRuntimeRolePermissions,
+    appRuntimeSecrets,
     roles,
+    type AppRuntimeStoredGrant,
 } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import {
@@ -113,22 +116,69 @@ export async function registerAppRuntimeGenerationInTransaction(
 
     await transaction
         .update(appRuntimeGenerations)
-        .set({ state: 'revoked' })
+        .set({ state: 'revoked', pendingGrants: null })
         .where(
             and(
                 eq(appRuntimeGenerations.installationId, installationId),
                 eq(appRuntimeGenerations.state, 'preparing'),
             ),
         )
+    await transaction
+        .delete(appRuntimePendingSecrets)
+        .where(eq(appRuntimePendingSecrets.installationId, installationId))
     await transaction.insert(appRuntimeGenerations).values({
         installationId,
         generation,
         leaseExpiresAt,
         state: 'preparing',
-        capabilities: declaredCapabilities,
-        permissionKeys: declaredPermissions,
+        capabilities: sql`${JSON.stringify(declaredCapabilities)}::text::jsonb`,
+        permissionKeys: sql`${JSON.stringify(declaredPermissions)}::text::jsonb`,
         hasUi,
     })
+}
+
+function pendingSecretsFor({ installationId, generation }: AppRuntimeIdentity) {
+    return and(
+        eq(appRuntimePendingSecrets.installationId, installationId),
+        eq(appRuntimePendingSecrets.generation, generation),
+    )
+}
+
+async function applyPendingSecrets(
+    transaction: AuthTransaction,
+    identity: AppRuntimeIdentity,
+): Promise<void> {
+    const scope = pendingSecretsFor(identity)
+    const deletions = transaction
+        .select({ id: appRuntimePendingSecrets.id })
+        .from(appRuntimePendingSecrets)
+        .where(and(scope, isNull(appRuntimePendingSecrets.ciphertext)))
+    await transaction
+        .delete(appRuntimeSecrets)
+        .where(
+            and(
+                eq(appRuntimeSecrets.installationId, identity.installationId),
+                inArray(appRuntimeSecrets.id, deletions),
+            ),
+        )
+    await transaction
+        .insert(appRuntimeSecrets)
+        .select(
+            transaction
+                .select({
+                    installationId: appRuntimePendingSecrets.installationId,
+                    id: appRuntimePendingSecrets.id,
+                    ciphertext: appRuntimePendingSecrets.ciphertext,
+                    iv: appRuntimePendingSecrets.iv,
+                })
+                .from(appRuntimePendingSecrets)
+                .where(and(scope, isNotNull(appRuntimePendingSecrets.ciphertext))),
+        )
+        .onConflictDoUpdate({
+            target: [appRuntimeSecrets.installationId, appRuntimeSecrets.id],
+            set: { ciphertext: sql`excluded.ciphertext`, iv: sql`excluded.iv` },
+        })
+    await transaction.delete(appRuntimePendingSecrets).where(scope)
 }
 
 export async function activateAppRuntimeGenerationInTransaction(
@@ -143,6 +193,9 @@ export async function activateAppRuntimeGenerationInTransaction(
         throw new AppRuntimeAuthorityError('conflict')
     assertLeaseDeadline(leaseExpiresAt, now)
     const { installationId, generation } = identity
+    if (candidate.pendingGrants !== null)
+        await publishAppRuntimeGrants(transaction, installationId, candidate.pendingGrants)
+    await applyPendingSecrets(transaction, identity)
     await transaction
         .update(appRuntimeGenerations)
         .set({ state: 'revoked' })
@@ -155,7 +208,7 @@ export async function activateAppRuntimeGenerationInTransaction(
         )
     await transaction
         .update(appRuntimeGenerations)
-        .set({ state: 'active', leaseExpiresAt })
+        .set({ state: 'active', leaseExpiresAt, pendingGrants: null })
         .where(
             and(
                 eq(appRuntimeGenerations.installationId, installationId),
@@ -170,6 +223,8 @@ export async function activateAppRuntimeGenerationInTransaction(
                 ne(appRuntimeDelegations.generation, generation),
             ),
         )
+    if (Math.min(candidate.leaseExpiresAt.getTime(), leaseExpiresAt.getTime()) <= Date.now())
+        throw new AppRuntimeAuthorityError('conflict')
 }
 
 export async function renewAppRuntimeGenerationLeaseInTransaction(
@@ -202,13 +257,14 @@ export async function revokeAppRuntimeGenerationInTransaction(
     const { installationId, generation } = identity
     await transaction
         .update(appRuntimeGenerations)
-        .set({ state: 'revoked' })
+        .set({ state: 'revoked', pendingGrants: null })
         .where(
             and(
                 eq(appRuntimeGenerations.installationId, installationId),
                 eq(appRuntimeGenerations.generation, generation),
             ),
         )
+    await transaction.delete(appRuntimePendingSecrets).where(pendingSecretsFor(identity))
     await transaction
         .delete(appRuntimeDelegations)
         .where(
@@ -219,7 +275,7 @@ export async function revokeAppRuntimeGenerationInTransaction(
         )
 }
 
-function serializeGrant(entry: typeof appRuntimeGrants.$inferSelect): string {
+function serializeGrant(entry: AppRuntimeStoredGrant): string {
     return JSON.stringify([
         entry.capabilityId,
         entry.scope,
@@ -227,6 +283,31 @@ function serializeGrant(entry: typeof appRuntimeGrants.$inferSelect): string {
         entry.allowService,
         entry.permissionKey,
     ])
+}
+
+async function publishAppRuntimeGrants(
+    transaction: AuthTransaction,
+    installationId: string,
+    entries: readonly AppRuntimeStoredGrant[],
+): Promise<void> {
+    const stored = await transaction
+        .select()
+        .from(appRuntimeGrants)
+        .where(eq(appRuntimeGrants.installationId, installationId))
+    const currentPolicy = new Set(stored.map(serializeGrant))
+    if (
+        currentPolicy.size === entries.length &&
+        entries.every((entry) => currentPolicy.has(serializeGrant(entry)))
+    )
+        return
+    await transaction
+        .delete(appRuntimeGrants)
+        .where(eq(appRuntimeGrants.installationId, installationId))
+    if (entries.length > 0)
+        await transaction
+            .insert(appRuntimeGrants)
+            .values(entries.map((entry) => ({ installationId, ...entry })))
+    await bumpAuthorizationEpoch(transaction, installationId)
 }
 
 export async function replaceAppRuntimeGrantsInTransaction(
@@ -251,7 +332,6 @@ export async function replaceAppRuntimeGrantsInTransaction(
             throw new AppRuntimeAuthorityError('invalid_input')
         seen.add(target)
         return {
-            installationId: identity.installationId,
             capabilityId: capability.id,
             scope: capability.scope,
             resourceId,
@@ -259,21 +339,19 @@ export async function replaceAppRuntimeGrantsInTransaction(
             permissionKey: permissionKey ?? null,
         }
     })
-    const stored = await transaction
-        .select()
-        .from(appRuntimeGrants)
-        .where(eq(appRuntimeGrants.installationId, identity.installationId))
-    const currentPolicy = new Set(stored.map(serializeGrant))
-    if (
-        currentPolicy.size === entries.length &&
-        entries.every((entry) => currentPolicy.has(serializeGrant(entry)))
-    )
-        return
-    await transaction
-        .delete(appRuntimeGrants)
-        .where(eq(appRuntimeGrants.installationId, identity.installationId))
-    if (entries.length > 0) await transaction.insert(appRuntimeGrants).values(entries)
-    await bumpAuthorizationEpoch(transaction, identity.installationId)
+    if (generation.state === 'preparing') {
+        await transaction
+            .update(appRuntimeGenerations)
+            .set({ pendingGrants: sql`${JSON.stringify(entries)}::text::jsonb` })
+            .where(
+                and(
+                    eq(appRuntimeGenerations.installationId, identity.installationId),
+                    eq(appRuntimeGenerations.generation, identity.generation),
+                ),
+            )
+    } else await publishAppRuntimeGrants(transaction, identity.installationId, entries)
+    if (generation.leaseExpiresAt.getTime() <= Date.now())
+        throw new AppRuntimeAuthorityError('conflict')
 }
 
 export async function setAppRuntimeRolePermissionInTransaction(
@@ -286,7 +364,8 @@ export async function setAppRuntimeRolePermissionInTransaction(
     // Exclude concurrent membership changes and delegation/recovery authorization.
     await transaction.execute(sql`select pg_advisory_xact_lock(${ACTIVE_OWNER_ADVISORY_LOCK_ID})`)
     const generation = await loadLockedGeneration(transaction, identity)
-    if (generation.state === 'revoked' || generation.leaseExpiresAt.getTime() <= Date.now())
+    // Role assignment edits update the live Platform authorization policy.
+    if (generation.state !== 'active' || generation.leaseExpiresAt.getTime() <= Date.now())
         throw new AppRuntimeAuthorityError('conflict')
     if (
         !isLocalAppRuntimePermissionKey(permissionKey) ||

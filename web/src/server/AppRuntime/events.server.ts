@@ -124,7 +124,7 @@ export async function appendAppRuntimeEventInTransaction(
             resourceId,
             occurredAt: sql`clock_timestamp()`,
             ...(revision === undefined ? {} : { revision }),
-            ...(payload === undefined ? {} : { payload }),
+            ...(payload === undefined ? {} : { payload: sql`${payload}` }),
         })
         .returning({ id: appRuntimeEvents.id })
     if (!row) throw new Error('App runtime event could not be persisted.')

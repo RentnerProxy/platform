@@ -1,5 +1,5 @@
 {
-  "id": "ed862c9a-6782-49ac-8c17-3b80f3f387a6",
+  "id": "801cdace-85fb-46d3-a4c7-403bc44fde22",
   "prevId": "df6033c4-e46b-419a-9519-4c4e8a076644",
   "version": "7",
   "dialect": "postgresql",
@@ -570,6 +570,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "pending_grants": {
+          "name": "pending_grants",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -1185,6 +1191,80 @@
       },
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "rentnerproxy.app_runtime_pending_secrets": {
+      "name": "app_runtime_pending_secrets",
+      "schema": "rentnerproxy",
+      "columns": {
+        "installation_id": {
+          "name": "installation_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ciphertext": {
+          "name": "ciphertext",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "iv": {
+          "name": "iv",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "app_runtime_pending_secrets_generation_fk": {
+          "name": "app_runtime_pending_secrets_generation_fk",
+          "tableFrom": "app_runtime_pending_secrets",
+          "tableTo": "app_runtime_generations",
+          "schemaTo": "rentnerproxy",
+          "columnsFrom": [
+            "installation_id",
+            "generation"
+          ],
+          "columnsTo": [
+            "installation_id",
+            "generation"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "app_runtime_pending_secrets_installation_id_generation_id_pk": {
+          "name": "app_runtime_pending_secrets_installation_id_generation_id_pk",
+          "columns": [
+            "installation_id",
+            "generation",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "app_runtime_pending_secrets_envelope_check": {
+          "name": "app_runtime_pending_secrets_envelope_check",
+          "value": "(\"rentnerproxy\".\"app_runtime_pending_secrets\".\"ciphertext\" is null and \"rentnerproxy\".\"app_runtime_pending_secrets\".\"iv\" is null) or\n                (\"rentnerproxy\".\"app_runtime_pending_secrets\".\"ciphertext\" is not null and \"rentnerproxy\".\"app_runtime_pending_secrets\".\"iv\" is not null and octet_length(\"rentnerproxy\".\"app_runtime_pending_secrets\".\"iv\") = 12)"
+        }
+      },
       "isRLSEnabled": false
     },
     "rentnerproxy.app_runtime_role_permissions": {
