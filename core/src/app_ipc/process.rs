@@ -2,7 +2,7 @@ use std::{
     fs::File,
     io,
     os::{
-        fd::AsFd,
+        fd::{AsFd, AsRawFd, RawFd},
         unix::{
             fs::{FileTypeExt, MetadataExt},
             net::UnixStream as StdUnixStream,
@@ -22,7 +22,10 @@ use tokio::{
     time::timeout,
 };
 
-use super::{LAUNCH_TIMEOUT, LaunchConfig};
+use super::{
+    LAUNCH_TIMEOUT, LaunchConfig,
+    filesystem::{retain_inherited_lock, set_close_on_exec},
+};
 
 const MAX_WATCHDOG_REQUEST_BYTES: usize = 24_576;
 
@@ -98,12 +101,34 @@ impl ManagerPipe {
         // A supervisor may revoke with one byte, by closing the pipe, or by exiting.
         let _ = self.read(&mut [0]).await;
     }
+
+    pub(super) fn revocation_pending(&self) -> io::Result<bool> {
+        let fd = match self {
+            Self::Pipe(pipe) => pipe.as_raw_fd(),
+            Self::Stream(stream) => stream.as_raw_fd(),
+        };
+        let mut byte = 0_u8;
+        loop {
+            // SAFETY: The channel owns this nonblocking FD and byte is valid
+            // for the one-byte read. Check the kernel before reactor delivery.
+            if unsafe { libc::read(fd, (&mut byte as *mut u8).cast(), 1) } >= 0 {
+                return Ok(true);
+            }
+            let error = io::Error::last_os_error();
+            match error.kind() {
+                io::ErrorKind::WouldBlock => return Ok(false),
+                io::ErrorKind::Interrupted => continue,
+                _ => return Err(error),
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 struct WatchdogRequest<Config, Bootstrap> {
     config: Config,
     bootstrap: Bootstrap,
+    lock_fd: RawFd,
 }
 
 pub(super) struct Watchdog {
@@ -116,22 +141,36 @@ impl Watchdog {
         controller: &Path,
         config: &LaunchConfig,
         bootstrap: &str,
+        lock: &File,
     ) -> io::Result<Self> {
-        let request = WatchdogRequest { config, bootstrap };
+        let lock_fd = lock.as_raw_fd();
+        let request = WatchdogRequest {
+            config,
+            bootstrap,
+            lock_fd,
+        };
         let mut frame = serde_json::to_vec(&request)
             .map_err(|_| io::Error::other("Unable to encode the app watchdog request"))?;
         frame.push(b'\n');
         if frame.len() > MAX_WATCHDOG_REQUEST_BYTES {
             return Err(io::Error::other("App watchdog request is too large"));
         }
-        let mut child = Command::new(controller)
+        let mut command = Command::new(controller);
+        command
             .arg("--app-ipc-watchdog")
             .env_remove(crate::config::CONTROLLER_TOKEN_FILE_ENV)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()?;
+            .process_group(0);
+        // SAFETY: The broker holds the borrowed file across spawn; only this
+        // forked child's descriptor flags change, using nonallocating syscalls.
+        unsafe {
+            command
+                .as_std_mut()
+                .pre_exec(move || set_close_on_exec(lock_fd, false));
+        }
+        let mut child = command.spawn()?;
         let mut pipe = child
             .stdin
             .take()
@@ -166,10 +205,14 @@ async fn supervise_app_group() -> io::Result<()> {
     let manager = ManagerPipe::open()?;
     let launch: WatchdogRequest<LaunchConfig, String> =
         timeout(LAUNCH_TIMEOUT, manager.launch(MAX_WATCHDOG_REQUEST_BYTES)).await??;
+    let _lock = retain_inherited_lock(launch.lock_fd)?;
     launch.config.validate()?;
     // SAFETY: The watchdog owns one app group and adopts its orphaned descendants.
     if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
         return Err(io::Error::last_os_error());
+    }
+    if manager.revocation_pending()? {
+        return Ok(());
     }
     let mut child = start_child(&launch.config)?;
     let pid = child

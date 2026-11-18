@@ -447,18 +447,27 @@ async fn database_renewal_extends_the_broker_lease_until_authority_revokes_it() 
     let socket = scratch.path("lease.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let authority = tokio::spawn(async move {
+        let original = Bytes::from(lease_expiry(Duration::from_millis(700)).to_string());
         for (status, remaining_ms) in [
-            (StatusCode::OK, 800),
+            (StatusCode::OK, 0),
+            (StatusCode::OK, 0),
+            (StatusCode::OK, 0),
             (StatusCode::OK, 1600),
             (StatusCode::SERVICE_UNAVAILABLE, 0),
             (StatusCode::UNAUTHORIZED, 0),
         ] {
             let (stream, _) = listener.accept().await.unwrap();
-            let service = service_fn(|request| async move {
-                let mut response =
-                    fixture_lease(request, Duration::from_millis(remaining_ms), 9).await;
-                *response.status_mut() = status;
-                Ok::<_, Infallible>(response)
+            let service = service_fn(|request| {
+                let original = original.clone();
+                async move {
+                    let mut response =
+                        fixture_lease(request, Duration::from_millis(remaining_ms), 9).await;
+                    if status == StatusCode::OK && remaining_ms == 0 {
+                        *response.body_mut() = Full::new(original);
+                    }
+                    *response.status_mut() = status;
+                    Ok::<_, Infallible>(response)
+                }
             });
             server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(stream), service)
@@ -478,7 +487,23 @@ async fn database_renewal_extends_the_broker_lease_until_authority_revokes_it() 
         .await
         .unwrap()
         .unwrap();
-    authority.await.unwrap();
+    timeout(Duration::from_secs(3), authority)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn watchdog_can_detect_pending_revocation_before_reactor_delivery() {
+    use tokio::io::AsyncWriteExt;
+
+    let (manager, mut writer) = UnixStream::pair().unwrap();
+    let manager = process::ManagerPipe::Stream(manager);
+    assert!(!manager.revocation_pending().unwrap());
+    writer.write_all(b"x").await.unwrap();
+    assert!(manager.revocation_pending().unwrap());
+    drop(writer);
+    assert!(manager.revocation_pending().unwrap());
 }
 
 #[tokio::test]
@@ -549,33 +574,37 @@ async fn privileged_generation_launches_restricted_child_and_revokes_listener() 
     let controller = PathBuf::from(env::var_os("RENTNERPROXY_TEST_CONTROLLER").unwrap());
     let listener = UnixListener::bind(&backend).unwrap();
     let backend_task = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        server::conn::http1::Builder::new()
-            .serve_connection(
-                TokioIo::new(stream),
-                service_fn(|request| async {
-                    Ok::<_, Infallible>(fixture_lease(request, Duration::from_secs(25), 9).await)
-                }),
-            )
-            .await
-            .unwrap();
-        let (stream, _) = listener.accept().await.unwrap();
-        assert_eq!(stream.peer_cred().unwrap().uid(), 0);
-        let service = service_fn(|request: Request<hyper::body::Incoming>| async move {
-            assert_eq!(request.uri(), CONTEXT);
-            assert_eq!(request.headers()["authorization"], TOKEN);
-            assert_eq!(
-                request.headers()["x-rentnerproxy-app-uid"],
-                TEST_UID.to_string()
-            );
-            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
-                br#"{"context":"verified"}"#,
-            ))))
-        });
-        server::conn::http1::Builder::new()
-            .serve_connection(TokioIo::new(stream), service)
-            .await
-            .unwrap();
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let context_served = AtomicBool::new(false);
+        while !context_served.load(Ordering::Relaxed) {
+            let (stream, _) = listener.accept().await.unwrap();
+            assert_eq!(stream.peer_cred().unwrap().uid(), 0);
+            let service = service_fn(|request: Request<hyper::body::Incoming>| {
+                let context_served = &context_served;
+                async move {
+                    if request.uri() == LEASE {
+                        return Ok::<_, Infallible>(
+                            fixture_lease(request, Duration::from_secs(25), 9).await,
+                        );
+                    }
+                    assert_eq!(request.uri(), CONTEXT);
+                    assert_eq!(request.headers()["authorization"], TOKEN);
+                    assert_eq!(
+                        request.headers()["x-rentnerproxy-app-uid"],
+                        TEST_UID.to_string()
+                    );
+                    context_served.store(true, Ordering::Relaxed);
+                    Ok(Response::new(Full::new(Bytes::from_static(
+                        br#"{"context":"verified"}"#,
+                    ))))
+                }
+            });
+            server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .unwrap();
+        }
     });
     let (revoke, stopped) = oneshot::channel::<()>();
     let core = app_root.join(TEST_UID.to_string()).join("9/core.sock");
@@ -612,7 +641,10 @@ async fn privileged_generation_launches_restricted_child_and_revokes_listener() 
         .unwrap()
         .unwrap();
     assert!(UnixStream::connect(core).await.is_err());
-    backend_task.await.unwrap();
+    timeout(Duration::from_secs(3), backend_task)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         fs::metadata(&uid_root).unwrap().permissions().mode() & 0o777,
         0o710
@@ -778,6 +810,15 @@ async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
     let descendant = descendant.trim().parse::<u32>().unwrap();
     let process = PathBuf::from(format!("/proc/{descendant}"));
     assert!(process.exists());
+    let duplicate = send(format!("{launch}\n")).await;
+    assert!(duplicate.contains("(os error 11)"), "{duplicate}");
+    assert!(expected_socket.exists());
+
+    let protected = scratch.path("outside-generation");
+    fs::create_dir(&protected).unwrap();
+    fs::write(protected.join("preserved"), []).unwrap();
+    let abandoned = expected_socket.parent().unwrap();
+    unix_fs::symlink(&protected, abandoned.join("app/untrusted-link")).unwrap();
     broker.kill().await.unwrap();
     timeout(Duration::from_secs(5), async {
         while process.exists() {
@@ -786,6 +827,37 @@ async fn privileged_controller_validates_launch_pipe_and_bootstrap_paths() {
     })
     .await
     .expect("the independent watchdog should kill and reap the descendant");
+    assert!(
+        expected_socket.exists(),
+        "SIGKILL should exercise stale-path recovery"
+    );
+    fs::write(&executable, "#!/bin/sh\ncat > recovered.json\n").unwrap();
+    let outcome = timeout(Duration::from_secs(6), async {
+        loop {
+            let outcome = send(format!("{launch}\n")).await;
+            if !outcome.contains("(os error 11)") {
+                return outcome;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        outcome.contains("Native app exited before readiness"),
+        "{outcome}"
+    );
+    assert!(data.join("recovered.json").is_file());
+    assert!(!abandoned.exists());
+    assert!(protected.join("preserved").is_file());
+
+    unix_fs::symlink(&protected, abandoned).unwrap();
+    assert!(
+        send(format!("{launch}\n"))
+            .await
+            .contains("Unsafe application runtime path or ownership")
+    );
+    assert!(protected.join("preserved").is_file());
     authority.kill().await.unwrap();
 }
 
@@ -848,6 +920,18 @@ async fn restricted_child_fixture() {
     );
 
     let core_socket = Path::new(descriptor["coreSocket"].as_str().unwrap());
+    let lock = core_socket
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join(".9.lock");
+    let app_fds = fs::read_dir("/proc/self/fd").unwrap();
+    assert!(
+        !app_fds
+            .filter_map(|entry| fs::read_link(entry.unwrap().path()).ok())
+            .any(|target| target == lock)
+    );
     let mut core = open(core_socket).await;
     let credential = format!("Bearer {}", descriptor["coreCredential"].as_str().unwrap());
     let context = core

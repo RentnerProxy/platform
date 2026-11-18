@@ -233,7 +233,7 @@ async fn run_generation(
     let mut watchdog = tokio::select! {
         biased;
         _ = &mut stop => return Ok(()),
-        result = timeout_at(launch_deadline, process::Watchdog::start(paths.controller, &config, &descriptor)) => result??,
+        result = timeout_at(launch_deadline, process::Watchdog::start(paths.controller, &config, &descriptor, &sockets.lock)) => result??,
     };
 
     let mut ready = false;

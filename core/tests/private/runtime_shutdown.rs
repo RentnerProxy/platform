@@ -26,6 +26,37 @@ impl super::super::ProxyEngine for IdleEngine {
 }
 
 #[tokio::test]
+async fn stable_proxy_status_defers_during_apply_without_blocking_ordinary_status() {
+    let runtime = ProxyRuntime::new(
+        super::super::RuntimeSettings::new(std::env::temp_dir(), 0),
+        None,
+    );
+    let revision = "active-fixture";
+    runtime.state.lock().await.active_revision = Some(revision.into());
+
+    let apply = runtime.apply_lock.lock().await;
+    assert!(matches!(
+        runtime.stable_status().await,
+        Err(RuntimeError::Busy)
+    ));
+    assert_eq!(
+        runtime.status().await.active_revision.as_deref(),
+        Some(revision)
+    );
+    drop(apply);
+
+    assert_eq!(
+        runtime
+            .stable_status()
+            .await
+            .unwrap()
+            .active_revision
+            .as_deref(),
+        Some(revision)
+    );
+}
+
+#[tokio::test]
 /// Exercises worker progress and bounded shutdown while another task holds the apply lock.
 async fn apply_contention_does_not_block_independent_recovery_progress_or_shutdown() {
     let mut settings = super::super::RuntimeSettings::new(std::env::temp_dir(), 0);

@@ -8,15 +8,30 @@ use crate::{
 use axum::{
     Json,
     body::Bytes,
-    extract::{Path, rejection::BytesRejection},
+    extract::{Path, Query, rejection::BytesRejection},
     response::Response,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+#[derive(Deserialize)]
+pub(in crate::server) struct ProxyStatusQuery {
+    #[serde(default)]
+    stable: bool,
+}
 
 pub(in crate::server) async fn proxy_status(
     state: AppState,
+    Query(query): Query<ProxyStatusQuery>,
 ) -> Result<Json<ProxyRuntimeStatus>, ApiError> {
+    if query.stable {
+        return state
+            .runtime
+            .stable_status()
+            .await
+            .map(Json)
+            .map_err(runtime_error);
+    }
     Ok(Json(state.runtime.status().await))
 }
 

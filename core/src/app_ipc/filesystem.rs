@@ -2,7 +2,7 @@ use std::{
     fs::{self, DirBuilder, File, OpenOptions},
     io::{self, Read, Write},
     os::{
-        fd::AsRawFd,
+        fd::{AsRawFd, FromRawFd, RawFd},
         unix::fs::{
             self as unix_fs, DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt,
             PermissionsExt,
@@ -114,6 +114,7 @@ pub(super) fn bridge_authorization(path: &Path) -> io::Result<HeaderValue> {
 
 pub(super) struct GenerationSockets {
     root: PathBuf,
+    pub(super) lock: File,
     pub(super) core_socket: PathBuf,
     pub(super) app_socket: PathBuf,
 }
@@ -133,10 +134,13 @@ impl GenerationSockets {
             return Err(invalid_path());
         }
 
+        let lock = lock_generation(&uid_root, &root, config.generation)?;
+        reclaim_generation(&root, config.gid)?;
         // Only this manager may create entries in the generation directory.
         DirBuilder::new().mode(0o700).create(&root)?;
         let sockets = Self {
             root,
+            lock,
             core_socket,
             app_socket,
         };
@@ -149,6 +153,98 @@ impl GenerationSockets {
         fs::set_permissions(&sockets.root, fs::Permissions::from_mode(0o710))?;
         Ok((sockets, listener))
     }
+}
+
+fn lock_generation(parent: &Path, root: &Path, generation: u64) -> io::Result<File> {
+    // Keep the lock inode outside the directory we may need to reclaim.
+    let mut lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(parent.join(format!(".{generation}.lock")))?;
+    require_private_file(&lock.metadata()?)?;
+    lock_file(&lock)?;
+    match lock.metadata()?.len() {
+        0 => {
+            // An existing unmarked directory might belong to an older broker
+            // that never acquired this lock. Record ownership before mkdir.
+            match fs::symlink_metadata(root) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+                Ok(_) => return Err(invalid_path()),
+            }
+            lock.write_all(b"1")?;
+        }
+        1 => {
+            let mut version = [0];
+            lock.read_exact(&mut version)?;
+            if version != *b"1" {
+                return Err(invalid_path());
+            }
+        }
+        _ => return Err(invalid_path()),
+    }
+    Ok(lock)
+}
+
+fn reclaim_generation(path: &Path, gid: u32) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mode = metadata.mode() & 0o7777;
+    if !metadata.is_dir()
+        || metadata.uid() != 0
+        || !((mode == 0o700 && metadata.gid() == 0)
+            || (matches!(mode, 0o700 | 0o710) && metadata.gid() == gid))
+    {
+        return Err(invalid_path());
+    }
+    // Linux remove_dir_all uses fd-relative traversal and never follows the
+    // symlinks an app may have left in its writable socket directory.
+    fs::remove_dir_all(path)
+}
+
+pub(super) fn retain_inherited_lock(fd: RawFd) -> io::Result<File> {
+    if fd < 3 {
+        return Err(invalid_path());
+    }
+    // The broker temporarily made this copy inheritable for watchdog exec.
+    // Restore CLOEXEC here as well as on the copy kept by the watchdog.
+    set_close_on_exec(fd, true)?;
+    // SAFETY: fcntl borrows the raw descriptor, returning a new owned
+    // descriptor tied to the same open file description and flock.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: A successful F_DUPFD_CLOEXEC gives us sole ownership of this copy.
+    let file = unsafe { File::from_raw_fd(duplicate) };
+    require_private_file(&file.metadata()?)?;
+    lock_file(&file)?;
+    Ok(file)
+}
+
+pub(super) fn set_close_on_exec(fd: RawFd, close: bool) -> io::Result<()> {
+    // SAFETY: fcntl borrows the descriptor and changes only its descriptor flags.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let flags = if close {
+        flags | libc::FD_CLOEXEC
+    } else {
+        flags & !libc::FD_CLOEXEC
+    };
+    // SAFETY: The descriptor stays open while the caller uses this helper.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 impl Drop for GenerationSockets {
@@ -227,7 +323,7 @@ fn reserve_uid(path: &Path, config: &LaunchConfig) -> io::Result<()> {
         .open(&identity_path)
     {
         Ok(file) => {
-            require_identity_file(&file.metadata()?)?;
+            require_private_file(&file.metadata()?)?;
             file.take(256).read_to_string(&mut identity)?;
             if identity != expected {
                 return Err(io::Error::other(
@@ -243,7 +339,7 @@ fn reserve_uid(path: &Path, config: &LaunchConfig) -> io::Result<()> {
     Ok(())
 }
 
-fn require_identity_file(metadata: &fs::Metadata) -> io::Result<()> {
+fn require_private_file(metadata: &fs::Metadata) -> io::Result<()> {
     if !metadata.is_file()
         || metadata.uid() != 0
         || metadata.nlink() != 1
@@ -260,7 +356,7 @@ fn publish_identity(path: &Path, identity: &Path, contents: &str) -> io::Result<
     let pending = path.join(".identity.pending");
     match fs::symlink_metadata(&pending) {
         Ok(metadata) => {
-            require_identity_file(&metadata)?;
+            require_private_file(&metadata)?;
             fs::remove_file(&pending)?;
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}

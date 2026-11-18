@@ -11,7 +11,9 @@ import {
     auditEvents,
     hostDomains,
     proxyHosts,
+    systemSettings,
 } from '@/db/schema.ts'
+import { getPageErrorDetails } from '@/lib/Errors/pageError.ts'
 import {
     listAppProxyHosts,
     manageOwnedHosts,
@@ -36,7 +38,10 @@ import type { AppOperation } from '@/server/AppRuntime/Types/operations.types.ts
 import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
-import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
+import {
+    lockProxyRuntimeSettings,
+    PROXY_RUNTIME_SETTINGS_KEY,
+} from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import { getProxyRuntimeSnapshotService } from '@/server/ProxyRuntime/proxy-runtime.service.ts'
 
 const integrationTest =
@@ -82,6 +87,26 @@ async function waitForOperation(
     return operation
 }
 
+async function waitForReleasedClaim(operationId: string): Promise<void> {
+    const db = getAuthDatabase()
+    const readClaim = async () => {
+        const [claim] = await db
+            .select({ token: appRuntimeOperations.leaseToken })
+            .from(appRuntimeOperations)
+            .where(eq(appRuntimeOperations.id, operationId))
+        return claim
+    }
+    const deadline = Date.now() + 4_000
+    let claim = await readClaim()
+    while (claim?.token && Date.now() < deadline) {
+        // oxlint-disable-next-line no-await-in-loop -- Observe a separate worker transaction's rollback and release.
+        await Bun.sleep(25)
+        // oxlint-disable-next-line no-await-in-loop -- Observe a separate worker transaction's rollback and release.
+        claim = await readClaim()
+    }
+    expect(claim?.token).toBeNull()
+}
+
 integrationTest(
     'app proxy operations fence ownership, cancellation, and duplicate replay across worker restart',
     async () => {
@@ -125,11 +150,42 @@ integrationTest(
         const { promise: heldReconcile, resolve: releaseReconcile } =
             Promise.withResolvers<ProxyRuntimeMutationStatus>()
         const firstWorker = createAppProxyOperationWorker(() => heldReconcile)
+        const {
+            promise: settingsHeld,
+            resolve: announceSettingsLock,
+            reject: rejectSettingsLock,
+        } = Promise.withResolvers<void>()
+        const { promise: settingsRelease, resolve: releaseSettingsLock } =
+            Promise.withResolvers<void>()
+        let settingsBlocker: Promise<void> | undefined
+        let controllerSampleHeldSettingsLock = false
         let recoveredAttempts = 0
-        const recoveredWorker = createAppProxyOperationWorker(() => {
-            recoveredAttempts += 1
-            return Promise.resolve(recoveredAttempts === 1 ? 'pending' : 'applied')
-        }, acknowledgeCurrentProxySnapshot)
+        const recoveredWorker = createAppProxyOperationWorker(
+            async () => {
+                recoveredAttempts += 1
+                if (recoveredAttempts === 1) {
+                    settingsBlocker = db
+                        .transaction(async (transaction) => {
+                            await lockProxyRuntimeSettings(transaction)
+                            announceSettingsLock()
+                            await settingsRelease
+                        })
+                        .catch(rejectSettingsLock)
+                    await settingsHeld
+                }
+                return 'applied'
+            },
+            async () => {
+                try {
+                    await db.execute(sql`select id from ${systemSettings}
+                    where key = ${PROXY_RUNTIME_SETTINGS_KEY} for update nowait`)
+                } catch (error) {
+                    if (getPageErrorDetails(error).code !== 'RP_DATABASE_BUSY') throw error
+                    controllerSampleHeldSettingsLock = true
+                }
+                return acknowledgeCurrentProxySnapshot()
+            },
+        )
         const recreatedHostIds: string[] = []
 
         const [foreignPending] = await db
@@ -222,11 +278,22 @@ integrationTest(
             await firstWorker.stop()
             releaseReconcile('pending')
             recoveredWorker.start()
+            await settingsHeld
+            // The first confirmation times out while this lock is still held. Release must
+            // use its own transaction and cannot depend on reacquiring the settings lock.
+            await waitForReleasedClaim(accepted.id)
+            expect(await getAppOperation(owner, accepted.id)).toEqual({
+                id: accepted.id,
+                status: 'running',
+            })
+            releaseSettingsLock()
+            await settingsBlocker
             const result = await waitForOperation(
                 () => getAppOperation(owner, accepted.id),
                 'succeeded',
             )
             expect(recoveredAttempts).toBe(2)
+            expect(controllerSampleHeldSettingsLock).toBe(true)
             const [settled] = await db
                 .select({ startedAt: appRuntimeOperations.startedAt })
                 .from(appRuntimeOperations)
@@ -372,6 +439,8 @@ integrationTest(
                 await restoringWorker.stop()
             }
         } finally {
+            releaseSettingsLock()
+            await settingsBlocker
             await firstWorker.stop()
             releaseReconcile('pending')
             await recoveredWorker.stop()

@@ -52,6 +52,7 @@ export async function controllerRequest(
         | '/internal/v1/backups/audit/ack'
         | '/internal/v1/diagnostics/domain'
         | '/internal/v1/proxy/status'
+        | '/internal/v1/proxy/status?stable=true'
         | '/internal/v1/proxy/version'
         | '/internal/v1/crowdsec/status'
         | `/internal/v1/crowdsec/dashboard${string}`

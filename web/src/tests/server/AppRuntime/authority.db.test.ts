@@ -586,12 +586,29 @@ integrationTest(
                     })
                 ).status,
             ).toBe(400)
+            const failedActivation = new Error('synthetic activation rollback')
+            await expect(
+                db.transaction(async (transaction) => {
+                    await activateAppRuntimeGenerationInTransaction(
+                        transaction,
+                        abandoned,
+                        new Date(leaseExpiresAt),
+                    )
+                    await expect(
+                        readAppRuntimeContextInTransaction(transaction, identity),
+                    ).rejects.toMatchObject({ code: 'unauthorized' })
+                    throw failedActivation
+                }),
+            ).rejects.toBe(failedActivation)
             expect((await control('revoke', { identity: abandoned })).status).toBe(204)
             expect(await (await api('authorization', authorization)).json()).toEqual({
                 allowed: true,
             })
             expect(await (await readSecret(assignedSecret)).json()).toEqual({
                 value: 'active-value',
+            })
+            expect(await (await readSecret(retiredSecret)).json()).toEqual({
+                value: 'retired-value',
             })
 
             const update = await api(

@@ -38,6 +38,51 @@ async function waitFor<T>(probe: () => Promise<T | undefined>): Promise<T> {
     throw new Error('App runtime fixture timed out')
 }
 
+function isPublishedNotification(frame: string, message: string): boolean {
+    const data = frame
+        .split(/\r?\n/u)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).replace(/^ /u, ''))
+    if (data.length === 0) return false
+    const event: unknown = JSON.parse(data.join('\n'))
+    return (
+        typeof event === 'object' &&
+        event !== null &&
+        'type' in event &&
+        event.type === 'appNotificationPublished' &&
+        'payload' in event &&
+        typeof event.payload === 'object' &&
+        event.payload !== null &&
+        'message' in event.payload &&
+        event.payload.message === message
+    )
+}
+
+async function verifyNotificationStream(events: Response, message: string): Promise<void> {
+    assert.equal(events.headers.get('Content-Type'), 'text/event-stream')
+    const reader = events.body?.getReader()
+    assert.ok(reader)
+    try {
+        const decoder = new TextDecoder()
+        let remaining = ''
+        let receivedBytes = 0
+        for (;;) {
+            // oxlint-disable-next-line no-await-in-loop -- Preserve UTF-8 and SSE framing across consecutive reads.
+            const chunk = await reader.read()
+            if (chunk.done) break
+            receivedBytes += chunk.value.byteLength
+            assert.ok(receivedBytes <= 65_536)
+            remaining += decoder.decode(chunk.value, { stream: true })
+            const frames = remaining.split(/\r?\n\r?\n/u)
+            remaining = frames.pop() ?? ''
+            if (frames.some((frame) => isPublishedNotification(frame, message))) return
+        }
+        assert.fail('Expected a complete published notification event')
+    } finally {
+        await reader.cancel()
+    }
+}
+
 async function verifyApp(bootstrap: Bootstrap): Promise<void> {
     const request = (route: string, input?: unknown, key?: string) =>
         fetch('http://app-runtime/platform/v1/' + route, {
@@ -134,29 +179,7 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
                 .status,
             409,
         )
-        const events = await request('events')
-        assert.equal(events.headers.get('Content-Type'), 'text/event-stream')
-        const eventReader = events.body?.getReader()
-        assert.ok(eventReader)
-        try {
-            const decoder = new TextDecoder()
-            let frames = ''
-            for (
-                let frame = 0;
-                frame < 8 && !frames.includes('"message":"App notification"');
-                frame += 1
-            ) {
-                // oxlint-disable-next-line no-await-in-loop -- Preserve the order of the streamed frames.
-                const chunk = await eventReader.read()
-                if (chunk.done) break
-                frames += decoder.decode(chunk.value, { stream: true })
-                assert.ok(frames.length < 65_536)
-            }
-            assert.match(frames, /"type":"appNotificationPublished"/u)
-            assert.match(frames, /"message":"App notification"/u)
-        } finally {
-            await eventReader.cancel()
-        }
+        await verifyNotificationStream(await request('events'), notification.message)
         await Bun.write(progressFile, 'ready')
     } catch {
         await Bun.write(progressFile, 'failed at ' + stage)
@@ -164,7 +187,12 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
     }
 }
 
-async function verifyManager(setStage: (stage: string) => void) {
+function setManagerStage(stage: string): Promise<number> {
+    return Bun.write(managerProgressFile, stage)
+}
+
+async function verifyManager() {
+    await setManagerStage('bridge readiness')
     const token = (await Bun.file(controllerTokenFile).text()).trim()
     const controlRequest = (action: string, body: unknown) =>
         fetch('http://app-runtime/internal/v1/app-generations/' + action, {
@@ -182,7 +210,7 @@ async function verifyManager(setStage: (stage: string) => void) {
         const response = await controlRequest(action, body)
         assert.equal(response.status, 204, 'App manager control rejected ' + action)
     }
-    setStage('registration')
+    await setManagerStage('registration')
     const lease = { identity, leaseExpiresAt: new Date(Date.now() + 120_000).toISOString() }
     await control('register', { ...lease, capabilities: [notifyCapability] })
     await control('grants', {
@@ -201,7 +229,7 @@ async function verifyManager(setStage: (stage: string) => void) {
         ],
     })
 
-    setStage('provisioning')
+    await setManagerStage('provisioning')
     const provision = (storage: 'files' | 'database') =>
         Bun.spawn(['/usr/local/bin/rentnerproxy-provision-app', String(identity.uid), storage], {
             stdout: 'ignore',
@@ -213,7 +241,7 @@ async function verifyManager(setStage: (stage: string) => void) {
         mode: 0o600,
     })
     assert.equal(await provision('database'), 0, 'Could not provision the isolated app database')
-    setStage('launch')
+    await setManagerStage('launch')
     const broker = Bun.spawn(['/usr/local/bin/rentnerproxy-controller', '--app-ipc'], {
         stdin: 'pipe',
         stdout: 'pipe',
@@ -241,7 +269,7 @@ async function verifyManager(setStage: (stage: string) => void) {
                 .text()
                 .catch(() => '')
         assert.equal(new TextDecoder().decode(readiness.value), 'ready\n', await progress())
-        setStage('activation')
+        await setManagerStage('activation')
         await control('activate', lease)
         const awaitProgress = (target: string) =>
             waitFor(async () => {
@@ -249,9 +277,9 @@ async function verifyManager(setStage: (stage: string) => void) {
                 if (current.startsWith('failed at ')) throw new Error(current)
                 return current === target ? true : undefined
             })
-        setStage('app checks')
+        await setManagerStage('app checks')
         await awaitProgress('ready')
-        setStage('revocation')
+        await setManagerStage('revocation')
         await control('revoke', { identity })
         assert.equal((await controlRequest('lease', { identity })).status, 401)
         assert.equal(await broker.exited, 0, 'Lease revocation did not stop the broker')
@@ -265,13 +293,5 @@ async function verifyManager(setStage: (stage: string) => void) {
 if (process.env.RENTNERPROXY_APP_BOOTSTRAP_FD === '0') {
     await verifyApp(JSON.parse(await Bun.stdin.text()) as Bootstrap)
 } else {
-    let stage = 'bridge readiness'
-    try {
-        await verifyManager((next) => {
-            stage = next
-        })
-    } catch (error) {
-        await Bun.write(managerProgressFile, stage).catch(() => undefined)
-        throw error
-    }
+    await verifyManager()
 }
