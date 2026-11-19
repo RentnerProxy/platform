@@ -74,8 +74,10 @@ function day(label: string): HTMLButtonElement {
     )!
 }
 
-function time(label: 'From' | 'To'): HTMLElement {
-    return document.querySelector<HTMLElement>(`[role="textbox"][aria-label^="${label} "]`)!
+function time(label: 'From' | 'To'): HTMLInputElement {
+    return document.querySelector<HTMLInputElement>(
+        `input[inputmode="numeric"][aria-label^="${label} "]`,
+    )!
 }
 
 async function setTime(element: HTMLElement, digits: string) {
@@ -99,7 +101,7 @@ test('selects both dates and built-in times in one calendar and emits UTC bounds
     await click(day('September 14, 2026'))
     await click(day('September 16, 2026'))
     expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1)
-    expect(document.querySelectorAll('[role="textbox"]')).toHaveLength(2)
+    expect(document.querySelectorAll('[role="dialog"] input[inputmode="numeric"]')).toHaveLength(2)
     await setTime(time('From'), '0845')
     await setTime(time('To'), '1730')
     expect(currentValue()).toEqual({
@@ -115,10 +117,10 @@ test('shows an empty range placeholder without separate time fields', async () =
     await render({ from: '', to: '' })
     expect(trigger().textContent).toContain('Select date range')
     expect(trigger().classList.contains('text-left')).toBe(true)
-    expect(document.querySelector('[role="textbox"]')).toBeNull()
+    expect(document.querySelector('input[inputmode="numeric"]')).toBeNull()
     await click(trigger())
-    expect(time('From').getAttribute('aria-disabled')).toBe('true')
-    expect(time('To').getAttribute('aria-disabled')).toBe('true')
+    expect(time('From').disabled).toBe(true)
+    expect(time('To').disabled).toBe(true)
 })
 
 test('supports package date keyboard navigation and Escape', async () => {
@@ -156,8 +158,8 @@ test.each(['2026-03-29T02:30', '2026-10-25T00:30', '2026-10-25T01:30'])(
 test('accepts an existing open-ended UTC range and clears both bounds together', async () => {
     await render({ from: initialRange.from, to: '' })
     await click(trigger())
-    expect(time('From').getAttribute('aria-disabled')).toBeNull()
-    expect(time('To').getAttribute('aria-disabled')).toBe('true')
+    expect(time('From').disabled).toBe(false)
+    expect(time('To').disabled).toBe(true)
     await key(time('From'), 'Escape')
     await click(document.querySelector<HTMLButtonElement>('button[aria-label="Clear"]')!)
     expect(currentValue()).toEqual({ from: '', to: '' })
