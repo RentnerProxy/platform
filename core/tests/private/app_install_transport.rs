@@ -6,7 +6,29 @@ use std::{
 
 use marketplace_artifacts::digest;
 
-use super::{Client, DownloadAsset, Duration, Http, Instant, Url};
+use super::{Client, DownloadAsset, Duration, Http, Instant, Url, release_redirect_allowed};
+
+#[test]
+fn release_redirects_remain_on_approved_https_origins() {
+    for url in [
+        "https://github.com/release",
+        "https://objects.githubusercontent.com/package",
+        "https://release-assets.githubusercontent.com:443/package",
+    ] {
+        let url = Url::parse(url).unwrap();
+        assert!(release_redirect_allowed(&url, 3));
+        assert!(!release_redirect_allowed(&url, 4));
+    }
+    for url in [
+        "http://github.com/package",
+        "https://github.com:8443/package",
+        "https://user@github.com/package",
+        "https://:password@github.com/package",
+        "https://github.com.example.invalid/package",
+    ] {
+        assert!(!release_redirect_allowed(&Url::parse(url).unwrap(), 1));
+    }
+}
 
 fn response(header: &'static str, body: &'static [u8]) -> (Http, thread::JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();

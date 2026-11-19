@@ -49,21 +49,7 @@ impl Http {
             .map_err(network)?;
         let package_client = builder()
             .redirect(Policy::custom(|attempt| {
-                let url = attempt.url();
-                if attempt.previous().len() <= 3
-                    && url.scheme() == "https"
-                    && url.port_or_known_default() == Some(443)
-                    && url.username().is_empty()
-                    && url.password().is_none()
-                    && matches!(
-                        url.host_str(),
-                        Some(
-                            "release-assets.githubusercontent.com"
-                                | "github.com"
-                                | "objects.githubusercontent.com"
-                        )
-                    )
-                {
+                if release_redirect_allowed(attempt.url(), attempt.previous().len()) {
                     attempt.follow()
                 } else {
                     attempt.error("Unexpected release redirect")
@@ -138,6 +124,22 @@ impl Http {
         }
         Ok(())
     }
+}
+
+fn release_redirect_allowed(url: &Url, previous_requests: usize) -> bool {
+    previous_requests <= 3
+        && url.scheme() == "https"
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && matches!(
+            url.host_str(),
+            Some(
+                "github.com"
+                    | "objects.githubusercontent.com"
+                    | "release-assets.githubusercontent.com"
+            )
+        )
 }
 
 fn network(error: reqwest::Error) -> io::Error {

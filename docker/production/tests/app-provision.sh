@@ -35,14 +35,20 @@ reject "$controller" --app-provision 59180 files extra
 "$controller" --app-backup empty
 captured=$("$controller" --app-backup capture)
 [[ -z $captured ]]
+reject gosu postgres "$controller" --app-backup capture
 reject "$controller" --app-backup unknown
 reject "$controller" --app-backup inspect /tmp/missing-snapshot
 reject "$controller" --app-manager
 reject "$controller" --app-manager /tmp/missing-config extra
+reject "$controller" --app-control status extra
+reject "$controller" --app-ipc-watchdog extra
 printf '{"version":1,"connections":[]}' | "$controller" --check-backup-state dns-registry
 printf '{"version":2,"connections":[]}' | reject "$controller" --check-backup-state dns-registry
 printf '{"certificates":{}}' | "$controller" --check-backup-state certificate-index
+printf 'null' | reject "$controller" --check-backup-state certificate-index
 reject "$controller" --check-backup-state other
+reject "$controller" --read-npm-sqlite
+[[ $("$controller" --read-npm-sqlite "$appliance/missing-import.db") == '{"error":"invalid_source"}' ]]
 provision 59180
 provision 59180 files
 [[ $(stat -c '%u:%g:%a' "$apps" "$apps/59180" "$apps/59180/data") == $'0:0:711\n0:59180:710\n59180:59180:700' ]]

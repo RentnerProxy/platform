@@ -1,4 +1,16 @@
-use super::check;
+use std::process::ExitCode;
+
+use super::{check, run_check_backup_state};
+
+#[test]
+fn metadata_validation_requires_exactly_one_kind() {
+    for command in [&[][..], &["certificate-index", "unexpected"]] {
+        assert_eq!(
+            run_check_backup_state(command.iter().map(|value| (*value).to_owned())),
+            ExitCode::FAILURE
+        );
+    }
+}
 
 #[test]
 fn applies_runtime_dns_admission_without_opening_a_state_store() {

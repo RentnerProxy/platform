@@ -1,6 +1,23 @@
 use std::os::unix::fs::MetadataExt;
 
-use super::{Ownership, Publication, publish};
+use std::process::ExitCode;
+
+use super::{Ownership, Publication, publish, run_write_bootstrap_state};
+
+#[test]
+fn bootstrap_writer_rejects_invalid_operations_before_opening_state() {
+    for command in [
+        &[][..],
+        &["secrets-v1.json", "unknown"],
+        &["secrets-v1.json", "create", "unexpected"],
+        &["../secrets-v1.json", "replace"],
+    ] {
+        assert_eq!(
+            run_write_bootstrap_state(command.iter().map(|value| (*value).to_owned())),
+            ExitCode::FAILURE
+        );
+    }
+}
 
 #[test]
 fn publishes_without_clobber_and_replaces_only_on_request() {

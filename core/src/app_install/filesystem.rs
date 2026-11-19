@@ -1,7 +1,9 @@
 use std::{
-    fs::{self, DirBuilder, File, OpenOptions},
+    fs::{self, DirBuilder, File, OpenOptions, TryLockError},
     io,
     path::{Component, Path},
+    thread,
+    time::{Duration, Instant},
 };
 
 use marketplace_artifacts::{file_identity, invalid};
@@ -57,8 +59,16 @@ pub(super) fn lock(directory: &Path) -> io::Result<File> {
     if !lock.metadata()?.is_file() {
         return Err(invalid("Invalid installer lock"));
     }
-    lock.try_lock()?;
-    Ok(lock)
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 pub(super) fn directory(path: &Path, mode: u32) -> io::Result<()> {

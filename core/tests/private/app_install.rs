@@ -241,6 +241,20 @@ fn persisted_roles_protect_against_rollback_expiry_and_partial_metadata() {
     let current: Value = serde_json::from_slice(trusted.catalog_bytes()).unwrap();
     assert_eq!(current["revision"], 2);
     let checkpoint = temp.path().join("catalog-checkpoint.json");
+    let saved: Value = serde_json::from_slice(&fs::read(&checkpoint).unwrap()).unwrap();
+    for (field, value) in [
+        ("acceptedAt", json!(i64::MAX)),
+        ("files", json!({"metadata/1.root.json":"!"})),
+        (
+            "files",
+            json!({"metadata/1.root.json":"A".repeat(1024 * 1024)}),
+        ),
+    ] {
+        let mut invalid = saved.clone();
+        invalid[field] = value;
+        fs::write(&checkpoint, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(reopened.checkpoint().is_err(), "{field}");
+    }
     fs::write(checkpoint, b"{").unwrap();
     assert!(refresh(&reopened, &initial, now()).is_err());
 }
@@ -341,6 +355,20 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
         .recover(ID, VERSION, &staged.archive_sha256)
         .unwrap();
     assert!(!abandoned.exists());
+    #[cfg(unix)]
+    {
+        let unexpected = store.path().join("packages/.stage-unexpected");
+        std::os::unix::fs::symlink(fixture.path(), &unexpected).unwrap();
+        assert_eq!(
+            offline
+                .recover(ID, VERSION, &staged.archive_sha256)
+                .unwrap_err()
+                .to_string(),
+            "Invalid abandoned package workspace"
+        );
+        assert!(fixture.path().is_dir());
+        fs::remove_file(unexpected).unwrap();
+    }
 
     files.extend(update(&catalog, json!({
         "formatVersion":1,"revision":3,"releases":[],"revocations":[
@@ -385,6 +413,17 @@ fn verifies_dynamic_abi_against_installed_appliance_libraries() {
     super::package::verify_abi(&json!([linkage]), target).unwrap();
     linkage["versions"]["libc.so.6"] = json!(["GLIBC_TEST_UNAVAILABLE"]);
     assert!(super::package::verify_abi(&json!([linkage]), target).is_err());
+    assert!(super::package::verify_abi(&json!([]), "linux-unsupported").is_err());
+    assert!(
+        super::package::verify_abi(
+            &json!([{"needed": ["libfixture-unavailable.so"], "interpreter": null}]),
+            target,
+        )
+        .is_err()
+    );
+    assert!(
+        super::package::verify_abi(&json!([{"needed": [], "interpreter": "/"}]), target,).is_err()
+    );
     for invalid_name in ["/lib/libc.so.6", "../libc.so.6", "lib\\libc.so.6", ".."] {
         assert_eq!(
             super::package::verify_abi(
@@ -433,7 +472,7 @@ fn staging_tree_refuses_special_files_before_touching_their_targets() {
 }
 
 #[test]
-fn installer_lock_reports_a_busy_store_without_waiting() {
+fn installer_lock_reports_a_busy_store_after_a_bounded_wait() {
     let directory = tempfile::tempdir().unwrap();
     let lock = super::filesystem::lock(directory.path()).unwrap();
     let error = super::filesystem::lock(directory.path()).unwrap_err();
@@ -445,10 +484,13 @@ fn installer_lock_reports_a_busy_store_without_waiting() {
 #[test]
 fn trusted_repository_setting_requires_a_plain_https_directory() {
     for value in [
+        "invalid catalog path",
         "http://example.com/",
         "https://user@example.com/",
+        "https://:password@example.com/",
         "https://example.com/tuf",
         "https://example.com/?key=value",
+        "https://example.com/tuf/#fragment",
     ] {
         assert!(super::transport::repository_url(value).is_err());
     }
@@ -493,6 +535,20 @@ fn installer_respects_root_path_admission_and_retains_its_catalog_when_refresh_f
     );
     fs::set_permissions(package_directory.path(), fs::Permissions::from_mode(0o711)).unwrap();
     let installer = Installer::open(&config).unwrap();
+    {
+        let _writer = installer.lock().unwrap();
+        assert_eq!(
+            installer.stage(ID, VERSION).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            installer
+                .recover(ID, VERSION, &"0".repeat(64))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
     assert!(installer.recover(ID, VERSION, &"0".repeat(64)).is_err());
     let files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
     refresh(&installer, &files, now()).unwrap();
