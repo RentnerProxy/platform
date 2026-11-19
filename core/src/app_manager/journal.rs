@@ -38,6 +38,14 @@ pub(super) struct Release {
     pub catalog_revision: u64,
 }
 
+impl Release {
+    pub fn same_package(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.archive_sha256 == other.archive_sha256
+            && self.manifest_sha256 == other.manifest_sha256
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Data {
@@ -80,8 +88,49 @@ pub(super) struct Slot {
     pub pending_fence: bool,
     pub database_provisioned: bool,
     pub recovery_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grants_uncertain: Option<bool>,
     pub provider_dependencies_unknown: bool,
     pub removal: Removal,
+}
+
+impl Slot {
+    pub fn uncertain_grants(&self) -> bool {
+        // Older interrupted journals did not distinguish missing files from ambiguous activation.
+        self.grants_uncertain.unwrap_or(self.recovery_required)
+    }
+
+    pub fn require_recovery(&mut self) {
+        self.grants_uncertain = Some(self.uncertain_grants());
+        self.recovery_required = true;
+    }
+
+    pub fn accepts(&self, release: &Release, data: Option<&Data>) -> bool {
+        compatible(self.written.as_ref(), data)
+            && (self
+                .active
+                .as_ref()
+                .is_none_or(|active| active.same_package(release))
+                || compatible(data, self.written.as_ref()))
+    }
+
+    pub fn commit_release(&mut self, release: Release) {
+        if self
+            .candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.same_package(&release))
+        {
+            self.candidate = None;
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| !active.same_package(&release))
+        {
+            self.previous = self.active.take();
+        }
+        self.active = Some(release);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -112,11 +161,7 @@ pub(super) struct Journal {
 pub(super) fn private_directory(path: &Path) -> io::Result<()> {
     require_safe_parents(path, 0)?;
     match DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => File::open(
-            path.parent()
-                .ok_or_else(|| bad("Missing directory parent"))?,
-        )?
-        .sync_all()?,
+        Ok(()) => (),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
         Err(e) => return Err(e),
     }
@@ -124,7 +169,11 @@ pub(super) fn private_directory(path: &Path) -> io::Result<()> {
     if !m.is_dir() || m.uid() != 0 || m.mode() & 0o7777 != 0o700 {
         return Err(bad("Unsafe manager directory"));
     }
-    Ok(())
+    File::open(
+        path.parent()
+            .ok_or_else(|| bad("Missing directory parent"))?,
+    )?
+    .sync_all()
 }
 
 pub(super) fn lock(path: &Path) -> io::Result<File> {
@@ -209,10 +258,14 @@ impl Journal {
     pub fn writer_path(&self, uid: u32) -> PathBuf {
         self.directory.join(format!("writer-{uid}.lock"))
     }
-    pub fn save(&mut self, id: &str, slot: Slot) -> io::Result<()> {
+    pub fn writable(&self) -> io::Result<()> {
         if self.poisoned {
             return Err(bad("Restart required after journal I/O failure"));
         }
+        Ok(())
+    }
+    pub fn save(&mut self, id: &str, slot: Slot) -> io::Result<()> {
+        self.writable()?;
         let mut next = self.state.clone();
         next.installations.insert(id.to_owned(), slot);
         let bytes = serde_json::to_vec(&next)?;

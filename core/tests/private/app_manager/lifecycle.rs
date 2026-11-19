@@ -57,11 +57,16 @@ async fn authority(
         "grants" => {
             assert_eq!(states.get(&generation), Some(&false));
             assert_eq!(value["grants"], json!([]));
+            fs::write(
+                Path::new(SOCKET).with_file_name("last-grants-generation"),
+                generation.to_string(),
+            )
+            .unwrap();
         }
         "activate" => {
             assert_eq!(states.insert(generation, true), Some(false));
         }
-        "renew" => assert_eq!(states.get(&generation), Some(&true)),
+        "renew" => assert!(states.contains_key(&generation)),
         "retire" => {
             states.remove(&generation);
         }
@@ -114,7 +119,12 @@ async fn invoke(controller: &Path, args: &[&str]) -> io::Result<Value> {
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-async fn mount_manager(controller: &Path, config: &Path, token: &Path) -> Child {
+async fn mount_manager(
+    controller: &Path,
+    config: &Path,
+    token: &Path,
+    expect_running: bool,
+) -> Child {
     let mut command = Process::new(controller);
     // Only the fixture's manager subprocess inherits this restrictive umask.
     unsafe {
@@ -133,7 +143,23 @@ async fn mount_manager(controller: &Path, config: &Path, token: &Path) -> Child 
     timeout(Duration::from_secs(20), async {
         loop {
             assert!(child.try_wait().unwrap().is_none());
-            if invoke(controller, &["status"]).await.is_ok() {
+            // Poll over the private socket without spawning short-lived process trees
+            // while startup is verifying the appliance's process identities.
+            let status = async {
+                let mut stream =
+                    UnixStream::connect("/run/rentnerproxy/app-manager/control.sock").await?;
+                stream.write_all(br#"{"action":"status"}"#).await?;
+                stream.shutdown().await?;
+                let mut bytes = Vec::new();
+                stream.read_to_end(&mut bytes).await?;
+                let reply: Value = serde_json::from_slice(&bytes)?;
+                Ok::<_, io::Error>(reply["result"].clone())
+            }
+            .await;
+            if status.is_ok_and(|state| {
+                state[ID]["running"] == expect_running
+                    && (expect_running || state[ID]["recoveryRequired"] == true)
+            }) {
                 break;
             }
             sleep(Duration::from_millis(50)).await;
@@ -293,9 +319,44 @@ pub(super) async fn exercise() {
     assert_eq!(unsafe { libc::geteuid() }, 0);
     let controller = PathBuf::from(std::env::var_os("RENTNERPROXY_TEST_CONTROLLER").unwrap());
     let executable = PathBuf::from(std::env::var_os("RENTNERPROXY_TEST_APP").unwrap());
-    assert!(!Path::new(ROOT).exists() && !Path::new(SOCKET).exists());
-    let run = Path::new("/run/rentnerproxy");
-    fs::create_dir_all(run).unwrap();
+    let fixed_directory = |parent: &Path, name: &str| {
+        tempfile::Builder::new()
+            .prefix(name)
+            .rand_bytes(0)
+            .tempdir_in(parent)
+            .unwrap()
+    };
+    let run_guard = fixed_directory(Path::new("/run"), "rentnerproxy");
+    let run = run_guard.path();
+    fs::set_permissions(run, fs::Permissions::from_mode(0o755)).unwrap();
+    let state = Path::new(ROOT).parent().unwrap();
+    let journal_guard = fixed_directory(state, "app-manager");
+    fs::set_permissions(journal_guard.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let storage = state.join("apps");
+    assert_eq!(
+        fs::symlink_metadata(&storage).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    struct AppStorage(PathBuf);
+    impl Drop for AppStorage {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    // Only this isolated fixture can create the previously absent storage tree.
+    let _storage_guard = AppStorage(storage);
+    assert!(
+        Process::new(&controller)
+            .args(["--app-backup", "empty"])
+            .env(
+                "RENTNERPROXY_APP_INSTALLER_CONFIG",
+                state.join("missing-installer.json")
+            )
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
     let api = run.join("app-api");
     fs::create_dir(&api).unwrap();
     chown(&api, Some(10002), Some(10002)).unwrap();
@@ -349,7 +410,7 @@ pub(super) async fn exercise() {
         )
         .unwrap();
     drop(journal);
-    let mut manager = mount_manager(&controller, &config, &token).await;
+    let mut manager = mount_manager(&controller, &config, &token, true).await;
     let states = invoke(&controller, &["status"]).await.unwrap();
     assert_eq!(states[ID]["active"], "1.0.0");
     assert_eq!(states[ID]["candidate"], "1.1.0");
@@ -363,13 +424,26 @@ pub(super) async fn exercise() {
     halt(&mut manager).await;
     verify_uid_stopped(UID).unwrap();
     backup_files(&controller, &config, temp.path()).await;
+    let archive = temp
+        .path()
+        .join("store/archives")
+        .join(&packages[0].archive_sha256);
+    let saved = temp.path().join("offline-archive");
+    fs::rename(&archive, &saved).unwrap();
+    let last_grants = Path::new(SOCKET).with_file_name("last-grants-generation");
+    let before_grants = fs::read(&last_grants).unwrap();
+    let mut manager = mount_manager(&controller, &config, &token, false).await;
+    fs::rename(saved, archive).unwrap();
+    invoke(&controller, &["start", ID]).await.unwrap();
+    assert_eq!(fs::read(&last_grants).unwrap(), before_grants);
+    halt(&mut manager).await;
     let mut journal = Journal::open(Path::new(ROOT)).unwrap();
     let mut slot = journal.slot(ID).unwrap().clone();
     assert!(!slot.pending_fence && slot.desired_running);
     slot.candidate = Some(release(&packages[2]));
     journal.save(ID, slot).unwrap();
     drop(journal);
-    let mut manager = mount_manager(&controller, &config, &token).await;
+    let mut manager = mount_manager(&controller, &config, &token, true).await;
     let before = invoke(&controller, &["status"]).await.unwrap()[ID]["generation"]
         .as_u64()
         .unwrap();
@@ -377,7 +451,7 @@ pub(super) async fn exercise() {
     assert!(
         error
             .to_string()
-            .contains("Previous release restarted with grants cleared"),
+            .contains("Previous release restarted with previously approved grants"),
         "{error}"
     );
     let states = invoke(&controller, &["status"]).await.unwrap();

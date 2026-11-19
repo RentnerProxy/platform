@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Recovery phases and bounded artifact validation are ordered.
 import { createDecipheriv } from 'node:crypto'
+import { maximumBackupMetadataBytes } from '../../../scripts/backup/validation.ts'
 import {
     appBackupCommand,
     hasNativeAppStorage,
@@ -366,7 +367,7 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
         metadata.postgres.bytes +
         metadata.applicationEncryptionKey.bytes +
         (metadata.version === 5 ? metadata.applications.bytes : 0) +
-        65_536
+        maximumBackupMetadataBytes
     // Existing live data is already reflected in free space. Extracted state also
     // needs target filesystem allocation for file tails, directories and metadata.
     await assertBackupCapacity([

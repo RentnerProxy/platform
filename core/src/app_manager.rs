@@ -3,6 +3,7 @@ mod gateway;
 mod journal;
 mod removal;
 mod runtime;
+mod service;
 mod storage;
 #[cfg(test)]
 #[path = "../tests/private/app_manager.rs"]
@@ -22,6 +23,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
@@ -48,6 +50,7 @@ fn valid_id(id: &str) -> bool {
 }
 
 struct Manager {
+    listener: Option<Arc<tokio::net::UnixListener>>,
     config: PathBuf,
     journal: Journal,
     gateway: Gateway,
@@ -57,12 +60,11 @@ struct Manager {
 
 impl Manager {
     async fn package(
-        &self,
+        config: PathBuf,
         app: String,
         version: String,
         record: Option<Release>,
     ) -> io::Result<StagedPackage> {
-        let config = self.config.clone();
         let (send, result) = tokio::sync::oneshot::channel();
         // Catalog downloads may outlive a shutdown request. Only the async owner publishes journal transitions.
         std::thread::Builder::new()
@@ -121,7 +123,12 @@ impl Manager {
         {
             return Err(bad("Installation belongs to another app"));
         }
-        let package = self.package(app.clone(), version.clone(), None).await?;
+        let package = self
+            .during(
+                id,
+                Self::package(self.config.clone(), app.clone(), version.clone(), None),
+            )
+            .await?;
         let mut slot = match self.journal.slots().get(id) {
             Some(s) => s.clone(),
             None => self.allocate(app).await?,
@@ -143,13 +150,17 @@ impl Manager {
         timeout(Duration::from_secs(11), async {
             loop {
                 match journal::lock(&path) {
-                    Ok(file) => {
-                        return tokio::task::spawn_blocking(move || {
-                            verify_uid_stopped(uid)?;
-                            Ok(file)
-                        })
-                        .await?;
-                    }
+                    Ok(file) => loop {
+                        match tokio::task::spawn_blocking(move || verify_uid_stopped(uid)).await? {
+                            Ok(()) => return Ok(file),
+                            // Concurrent thread creation can invalidate a /proc snapshot.
+                            // Hold the writer and require a fresh, conclusive scan.
+                            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                                sleep(Duration::from_millis(100)).await
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    },
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                         sleep(Duration::from_millis(100)).await
                     }
@@ -216,14 +227,18 @@ impl Manager {
     ) -> io::Result<()> {
         let slot = self.journal.slot(id)?.clone();
         let package = self
-            .package(
-                slot.app_id.clone(),
-                release.version.clone(),
-                Some(release.clone()),
+            .during(
+                id,
+                Self::package(
+                    self.config.clone(),
+                    slot.app_id.clone(),
+                    release.version.clone(),
+                    Some(release.clone()),
+                ),
             )
             .await?;
         let data = package.manifest.get("data").map(read_data).transpose()?;
-        if !journal::compatible(slot.written.as_ref(), data.as_ref()) {
+        if !slot.accepts(&release, data.as_ref()) {
             return Err(bad("Declared data versions require migration or recovery"));
         }
         let generation = slot
@@ -234,7 +249,7 @@ impl Manager {
         let writer = self.fence(id).await?;
         let mut slot = self.journal.slot(id)?.clone();
         slot.generation = generation;
-        slot.recovery_required = true;
+        slot.require_recovery();
         slot.pending_fence = true;
         self.journal.save(id, slot.clone())?;
         let who = identity(id, &slot);
@@ -260,32 +275,32 @@ impl Manager {
         }
         slot.database_provisioned |= data.is_some();
         self.journal.save(id, slot.clone())?;
-        runtime::provision(slot.uid, data.is_some(), &writer).await?;
+        self.during(id, runtime::provision(slot.uid, data.is_some(), &writer))
+            .await?;
         slot.written = data;
         slot.provider_dependencies_unknown |= package.manifest["providers"]
             .as_array()
             .is_none_or(|providers| !providers.is_empty());
         self.journal.save(id, slot.clone())?;
-        let mut live = Running::launch(id, &slot, &package, &writer, renewal).await?;
+        let mut live = self
+            .during(id, Running::launch(id, &slot, &package, &writer, renewal))
+            .await?;
         if live.exited()? {
             return Err(bad("App or lease expired before activation"));
+        }
+        if grants.is_some() {
+            // Only activation can publish staged grants. Persist uncertainty before sending it.
+            slot.grants_uncertain = Some(true);
+            self.journal.save(id, slot.clone())?;
         }
         live.activate(&self.gateway, &who).await?;
         if live.exited()? {
             return Err(bad("App exited during activation"));
         }
-        if slot.active.as_ref() != Some(&release) {
-            slot.previous = slot.active.replace(release.clone());
-        }
-        if slot
-            .candidate
-            .as_ref()
-            .is_some_and(|c| c.archive_sha256 == release.archive_sha256)
-        {
-            slot.candidate = None;
-        }
+        slot.commit_release(release);
         slot.desired_running = true;
         slot.recovery_required = false;
+        slot.grants_uncertain = None;
         self.journal.save(id, slot)?;
         self.running.insert(id.to_owned(), live);
         Ok(())
@@ -313,12 +328,20 @@ impl Manager {
                 {
                     // The failed activation may have committed new grants. Replaying an old
                     // grant set could also restore access an operator revoked during cutover.
-                    if self.launch(id, active, Some(&[])).await.is_ok() {
+                    let uncertain = self.journal.slot(id)?.uncertain_grants();
+                    if self
+                        .launch(id, active, uncertain.then_some([].as_slice()))
+                        .await
+                        .is_ok()
+                    {
+                        let grants = if uncertain {
+                            "grants cleared. Reapprove the required grants"
+                        } else {
+                            "previously approved grants"
+                        };
                         return Err(io::Error::new(
                             error.kind(),
-                            format!(
-                                "{error}. Previous release restarted with grants cleared. Reapprove the required grants."
-                            ),
+                            format!("{error}. Previous release restarted with {grants}."),
                         ));
                     }
                     self.fence(id).await?;
@@ -350,27 +373,7 @@ impl Manager {
             }
         }
         match cmd {
-            Command::Status => {
-                let mut status = BTreeMap::new();
-                for (id, s) in self.journal.slots() {
-                    status.insert(
-                        id,
-                        json!({
-                            "appId": s.app_id,
-                            "uid": s.uid,
-                            "generation": s.generation,
-                            "active": s.active.as_ref().map(|p| &p.version),
-                            "candidate": s.candidate.as_ref().map(|p| &p.version),
-                            "previous": s.previous.as_ref().map(|p| &p.version),
-                            "running": self.running.contains_key(id),
-                            "recoveryRequired": s.recovery_required,
-                            "desiredRunning": s.desired_running,
-                            "removal": s.removal,
-                        }),
-                    );
-                }
-                return Ok(json!(status));
-            }
+            Command::Status => return Ok(self.status()),
             Command::Stage {
                 installation_id,
                 app_id,
@@ -403,26 +406,25 @@ impl Manager {
                 self.switch(&installation_id, target, Some(&[])).await?;
             }
             Command::Stop { installation_id } => {
-                let mut slot = self.journal.slot(&installation_id)?.clone();
-                slot.desired_running = false;
-                self.journal.save(&installation_id, slot)?;
-                self.fence(&installation_id).await?;
+                self.stop(&installation_id).await?;
             }
             Command::Start { installation_id } => {
-                if !self.running.contains_key(&installation_id) {
-                    let target = self
-                        .journal
-                        .slot(&installation_id)?
-                        .active
-                        .clone()
-                        .ok_or_else(|| bad("No committed release"))?;
-                    let grants = self
-                        .journal
-                        .slot(&installation_id)?
-                        .recovery_required
-                        .then_some([].as_slice());
-                    self.switch(&installation_id, target, grants).await?;
+                if let Some(live) = self.running.get_mut(&installation_id) {
+                    if !live.exited()? {
+                        return Ok(Value::Null);
+                    }
+                    let mut slot = self.journal.slot(&installation_id)?.clone();
+                    slot.require_recovery();
+                    self.journal.save(&installation_id, slot)?;
+                    self.fence(&installation_id).await?;
                 }
+                let slot = self.journal.slot(&installation_id)?;
+                let target = slot
+                    .active
+                    .clone()
+                    .ok_or_else(|| bad("No committed release"))?;
+                let grants = slot.uncertain_grants().then_some([].as_slice());
+                self.switch(&installation_id, target, grants).await?;
             }
         }
         Ok(Value::Null)
@@ -445,15 +447,19 @@ impl Manager {
                         .active
                         .take()
                         .ok_or_else(|| bad("No active release to recover"))?;
-                    self.launch(&id, target, slot.recovery_required.then_some([].as_slice()))
-                        .await?;
+                    self.launch(
+                        &id,
+                        target,
+                        slot.uncertain_grants().then_some([].as_slice()),
+                    )
+                    .await?;
                 }
                 Ok::<_, io::Error>(())
             }
             .await;
             if let Err(e) = result {
                 let mut slot = self.journal.slot(&id)?.clone();
-                slot.recovery_required = true;
+                slot.require_recovery();
                 self.journal.save(&id, slot)?;
                 eprintln!("Installation {id} needs recovery: {e}");
             }
@@ -462,7 +468,8 @@ impl Manager {
     }
 
     async fn serve(&mut self) -> io::Result<()> {
-        let listener = control::bind()?;
+        let listener = Arc::new(control::bind()?);
+        self.listener = Some(Arc::clone(&listener));
         self.reconcile().await?;
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -477,24 +484,30 @@ impl Manager {
     /// After an unexpected exit, ticks retry retirement and leave the app stopped for manual recovery with `start`.
     /// The next manager boot reconciles the saved running intent.
     async fn check_exits(&mut self) -> io::Result<()> {
+        self.check_other_exits(None).await
+    }
+
+    async fn check_other_exits(&mut self, busy: Option<&str>) -> io::Result<()> {
         let pending: Vec<_> = self
             .journal
             .slots()
             .iter()
-            .filter(|(id, s)| s.pending_fence && !self.running.contains_key(*id))
+            .filter(|(id, s)| {
+                Some(id.as_str()) != busy && s.pending_fence && !self.running.contains_key(*id)
+            })
             .map(|(id, _)| id.clone())
             .collect();
         let start = pending.partition_point(|id| id <= &self.fence_cursor);
         let retry = pending[start..].iter().chain(&pending[..start]).take(8);
         let mut dead = Vec::new();
         for (id, live) in &mut self.running {
-            if live.exited()? {
+            if Some(id.as_str()) != busy && live.exited()? {
                 dead.push(id.clone());
             }
         }
         for id in &dead {
             let mut slot = self.journal.slot(id)?.clone();
-            slot.recovery_required = true;
+            slot.require_recovery();
             self.journal.save(id, slot)?;
         }
         for id in retry {
@@ -512,6 +525,13 @@ impl Manager {
             Ok(request) => self.execute(request).await,
             Err(error) => Err(error),
         };
+        Self::respond(&mut stream, result).await
+    }
+
+    async fn respond(
+        stream: &mut tokio::net::UnixStream,
+        result: io::Result<Value>,
+    ) -> io::Result<()> {
         let response = match result {
             Ok(value) => json!({"ok": true, "result": value}),
             Err(error) => json!({"ok": false, "error": error.to_string()}),
@@ -617,7 +637,7 @@ fn recover(installer: &Installer, app: &str, record: &Release) -> io::Result<Sta
 
 pub(crate) fn backup_inventory(config: Option<&Path>) -> io::Result<(impl Sized, Value)> {
     let journal = Journal::open(Path::new("/var/lib/rentnerproxy/app-manager"))?;
-    let installer = config.map(Installer::open).transpose()?;
+    let mut installer = None;
     let mut writers = Vec::new();
     for slot in journal.slots().values() {
         writers.push(journal.writer(slot.uid)?);
@@ -634,13 +654,13 @@ pub(crate) fn backup_inventory(config: Option<&Path>) -> io::Result<(impl Sized,
             .into_iter()
             .flatten()
         {
-            recover(
-                installer
-                    .as_ref()
-                    .ok_or_else(|| bad("Missing installer configuration for backup"))?,
-                &slot.app_id,
-                release,
-            )?;
+            let installer = match &mut installer {
+                Some(existing) => existing,
+                empty => empty.insert(Installer::open(
+                    config.ok_or_else(|| bad("Missing installer configuration for backup"))?,
+                )?),
+            };
+            recover(installer, &slot.app_id, release)?;
         }
     }
     let snapshot = serde_json::to_value(journal.slots())?;
@@ -697,6 +717,7 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
     let check = config.clone();
     tokio::task::spawn_blocking(move || Installer::open(&check).map(drop)).await??;
     let mut manager = Manager {
+        listener: None,
         config,
         journal: Journal::open(Path::new("/var/lib/rentnerproxy/app-manager"))?,
         gateway: Gateway::open()?,

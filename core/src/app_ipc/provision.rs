@@ -88,17 +88,19 @@ fn ensure_directory(path: &Path, uid: u32, gid: u32, mode: u32) -> io::Result<Fi
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
         .open(path)?;
     let stat = directory.metadata()?;
-    if stat.uid() == uid && stat.gid() == gid && stat.mode() & 0o7777 == mode {
-        return Ok(directory);
-    }
-    if stat.uid() == 0 && (stat.gid() == 0 || stat.gid() == gid) && stat.mode() & 0o7777 == 0o700 {
+    if stat.uid() != uid || stat.gid() != gid || stat.mode() & 0o7777 != mode {
+        if stat.uid() != 0
+            || (stat.gid() != 0 && stat.gid() != gid)
+            || stat.mode() & 0o7777 != 0o700
+        {
+            return Err(unsafe_path());
+        }
         fchown(&directory, Some(uid), Some(gid))?;
         directory.set_permissions(fs::Permissions::from_mode(mode))?;
-        directory.sync_all()?;
-        File::open(path.parent().ok_or_else(unsafe_path)?)?.sync_all()?;
-        return Ok(directory);
     }
-    Err(unsafe_path())
+    directory.sync_all()?;
+    File::open(path.parent().ok_or_else(unsafe_path)?)?.sync_all()?;
+    Ok(directory)
 }
 
 fn provision_lock(installation: &Path) -> io::Result<File> {

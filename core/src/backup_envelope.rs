@@ -25,7 +25,7 @@ const NAMES: [&str; 5] = [
 ];
 const LARGE_ARTIFACT: u64 = 8 * 1024_u64.pow(3);
 const LIMITS: [u64; NAMES.len()] = [
-    65_536,
+    512 * 1024,
     65_536,
     LARGE_ARTIFACT,
     LARGE_ARTIFACT,

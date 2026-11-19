@@ -66,6 +66,7 @@ rusqlite = { version = "0.43.0", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+tokio = { version = "1.54.1", features = ["test-util"] }
 ed25519-dalek = { version = "3.0.0", features = ["pem"] }
 tower = { version = "0.5.3", features = ["util"] }
 

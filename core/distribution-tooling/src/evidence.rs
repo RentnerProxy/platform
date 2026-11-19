@@ -141,12 +141,13 @@ pub fn verify_oci_input(root: &Path, expected: OciInput, output: impl Write) -> 
     Ok(())
 }
 
-fn files(root: &Path) -> io::Result<BTreeSet<String>> {
+fn files(root: &Path, maximum_files: usize) -> io::Result<BTreeSet<String>> {
     fn visit(
         directory: &Path,
         prefix: &str,
         depth: usize,
         remaining_directories: &mut usize,
+        maximum_files: usize,
         files: &mut BTreeSet<String>,
     ) -> io::Result<()> {
         if depth > 32 || !fs::symlink_metadata(directory)?.is_dir() {
@@ -174,10 +175,11 @@ fn files(root: &Path) -> io::Result<BTreeSet<String>> {
                     &format!("{prefix}{name}/"),
                     depth + 1,
                     remaining_directories,
+                    maximum_files,
                     files,
                 )?;
             } else if kind.is_file() {
-                if files.len() == MAX_FILES {
+                if files.len() == maximum_files {
                     return Err(invalid("Artifact bundle is too large"));
                 }
                 files.insert(format!("{prefix}{name}"));
@@ -189,7 +191,14 @@ fn files(root: &Path) -> io::Result<BTreeSet<String>> {
     }
     let mut paths = BTreeSet::new();
     let mut remaining_directories = MAX_DIRECTORIES;
-    visit(root, "", 0, &mut remaining_directories, &mut paths)?;
+    visit(
+        root,
+        "",
+        0,
+        &mut remaining_directories,
+        maximum_files,
+        &mut paths,
+    )?;
     Ok(paths)
 }
 
@@ -197,7 +206,7 @@ pub fn verify_reports(root: &Path, expected: Reports) -> io::Result<()> {
     if !sha256(&expected.candidate_bundle_sha256) {
         return Err(invalid("Invalid candidate bundle checksum"));
     }
-    let mut paths = files(root)?;
+    let mut paths = files(root, MAX_FILES)?;
     for architecture in ["amd64", "arm64"] {
         for target in ["debian", "fedora"] {
             let name = format!("native-{target}-{architecture}.json");
@@ -221,16 +230,26 @@ pub fn verify_reports(root: &Path, expected: Reports) -> io::Result<()> {
     Ok(())
 }
 
-pub fn verify_bound(root: &Path, expected: Workflow, output: impl Write) -> io::Result<()> {
-    let mut paths = files(root)?;
-    for excluded in [
-        "bundle.json",
-        "candidate-bundle.json",
-        "binding.json",
-        "image-evidence.json",
-    ] {
+const BINDER_FILES: [&str; 4] = [
+    "bundle.json",
+    "candidate-bundle.json",
+    "binding.json",
+    "image-evidence.json",
+];
+
+fn bound_files(root: &Path) -> io::Result<BTreeSet<String>> {
+    let mut paths = files(root, MAX_FILES - 1 + BINDER_FILES.len())?;
+    for excluded in BINDER_FILES {
         paths.remove(excluded);
     }
+    if paths.len() >= MAX_FILES {
+        return Err(invalid("Artifact bundle is too large"));
+    }
+    Ok(paths)
+}
+
+pub fn verify_bound(root: &Path, expected: Workflow, output: impl Write) -> io::Result<()> {
+    let paths = bound_files(root)?;
     let binding: Binding = decode(&read_file(&root.join("binding.json"), SMALL_JSON)?)?;
     let manifest = read_file(&root.join("candidate-bundle.json"), BUNDLE_BYTES)?;
     let image = read_file(&root.join("image-evidence.json"), MAX_IMAGE_EVIDENCE_BYTES)?;
@@ -289,4 +308,24 @@ pub fn verify_bound(root: &Path, expected: Workflow, output: impl Write) -> io::
         },
     )
     .map_err(io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bound_inventory_allows_binder_files_above_the_candidate_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..MAX_FILES - 1 {
+            fs::write(directory.path().join(format!("test-{index}")), b"").unwrap();
+        }
+        for name in BINDER_FILES {
+            fs::write(directory.path().join(name), b"").unwrap();
+        }
+        assert_eq!(bound_files(directory.path()).unwrap().len(), MAX_FILES - 1);
+        fs::remove_file(directory.path().join(BINDER_FILES[0])).unwrap();
+        fs::write(directory.path().join("extra"), b"").unwrap();
+        assert!(bound_files(directory.path()).is_err());
+    }
 }

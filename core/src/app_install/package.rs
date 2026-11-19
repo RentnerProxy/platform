@@ -33,8 +33,6 @@ pub(super) fn stage(
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             fetch(&asset, &archive)?;
-            filesystem::sync_file(&archive)?;
-            filesystem::sync_directory(&archives)?;
         }
         Err(error) => return Err(error),
     }
@@ -44,6 +42,23 @@ pub(super) fn stage(
     };
     if file_identity(&archive, asset.size_bytes)? != identity {
         return Err(invalid("Cached archive differs from the signed release"));
+    }
+    filesystem::sync_file(&archive)?;
+    filesystem::sync_directory(&archives)?;
+
+    // The installer lock is held for staging and offline recovery.
+    for entry in fs::read_dir(&packages)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(".stage-"))
+        {
+            if !entry.file_type()?.is_dir() {
+                return Err(invalid("Invalid abandoned package workspace"));
+            }
+            fs::remove_dir_all(entry.path())?;
+        }
     }
     let mut builder = tempfile::Builder::new();
     builder.prefix(".stage-");

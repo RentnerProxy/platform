@@ -7,13 +7,13 @@ import { test } from 'bun:test'
 const root = resolve(import.meta.dir, '../../../..')
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const artifact = (bytes: Uint8Array) => ({ bytes: bytes.length, sha256: hash(bytes) })
-function emptyDirectoryTar() {
+function fixtureTar(name = './', contents = '') {
     const header = Buffer.alloc(512)
-    header.write('./')
+    header.write(name)
     header.write('0000700\0', 100)
-    header.write('00000000000\0', 124)
+    header.write(Buffer.byteLength(contents).toString(8).padStart(11, '0') + '\0', 124)
     header.fill(32, 148, 156)
-    header[156] = 53
+    header[156] = contents ? 48 : 53
     header.write(
         header
             .reduce((sum, byte) => sum + byte, 0)
@@ -21,13 +21,19 @@ function emptyDirectoryTar() {
             .padStart(6, '0') + '\0 ',
         148,
     )
-    return Buffer.concat([header, Buffer.alloc(1024)])
+    const body = Buffer.alloc(Math.ceil(Buffer.byteLength(contents) / 512) * 512)
+    body.write(contents)
+    return Buffer.concat([header, body, Buffer.alloc(1024)])
 }
 
 type RestoreScenario =
     | 'success'
     | 'source-swap'
     | 'bad-hash'
+    | 'invalid-index'
+    | 'null-index'
+    | 'legacy-index'
+    | 'legacy-image'
     | 'database-failure'
     | 'stopped-configured'
     | 'fresh-target'
@@ -35,6 +41,7 @@ type RestoreScenario =
     | 'wrong-backup'
     | 'resume-missing'
     | 'inventory-running'
+    | 'inventory-transport-failure'
     | 'inventory-stopped'
     | 'inventory-pending'
     | 'inventory-cleanup-failure'
@@ -50,7 +57,16 @@ async function restore(scenario: RestoreScenario) {
     await Promise.all([mkdir(input), mkdir(bin)])
     const dump = Buffer.alloc(6 * 1024 ** 2 + 7, 137)
     const key = Buffer.from(Buffer.alloc(32, 17).toString('base64') + '\n')
-    const tar = emptyDirectoryTar()
+    const tar = fixtureTar()
+    const index =
+        scenario === 'invalid-index'
+            ? '{"certificates":{},"eventJournalVersion":2}'
+            : scenario === 'legacy-index' || scenario === 'legacy-image'
+              ? '{"certificates":{},"eventJournalVersion":0}'
+              : scenario === 'null-index'
+                ? 'null'
+                : undefined
+    const controller = index ? fixtureTar('certificates/certificate-metadata.json', index) : tar
     const metadata = {
         format: 'rentnerproxy-production-backup',
         version: 4,
@@ -63,7 +79,7 @@ async function restore(scenario: RestoreScenario) {
             dump: 'postgres.dump',
         },
         applicationEncryptionKey: { ...artifact(key), file: 'app-encryption-key' },
-        controllerState: { ...artifact(tar), archive: 'controller-state.tar' },
+        controllerState: { ...artifact(controller), archive: 'controller-state.tar' },
         crowdSecState: { ...artifact(tar), archive: 'crowdsec-state.tar' },
         deployment: { publicOrigin: 'https://proxy.test', trustedProxyCidrs: '' },
         source: { imageId: 'sha256:' + 'a'.repeat(64), revision: null, version: null },
@@ -75,10 +91,29 @@ async function restore(scenario: RestoreScenario) {
             scenario === 'bad-hash' ? Buffer.alloc(dump.length) : dump,
         ),
         writeFile(join(input, 'app-encryption-key'), key),
-        writeFile(join(input, 'controller-state.tar'), tar),
+        writeFile(join(input, 'controller-state.tar'), controller),
         writeFile(join(input, 'crowdsec-state.tar'), tar),
         writeFile(join(directory, 'compose.yml'), 'fixture only; docker is replaced'),
     ])
+    const compatibility = join(directory, 'compatibility.ts')
+    await writeFile(
+        compatibility,
+        'export const isSupportedBackupVersion = version => ' +
+            (scenario === 'legacy-image' ? 'version === 4' : 'version === 4 || version === 5'),
+    )
+    const decoder = join(bin, 'controller')
+    await writeFile(
+        decoder,
+        `#!/usr/bin/env -S bun --no-env-file
+import {readFileSync} from 'node:fs'
+if (process.env.FIXTURE_SCENARIO === 'legacy-image' || process.argv[2] !== '--check-backup-state' || process.argv[3] !== 'certificate-index') process.exit(98)
+const doc = readFileSync(0)
+const actual = process.env.RENTNERPROXY_TEST_CONTROLLER
+if (actual) process.exit(Bun.spawnSync([actual,'--check-backup-state','certificate-index'], {stdin: doc,stdout:'ignore',stderr:'ignore'}).exitCode ?? 97)
+process.exit(JSON.parse(doc.toString()).eventJournalVersion === 0 ? 0 : 1)
+`,
+        { mode: 0o755 },
+    )
     const fake = join(bin, 'docker')
     await writeFile(
         fake,
@@ -93,17 +128,24 @@ if (command.includes('config --format=json')) {
     console.log(JSON.stringify({ services: { rentnerproxy: { image:'fixture',environment:{ PUBLIC_ORIGIN:'https://proxy.test' } } } }))
 } else if (command.startsWith('image inspect ')) {
     console.log('sha256:' + 'a'.repeat(64))
+} else if (args.includes('metadata')) {
+    const doc = readFileSync(0,'utf8')
+    if (!args.includes('certificate-index') || !args.includes('--network=none') || !args.includes('--interactive') || args.includes('--volume')) process.exit(99)
+    const [shell, ...values] = args.slice(args.indexOf('-ceu') + 1)
+    const script = shell.replace('/opt/rentnerproxy/web/web/src/lib/ApplicationVersion/backupCompatibility.ts', directory + '/compatibility.ts').replace('/usr/local/bin/rentnerproxy-controller',directory + '/bin/controller')
+    process.exit(Bun.spawnSync(['bash','-ceu',script,...values], {stdin:Buffer.from(doc),stdout:'ignore',stderr:'ignore'}).exitCode ?? 97)
 } else if (command.includes('inspect-production-restore')) {
     if (scenario === 'resume' || scenario === 'inventory-pending') console.log(process.env.FIXTURE_BACKUP_ID)
     if (scenario === 'wrong-backup') console.log('b'.repeat(64))
 } else if (command.includes('ps --status running --quiet')) {
-    if (['inventory-running', 'inventory-cleanup-failure', 'inventory-pending'].includes(scenario)) console.log('existing-appliance')
+    if (['inventory-running', 'inventory-transport-failure', 'inventory-cleanup-failure', 'inventory-pending'].includes(scenario)) console.log('existing-appliance')
 } else if (args.includes('inventory') && args.some(arg => arg.includes('CHECK_APP_INVENTORY'))) {
     if (!args.includes('--rm')) process.exit(78)
-    if (scenario === 'inventory-cleanup-failure') {
+    if (scenario === 'inventory-cleanup-failure' || scenario === 'inventory-transport-failure') {
         const name = args[args.indexOf('--name') + 1], label = args[args.indexOf('--label') + 1]
         writeFileSync(directory + '/maintenance', JSON.stringify({ name, label }))
     }
+    if (scenario === 'inventory-transport-failure') process.exit(9)
     console.log(scenario.startsWith('inventory-') ? 'rejected' : 'accepted')
 } else if (command.startsWith('container ls ') && existsSync(directory + '/maintenance')) {
     const {name} = JSON.parse(readFileSync(directory + '/maintenance'))
@@ -206,6 +248,7 @@ test
     .skipIf(process.platform === 'win32')
     .each([
         'inventory-running',
+        'inventory-transport-failure',
         'inventory-stopped',
         'inventory-pending',
         'inventory-cleanup-failure',
@@ -220,13 +263,13 @@ test
         !calls.some((args) => args.includes('begin-production-restore') || args.includes('up')),
     )
     const start = calls.findIndex((args) => args.includes('start'))
-    if (scenario === 'inventory-running') {
+    if (scenario === 'inventory-running' || scenario === 'inventory-transport-failure') {
         assert.ok(start > cleanup)
         assert.ok(calls.some((args, i) => i > start && args.includes('exec')))
     } else {
         assert.equal(start, -1)
     }
-    if (scenario === 'inventory-cleanup-failure') {
+    if (scenario === 'inventory-cleanup-failure' || scenario === 'inventory-transport-failure') {
         assert.ok(
             calls.some((args, i) => i > cleanup && args.includes('rm') && args.includes('--force')),
         )
@@ -238,6 +281,32 @@ test
             : /check target application inventory/,
     )
 })
+
+test
+    .skipIf(process.platform === 'win32')
+    .each(['invalid-index', 'legacy-index', 'legacy-image', 'null-index'] as const)(
+    'checks the recovered %s before quiescing the target',
+    async (scenario) => {
+        const { calls, exit, stderr } = await restore(scenario)
+        if (scenario === 'null-index') {
+            assert.equal(exit, 1)
+            assert.match(stderr, /invalid certificate state metadata/)
+            assert.equal(calls.length, 0)
+            return
+        }
+        const checked = calls.findIndex((args) => args.includes('metadata'))
+        assert.ok(checked >= 0)
+        const stopped = calls.findIndex((args) => args.includes('stop'))
+        if (scenario === 'legacy-index' || scenario === 'legacy-image') {
+            assert.equal(exit, 0, stderr)
+            assert.ok(stopped > checked)
+        } else {
+            assert.equal(exit, 1)
+            assert.match(stderr, /validate controller backup metadata/)
+            assert.equal(stopped, -1)
+        }
+    },
+)
 
 test.skipIf(process.platform === 'win32')(
     'restore CLI rejects corrupted input before any Docker call',

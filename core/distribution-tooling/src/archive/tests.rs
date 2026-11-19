@@ -11,6 +11,12 @@ fn expected() -> [File; 1] {
     }]
 }
 
+fn tar_checksum(header: &mut [u8]) {
+    header[148..156].fill(b' ');
+    let checksum: u32 = header[..512].iter().copied().map(u32::from).sum();
+    header[148..156].copy_from_slice(format!("{checksum:06o}\0 ").as_bytes());
+}
+
 fn tar_entry(path: &str, mode: u32, owner: u32, kind: u8, link: &str) -> Vec<u8> {
     let mut header = [0; 512];
     header[..path.len()].copy_from_slice(path.as_bytes());
@@ -20,9 +26,7 @@ fn tar_entry(path: &str, mode: u32, owner: u32, kind: u8, link: &str) -> Vec<u8>
     header[124..136].copy_from_slice(format!("{:011o}\0", CONTENT.len()).as_bytes());
     header[156] = kind;
     header[157..157 + link.len()].copy_from_slice(link.as_bytes());
-    header[148..156].fill(b' ');
-    let checksum: u32 = header.iter().copied().map(u32::from).sum();
-    header[148..156].copy_from_slice(format!("{checksum:06o}\0 ").as_bytes());
+    tar_checksum(&mut header);
     let mut bytes = header.to_vec();
     bytes.extend_from_slice(CONTENT);
     bytes.resize(2048, 0);
@@ -70,6 +74,7 @@ fn tar_authenticates_types_paths_modes_and_exact_inventory() {
         assert!(verify_tar(&tar_entry(path, 0o755, 0, b'0', ""), &expected()).is_err());
     }
     for change in [
+        tar_entry("usr/bin/rentnerproxy/", 0o755, 0, b'0', ""),
         tar_entry(PATH, 0o4755, 0, b'0', ""),
         tar_entry(PATH, 0o755, 1, b'0', ""),
         tar_entry(PATH, 0o755, 0, b'0', "other"),
@@ -84,6 +89,21 @@ fn tar_authenticates_types_paths_modes_and_exact_inventory() {
     let mut invalid_header = valid;
     invalid_header[0] = b'x';
     assert!(verify_tar(&invalid_header, &expected()).is_err());
+}
+
+#[test]
+fn tar_prefix_is_only_used_with_ustar_headers() {
+    let mut prefixed = tar_entry("rentnerproxy", 0o755, 0, b'0', "");
+    prefixed[345..352].copy_from_slice(b"usr/bin");
+    tar_checksum(&mut prefixed);
+    assert!(verify_tar(&prefixed, &expected()).is_err());
+    prefixed[257..265].copy_from_slice(b"ustar\x0000");
+    tar_checksum(&mut prefixed);
+    assert!(verify_tar(&prefixed, &expected()).is_ok());
+    let mut gnu = tar_entry(PATH, 0o755, 0, b'0', "");
+    gnu[257..265].copy_from_slice(b"ustar  \0");
+    tar_checksum(&mut gnu);
+    assert!(verify_tar(&gnu, &expected()).is_ok());
 }
 
 #[test]

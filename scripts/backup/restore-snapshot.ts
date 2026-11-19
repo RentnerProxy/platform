@@ -2,6 +2,7 @@
 import { createDecipheriv, createHash } from 'node:crypto'
 import { appStateName, controllerAllocation, readAppStateMember } from './app-state.ts'
 import { constants } from 'node:fs'
+import { maximumBackupMetadataBytes } from './validation.ts'
 import { chmod, open, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -37,7 +38,10 @@ async function readBackupFile(path: string, maximumBytes: number): Promise<Buffe
 }
 
 export async function readSnapshotMetadata(directory: string, expectedId?: string) {
-    const metadataBytes = await readBackupFile(join(directory, 'metadata.json'), 65_536)
+    const metadataBytes = await readBackupFile(
+        join(directory, 'metadata.json'),
+        maximumBackupMetadataBytes,
+    )
     const backupId = createHash('sha256').update(metadataBytes).digest('hex')
     if (expectedId !== undefined && expectedId !== backupId)
         throw new Error('Backup metadata identity mismatch')
@@ -54,6 +58,7 @@ export async function snapshotProductionRestore(
     inputPath: string,
     snapshot: string,
     signal?: AbortSignal,
+    validateNative?: Parameters<typeof validateControllerEncryptionFile>[3],
 ) {
     signal?.throwIfAborted()
     const { metadata, metadataBytes, backupId } = await readSnapshotMetadata(inputPath)
@@ -66,7 +71,7 @@ export async function snapshotProductionRestore(
                 metadata.controllerState.bytes +
                 metadata.crowdSecState.bytes +
                 (metadata.version === 5 ? metadata.applications.bytes : 0) +
-                65_536,
+                metadataBytes.length,
         },
     ])
     await writeFile(join(snapshot, 'metadata.json'), metadataBytes, { mode: 0o600, flag: 'wx' })
@@ -121,6 +126,7 @@ export async function snapshotProductionRestore(
                     throw new Error('backup application key cannot decrypt controller state')
                 }
             },
+            validateNative,
         )
     } finally {
         await controllerFile.close()

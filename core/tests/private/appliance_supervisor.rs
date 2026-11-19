@@ -229,3 +229,21 @@ async fn engine_ignoring_term_is_killed_and_reaped_within_the_forced_window() {
     assert!(engine.is_none());
     assert!(!Path::new(&format!("/proc/{pid}")).exists());
 }
+
+#[tokio::test]
+async fn probe_confirmation_requires_the_managed_engine_to_still_be_alive() {
+    use super::{Mode, Supervisor};
+    let mut supervisor = Supervisor::new(CancellationToken::new());
+    supervisor.running = Mode::Online;
+    supervisor.engine = Some(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap(),
+    );
+    assert!(supervisor.engine_wanted(Mode::Online).unwrap());
+    assert!(!supervisor.engine_wanted(Mode::Local).unwrap());
+    supervisor.engine.as_mut().unwrap().kill().await.unwrap();
+    assert!(!supervisor.engine_wanted(Mode::Online).unwrap());
+}

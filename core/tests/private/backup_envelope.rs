@@ -89,6 +89,11 @@ fn matches_the_openssl_v1_envelope_across_artifact_boundaries() {
         assert!(verify_header(&invalid, &key).is_err());
     }
     assert!(verify_header(&header, &[0; 32]).is_err());
+    let mut maximum_metadata = header;
+    maximum_metadata[56..64].copy_from_slice(&(512_u64 * 1024).to_be_bytes());
+    assert!(verify_header(&maximum_metadata, &key).is_ok());
+    maximum_metadata[56..64].copy_from_slice(&(512_u64 * 1024 + 1).to_be_bytes());
+    assert!(verify_header(&maximum_metadata, &key).is_err());
     for (mode, request) in [
         ("seal", &seal_frame[..seal_frame.len() - 1]),
         ("open", &open_frame[..8]),

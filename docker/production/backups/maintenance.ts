@@ -82,6 +82,21 @@ async function command(args: string[], output?: string) {
     }
 }
 
+async function validateControllerMetadata(
+    kind: 'dns-registry' | 'certificate-index',
+    input: Uint8Array,
+) {
+    const result = await runMaintenanceProcess([appBackupCommand, '--check-backup-state', kind], {
+        cwd: '/',
+        env: childEnvironment,
+        input,
+        signal: operationSignal,
+        timeoutMs: 10_000,
+        maximumOutputBytes: 0,
+    })
+    if (result.failed || !result.stopped) throw new Error('Invalid controller metadata in backup')
+}
+
 function deployment() {
     return deploymentSchema.parse({
         publicOrigin: readDeploymentEnvironmentVariable('PUBLIC_ORIGIN', process.env),
@@ -166,6 +181,7 @@ async function offlineValidate() {
             '/backup',
             snapshot,
             operationSignal,
+            validateControllerMetadata,
         )
         await assertBackupCapacity([
             { path: '/tmp', bytes: 0, archive: stateCapacity.crowdSecState },
@@ -267,6 +283,7 @@ async function offlineRestore(options: readonly string[]) {
             '/backup',
             snapshot,
             operationSignal,
+            validateControllerMetadata,
         )
 
         if (capacity.backupId !== backupId)

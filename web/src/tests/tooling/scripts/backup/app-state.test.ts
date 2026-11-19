@@ -21,6 +21,7 @@ import {
 import { publishProductionBackup } from '../../../../../../scripts/backup/publication.ts'
 import { assertBackupAppRows } from '../../../../../../docker/web/validate-backup.ts'
 import { readSnapshotMetadata } from '../../../../../../scripts/backup/restore-snapshot.ts'
+import { maximumBackupMetadataBytes } from '../../../../../../scripts/backup/validation.ts'
 import { postgresCommand } from '../../../../../../scripts/backup/volume-commands.ts'
 
 const digest = (data: Buffer) => ({
@@ -29,7 +30,7 @@ const digest = (data: Buffer) => ({
 })
 const legacyInstallation = { id: 'kiri-1', appId: 'dev.example.kiri', uid: 20000, generation: 3 }
 const installation = { ...legacyInstallation, authorityRecorded: true }
-const snapshot = Buffer.from(
+const singleSnapshot = Buffer.from(
     JSON.stringify({
         formatVersion: 1,
         installations: {
@@ -45,7 +46,7 @@ const snapshot = Buffer.from(
 )
 
 test('checks installation identity including the candidate-only case', () => {
-    expect(appStateInstallations(snapshot)).toEqual([installation])
+    expect(appStateInstallations(singleSnapshot)).toEqual([installation])
     expect(() => assertBackupAppRows([installation], [{ ...installation }])).not.toThrow()
     expect(() => assertBackupAppRows([legacyInstallation], [installation])).not.toThrow()
     expect(() => assertBackupAppRows([legacyInstallation], [])).toThrow()
@@ -82,6 +83,31 @@ test('checks installation identity including the candidate-only case', () => {
 test('app snapshot survives publication and encrypted recovery and rejects downgrade, substitution and omission', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'rp-kiri-backup-'))
     try {
+        const installations = Array.from({ length: 256 }, (_, index) => ({
+            id: 'kiri-' + String(index).padStart(59, '0'),
+            appId: 'dev.example.' + String(index).padStart(86, 'a'),
+            uid: 20000 + index,
+            generation: Number.MAX_SAFE_INTEGER,
+            authorityRecorded: true,
+        }))
+        const slots = Object.fromEntries(
+            installations.map((slot) => [
+                slot.id,
+                Object.assign(
+                    { removal: 'installed', databaseProvisioned: false, written: null },
+                    slot,
+                ),
+            ]),
+        )
+        const data = Object.fromEntries(
+            installations.map((slot) => [
+                slot.uid,
+                [{ path: 'note', mode: 384, contents: 'a2lyaQ==' }],
+            ]),
+        )
+        const snapshot = Buffer.from(
+            JSON.stringify({ formatVersion: 1, installations: slots, data }),
+        )
         const staging = join(workspace, 'staging')
         const input = join(workspace, 'input')
         const source = join(workspace, 'source')
@@ -130,7 +156,7 @@ test('app snapshot survives publication and encrypted recovery and rejects downg
         const metadata = parseBackupMetadata({
             ...base,
             version: 5,
-            applications: { ...digest(snapshot), installations: [installation] },
+            applications: { ...digest(snapshot), installations },
         })
         const sized = (bytes: number) =>
             parseBackupMetadata({
@@ -141,7 +167,9 @@ test('app snapshot survives publication and encrypted recovery and rejects downg
         expect(() => sized(maximumAppStateBytes)).not.toThrow()
         expect(() => sized(maximumAppStateBytes + 1)).toThrow()
         await publishProductionBackup(staging, source, metadata)
-        const id = digest(await readFile(join(source, 'metadata.json'))).sha256
+        const published = await readFile(join(source, 'metadata.json'))
+        expect(published.length).toBeGreaterThan(65_536)
+        const id = digest(published).sha256
         expect((await readSnapshotMetadata(source, id)).metadata).toEqual(metadata)
         await expect(readSnapshotMetadata(source, '0'.repeat(64))).rejects.toThrow(
             'identity mismatch',
@@ -157,6 +185,14 @@ test('app snapshot survives publication and encrypted recovery and rejects downg
         const recoveryKey = createRecoveryKey()
         await encryptBackup(source, encrypted, recoveryKey)
         await decryptBackup(encrypted, restored, recoveryKey)
+        expect((await readSnapshotMetadata(restored, id)).metadata).toEqual(metadata)
+        expect(maximumBackupMetadataBytes).toBe(512 * 1024)
+        const padded = Buffer.alloc(maximumBackupMetadataBytes, 32)
+        published.copy(padded)
+        await writeFile(join(input, 'metadata.json'), padded)
+        expect((await readSnapshotMetadata(input)).metadata).toEqual(metadata)
+        await writeFile(join(input, 'metadata.json'), Buffer.concat([padded, Buffer.from(' ')]))
+        await expect(readSnapshotMetadata(input)).rejects.toThrow('too large')
         const file = await open(join(restored, 'controller-state.tar'), 'r')
         try {
             const entries = await validateStateArchiveFile(file, 'controller')

@@ -14,6 +14,7 @@ const healthcheckScript = '/opt/rentnerproxy/web/docker/web/healthcheck.ts'
 import {
     postgresCommand,
     controllerRestoreCommand,
+    controllerMetadataValidationCommand,
     crowdSecRestoreCommand,
 } from './backup/volume-commands.ts'
 export { postgresCommand, postgresRestoreCommand } from './backup/volume-commands.ts'
@@ -62,7 +63,17 @@ async function restore(): Promise<void> {
     const snapshot = await mkdtemp(join(tmpdir(), 'rentnerproxy-restore-'))
     await chmod(snapshot, 0o700)
     try {
-        const { metadata, backupId } = await snapshotProductionRestore(inputPath, snapshot)
+        // Only the bounded DNS registry and certificate index are retained for the pinned target image.
+        const controllerDocuments: { kind: string; bytes: Uint8Array }[] = []
+        const { metadata, backupId } = await snapshotProductionRestore(
+            inputPath,
+            snapshot,
+            undefined,
+            (kind, bytes) => {
+                controllerDocuments.push({ kind, bytes })
+                return Promise.resolve()
+            },
+        )
 
         const project = composeProject(argumentsList)
         const composeFile = resolve(process.env.RENTNERPROXY_COMPOSE_FILE ?? defaultComposeFile)
@@ -94,6 +105,28 @@ async function restore(): Promise<void> {
             'inspect restore image',
         )
         if (!/^sha256:[a-f0-9]{64}$/u.test(imageId)) throw new Error('invalid restore target image')
+        for (const { kind, bytes } of controllerDocuments) {
+            // oxlint-disable-next-line no-await-in-loop -- One owned validation container at a time.
+            await commands.input(
+                [
+                    'docker',
+                    'run',
+                    '--rm',
+                    '--network=none',
+                    '--interactive',
+                    '--entrypoint=bash',
+                    imageId,
+                    '-ceu',
+                    controllerMetadataValidationCommand,
+                    'metadata',
+                    kind,
+                    String(metadata.version),
+                ],
+                bytes,
+                'validate controller backup metadata',
+                30_000,
+            )
+        }
         await runCommand(
             [
                 'docker',
@@ -159,43 +192,46 @@ async function restore(): Promise<void> {
         )
         // A completed inventory rejection is a normal container exit. This lets the
         // maintenance runner verify --rm cleanup separately from the inventory verdict.
-        const inventory = await runCommand(
-            [
-                ...compose,
-                'run',
-                '--no-TTY',
-                '--rm',
-                '--no-deps',
-                '--entrypoint=bash',
-                '--volume',
-                archiveVolume,
-                applianceService,
-                '-c',
-                'if bash -c "$1" >&2; then echo accepted; else echo rejected; fi',
-                'inventory',
-                postgresCommand('inventory', '/backup', metadata.version === 5, backupId),
-            ],
-            'check target application inventory',
-            metadata.version === 5 ? BACKUP_RUNTIME_POLICY.databaseTimeoutMs : 180_000,
-        )
-        if (inventory !== 'accepted') {
-            if (inventory === 'rejected' && previouslyRunning) {
+        try {
+            const inventory = await runCommand(
+                [
+                    ...compose,
+                    'run',
+                    '--no-TTY',
+                    '--rm',
+                    '--no-deps',
+                    '--entrypoint=bash',
+                    '--volume',
+                    archiveVolume,
+                    applianceService,
+                    '-c',
+                    'if bash -c "$1" >&2; then echo accepted; else echo rejected; fi',
+                    'inventory',
+                    postgresCommand('inventory', '/backup', metadata.version === 5, backupId),
+                ],
+                'check target application inventory',
+                metadata.version === 5 ? BACKUP_RUNTIME_POLICY.databaseTimeoutMs : 180_000,
+            )
+            if (inventory !== 'accepted')
+                throw new Error('Could not check target application inventory')
+        } catch (error) {
+            if (previouslyRunning) {
                 commands.assertRestartSafe()
                 try {
                     await runCommand(
                         [...compose, 'start', applianceService],
-                        'restart rejected restore target',
+                        'restart restore target after preflight failure',
                         180_000,
                     )
                     await waitForAppliance(compose)
                 } catch (cause) {
                     throw new Error(
-                        'Target inventory preflight failed and the previously running appliance could not be returned to readiness.',
+                        'Preflight failed before the restore journal was created. Start the appliance with docker compose start rentnerproxy in the same Compose project and check readiness before retrying.',
                         { cause },
                     )
                 }
             }
-            throw new Error('Could not check target application inventory')
+            throw error
         }
         // Preparing a fresh database must never boot the old controller/web workers.
         // A resumed restore already has its initialized cluster and must retain its journal/key state.

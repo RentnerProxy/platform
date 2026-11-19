@@ -34,6 +34,7 @@ impl Manager {
         slot.candidate = None;
         slot.previous = None;
         slot.recovery_required = false;
+        slot.grants_uncertain = None;
         slot.removal = Removal::Removed;
         self.journal.save(id, slot)
     }

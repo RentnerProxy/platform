@@ -284,14 +284,16 @@ impl Supervisor {
             .map(|status| status.is_none())
     }
 
+    fn engine_wanted(&mut self, wanted: Mode) -> io::Result<bool> {
+        Ok(!self.helpers.shutdown.is_cancelled()
+            && wanted != Mode::Stopped
+            && (self.running != Mode::Online || wanted == Mode::Online)
+            && self.alive()?)
+    }
+
     async fn ready(&mut self) -> io::Result<bool> {
         for _ in 0..30 {
-            let wanted = desired();
-            if self.helpers.shutdown.is_cancelled()
-                || wanted == Mode::Stopped
-                || (self.running == Mode::Online && wanted != Mode::Online)
-                || !self.alive()?
-            {
+            if !self.engine_wanted(desired())? {
                 break;
             }
             let mut command = Command::new("/usr/bin/curl");
@@ -305,10 +307,7 @@ impl Supervisor {
                 "http://127.0.0.1:18080/health",
             ]);
             if bounded(command, 1, false, &self.helpers).await.is_ok() {
-                let wanted = desired();
-                return Ok(!self.helpers.shutdown.is_cancelled()
-                    && wanted != Mode::Stopped
-                    && (self.running != Mode::Online || wanted == Mode::Online));
+                return self.engine_wanted(desired());
             }
             pause(1, &self.helpers.shutdown).await;
         }

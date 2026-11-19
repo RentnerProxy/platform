@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Poll one supervisor result and inspect fixed owned files sequentially.
 import { randomUUID } from 'node:crypto'
+import { maximumBackupMetadataBytes } from '../../../scripts/backup/validation.ts'
 import { chmod, chown, lstat, opendir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -185,7 +186,10 @@ export async function reconcileBackupArtifacts(
         if (!job) {
             try {
                 const metadata = parseBackupMetadata(
-                    await readPrivateJson(join(directory, 'metadata.json'), 65_536),
+                    await readPrivateJson(
+                        join(directory, 'metadata.json'),
+                        maximumBackupMetadataBytes,
+                    ),
                 )
                 managedBackupSourceSchema.parse(metadata.source)
             } catch (error) {

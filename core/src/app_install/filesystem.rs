@@ -57,7 +57,7 @@ pub(super) fn lock(directory: &Path) -> io::Result<File> {
     if !lock.metadata()?.is_file() {
         return Err(invalid("Invalid installer lock"));
     }
-    lock.lock()?;
+    lock.try_lock()?;
     Ok(lock)
 }
 

@@ -66,11 +66,11 @@ fn writers_present(
     exclusions: &[u32],
     is_writer: impl Fn(u32) -> bool,
 ) -> io::Result<bool> {
-    if inspect(&proc.join("self/status"))?.is_none() {
+    if inspect(&proc.join("self/status"))?.uids.is_none() {
         return Err(invalid_status());
     }
     let deadline = Instant::now() + SCAN_BUDGET;
-    scan_tasks(proc, exclusions, deadline, &is_writer, true)
+    scan_tasks(proc, exclusions, deadline, &is_writer, None)
 }
 
 fn scan_tasks(
@@ -78,11 +78,11 @@ fn scan_tasks(
     exclusions: &[u32],
     deadline: Instant,
     is_writer: &impl Fn(u32) -> bool,
-    inspect_siblings: bool,
+    expected_threads: Option<u32>,
 ) -> io::Result<bool> {
     check_deadline(deadline)?;
     let entries = fs::read_dir(directory)?;
-    let mut observed_task = false;
+    let mut observed = 0;
     for entry in entries {
         check_deadline(deadline)?;
         let entry = entry?;
@@ -94,49 +94,62 @@ fn scan_tasks(
         else {
             continue;
         };
-        observed_task = true;
+        observed += 1;
         let process = directory.join(pid.to_string());
-        match inspect_live_entry(&process, deadline)? {
-            Some(uids) if uids.into_iter().any(is_writer) => return Ok(true),
-            None if inspect_siblings => {
-                let siblings = scan_tasks(&process.join("task"), &[], deadline, is_writer, false);
-                let present = match siblings {
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-                        ) =>
-                    {
-                        match hidden_group_has_writer(
-                            directory,
-                            Path::new("/sys/fs/cgroup"),
-                            pid,
-                            deadline,
-                            is_writer,
-                        ) {
-                            Err(error)
-                                if error.kind() == io::ErrorKind::NotFound
-                                    && disappeared(&process) =>
-                            {
-                                false
-                            }
-                            result => result?,
+        let Some(task) = inspect_live_entry(&process, deadline)? else {
+            continue;
+        };
+        if task
+            .uids
+            .is_some_and(|uids| uids.into_iter().any(is_writer))
+        {
+            return Ok(true);
+        }
+        if expected_threads.is_none() && (task.threads > 1 || task.uids.is_none()) {
+            let siblings = scan_tasks(
+                &process.join("task"),
+                &[],
+                deadline,
+                is_writer,
+                Some(task.threads),
+            );
+            let present = match siblings {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                    ) =>
+                {
+                    match hidden_group_has_writer(
+                        directory,
+                        Path::new("/sys/fs/cgroup"),
+                        pid,
+                        deadline,
+                        is_writer,
+                    ) {
+                        Err(error)
+                            if error.kind() == io::ErrorKind::NotFound && disappeared(&process) =>
+                        {
+                            false
                         }
+                        result => result?,
                     }
-                    result => result?,
-                };
-                if present {
-                    return Ok(true);
                 }
+                result => result?,
+            };
+            if present {
+                return Ok(true);
             }
-            _ => (),
         }
     }
-    if !inspect_siblings && !observed_task {
+    if expected_threads.is_some() && observed == 0 {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "No visible thread identities",
         ));
+    }
+    if expected_threads.is_some_and(|count| count != observed) {
+        return Err(invalid_status());
     }
     check_deadline(deadline)?;
     Ok(false)
@@ -220,11 +233,16 @@ fn disappeared(path: &Path) -> bool {
     fs::symlink_metadata(path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
 }
 
-fn inspect_live_entry(directory: &Path, deadline: Instant) -> io::Result<Option<[u32; 4]>> {
+struct TaskIdentity {
+    uids: Option<[u32; 4]>,
+    threads: u32,
+}
+
+fn inspect_live_entry(directory: &Path, deadline: Instant) -> io::Result<Option<TaskIdentity>> {
     let file = directory.join("status");
     for attempt in 0..3 {
         match inspect(&file) {
-            Ok(credentials) => return Ok(credentials),
+            Ok(identity) => return Ok(Some(identity)),
             Err(_) if disappeared(directory) => return Ok(None),
             Err(_) if attempt < 2 && Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(20));
@@ -235,8 +253,16 @@ fn inspect_live_entry(directory: &Path, deadline: Instant) -> io::Result<Option<
     Err(invalid_status())
 }
 
-fn inspect(path: &Path) -> io::Result<Option<[u32; 4]>> {
-    parse_status(&read_bounded(path)?)
+fn inspect(path: &Path) -> io::Result<TaskIdentity> {
+    let status = read_bounded(path)?;
+    let threads = status_number(&status, b"Threads:")?;
+    if threads == 0 {
+        return Err(invalid_status());
+    }
+    Ok(TaskIdentity {
+        uids: parse_status(&status)?,
+        threads,
+    })
 }
 
 fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {

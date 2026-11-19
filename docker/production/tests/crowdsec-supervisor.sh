@@ -81,7 +81,14 @@ echo "$*" >> /tmp/rentnerproxy-native-crowdsec/launches
 exec /crowdsec-fixture
 SH
 chmod 0755 /usr/local/bin/{cscli,crowdsec,gosu}
-mode() { printf '%s\n' "$1" > "$control/desired-mode"; chown 10001:10001 "$control/desired-mode"; chmod 0600 "$control/desired-mode"; }
+mode() {
+    local staged
+    staged=$(mktemp "$control/.desired-mode.XXXXXX")
+    printf '%s\n' "$1" > "$staged"
+    chown 10001:10001 "$staged"
+    chmod 0600 "$staged"
+    mv -T "$staged" "$control/desired-mode"
+}
 until_match() {
     local file=$1 pattern=$2 attempt
     for ((attempt=0; attempt<110; attempt++)); do

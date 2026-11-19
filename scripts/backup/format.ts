@@ -285,6 +285,8 @@ export async function validateControllerEncryptionFile(
                   : /(?:^|\/)candidate\.json$/u.test(entry.name)
                     ? 256 * 1024
                     : null
+        if (entry.directory && entry.name === 'certificates/certificate-metadata.json')
+            throw new Error('invalid certificate state metadata')
         if (limit === null || (entry.directory && entry.name !== 'dns-connections.json')) continue
         if (entry.size > limit) throw new Error('controller state metadata is too large')
         // Validate each bounded document immediately rather than retaining all metadata bodies.
@@ -330,6 +332,11 @@ function validateControllerEncryptionEntries(
         } catch {
             throw new Error('invalid certificate state metadata')
         }
+        if (
+            entry.name === 'certificates/certificate-metadata.json' &&
+            (document === null || typeof document !== 'object' || Array.isArray(document))
+        )
+            throw new Error('invalid certificate state metadata')
         const visit = (value: unknown): void => {
             if (!value || typeof value !== 'object') return
             const object = value as Record<string, unknown>

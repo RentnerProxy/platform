@@ -7,6 +7,7 @@ import {
     timingSafeEqual,
 } from 'node:crypto'
 import { constants } from 'node:fs'
+import { maximumBackupMetadataBytes } from '../validation.ts'
 import {
     chmod,
     lstat,
@@ -43,7 +44,7 @@ const names = [
     'crowdsec-state.tar',
 ] as const
 const limits = [
-    65_536,
+    maximumBackupMetadataBytes,
     65_536,
     BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
     BACKUP_RUNTIME_POLICY.maximumArtifactBytes,

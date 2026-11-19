@@ -242,6 +242,15 @@ impl Drop for Renewal {
 }
 
 impl Running {
+    #[cfg(test)]
+    pub(super) fn fixture_child(child: Child) -> Self {
+        Self {
+            child,
+            pipe: None,
+            renewal: None,
+        }
+    }
+
     pub async fn launch(
         id: &str,
         slot: &Slot,

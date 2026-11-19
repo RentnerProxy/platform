@@ -115,15 +115,6 @@ fn tar(mut bytes: &[u8]) -> io::Result<Inventory<'_>> {
         {
             return Err(invalid("Invalid package tar ownership or links"));
         }
-        let name = text(0, 100)?;
-        let prefix = text(345, 500)?;
-        let combined;
-        let path = if prefix.is_empty() {
-            path_name(name)?
-        } else {
-            combined = format!("{prefix}/{name}");
-            path_name(&combined)?
-        };
         let size = octal(124, 136)? as usize;
         if size as u64 > ARCHIVE_BYTES {
             return Err(invalid("Unsupported package tar entry size"));
@@ -133,6 +124,23 @@ fn tar(mut bytes: &[u8]) -> io::Result<Inventory<'_>> {
             0 | b'0' => false,
             b'5' if size == 0 && mode <= 0o777 => true,
             _ => return Err(invalid("Unsupported package tar entry")),
+        };
+        let name = text(0, 100)?;
+        if !directory && name.ends_with('/') {
+            return Err(invalid("Regular tar file name ends with a slash"));
+        }
+        let prefix = match &header[257..265] {
+            b"ustar\x0000" => text(345, 500)?,
+            b"ustar  \0" => "",
+            [0, 0, 0, 0, 0, 0, 0, 0] if header[345..500].iter().all(|byte| *byte == 0) => "",
+            _ => return Err(invalid("Unsupported package tar format")),
+        };
+        let combined;
+        let path = if prefix.is_empty() {
+            path_name(name)?
+        } else {
+            combined = format!("{prefix}/{name}");
+            path_name(&combined)?
         };
         let data = bytes
             .get(512..512 + size)

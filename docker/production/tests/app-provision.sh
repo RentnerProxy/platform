@@ -94,15 +94,16 @@ provision 59183
 install -m 0600 /dev/null "$apps/59183/database-password"
 provision 59183 database
 [[ $(stat -c '%s' "$apps/59183/database-password") == 65 ]]
-printf 'invalid\n' > "$apps/59183/database-password"
-reject "$controller" --app-provision 59183 database
 chmod 0644 "$apps/59183/database-password"
+reject "$controller" --app-provision 59183 database
+chmod 0600 "$apps/59183/database-password"
+printf 'invalid\n' > "$apps/59183/database-password"
 reject "$controller" --app-provision 59183 database
 
 readonly state_file="$bootstrap/production-restore-v1.json"
-reject "$controller" --write-bootstrap-state production-restore-v1.json create
+printf '{}' | reject "$controller" --write-bootstrap-state production-restore-v1.json create
 install -d -m 0755 "$bootstrap"
-reject "$controller" --write-bootstrap-state production-restore-v1.json create
+printf '{}' | reject "$controller" --write-bootstrap-state production-restore-v1.json create
 chmod 0700 "$bootstrap"
 reject "$controller" --write-bootstrap-state ../outside create
 reject "$controller" --write-bootstrap-state production-restore-v1.json other

@@ -2,6 +2,9 @@ import { z } from 'zod'
 import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
 import { APP_AWARE_BACKUP_VERSION } from '../../web/src/config/compatibility.config.ts'
 
+// Covers 256 installation summaries plus escaped deployment strings in formatted JSON.
+export const maximumBackupMetadataBytes = 512 * 1024
+
 const digest = z.string().regex(/^[a-f0-9]{64}$/u)
 
 const artifact = z.strictObject({

@@ -9,6 +9,7 @@ import { parseApplicationEncryptionKeyFile, readFileRange } from './artifact-fil
 import type { BackupMetadata } from './Types/format.types.ts'
 import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
 import { stateArchiveAllocationEvidence } from './capacity.ts'
+import { maximumBackupMetadataBytes } from './validation.ts'
 import type { StateArchiveAllocationEvidence } from './Types/capacity.types.ts'
 
 async function regularFile(path: string, maximum: number, sync = false): Promise<FileHandle> {
@@ -44,7 +45,10 @@ export async function verifyPublishedBackup(
     progress?: () => void,
 ) {
     signal?.throwIfAborted()
-    const metadataFile = await regularFile(join(directory, 'metadata.json'), 65_536)
+    const metadataFile = await regularFile(
+        join(directory, 'metadata.json'),
+        maximumBackupMetadataBytes,
+    )
     let bytes: Buffer
     try {
         bytes = await metadataFile.readFile()
@@ -111,7 +115,10 @@ export async function publishProductionBackup(
 ): Promise<void> {
     signal?.throwIfAborted()
     parseBackupMetadata(metadata)
-    await writeFile(join(stagingPath, 'metadata.json'), JSON.stringify(metadata, null, 2) + '\n', {
+    const serialized = Buffer.from(JSON.stringify(metadata, null, 2) + '\n')
+    if (serialized.length > maximumBackupMetadataBytes)
+        throw new Error('Backup metadata exceeds size limit')
+    await writeFile(join(stagingPath, 'metadata.json'), serialized, {
         flag: 'wx',
         mode: 0o600,
     })

@@ -331,6 +331,16 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
             .is_err()
     );
     fs::write(&cached_archive, &archive).unwrap();
+    let abandoned = tempfile::Builder::new()
+        .prefix(".stage-interrupted")
+        .tempdir_in(store.path().join("packages"))
+        .unwrap()
+        .keep();
+    fs::write(abandoned.join("package.tar"), b"interrupted").unwrap();
+    offline
+        .recover(ID, VERSION, &staged.archive_sha256)
+        .unwrap();
+    assert!(!abandoned.exists());
 
     files.extend(update(&catalog, json!({
         "formatVersion":1,"revision":3,"releases":[],"revocations":[
@@ -357,9 +367,13 @@ fn verifies_dynamic_abi_against_installed_appliance_libraries() {
     } else {
         "linux-arm64"
     };
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("app");
+    // The package verifier requires a regular file with a single link.
+    fs::copy("/usr/bin/true", &executable).unwrap();
     let mut linkage = execute(
         "inspect-elf",
-        json!({"inputPath":"/usr/bin/true","target":target}),
+        json!({"inputPath":executable,"target":target}),
     )
     .unwrap();
     assert!(
@@ -416,6 +430,16 @@ fn staging_tree_refuses_special_files_before_touching_their_targets() {
         0o711
     );
     assert!(super::filesystem::directory(&directory.path().join("absent/child"), 0o711).is_err());
+}
+
+#[test]
+fn installer_lock_reports_a_busy_store_without_waiting() {
+    let directory = tempfile::tempdir().unwrap();
+    let lock = super::filesystem::lock(directory.path()).unwrap();
+    let error = super::filesystem::lock(directory.path()).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    drop(lock);
+    assert!(super::filesystem::lock(directory.path()).is_ok());
 }
 
 #[test]

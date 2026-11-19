@@ -291,6 +291,25 @@ pub(super) fn restore(
         Err(error) => return Err(error),
     }
     fs::DirBuilder::new().mode(0o700).create(&stage)?;
+    if let Err(error) = stage_and_exchange(&stage, root, uid, entries, target_state) {
+        fs::remove_dir_all(&stage)?;
+        File::open(parent)?.sync_all()?;
+        return Err(error);
+    }
+    // After exchange, staging may hold the only copy of the outgoing tree. Keep
+    // it available for resume until the exchange is durable.
+    File::open(parent)?.sync_all()?;
+    fs::remove_dir_all(&stage)?;
+    File::open(parent)?.sync_all()
+}
+
+fn stage_and_exchange(
+    stage: &Path,
+    root: &Path,
+    uid: u32,
+    entries: &[Entry],
+    target_state: RestoreTarget,
+) -> io::Result<()> {
     // An installation parent may have a default ACL. Strip both inherited ACLs
     // from our private directory before it can propagate them to snapshot files.
     let stage_path = CString::new(stage.as_os_str().as_bytes())?;
@@ -302,8 +321,8 @@ pub(super) fn restore(
             }
         }
     }
-    fs::set_permissions(&stage, Permissions::from_mode(0o700))?;
-    check_attributes(&stage)?;
+    fs::set_permissions(stage, Permissions::from_mode(0o700))?;
+    check_attributes(stage)?;
     let tree = stage.join("data");
     fs::create_dir(&tree)?;
     for entry in entries {
@@ -359,9 +378,7 @@ pub(super) fn restore(
     {
         return Err(io::Error::last_os_error());
     }
-    File::open(parent)?.sync_all()?;
-    fs::remove_dir_all(&stage)?;
-    File::open(parent)?.sync_all()
+    Ok(())
 }
 
 #[cfg(test)]
@@ -441,12 +458,42 @@ mod tests {
         assert!(existing.is_file());
         let error = restore(&root, uid, &entries, ".app-restore-kiri", missing).unwrap_err();
         assert_eq!(error.raw_os_error(), Some(libc::EEXIST));
+        assert!(!fixture.path().join(".app-restore-kiri").exists());
         assert!(existing.is_file());
         std::os::unix::fs::symlink(&existing, root.join("link")).unwrap();
         assert!(inspect_target(&root, uid, &mut 0).is_err());
         let link = fixture.path().join("linked-data");
         std::os::unix::fs::symlink(&root, &link).unwrap();
         assert!(inspect_target(&link, uid, &mut 0).is_err());
+    }
+
+    #[test]
+    fn cleans_partial_staging_when_a_file_cannot_be_created() {
+        let uid = unsafe { libc::geteuid() };
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("data");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("original"), b"kiri").unwrap();
+        let entries = [
+            dir("partial"),
+            Entry {
+                path: "missing/note".into(),
+                mode: 0o600,
+                contents: Some(STANDARD.encode(b"new")),
+            },
+        ];
+        let error = restore(
+            &root,
+            uid,
+            &entries,
+            ".app-restore-kiri",
+            RestoreTarget::Existing,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(fs::read(root.join("original")).unwrap(), b"kiri");
+        assert!(!root.join("partial").exists());
+        assert!(!parent.path().join(".app-restore-kiri").exists());
     }
 
     #[test]

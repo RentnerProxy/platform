@@ -39,6 +39,21 @@ export function postgresRestoreCommand(validateOnly: boolean, backupDirectory = 
     ].join('\n')
 }
 
+// Older controllers may enter normal server mode for an unknown flag. Query the
+// immutable target image's declared backup compatibility before invoking its decoder.
+export const controllerMetadataValidationCommand = [
+    'compatibility=/opt/rentnerproxy/web/web/src/lib/ApplicationVersion/backupCompatibility.ts',
+    'mode=legacy',
+    'if [[ -e "$compatibility" ]]; then',
+    `  mode=$(bun --no-env-file -e 'const { isSupportedBackupVersion } = await import(process.argv[1]); console.log(isSupportedBackupVersion(5) ? "native" : isSupportedBackupVersion(4) ? "legacy" : "unsupported")' "$compatibility" </dev/null)`,
+    'fi',
+    'case "$mode" in',
+    'native) exec /usr/local/bin/rentnerproxy-controller --check-backup-state "$1" ;;',
+    'legacy) [[ $2 == 4 ]] && cat >/dev/null ;;',
+    '*) exit 1 ;;',
+    'esac',
+].join('\n')
+
 const legacyFilesGuard =
     'for path in /var/lib/rentnerproxy/apps /var/lib/rentnerproxy/app-manager; do if [[ -e $path || -L $path ]]; then /usr/local/bin/rentnerproxy-controller --app-backup empty; break; fi; done'
 const legacyDatabaseGuard = [

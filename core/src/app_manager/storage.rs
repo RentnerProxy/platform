@@ -70,9 +70,10 @@ pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
     if owned(root, id, slot)? {
         return root_directory.sync_all();
     }
+    // A power loss may leave a reservation behind. Keep it outside the scanned app inventory.
     let tmp = tempfile::Builder::new()
         .prefix(".reserve-")
-        .tempdir_in(root)?;
+        .tempdir_in(parent)?;
     let marker = tmp.path().join(OWNER);
     let mut file = OpenOptions::new()
         .write(true)
@@ -87,6 +88,7 @@ pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o710))?;
     File::open(tmp.path())?.sync_all()?;
     rename_new(tmp.path(), &directory(slot.uid))?;
+    File::open(parent)?.sync_all()?;
     root_directory.sync_all()
 }
 

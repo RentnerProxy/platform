@@ -32,9 +32,10 @@ fn fails_closed_for_truncated_or_unreadable_identity() {
     assert!(verify_writers_stopped(root, &[], is_app).is_err());
     assert!(super::writers_present(root, &[], is_app).is_err());
     assert!(parse_status(b"State:\tS\nUid:\t0 0 0 0 0\n").is_err());
-    assert_eq!(
-        inspect_live_entry(&root.join("43"), std::time::Instant::now()).unwrap(),
-        None,
+    assert!(
+        inspect_live_entry(&root.join("43"), std::time::Instant::now())
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -72,7 +73,7 @@ fn write_status(root: &Path, pid: &str, state: &str, uids: [u32; 4]) {
     let [real, effective, saved, filesystem] = uids;
     fs::write(
         directory.join("status"),
-        format!("State:\t{state} (fixture)\nUid:\t{real} {effective} {saved} {filesystem}\n"),
+        format!("State:\t{state} (fixture)\nThreads:\t1\nUid:\t{real} {effective} {saved} {filesystem}\n"),
     )
     .unwrap();
 }
@@ -83,6 +84,7 @@ fn checks_live_siblings_of_an_exited_leader_and_requires_a_visible_task_list() {
     let root = fixture.path();
     write_status(root, "self", "S", [0; 4]);
     write_status(root, "70", "Z", [0; 4]);
+    fs::write(root.join("70/status"), "State: Z\nThreads: 2\n").unwrap();
     assert!(verify_writers_stopped(root, &[], is_app).is_err());
     let tasks = root.join("70/task");
     fs::create_dir(&tasks).unwrap();
@@ -92,6 +94,35 @@ fn checks_live_siblings_of_an_exited_leader_and_requires_a_visible_task_list() {
     assert!(verify_writers_stopped(root, &[], is_app).is_err());
     write_status(&tasks, "71", "X", [20_001; 4]);
     verify_writers_stopped(root, &[], is_app).unwrap();
+}
+
+#[test]
+fn live_leaders_require_every_worker_identity() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    write_status(root, "self", "S", [0; 4]);
+    write_status(root, "80", "S", [0; 4]);
+    let census = || super::writers_present(root, &[], is_app);
+    assert!(!census().unwrap());
+
+    let status = root.join("80/status");
+    fs::write(&status, "State: S\nUid: 0 0 0 0\nThreads: 2\n").unwrap();
+    assert!(census().is_err());
+    let tasks = root.join("80/task");
+    write_status(&tasks, "80", "S", [0; 4]);
+    assert!(census().is_err());
+    write_status(&tasks, "81", "S", [0, 0, 20_000, 0]);
+    assert!(census().unwrap());
+    write_status(&tasks, "81", "S", [0; 4]);
+    assert!(!census().unwrap());
+    for threads in ["0", "invalid"] {
+        fs::write(
+            &status,
+            format!("State: S\nUid: 0 0 0 0\nThreads: {threads}\n"),
+        )
+        .unwrap();
+        assert!(census().is_err());
+    }
 }
 
 #[test]
