@@ -26,7 +26,11 @@ struct Snapshot {
     data: BTreeMap<u32, Vec<files::Entry>>,
 }
 
-fn app_roots(installations: &Value, pending: Option<&str>) -> io::Result<BTreeMap<u32, PathBuf>> {
+fn app_roots(
+    root: &Path,
+    installations: &Value,
+    pending: Option<&str>,
+) -> io::Result<BTreeMap<u32, PathBuf>> {
     let mut slots = BTreeMap::new();
     for slot in installations
         .as_object()
@@ -60,7 +64,6 @@ fn app_roots(installations: &Value, pending: Option<&str>) -> io::Result<BTreeMa
         }
     }
     let mut roots = BTreeMap::new();
-    let root = Path::new(APPS);
     let entries = match fs::symlink_metadata(root) {
         Ok(m) if m.is_dir() && m.uid() == 0 && m.mode() & 0o7022 == 0 => Some(fs::read_dir(root)?),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
@@ -114,10 +117,15 @@ fn app_roots(installations: &Value, pending: Option<&str>) -> io::Result<BTreeMa
             return Err(invalid("Unverified application storage owner"));
         }
         let data = root.join("data");
-        let meta = fs::symlink_metadata(&data)?;
-        if !meta.is_dir() || meta.uid() != uid || meta.gid() != uid || meta.mode() & 0o7777 != 0o700
-        {
-            return Err(invalid("Unsafe installation data directory"));
+        match fs::symlink_metadata(&data) {
+            Ok(meta)
+                if meta.is_dir()
+                    && meta.uid() == uid
+                    && meta.gid() == uid
+                    && meta.mode() & 0o7777 == 0o700 => {}
+            Err(error) if pending.is_some() && error.kind() == io::ErrorKind::NotFound => (),
+            Ok(_) => return Err(invalid("Unsafe installation data directory")),
+            Err(error) => return Err(error),
         }
         roots.insert(uid, data);
     }
@@ -149,6 +157,9 @@ fn validate_snapshot(snapshot: &Snapshot) -> io::Result<()> {
             .ok_or_else(|| invalid("Missing snapshot generation"))?;
         let removal = slot["removal"].as_str();
         if !uids.insert(uid)
+            || slot
+                .get("authorityRecorded")
+                .is_some_and(|v| !v.is_boolean())
             || !matches!(removal, Some("installed" | "removed" | "purged"))
             || slot["databaseProvisioned"] != false
             || !slot["written"].is_null()
@@ -189,11 +200,13 @@ fn process(args: &[String]) -> io::Result<()> {
             let bytes = read_file(Path::new(path), MAX_ARCHIVE as u64)?;
             let stage = format!(".app-restore-{}", digest(&bytes));
             let snapshot: Snapshot = serde_json::from_slice(&bytes)?;
+            validate_snapshot(&snapshot)?;
             Some((stage, snapshot))
         }
         _ => None,
     };
     let roots = app_roots(
+        Path::new(APPS),
         &inventory,
         snapshot_input.as_ref().map(|(name, _)| name.as_str()),
     )?;
@@ -230,6 +243,12 @@ fn process(args: &[String]) -> io::Result<()> {
                 .as_object_mut()
                 .ok_or_else(|| invalid("Missing snapshot inventory"))?
             {
+                if slot.get("authorityRecorded").is_none()
+                    && inventory[id].get("authorityRecorded").is_some()
+                {
+                    slot["authorityRecorded"] =
+                        Value::Bool(slot["generation"].as_u64().is_some_and(|n| n > 0));
+                }
                 let current = &inventory[id]["generation"];
                 if slot["generation"]
                     .as_u64()
@@ -248,14 +267,17 @@ fn process(args: &[String]) -> io::Result<()> {
                     "Snapshot requires the same installed applications and releases",
                 ));
             }
-            validate_snapshot(&snapshot)?;
             let mut current_budget = files::Budget::default();
+            let mut targets = BTreeMap::new();
             for (uid, root) in &roots {
-                files::capture(root, *uid, &mut current_budget)?;
+                targets.insert(
+                    *uid,
+                    files::inspect_target(root, *uid, &mut current_budget)?,
+                );
             }
             if action == "restore" {
                 for (uid, entries) in &snapshot.data {
-                    files::restore(&roots[uid], *uid, entries, &stage)?;
+                    files::restore(&roots[uid], *uid, entries, &stage, targets[uid])?;
                 }
             }
             Ok(())
@@ -275,3 +297,7 @@ pub fn run(args: impl Iterator<Item = String>) -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/private/app_backup.rs"]
+mod tests;

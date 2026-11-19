@@ -55,10 +55,19 @@ pub(super) async fn bounded(
                 return Err(io::Error::other("Command output exceeded limit"));
             }
         }
-        if child.wait().await?.success() {
+        let status = child.wait().await?;
+        if status.success() {
             Ok(buffer)
+        } else if status.code().is_some() {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CrowdSec helper rejected the operation",
+            ))
         } else {
-            Err(io::Error::other("CrowdSec helper failed"))
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "CrowdSec helper was interrupted",
+            ))
         }
     };
     let result = tokio::select! {

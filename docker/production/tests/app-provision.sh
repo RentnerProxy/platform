@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 readonly controller=${RENTNERPROXY_TEST_CONTROLLER:-/controller}
+readonly ipc_tests=${RENTNERPROXY_TEST_IPC_BINARY:-/ipc-tests}
 readonly appliance=/var/lib/rentnerproxy
 readonly apps="$appliance/apps"
 readonly bootstrap="$appliance/bootstrap"
@@ -9,7 +10,7 @@ readonly postgres=/usr/lib/postgresql/18/bin
 readonly socket=/var/run/postgresql
 readonly database=/tmp/app-provision-postgres
 
-[[ $(id -u) == 0 && -x $controller && ! -e $apps && ! -e $bootstrap && ! -e $database ]]
+[[ $(id -u) == 0 && -x $controller && -x $ipc_tests && ! -e $apps && ! -e $bootstrap && ! -e $database ]]
 
 reject() {
     if "$@" >/dev/null 2>&1; then
@@ -31,10 +32,21 @@ reject "$controller" --app-provision 19999
 reject "$controller" --app-provision 60000
 reject "$controller" --app-provision 59180 other
 reject "$controller" --app-provision 59180 files extra
+"$controller" --app-backup empty
+[[ -z $("$controller" --app-backup capture) ]]
+reject "$controller" --app-backup unknown
+reject "$controller" --app-backup inspect /tmp/missing-snapshot
+reject "$controller" --app-manager
+reject "$controller" --app-manager /tmp/missing-config extra
+printf '{"version":1,"connections":[]}' | "$controller" --check-backup-state dns-registry
+printf '{"version":2,"connections":[]}' | reject "$controller" --check-backup-state dns-registry
+printf '{"certificates":{}}' | "$controller" --check-backup-state certificate-index
+reject "$controller" --check-backup-state other
 provision 59180
 provision 59180 files
 [[ $(stat -c '%u:%g:%a' "$apps" "$apps/59180" "$apps/59180/data") == $'0:0:711\n0:59180:710\n59180:59180:700' ]]
 [[ ! -e $apps/59180/database-password && ! -e $apps/59180/data/database-url ]]
+reject "$controller" --app-backup capture
 
 ln -s "$apps/59180" "$apps/59181"
 reject "$controller" --app-provision 59181 files
@@ -98,4 +110,5 @@ mv "$state_file" "$bootstrap/sentry"
 ln -s "$bootstrap/sentry" "$state_file"
 printf '{}' | reject "$controller" --write-bootstrap-state production-restore-v1.json replace
 [[ $(<"$bootstrap/sentry") == '{"fixture":true}' ]]
+"$ipc_tests" --ignored --exact app_manager::tests::privileged_postgres_uid_fencing
 printf '%s\n' 'PASS: native app UID and PostgreSQL provisioning and protected bootstrap publication'

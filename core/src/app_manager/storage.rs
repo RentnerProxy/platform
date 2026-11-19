@@ -119,7 +119,17 @@ pub(super) fn purge(id: &str, slot: &Slot) -> io::Result<()> {
             fs::remove_dir_all(retired)?;
             File::open(root)?.sync_all()?;
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            match OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+                .open(root)
+            {
+                Ok(directory) => directory.sync_all()?,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+                Err(e) => return Err(e),
+            }
+        }
         _ => return Err(bad("Unexpected data purge tombstone")),
     }
     Ok(())

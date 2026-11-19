@@ -74,6 +74,11 @@ fn mount_id(path: &Path) -> io::Result<u64> {
     if stat.stx_mask & libc::STATX_MNT_ID == 0 {
         return Err(invalid("Mount identity unavailable"));
     }
+    Ok(stat.stx_mnt_id)
+}
+
+fn check_attributes(path: &Path) -> io::Result<()> {
+    let path = CString::new(path.as_os_str().as_bytes())?;
     let attrs = unsafe { libc::llistxattr(path.as_ptr(), std::ptr::null_mut(), 0) };
     if attrs < 0 {
         let error = io::Error::last_os_error();
@@ -83,10 +88,15 @@ fn mount_id(path: &Path) -> io::Result<u64> {
     } else if attrs > 0 {
         return Err(invalid("Extended application metadata is unsupported"));
     }
-    Ok(stat.stx_mnt_id)
+    Ok(())
 }
 
-pub(super) fn capture(root: &Path, uid: u32, budget: &mut Budget) -> io::Result<Vec<Entry>> {
+fn walk_data(
+    root: &Path,
+    uid: u32,
+    mut visit: impl FnMut(String, &fs::Metadata) -> io::Result<()>,
+) -> io::Result<()> {
+    check_attributes(root)?;
     let mount = mount_id(root)?;
     if mount_id(
         root.parent()
@@ -96,7 +106,6 @@ pub(super) fn capture(root: &Path, uid: u32, budget: &mut Budget) -> io::Result<
         return Err(invalid("Mounted application data is unsupported"));
     }
     let dev = fs::symlink_metadata(root)?.dev();
-    let mut entries = Vec::new();
     let mut pending = vec![String::new()];
     while let Some(directory) = pending.pop() {
         for member in fs::read_dir(root.join(&directory))? {
@@ -121,39 +130,82 @@ pub(super) fn capture(root: &Path, uid: u32, budget: &mut Budget) -> io::Result<
             {
                 return Err(invalid("Unsafe application data metadata"));
             }
-            let contents = if info.is_dir() {
-                budget.add(0)?;
+            check_attributes(&member.path())?;
+            if info.is_dir() {
                 pending.push(path.clone());
-                None
-            } else {
-                if !info.is_file() || info.nlink() != 1 {
-                    return Err(invalid("Unsupported application data file"));
-                }
-                budget.add(usize::try_from(info.len()).map_err(|_| invalid("Oversized file"))?)?;
-                let mut file = OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                    .open(member.path())?;
-                let pinned = file.metadata()?;
-                if pinned.dev() != dev || pinned.ino() != info.ino() || pinned.len() != info.len() {
-                    return Err(invalid("Application data changed during capture"));
-                }
-                let mut bytes = Vec::new();
-                (&mut file).take(info.len() + 1).read_to_end(&mut bytes)?;
-                if bytes.len() as u64 != info.len() {
-                    return Err(invalid("File changed during capture"));
-                }
-                Some(STANDARD.encode(bytes))
-            };
-            entries.push(Entry {
-                path,
-                mode,
-                contents,
-            });
+            } else if !info.is_file() || info.nlink() != 1 {
+                return Err(invalid("Unsupported application data file"));
+            }
+            visit(path, &info)?;
         }
     }
+    Ok(())
+}
+
+pub(super) fn capture(root: &Path, uid: u32, budget: &mut Budget) -> io::Result<Vec<Entry>> {
+    let mut entries = Vec::new();
+    walk_data(root, uid, |path, info| {
+        let size = if info.is_file() {
+            usize::try_from(info.len()).map_err(|_| invalid("Oversized file"))?
+        } else {
+            0
+        };
+        budget.add(size)?;
+        let contents = if info.is_dir() {
+            None
+        } else {
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(root.join(&path))?;
+            let pinned = file.metadata()?;
+            if pinned.dev() != info.dev()
+                || pinned.ino() != info.ino()
+                || pinned.len() != info.len()
+            {
+                return Err(invalid("Application data changed during capture"));
+            }
+            let mut bytes = Vec::new();
+            file.take(info.len() + 1).read_to_end(&mut bytes)?;
+            if bytes.len() != size {
+                return Err(invalid("File changed during capture"));
+            }
+            Some(STANDARD.encode(bytes))
+        };
+        entries.push(Entry {
+            path,
+            mode: info.mode() & 0o7777,
+            contents,
+        });
+        Ok(())
+    })?;
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(entries)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum RestoreTarget {
+    Existing,
+    Missing,
+}
+
+pub(super) fn inspect_target(
+    root: &Path,
+    uid: u32,
+    budget: &mut Budget,
+) -> io::Result<RestoreTarget> {
+    match fs::symlink_metadata(root) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(RestoreTarget::Missing),
+        Ok(info)
+            if info.is_dir()
+                && info.uid() == uid
+                && info.gid() == uid
+                && info.mode() & 0o7777 == 0o700 => {}
+        Ok(_) => return Err(invalid("Unsafe installation data directory")),
+        Err(error) => return Err(error),
+    }
+    walk_data(root, uid, |_, _| budget.add(0))?;
+    Ok(RestoreTarget::Existing)
 }
 
 pub(super) fn validate(entries: &[Entry], budget: &mut Budget) -> io::Result<()> {
@@ -195,6 +247,7 @@ pub(super) fn restore(
     uid: u32,
     entries: &[Entry],
     stage_name: &str,
+    target_state: RestoreTarget,
 ) -> io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
     let parent = root
@@ -252,7 +305,10 @@ pub(super) fn restore(
             source.as_ptr(),
             libc::AT_FDCWD,
             target.as_ptr(),
-            libc::RENAME_EXCHANGE,
+            match target_state {
+                RestoreTarget::Existing => libc::RENAME_EXCHANGE,
+                RestoreTarget::Missing => libc::RENAME_NOREPLACE,
+            },
         )
     } != 0
     {
@@ -290,11 +346,84 @@ mod tests {
         validate(&entries, &mut Budget::default()).unwrap();
         fs::write(&note, b"current note").unwrap();
         fs::write(root.join("later"), b"later").unwrap();
-        restore(&root, uid, &entries, ".app-restore-kiri").unwrap();
+        restore(
+            &root,
+            uid,
+            &entries,
+            ".app-restore-kiri",
+            RestoreTarget::Existing,
+        )
+        .unwrap();
         assert_eq!(fs::read(&note).unwrap(), b"previous note");
         assert_eq!(fs::metadata(&note).unwrap().mode() & 0o7777, 0o640);
         assert!(!root.join("later").exists());
         std::os::unix::fs::symlink(&note, root.join("shortcut")).unwrap();
+        assert!(capture(&root, uid, &mut Budget::default()).is_err());
+    }
+
+    #[test]
+    fn inspects_only_metadata_and_publishes_missing_storage_exclusively() {
+        let uid = unsafe { libc::geteuid() };
+        if uid != unsafe { libc::getegid() } {
+            return;
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("data");
+        let missing = inspect_target(&root, uid, &mut Budget::default()).unwrap();
+        assert_eq!(missing, RestoreTarget::Missing);
+        assert!(!root.exists());
+        let entries = [dir("kiri")];
+        restore(&root, uid, &entries, ".app-restore-kiri", missing).unwrap();
+        let existing = root.join("outgoing");
+        File::create(&existing)
+            .unwrap()
+            .set_len(MAX_DATA as u64 + 1)
+            .unwrap();
+        assert_eq!(
+            inspect_target(&root, uid, &mut Budget::default()).unwrap(),
+            RestoreTarget::Existing
+        );
+        assert!(capture(&root, uid, &mut Budget::default()).is_err());
+        let error = restore(&root, uid, &entries, ".app-restore-kiri", missing).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EEXIST));
+        assert!(existing.is_file());
+        std::os::unix::fs::symlink(&existing, root.join("link")).unwrap();
+        assert!(inspect_target(&root, uid, &mut Budget::default()).is_err());
+        let link = fixture.path().join("linked-data");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        assert!(inspect_target(&link, uid, &mut Budget::default()).is_err());
+    }
+
+    #[test]
+    fn installation_parent_attributes_are_outside_the_snapshot() {
+        let uid = unsafe { libc::geteuid() };
+        if uid != unsafe { libc::getegid() } {
+            return;
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let set_attr = |path: &Path| {
+            let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+            unsafe {
+                libc::lsetxattr(
+                    path.as_ptr(),
+                    c"user.fixture".as_ptr(),
+                    c"1".as_ptr().cast(),
+                    1,
+                    0,
+                )
+            }
+        };
+        if set_attr(fixture.path()) != 0 {
+            assert!(matches!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::ENOTSUP | libc::EPERM)
+            ));
+            return;
+        }
+        let root = fixture.path().join("data");
+        fs::create_dir(&root).unwrap();
+        assert!(capture(&root, uid, &mut Budget::default()).is_ok());
+        assert_eq!(set_attr(&root), 0);
         assert!(capture(&root, uid, &mut Budget::default()).is_err());
     }
 

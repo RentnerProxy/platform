@@ -1,6 +1,82 @@
 use super::*;
+
+#[tokio::test]
+#[ignore = "requires the ephemeral PostgreSQL cluster from app-provision.sh"]
+async fn privileged_postgres_uid_fencing() {
+    use std::process::Stdio;
+    use tokio::process::Command as Process;
+    fn psql(user: &str, database: &str) -> Process {
+        let mut command = Process::new("/usr/lib/postgresql/18/bin/psql");
+        command
+            .env_clear()
+            .args([
+                "--no-psqlrc",
+                "--no-password",
+                "--no-align",
+                "--tuples-only",
+                "--set=ON_ERROR_STOP=1",
+                "--host=/var/run/postgresql",
+                "--username",
+                user,
+                "--dbname",
+                database,
+            ])
+            .kill_on_drop(true);
+        command
+    }
+    async fn query(sql: &str) -> String {
+        let output = psql("postgres", "postgres")
+            .args(["--command", sql])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+    assert_eq!(
+        query("SHOW data_directory").await,
+        "/tmp/app-provision-postgres"
+    );
+    assert!(!runtime::database_uid_vacant(59182).await.unwrap());
+    assert!(!runtime::database_uid_vacant(59183).await.unwrap());
+    assert!(runtime::database_uid_vacant(59184).await.unwrap());
+    assert!(runtime::database_uid_vacant(60000).await.is_err());
+    let mut session = psql("rp_app_59182", "rp_app_59182")
+        .env("PGAPPNAME", "fixture-uid-fence")
+        .args(["--command", "SELECT pg_sleep(20)"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    timeout(Duration::from_secs(5),async{
+        while query("SELECT count(*) FROM pg_stat_activity WHERE usename='rp_app_59182' AND application_name='fixture-uid-fence'").await!="1"{
+            sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    runtime::fence_database(59182).await.unwrap();
+    assert!(
+        !timeout(Duration::from_secs(3), session.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(
+        query("SELECT rolcanlogin FROM pg_roles WHERE rolname='rp_app_59182'").await,
+        "f"
+    );
+    runtime::purge_database(59182).await.unwrap();
+    assert!(runtime::database_uid_vacant(59182).await.unwrap());
+    assert_eq!(
+        query("SELECT rolcanlogin FROM pg_roles WHERE rolname='rp_app_59183'").await,
+        "t"
+    );
+    assert!(!runtime::database_uid_vacant(59183).await.unwrap());
+}
 #[path = "app_manager/lifecycle.rs"]
 mod lifecycle;
+#[path = "app_manager/retirement.rs"]
+mod retirement;
 #[tokio::test]
 #[ignore = "requires the isolated Linux lifecycle fixture and a dedicated writable appliance tmpfs"]
 async fn privileged_signed_lifecycle() {
@@ -40,6 +116,7 @@ fn data_changes_preserve_every_possible_written_version_or_require_recovery() {
     target = source.clone();
     target.read_versions.retain(|v| *v != 3);
     assert!(!compatible(Some(&source), Some(&target)));
+    target = source.clone();
     target.target_version = 3;
     assert!(!compatible(Some(&source), Some(&target)));
     assert!(!compatible(Some(&source), None));
@@ -150,6 +227,7 @@ async fn dependency_block_and_separate_purge_keep_the_uid_reserved() {
         journal,
         gateway: Gateway::fixture(temp.path().join("absent.sock"), 0),
         running: BTreeMap::new(),
+        fence_cursor: String::new(),
     };
     let slot = Slot {
         app_id: "example.test".into(),

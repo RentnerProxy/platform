@@ -70,6 +70,8 @@ pub(super) struct Slot {
     pub app_id: String,
     pub uid: u32,
     pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_recorded: Option<bool>,
     pub candidate: Option<Release>,
     pub active: Option<Release>,
     pub previous: Option<Release>,
@@ -146,7 +148,7 @@ impl Journal {
     pub fn open(directory: &Path) -> io::Result<Self> {
         private_directory(directory)?;
         let guard = lock(&directory.join("manager.lock"))?;
-        let state = match OpenOptions::new()
+        let mut state = match OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(directory.join("journal.json"))
@@ -182,6 +184,9 @@ impl Journal {
         {
             return Err(bad("Invalid manager journal"));
         }
+        for slot in state.installations.values_mut() {
+            slot.authority_recorded.get_or_insert(slot.generation > 0);
+        }
         Ok(Self {
             directory: directory.to_owned(),
             _lock: guard,
@@ -199,7 +204,10 @@ impl Journal {
             .ok_or_else(|| bad("Unknown installation"))
     }
     pub fn writer(&self, uid: u32) -> io::Result<File> {
-        lock(&self.directory.join(format!("writer-{uid}.lock")))
+        lock(&self.writer_path(uid))
+    }
+    pub fn writer_path(&self, uid: u32) -> PathBuf {
+        self.directory.join(format!("writer-{uid}.lock"))
     }
     pub fn save(&mut self, id: &str, slot: Slot) -> io::Result<()> {
         if self.poisoned {

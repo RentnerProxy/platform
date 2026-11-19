@@ -101,20 +101,28 @@ fn read_source(path: &Path) -> Result<Value, SourceError> {
     }
 
     let mut output = Map::from_iter([("schema".into(), Value::String("npm-2.16-schema".into()))]);
+    let mut remaining = MAXIMUM_OUTPUT;
     for (name, query) in contract.queries {
         output.insert(
             name,
-            Value::Array(read_rows(&connection, &query, MAXIMUM_ROWS)?),
+            Value::Array(read_rows(
+                &connection,
+                &query,
+                MAXIMUM_ROWS,
+                &mut remaining,
+            )?),
         );
     }
     Ok(Value::Object(output))
 }
 
 fn validate_schema(connection: &Connection, contract: &Contract) -> Result<(), SourceError> {
+    let mut remaining = MAXIMUM_OUTPUT;
     let objects = read_rows(
         connection,
         "select name, type, sql from sqlite_schema where name not like 'sqlite_%' limit 1025",
         1024,
+        &mut remaining,
     )?;
     let objects: BTreeMap<_, _> = objects
         .iter()
@@ -136,7 +144,12 @@ fn validate_schema(connection: &Connection, contract: &Contract) -> Result<(), S
         if object["type"] != "table" || !ordinary_table {
             return Err(SourceError::Unsupported);
         }
-        let columns = read_rows(connection, &format!("pragma table_info({table})"), 256)?;
+        let columns = read_rows(
+            connection,
+            &format!("pragma table_info({table})"),
+            256,
+            &mut remaining,
+        )?;
         let columns: HashSet<_> = columns
             .iter()
             .filter_map(|row| row["name"].as_str())
@@ -149,6 +162,7 @@ fn validate_schema(connection: &Connection, contract: &Contract) -> Result<(), S
         connection,
         "select name from knex_migrations limit 100",
         100,
+        &mut remaining,
     )?;
     let installed: HashSet<_> = migrations
         .iter()
@@ -170,6 +184,7 @@ fn read_rows(
     connection: &Connection,
     sql: &str,
     maximum: usize,
+    remaining: &mut usize,
 ) -> Result<Vec<Value>, SourceError> {
     let mut query = connection.prepare(sql).map_err(|_| SourceError::Invalid)?;
     let columns: Vec<_> = query.column_names().map(str::to_owned).collect();
@@ -182,6 +197,13 @@ fn read_rows(
         let mut fields = Map::new();
         for (index, key) in columns.iter().enumerate() {
             let item = row.get_ref(index).map_err(|_| SourceError::Invalid)?;
+            let payload = match item {
+                ValueRef::Text(bytes) => bytes.len(),
+                _ => 0,
+            };
+            *remaining = remaining
+                .checked_sub(key.len() + payload + 4)
+                .ok_or(SourceError::Limit)?;
             let value = match item {
                 ValueRef::Null => Value::Null,
                 ValueRef::Integer(value) if value.unsigned_abs() <= 9_007_199_254_740_991 => {

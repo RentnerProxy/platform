@@ -1,8 +1,12 @@
 use std::{
+    ffi::CString,
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     mem::MaybeUninit,
-    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+    },
     path::Path,
     process::ExitCode,
 };
@@ -32,24 +36,36 @@ const TAG_BYTES: usize = 16;
 const CHUNK_BYTES: usize = 65_536;
 const RESERVE_BYTES: u128 = 2 * 1024_u128.pow(3);
 const CHECK_INTERVAL: u64 = 16 * 1024 * 1024;
+type CapacityCheck = fn(&File) -> io::Result<()>;
 
 pub fn run_backup_envelope(mut arguments: impl Iterator<Item = String>) -> ExitCode {
-    let (Some(operation), Some(source), Some(target), None) = (
-        arguments.next(),
-        arguments.next(),
-        arguments.next(),
-        arguments.next(),
-    ) else {
+    let Some(operation) = arguments.next() else {
         return ExitCode::FAILURE;
     };
-    let stdin = io::stdin().lock();
-    let result = transform(
-        &operation,
-        Path::new(&source),
-        Path::new(&target),
-        stdin,
-        io::stdout().lock(),
-    );
+    if operation == "version" {
+        if arguments.next().is_some() {
+            return ExitCode::FAILURE;
+        }
+        println!("RPBAKENC/1");
+        return ExitCode::SUCCESS;
+    }
+    let (Some(source), Some(target), None) = (arguments.next(), arguments.next(), arguments.next())
+    else {
+        return ExitCode::FAILURE;
+    };
+    let (source, target) = (Path::new(&source), Path::new(&target));
+    let result = if operation == "publish" {
+        publish(source, target)
+    } else {
+        transform(
+            &operation,
+            source,
+            target,
+            io::stdin().lock(),
+            io::stdout().lock(),
+            check_capacity,
+        )
+    };
     if result.is_ok() {
         ExitCode::SUCCESS
     } else {
@@ -58,12 +74,32 @@ pub fn run_backup_envelope(mut arguments: impl Iterator<Item = String>) -> ExitC
     }
 }
 
+fn publish(source: &Path, target: &Path) -> io::Result<()> {
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let target = CString::new(target.as_os_str().as_bytes())?;
+    // SAFETY: Both paths are valid, live NUL-terminated strings.
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            target.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn transform(
     operation: &str,
     source: &Path,
     target: &Path,
     mut request: impl Read,
     mut response: impl Write,
+    check: CapacityCheck,
 ) -> io::Result<()> {
     let mut key = Zeroizing::new([0; 32]);
     request.read_exact(key.as_mut())?;
@@ -79,7 +115,7 @@ fn transform(
                 request.read_exact(sha256)?;
             }
             eof(&mut request)?;
-            let (length, hash) = seal(source, target, &header, lengths, hashes, cipher)?;
+            let (length, hash) = seal(source, target, &header, lengths, hashes, cipher, check)?;
             serde_json::to_writer(
                 &mut response,
                 &serde_json::json!({"bytes": length, "sha256": hash}),
@@ -88,7 +124,7 @@ fn transform(
         }
         "open" => {
             eof(&mut request)?;
-            open(source, target, &header, lengths, cipher)
+            open(source, target, &header, lengths, cipher, check)
         }
         _ => Err(invalid()),
     }
@@ -122,6 +158,7 @@ fn seal(
     lengths: [u64; NAMES.len()],
     hashes: [[u8; 32]; NAMES.len()],
     mut cipher: AesGcm<Aes256>,
+    check: CapacityCheck,
 ) -> io::Result<(u64, String)> {
     let mut output = new_private_file(target)?;
     output.write_all(header)?;
@@ -134,7 +171,7 @@ fn seal(
             return Err(invalid());
         }
         let mut artifact = digest::Context::new(&digest::SHA256);
-        transfer(&mut input, &mut output, expected_length, |data| {
+        transfer(&mut input, &mut output, expected_length, check, |data| {
             artifact.update(data);
             cipher.encrypt(data);
             checksum.update(data);
@@ -166,6 +203,7 @@ fn open(
     expected_header: &[u8; HEADER_BYTES],
     lengths: [u64; NAMES.len()],
     mut cipher: AesGcm<Aes256>,
+    check: CapacityCheck,
 ) -> io::Result<()> {
     let size = HEADER_BYTES as u64 + lengths.into_iter().sum::<u64>() + TAG_BYTES as u64;
     let (mut input, before) = marketplace_artifacts::open_regular(source, size)?;
@@ -179,7 +217,9 @@ fn open(
     }
     for (name, length) in NAMES.into_iter().zip(lengths) {
         let mut output = new_private_file(&target_directory.join(name))?;
-        transfer(&mut input, &mut output, length, |data| cipher.decrypt(data))?;
+        transfer(&mut input, &mut output, length, check, |data| {
+            cipher.decrypt(data)
+        })?;
         output.sync_all()?;
     }
     let mut tag = [0; TAG_BYTES];
@@ -192,13 +232,14 @@ fn transfer(
     input: &mut File,
     output: &mut File,
     length: u64,
+    check: CapacityCheck,
     mut transform: impl FnMut(&mut [u8]),
 ) -> io::Result<()> {
     let mut buffer = Zeroizing::new(vec![0; CHUNK_BYTES]);
     let mut offset = 0;
     while offset < length {
         if offset % CHECK_INTERVAL == 0 {
-            check_capacity(output)?;
+            check(output)?;
         }
         let bytes = ((length - offset).min(CHUNK_BYTES as u64)) as usize;
         let chunk = &mut buffer[..bytes];

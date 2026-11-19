@@ -9,6 +9,7 @@ fn guards_every_kernel_credential_and_respects_the_uid_pool() {
     write_status(root, "self", "S", [0, 0, 0, 0]);
     write_status(root, "18", "S", [19_999, 0, 60_000, 0]);
     write_status(root, "21", "Z", [20_000, 20_000, 20_000, 20_000]);
+    write_status(&root.join("21/task"), "21", "Z", [20_000; 4]);
     verify_writers_stopped(root, &[], is_app).unwrap();
     for field in 0..4 {
         let mut identities = [0; 4];
@@ -71,4 +72,21 @@ fn write_status(root: &Path, pid: &str, state: &str, uids: [u32; 4]) {
         format!("State:\t{state} (fixture)\nUid:\t{real} {effective} {saved} {filesystem}\n"),
     )
     .unwrap();
+}
+
+#[test]
+fn checks_live_siblings_of_an_exited_leader_and_requires_a_visible_task_list() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    write_status(root, "self", "S", [0; 4]);
+    write_status(root, "70", "Z", [0; 4]);
+    assert!(verify_writers_stopped(root, &[], is_app).is_err());
+    let tasks = root.join("70/task");
+    fs::create_dir(&tasks).unwrap();
+    assert!(verify_writers_stopped(root, &[], is_app).is_err());
+    write_status(&tasks, "70", "Z", [0; 4]);
+    write_status(&tasks, "71", "S", [0, 20_001, 0, 0]);
+    assert!(verify_writers_stopped(root, &[], is_app).is_err());
+    write_status(&tasks, "71", "X", [20_001; 4]);
+    verify_writers_stopped(root, &[], is_app).unwrap();
 }

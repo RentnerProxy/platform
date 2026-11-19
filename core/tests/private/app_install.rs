@@ -346,6 +346,34 @@ fn verifies_dynamic_abi_against_installed_appliance_libraries() {
     super::package::verify_abi(&json!([linkage]), target).unwrap();
     linkage["versions"]["libc.so.6"] = json!(["GLIBC_TEST_UNAVAILABLE"]);
     assert!(super::package::verify_abi(&json!([linkage]), target).is_err());
+    for invalid_name in ["/lib/libc.so.6", "../libc.so.6", "lib\\libc.so.6", ".."] {
+        assert!(
+            super::package::verify_abi(
+                &json!([{"needed": [invalid_name], "interpreter": null}]),
+                target,
+            )
+            .is_err()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn staging_tree_refuses_special_files_before_touching_their_targets() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let directory = tempfile::tempdir().unwrap();
+    let stage = directory.path().join("stage");
+    let outside = directory.path().join("outside");
+    fs::create_dir(&stage).unwrap();
+    fs::write(&outside, b"preserved").unwrap();
+    fs::set_permissions(&outside, fs::Permissions::from_mode(0o600)).unwrap();
+    symlink(&outside, stage.join("entry")).unwrap();
+    assert!(super::filesystem::sync_tree(&stage).is_err());
+    assert_eq!(
+        fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 #[test]
@@ -359,4 +387,82 @@ fn trusted_repository_setting_requires_a_plain_https_directory() {
         assert!(super::transport::repository_url(value).is_err());
     }
     assert!(super::transport::repository_url("https://example.com/tuf/").is_ok());
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[test]
+fn installer_respects_root_path_admission_and_retains_its_catalog_when_refresh_fails() {
+    use std::{
+        os::unix::fs::{PermissionsExt, symlink},
+        process::ExitCode,
+    };
+
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let temporary = tempfile::tempdir_in("/root").unwrap();
+    let root = temporary.path();
+    let store = root.join("store");
+    let pin = root.join("root.json");
+    let config = root.join("installer.json");
+    fs::create_dir(&store).unwrap();
+    fs::write(&pin, PIN).unwrap();
+    let settings = json!({
+        "storeDirectory":store,"pinnedRoot":pin,
+        "repositoryUrl":"https://127.0.0.1:0/","engineCapabilities":[]
+    });
+    let write_settings =
+        |value: &Value| fs::write(&config, serde_json::to_vec(value).unwrap()).unwrap();
+    write_settings(&settings);
+    let installer = Installer::open(&config).unwrap();
+    assert!(installer.recover(ID, VERSION, &"0".repeat(64)).is_err());
+    let files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
+    refresh(&installer, &files, now()).unwrap();
+    let checkpoint = store.join("catalog-checkpoint.json");
+    let accepted = fs::read(&checkpoint).unwrap();
+    assert!(refresh(&installer, &files, now() - Duration::seconds(1)).is_err());
+    let command = [
+        config.to_str().unwrap().to_owned(),
+        ID.into(),
+        VERSION.into(),
+    ];
+    assert_eq!(
+        super::run_app_stage(command.clone().into_iter()),
+        ExitCode::FAILURE
+    );
+    assert_eq!(
+        super::run_app_stage(command.into_iter().take(2)),
+        ExitCode::FAILURE
+    );
+    assert_eq!(fs::read(&checkpoint).unwrap(), accepted);
+    assert!(super::filesystem::check_root_path(Path::new("catalog.json"), false).is_err());
+    assert!(super::filesystem::check_root_path(&pin, true).is_err());
+
+    let alias = root.join("alias.json");
+    symlink(&config, &alias).unwrap();
+    assert!(Installer::open(&alias).is_err());
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o666)).unwrap();
+    assert!(Installer::open(&config).is_err());
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    for (field, value) in [
+        ("pinnedRoot", json!(store)),
+        ("storeDirectory", json!(pin)),
+        ("engineCapabilities", json!(["unknown-engine"])),
+        ("repositoryUrl", json!("http://example.com/")),
+        ("unknownField", Value::Bool(true)),
+    ] {
+        let mut changed = settings.clone();
+        changed[field] = value;
+        write_settings(&changed);
+        assert!(Installer::open(&config).is_err(), "{field}");
+    }
+    assert_eq!(fs::read(&checkpoint).unwrap(), accepted);
+
+    let mut inconsistent: Value = serde_json::from_slice(&accepted).unwrap();
+    inconsistent["pinSha256"] = "0".repeat(64).into();
+    fs::write(&checkpoint, serde_json::to_vec(&inconsistent).unwrap()).unwrap();
+    assert!(installer.checkpoint().is_err());
 }

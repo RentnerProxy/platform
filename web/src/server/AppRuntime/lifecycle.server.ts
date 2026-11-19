@@ -65,6 +65,15 @@ async function loadLockedGeneration(transaction: AuthTransaction, identity: AppR
     return generation
 }
 
+async function reserveInstallation(transaction: AuthTransaction, identity: AppRuntimeIdentity) {
+    const { installationId, appId, uid } = identity
+    await transaction
+        .insert(appRuntimeInstallations)
+        .values({ id: installationId, appId, uid })
+        .onConflictDoNothing()
+    await lockAppRuntimeInstallation(transaction, identity, true)
+}
+
 export async function registerAppRuntimeGenerationInTransaction(
     transaction: AuthTransaction,
     registration: AppRuntimeRegistration,
@@ -87,12 +96,8 @@ export async function registerAppRuntimeGenerationInTransaction(
     )
         throw new AppRuntimeAuthorityError('invalid_input')
 
-    const { installationId, appId, uid, generation } = identity
-    await transaction
-        .insert(appRuntimeInstallations)
-        .values({ id: installationId, appId, uid })
-        .onConflictDoNothing()
-    await lockAppRuntimeInstallation(transaction, identity, true)
+    const { installationId, generation } = identity
+    await reserveInstallation(transaction, identity)
     const [previous] = await transaction
         .select()
         .from(appRuntimeGenerations)
@@ -325,7 +330,19 @@ export async function revokeAppRuntimeGenerationInTransaction(
     allowMissing = false,
 ): Promise<void> {
     if (allowMissing) {
-        if (!(await lockExistingInstallation(transaction, identity))) return
+        await reserveInstallation(transaction, identity)
+        await transaction
+            .insert(appRuntimeGenerations)
+            .values({
+                installationId: identity.installationId,
+                generation: identity.generation,
+                state: 'revoked',
+                leaseExpiresAt: new Date(0),
+                capabilities: sql`'[]'::jsonb`,
+                permissionKeys: sql`'[]'::jsonb`,
+                hasUi: false,
+            })
+            .onConflictDoNothing()
     } else {
         await loadLockedGeneration(transaction, identity)
     }

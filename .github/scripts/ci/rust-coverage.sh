@@ -29,7 +29,7 @@ if [[ ${1:-} == --privileged-app-ipc ]]; then
         docker run --rm --network none --read-only --user 0:0
         --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add KILL --cap-add SETGID --cap-add SETUID \
         --security-opt no-new-privileges \
-        --tmpfs /run:rw,exec,mode=0755,size=512m \
+        --tmpfs '/run:rw,exec,mode=0755,size=512m' \
         --mount "type=bind,source=$profiles/ipc-tests,target=/ipc-tests,readonly" \
         --mount "type=bind,source=$profiles/controller,target=/controller,readonly" \
         --mount "type=bind,source=$profiles/data,target=/profiles" \
@@ -41,6 +41,10 @@ if [[ ${1:-} == --privileged-app-ipc ]]; then
         /ipc-tests --test-threads=1 --ignored app_ipc::tests::privileged_
     # The application verifier cross-checks ELF linkage with the image's readelf.
     native_fixture_image=mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31
+    "${runner[@]}" \
+        --tmpfs /root:rw,mode=0700,size=64m \
+        "$native_fixture_image" \
+        /ipc-tests --test-threads=1 app_manager::tests:: app_install::tests::
     "${runner[@]}" \
         --tmpfs /var/lib/rentnerproxy:rw,exec,mode=0755,size=128m \
         --tmpfs /tmp:rw,mode=01777,size=128m \

@@ -11,7 +11,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::{
-    net::UnixListener,
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{UnixListener, UnixStream},
     process::{Child, Command as Process},
 };
 
@@ -166,7 +167,7 @@ async fn backup_files(controller: &Path, config: &Path, temporary: &Path) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let manifest: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut manifest: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(manifest["installations"][ID]["active"]["version"], "1.0.0");
     let snapshot = temporary.join("app-snapshot");
     fs::write(&snapshot, output.stdout).unwrap();
@@ -184,6 +185,100 @@ async fn backup_files(controller: &Path, config: &Path, temporary: &Path) {
     }
     assert_eq!(fs::read(&note).unwrap(), b"offline fixture");
     assert!(!command("empty").output().await.unwrap().status.success());
+    fs::remove_dir_all(&data).unwrap();
+    assert!(
+        command("restore")
+            .arg(&snapshot)
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
+    assert_eq!(fs::read(&note).unwrap(), b"offline fixture");
+    let alias = data.join("fixture-hardlink");
+    fs::hard_link(&note, &alias).unwrap();
+    assert!(!command("capture").output().await.unwrap().status.success());
+    fs::remove_file(alias).unwrap();
+    manifest["installations"][ID]["active"]["archiveSha256"] = "0".repeat(64).into();
+    fs::write(&snapshot, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert!(
+        !command("restore")
+            .arg(&snapshot)
+            .output()
+            .await
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(fs::read(&note).unwrap(), b"offline fixture");
+}
+
+async fn check_control_boundary(controller: &Path, temporary: &Path) {
+    for arguments in [
+        &["unknown"][..],
+        &["stop", "../invalid"],
+        &["stop", "missing-app"],
+        &["stage", ID, "example.other", "1.0.0"],
+        &["rollback", ID],
+    ] {
+        assert!(
+            invoke(controller, arguments).await.is_err(),
+            "{arguments:?}"
+        );
+    }
+    let long_version = "1".repeat(129);
+    assert!(
+        invoke(controller, &["stage", ID, "example.probe", &long_version])
+            .await
+            .is_err()
+    );
+    let socket = "/run/rentnerproxy/app-manager/control.sock";
+    for malformed in [b"null".to_vec(), vec![b' '; 96 * 1024 + 1]] {
+        let mut stream = UnixStream::connect(socket).await.unwrap();
+        stream.write_all(&malformed).await.unwrap();
+        stream.shutdown().await.unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).await.unwrap();
+        let reply: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(reply["ok"], false);
+    }
+    let grants = temporary.join("grants.json");
+    fs::write(&grants, "[]").unwrap();
+    let path = grants.to_str().unwrap();
+    fs::set_permissions(&grants, fs::Permissions::from_mode(0o666)).unwrap();
+    assert!(invoke(controller, &["activate", ID, path]).await.is_err());
+    fs::set_permissions(&grants, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&grants, "{").unwrap();
+    assert!(invoke(controller, &["activate", ID, path]).await.is_err());
+    fs::write(&grants, "[]").unwrap();
+    invoke(controller, &["activate", ID, path]).await.unwrap();
+}
+
+async fn check_process_recovery(controller: &Path) {
+    let data = super::super::storage::directory(UID).join("data");
+    fs::write(data.join("fixture-exit"), []).unwrap();
+    timeout(Duration::from_secs(8), async {
+        loop {
+            let state = invoke(controller, &["status"]).await.unwrap();
+            if state[ID]["running"] == false {
+                assert_eq!(state[ID]["recoveryRequired"], true);
+                assert_eq!(state[ID]["desiredRunning"], true);
+                break;
+            }
+            sleep(Duration::from_millis(75)).await;
+        }
+    })
+    .await
+    .unwrap();
+    invoke(controller, &["start", ID]).await.unwrap();
+    invoke(controller, &["stop", ID]).await.unwrap();
+    let stopped = invoke(controller, &["status"]).await.unwrap();
+    assert_eq!(stopped[ID]["running"], false);
+    assert_eq!(stopped[ID]["desiredRunning"], false);
+    invoke(controller, &["start", ID]).await.unwrap();
+    let started = invoke(controller, &["status"]).await.unwrap();
+    invoke(controller, &["start", ID]).await.unwrap();
+    assert_eq!(invoke(controller, &["status"]).await.unwrap(), started);
 }
 
 pub(super) async fn exercise() {
@@ -251,11 +346,12 @@ pub(super) async fn exercise() {
     assert_eq!(states[ID]["active"], "1.0.0");
     assert_eq!(states[ID]["candidate"], "1.1.0");
     assert_eq!(states[ID]["running"], true);
-    invoke(&controller, &["activate", ID]).await.unwrap();
+    check_control_boundary(&controller, temp.path()).await;
     let states = invoke(&controller, &["status"]).await.unwrap();
     assert_eq!(states[ID]["active"], "1.1.0");
     assert_eq!(states[ID]["previous"], "1.0.0");
     invoke(&controller, &["rollback", ID]).await.unwrap();
+    check_process_recovery(&controller).await;
     halt(&mut manager).await;
     verify_uid_stopped(UID).unwrap();
     backup_files(&controller, &config, temp.path()).await;
@@ -266,12 +362,15 @@ pub(super) async fn exercise() {
     journal.save(ID, slot).unwrap();
     drop(journal);
     let mut manager = mount_manager(&controller, &config, &token).await;
+    let before = invoke(&controller, &["status"]).await.unwrap()[ID]["generation"]
+        .as_u64()
+        .unwrap();
     assert!(invoke(&controller, &["activate", ID]).await.is_err());
     let states = invoke(&controller, &["status"]).await.unwrap();
     assert_eq!(states[ID]["active"], "1.0.0");
     assert_eq!(states[ID]["candidate"], "1.2.0");
     assert_eq!(states[ID]["running"], true);
-    assert_eq!(states[ID]["generation"], 6);
+    assert_eq!(states[ID]["generation"], before + 2);
     invoke(&controller, &["remove", ID]).await.unwrap();
     let data = super::super::storage::directory(UID);
     assert!(data.join("data/app-pid").is_file());

@@ -47,6 +47,53 @@ const integrationEnabled =
     process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && Boolean(process.env.DATABASE_URL)
 const integrationTest = integrationEnabled ? test : test.skip
 
+integrationTest('retirement waits for a registration that has not committed', async () => {
+    const { db } = await import('@/db/index.ts')
+    const identity = {
+        installationId: crypto.randomUUID(),
+        appId: 'fixture.retirement',
+        uid: 40_495,
+        generation: 1,
+    }
+    const inserted = Promise.withResolvers<void>()
+    const commit = Promise.withResolvers<void>()
+    const registering = db.transaction(async (transaction) => {
+        await registerAppRuntimeGenerationInTransaction(transaction, {
+            identity,
+            leaseExpiresAt: new Date(Date.now() + 60_000),
+            capabilities: [],
+        })
+        inserted.resolve()
+        await commit.promise
+    })
+    try {
+        await Promise.race([inserted.promise, registering])
+        await expect(
+            db.transaction(async (transaction) => {
+                await transaction.execute(sql`set local lock_timeout = '100ms'`)
+                await revokeAppRuntimeGenerationInTransaction(transaction, identity, true)
+            }),
+        ).rejects.toThrow()
+        commit.resolve()
+        await registering
+        await db.transaction(async (transaction) => {
+            await revokeAppRuntimeGenerationInTransaction(transaction, identity, true)
+            await checkAppRuntimeDependenciesInTransaction(transaction, identity, 'purge-data')
+        })
+    } finally {
+        commit.resolve()
+        await registering
+        await db.transaction(async (transaction) => {
+            await transaction
+                .delete(appRuntimeGenerations)
+                .where(eq(appRuntimeGenerations.installationId, identity.installationId))
+            await transaction
+                .delete(appRuntimeInstallations)
+                .where(eq(appRuntimeInstallations.id, identity.installationId))
+        })
+    }
+})
+
 integrationTest(
     'runtime authority persists and fences app generations, delegation, secrets and replay',
     async () => {
@@ -85,6 +132,31 @@ integrationTest(
                         capabilities: [read],
                         permissionKeys: ['use-secret'],
                     }
+                    const retired = {
+                        ...identity,
+                        installationId: crypto.randomUUID(),
+                        uid: 40_494,
+                    }
+                    await revokeAppRuntimeGenerationInTransaction(transaction, retired, true)
+                    await expect(
+                        registerAppRuntimeGenerationInTransaction(transaction, {
+                            ...registration,
+                            identity: retired,
+                        }),
+                    ).rejects.toMatchObject({ code: 'conflict' })
+                    const successor = { ...retired, generation: 2 }
+                    await registerAppRuntimeGenerationInTransaction(transaction, {
+                        ...registration,
+                        identity: successor,
+                    })
+                    await replaceAppRuntimeGrantsInTransaction(transaction, successor, [
+                        { capability: read, resourceId: 'other-host', allowService: false },
+                    ])
+                    await activateAppRuntimeGenerationInTransaction(
+                        transaction,
+                        successor,
+                        leaseExpiresAt,
+                    )
                     await registerAppRuntimeGenerationInTransaction(transaction, registration)
                     await replaceAppRuntimeGrantsInTransaction(transaction, identity, granted)
 
@@ -440,7 +512,17 @@ integrationTest(
                         'workers-stopped',
                     )
                     await checkAppRuntimeDependenciesInTransaction(transaction, next, 'removable')
+                    const grantsFor = (id: string) =>
+                        transaction
+                            .select({ id: appRuntimeGrants.resourceId })
+                            .from(appRuntimeGrants)
+                            .where(eq(appRuntimeGrants.installationId, id))
+                    expect((await grantsFor(installationId)).length).toBeGreaterThan(0)
                     await checkAppRuntimeDependenciesInTransaction(transaction, next, 'purge-data')
+                    expect(await grantsFor(installationId)).toEqual([])
+                    expect(await grantsFor(successor.installationId)).toEqual([
+                        { id: 'other-host' },
+                    ])
                     await expect(
                         checkAppRuntimeDependenciesInTransaction(
                             transaction,

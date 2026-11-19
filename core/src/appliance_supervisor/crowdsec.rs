@@ -100,6 +100,8 @@ impl Supervisor {
                 self.restarts = 0;
                 self.blocked = false;
                 self.rotate = true;
+                self.attempt = Instant::now();
+                self.suspended = self.attempt;
                 self.community = "disabled";
                 self.console = "not_enrolled";
                 self.publish("stopped")?;
@@ -111,18 +113,17 @@ impl Supervisor {
                 pause(1, &self.shutdown).await;
                 continue;
             }
-            if self.rotate {
-                if files::rotate_key().is_err() {
+            self.publish("starting")?;
+            if let Err(error) = self.start().await {
+                if self.shutdown.is_cancelled() {
+                    break;
+                }
+                if error.kind() == io::ErrorKind::InvalidInput {
                     self.blocked = true;
                     self.publish("degraded")?;
-                    continue;
+                } else {
+                    self.retry().await?;
                 }
-                self.rotate = false;
-            }
-            self.publish("starting")?;
-            if self.start().await.is_err() {
-                self.blocked = true;
-                self.publish("degraded")?;
                 continue;
             }
             let ready = self.ready().await?;
@@ -141,24 +142,28 @@ impl Supervisor {
                 self.suspended = Instant::now() + RETRY;
                 self.attempt = self.suspended;
                 self.community = "degraded";
+                self.console = "degraded";
                 self.publish("restarting")?;
                 continue;
             }
             if ready && ready_since.elapsed() >= RETRY {
                 self.restarts = 0;
             }
-            self.restarts += 1;
-            if self.restarts >= 5 {
-                self.blocked = true;
-                self.publish("degraded")?;
-            } else {
-                if ready {
-                    self.publish("restarting")?;
-                }
-                pause(1 << (self.restarts - 1), &self.shutdown).await;
-            }
+            self.retry().await?;
         }
         Ok(())
+    }
+
+    async fn retry(&mut self) -> io::Result<()> {
+        self.restarts += 1;
+        if self.restarts >= 5 {
+            self.blocked = true;
+            self.publish("degraded")
+        } else {
+            self.publish("restarting")?;
+            pause(1 << (self.restarts - 1), &self.shutdown).await;
+            Ok(())
+        }
     }
 
     async fn start(&mut self) -> io::Result<()> {
@@ -173,12 +178,15 @@ impl Supervisor {
                 config = ONLINE_CONFIG;
                 self.running = Mode::Online;
                 self.community = "starting";
+                self.probe = Instant::now();
             } else {
                 self.community = "degraded";
                 self.attempt = Instant::now() + RETRY;
             }
         }
-        self.validate(config).await?;
+        if config == LOCAL_CONFIG {
+            self.validate(config).await?;
+        }
         let mut command = service(ENGINE, &["-c", config]);
         if self.running == Mode::Local {
             command.arg("-no-capi");
@@ -195,6 +203,16 @@ impl Supervisor {
             &self.shutdown,
         )
         .await
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::InvalidData {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid CrowdSec configuration",
+                )
+            } else {
+                error
+            }
+        })
     }
 
     async fn cli(
@@ -209,14 +227,13 @@ impl Supervisor {
         bounded(command, seconds, capture, &self.shutdown).await
     }
 
-    async fn initialize_credentials(&self) -> io::Result<()> {
-        let key = files::key()?;
+    async fn initialize_credentials(&mut self) -> io::Result<()> {
         const MACHINE: &str = "rentnerproxy-managed";
         const BOUNCER: &str = "rentnerproxy-caddy";
         let machines = self
             .cli(LOCAL_CONFIG, &["machines", "list", "-o", "json"], 25, true)
-            .await;
-        if !machines.is_ok_and(|json| online::has_json_field(&json, "machineId", &json!(MACHINE))) {
+            .await?;
+        if !online::has_json_field(&machines, "machineId", &json!(MACHINE)) {
             let _ = self
                 .cli(LOCAL_CONFIG, &["machines", "delete", MACHINE], 25, false)
                 .await;
@@ -228,16 +245,22 @@ impl Supervisor {
             )
             .await?;
         }
-        let _ = self
-            .cli(LOCAL_CONFIG, &["bouncers", "delete", BOUNCER], 25, false)
-            .await;
-        self.cli(
-            LOCAL_CONFIG,
-            &["bouncers", "add", BOUNCER, "--key", &key],
-            25,
-            false,
-        )
-        .await?;
+        if self.rotate {
+            files::check_previous_key()?;
+            let _ = self
+                .cli(LOCAL_CONFIG, &["bouncers", "delete", BOUNCER], 25, false)
+                .await;
+            let key = self
+                .cli(
+                    LOCAL_CONFIG,
+                    &["bouncers", "add", BOUNCER, "-o", "raw"],
+                    25,
+                    true,
+                )
+                .await?;
+            files::publish_generated_key(key)?;
+            self.rotate = false;
+        }
         Ok(())
     }
 
@@ -277,6 +300,8 @@ impl Supervisor {
             match (self.running, desired()) {
                 (_, Mode::Stopped) => break,
                 (Mode::Online, Mode::Local) => {
+                    self.attempt = Instant::now();
+                    self.suspended = self.attempt;
                     self.community = "disabled";
                     self.console = "not_enrolled";
                     return Ok(true);

@@ -52,7 +52,10 @@ export function postgresCommand(
     validateOnly: boolean | 'inventory',
     backupDirectory = '/backup',
     appAware = false,
+    snapshotId?: string,
 ): string {
+    if (validateOnly === 'inventory' && appAware && !/^[a-f0-9]{64}$/u.test(snapshotId ?? ''))
+        throw new Error('Missing verified app backup identity')
     if (!/^\/[A-Za-z0-9_./-]+$/u.test(backupDirectory) || backupDirectory.split('/').includes('..'))
         throw new Error('Invalid backup snapshot path')
     return [
@@ -99,7 +102,9 @@ export function postgresCommand(
         validateOnly === 'inventory'
             ? appAware
                 ? 'bun --no-env-file /opt/rentnerproxy/web/backup-export.js --check-app-restore-inventory ' +
-                  backupDirectory
+                  backupDirectory +
+                  ' ' +
+                  snapshotId
                 : legacyDatabaseGuard
             : validateOnly
               ? postgresRestoreCommand(true, backupDirectory)

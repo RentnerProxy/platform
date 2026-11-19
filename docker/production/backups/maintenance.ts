@@ -294,7 +294,7 @@ async function offlineRestore(options: readonly string[]) {
         await command([
             'bash',
             '-c',
-            postgresCommand('inventory', snapshot, metadata.version === 5),
+            postgresCommand('inventory', snapshot, metadata.version === 5, backupId),
         ])
         if (!pending)
             await command(['/usr/local/bin/rentnerproxy-production', '--initialize-restore-target'])

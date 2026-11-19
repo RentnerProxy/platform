@@ -95,12 +95,14 @@ test_environment() (
     done
     (
         export SMTP_USER=dummy-user SMTP_PASSWORD=dummy-password
+        local dispatched=false
         exec() {
             [[ $* == '/usr/local/bin/rentnerproxy-controller --appliance-supervisor crowdsec' ]] || fail 'unexpected CrowdSec supervisor invocation'
+            bash -c '[[ ! -v SMTP_USER && ! -v SMTP_PASSWORD ]]' || fail 'CrowdSec received SMTP credentials'
+            dispatched=true
         }
         source "$supervisor"
-        bash -c '[[ ! -v SMTP_USER && ! -v SMTP_PASSWORD ]]' \
-            || fail 'standalone CrowdSec supervisor retained SMTP credentials'
+        "$dispatched" || fail 'CrowdSec supervisor was not dispatched'
     )
     printf 'PASS: configured, empty and unset SMTP credentials stay in the web child\n'
 )

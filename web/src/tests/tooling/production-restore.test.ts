@@ -80,6 +80,31 @@ describe('restore target maintenance entrypoint', () => {
         'utf8',
     )
 
+    test('terminates web and postgres after the app drain finishes', async () => {
+        const shutdown = /^shutdown_children\(\) \{[\s\S]*?^\}/mu.exec(await entrypoint)?.[0]
+        expect(shutdown).toBeDefined()
+        const result = Bun.spawnSync([
+            bash,
+            '-c',
+            [
+                'set -eu',
+                'child_names=(web postgres app-manager); child_pids=(101 102 103)',
+                'backup_stop_consumer_phase() { echo "drain-$1"; unset "child_names[2]" "child_pids[2]"; }',
+                'backup_stop_retained_caddy() { :; }',
+                'live_web=true',
+                'kill() { if [[ $1 == -0 ]]; then [[ $2 == 101 && $live_web == true ]]; else echo "$1-$2"; if [[ $2 == 101 ]]; then live_web=false; fi; fi; }',
+                'wait() { :; }',
+                shutdown!,
+                'shutdown_children',
+            ].join('\n'),
+        ])
+        expect(result.exitCode, result.stderr.toString()).toBe(0)
+        const signals = result.stdout.toString().trim().split(/\r?\n/u)
+        expect(signals[0]).toBe('drain-apps')
+        expect(signals).toContain('-TERM-101')
+        expect(signals).toContain('-TERM-102')
+    })
+
     test.each([false, true])(
         'database preparation (failure: %s) never starts application consumers',
         async (failure) => {

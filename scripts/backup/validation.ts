@@ -63,6 +63,7 @@ export const appBackupInstallations = z
             appId: z.string().min(1).max(98),
             uid: z.number().int().min(20000).max(59999),
             generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+            authorityRecorded: z.boolean().optional(),
         }),
     )
     .min(1)

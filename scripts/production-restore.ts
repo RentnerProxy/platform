@@ -157,10 +157,10 @@ async function restore(): Promise<void> {
                 archiveVolume,
                 applianceService,
                 '-c',
-                postgresCommand('inventory', '/backup', metadata.version === 5),
+                postgresCommand('inventory', '/backup', metadata.version === 5, backupId),
             ],
             'check target application inventory',
-            180_000,
+            metadata.version === 5 ? BACKUP_RUNTIME_POLICY.databaseTimeoutMs : 180_000,
         )
         // Preparing a fresh database must never boot the old controller/web workers.
         // A resumed restore already has its initialized cluster and must retain its journal/key state.

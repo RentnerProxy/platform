@@ -19,12 +19,15 @@ import {
 } from '../../../../../../scripts/backup/offhost/envelope.ts'
 import { publishProductionBackup } from '../../../../../../scripts/backup/publication.ts'
 import { assertBackupAppRows } from '../../../../../../docker/web/validate-backup.ts'
+import { readSnapshotMetadata } from '../../../../../../scripts/backup/restore-snapshot.ts'
+import { postgresCommand } from '../../../../../../scripts/backup/volume-commands.ts'
 
 const digest = (data: Buffer) => ({
     bytes: data.length,
     sha256: createHash('sha256').update(data).digest('hex'),
 })
-const installation = { id: 'kiri-1', appId: 'dev.example.kiri', uid: 20000, generation: 3 }
+const legacyInstallation = { id: 'kiri-1', appId: 'dev.example.kiri', uid: 20000, generation: 3 }
+const installation = { ...legacyInstallation, authorityRecorded: true }
 const snapshot = Buffer.from(
     JSON.stringify({
         formatVersion: 1,
@@ -36,10 +39,30 @@ const snapshot = Buffer.from(
 test('checks installation identity including the candidate-only case', () => {
     expect(appStateInstallations(snapshot)).toEqual([installation])
     expect(() => assertBackupAppRows([installation], [{ ...installation }])).not.toThrow()
-    expect(() => assertBackupAppRows([{ ...installation, generation: 0 }], [])).not.toThrow()
+    expect(() => assertBackupAppRows([legacyInstallation], [installation])).not.toThrow()
+    expect(() => assertBackupAppRows([legacyInstallation], [])).toThrow()
+    expect(() => assertBackupAppRows([{ ...legacyInstallation, generation: 0 }], [])).not.toThrow()
+    expect(
+        appStateInstallations(
+            Buffer.from(
+                JSON.stringify({
+                    formatVersion: 1,
+                    installations: { 'kiri-1': legacyInstallation },
+                }),
+            ),
+        ),
+    ).toEqual([legacyInstallation])
     expect(() => assertBackupAppRows([], [installation])).toThrow()
     expect(() => assertBackupAppRows([installation], [{ ...installation, uid: 20001 }])).toThrow()
     expect(() => assertBackupAppRows([installation], [])).toThrow()
+    const reserved = { ...installation, authorityRecorded: false }
+    expect(() => assertBackupAppRows([reserved], [])).not.toThrow()
+    expect(() => assertBackupAppRows([reserved], [installation])).toThrow()
+
+    const bytes = Buffer.from(
+        JSON.stringify({ formatVersion: 1, installations: { 'kiri-1': reserved } }),
+    )
+    expect(appStateInstallations(bytes)).toEqual([reserved])
     expect(() =>
         assertBackupAppRows(
             [installation, { ...installation, id: 'kiri-2', uid: 20001 }],
@@ -102,6 +125,19 @@ test('app snapshot survives publication and encrypted recovery and rejects downg
             applications: { ...digest(snapshot), installations: [installation] },
         })
         await publishProductionBackup(staging, source, metadata)
+        const id = digest(await readFile(join(source, 'metadata.json'))).sha256
+        expect((await readSnapshotMetadata(source, id)).metadata).toEqual(metadata)
+        await expect(readSnapshotMetadata(source, '0'.repeat(64))).rejects.toThrow(
+            'identity mismatch',
+        )
+        const preflight = postgresCommand('inventory', '/backup', true, id)
+        expect(preflight).toContain('--app-backup verify /backup/' + appStateName)
+        expect(preflight.indexOf('--app-backup verify')).toBeLessThan(
+            preflight.indexOf('gosu postgres postgres'),
+        )
+        expect(preflight).toContain('--check-app-restore-inventory /backup ' + id)
+        expect(() => postgresCommand('inventory', '/backup', true)).toThrow()
+
         const recoveryKey = createRecoveryKey()
         await encryptBackup(source, encrypted, recoveryKey)
         await decryptBackup(encrypted, restored, recoveryKey)

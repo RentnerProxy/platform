@@ -7,6 +7,7 @@ import {
     appStateInstallations,
 } from '../../../scripts/backup/app-state.ts'
 import { checkLiveAppDatabase } from './app-database.ts'
+import { readSnapshotMetadata } from '../../../scripts/backup/restore-snapshot.ts'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { APP_AWARE_BACKUP_VERSION } from '../../../web/src/config/compatibility.config.ts'
@@ -244,11 +245,17 @@ if (import.meta.main) {
                 success: result === 'success',
                 ...(result === 'success' ? {} : { error: result }),
             })
-        } else if (args.length === 2 && args[0] === '--check-app-restore-inventory') {
+        } else if (args.length === 3 && args[0] === '--check-app-restore-inventory') {
             const path = args[1]!
             if (!/^\/(?:backup|tmp\/rentnerproxy-offline-[A-Za-z0-9_-]+)$/u.test(path))
                 throw new Error('Invalid snapshot path')
-            const { metadata } = await verifyPublishedBackup(path, controller.signal)
+            const { metadata } = await readSnapshotMetadata(
+                path,
+                z
+                    .string()
+                    .regex(/^[a-f0-9]{64}$/u)
+                    .parse(args[2]),
+            )
             await checkLiveAppDatabase(
                 metadata.version === 5 ? metadata.applications.installations : [],
                 controller.signal,

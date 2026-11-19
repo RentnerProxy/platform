@@ -120,9 +120,10 @@ fn permissions(path: &Path, mode: u32) -> io::Result<()> {
 pub(super) fn sync_tree(path: &Path) -> io::Result<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
             sync_tree(&entry.path())?;
-        } else {
+        } else if kind.is_file() {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -130,6 +131,10 @@ pub(super) fn sync_tree(path: &Path) -> io::Result<()> {
                 permissions(&entry.path(), if executable { 0o755 } else { 0o644 })?;
             }
             sync_file(&entry.path())?;
+        } else {
+            return Err(invalid(
+                "Extracted package contains a special filesystem entry",
+            ));
         }
     }
     permissions(path, 0o755)?;

@@ -203,6 +203,22 @@ describe('backup database validation with isolated storage and injected SQL rows
         expect(closed).toBe(1)
     })
 
+    test.each([true, false])(
+        'validates canonical raw CrowdSec credentials (canonical: %s)',
+        async (canonical) => {
+            const context = await fixture()
+            const rawCredential = Buffer.alloc(32, 255).toString('base64').slice(0, -1)
+            await writeFile(
+                join(context.archive, 'bouncer/caddy-bouncer-key'),
+                canonical ? rawCredential : rawCredential.slice(0, -1) + 'B',
+            )
+            await context.pack()
+            if (canonical) await context.validate()
+            else await expect(context.validate()).rejects.toThrow('invalid CrowdSec bouncer key')
+            expect(closed).toBe(1)
+        },
+    )
+
     test.each([
         'journal',
         'migration',

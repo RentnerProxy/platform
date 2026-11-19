@@ -84,10 +84,15 @@ export function assertSupportedBackupVersion(metadata: unknown): void {
 export function assertBackupAppRows(installations: unknown, rows: readonly unknown[]): void {
     if (!Array.isArray(installations) || installations.length > 256 || rows.length > 256)
         throw new Error('Invalid application backup inventory')
-    const active = installations.filter(
-        (slot: unknown) =>
-            isRecord(slot) && typeof slot.generation === 'number' && slot.generation > 0,
-    )
+    const active = installations.filter((slot: unknown) => {
+        if (
+            !isRecord(slot) ||
+            typeof slot.generation !== 'number' ||
+            (slot.authorityRecorded !== undefined && typeof slot.authorityRecorded !== 'boolean')
+        )
+            throw new Error('Invalid application backup inventory')
+        return slot.authorityRecorded ?? slot.generation > 0
+    })
     if (
         active.length !== rows.length ||
         new Set(rows.map((row) => (isRecord(row) ? row.id : null))).size !== rows.length ||
@@ -361,7 +366,9 @@ export async function validateDatabase(
             const bouncerKey = (
                 await readFile(join(crowdSecDirectory, 'bouncer/caddy-bouncer-key'), 'utf8')
             ).trim()
-            if (!/^[a-f0-9]{64}$/u.test(bouncerKey)) throw new Error('invalid CrowdSec bouncer key')
+            const legacyKey = /^[a-f0-9]{64}$/u.test(bouncerKey)
+            const rawKey = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]$/u.test(bouncerKey)
+            if (!legacyKey && !rawKey) throw new Error('invalid CrowdSec bouncer key')
         }
         console.log('Backup database version and encrypted secrets verified.')
     } finally {

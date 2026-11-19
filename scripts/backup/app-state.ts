@@ -38,17 +38,13 @@ export function appStateInstallations(bytes: Buffer) {
                     uid: z.number(),
                     appId: z.string(),
                     generation: z.number(),
+                    authorityRecorded: z.boolean().optional(),
                 }),
             ),
         })
         .parse(JSON.parse(bytes.toString('utf8')))
     const items = appBackupInstallations.parse(
-        Object.entries(summary.installations).map(([id, { appId, uid, generation }]) => ({
-            id,
-            appId,
-            uid,
-            generation,
-        })),
+        Object.entries(summary.installations).map(([id, slot]) => Object.assign({ id }, slot)),
     )
     if (new Set(items.map(({ uid }) => uid)).size !== items.length)
         throw new Error('Duplicate installation identity')

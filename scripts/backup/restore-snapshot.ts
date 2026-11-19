@@ -36,20 +36,27 @@ async function readBackupFile(path: string, maximumBytes: number): Promise<Buffe
     }
 }
 
-export async function snapshotProductionRestore(
-    inputPath: string,
-    snapshot: string,
-    signal?: AbortSignal,
-) {
-    signal?.throwIfAborted()
-    const metadataBytes = await readBackupFile(join(inputPath, 'metadata.json'), 65_536)
+export async function readSnapshotMetadata(directory: string, expectedId?: string) {
+    const metadataBytes = await readBackupFile(join(directory, 'metadata.json'), 65_536)
+    const backupId = createHash('sha256').update(metadataBytes).digest('hex')
+    if (expectedId !== undefined && expectedId !== backupId)
+        throw new Error('Backup metadata identity mismatch')
     let metadataValue: unknown
     try {
         metadataValue = JSON.parse(metadataBytes.toString('utf8'))
     } catch {
         throw new Error('invalid backup metadata')
     }
-    const metadata = parseBackupMetadata(metadataValue)
+    return { metadata: parseBackupMetadata(metadataValue), metadataBytes, backupId }
+}
+
+export async function snapshotProductionRestore(
+    inputPath: string,
+    snapshot: string,
+    signal?: AbortSignal,
+) {
+    signal?.throwIfAborted()
+    const { metadata, metadataBytes, backupId } = await readSnapshotMetadata(inputPath)
     await assertBackupCapacity([
         {
             path: snapshot,
@@ -62,7 +69,6 @@ export async function snapshotProductionRestore(
                 65_536,
         },
     ])
-    const backupId = createHash('sha256').update(metadataBytes).digest('hex')
     await writeFile(join(snapshot, 'metadata.json'), metadataBytes, { mode: 0o600, flag: 'wx' })
     await chmod(join(snapshot, 'metadata.json'), 0o600)
     const artifacts = [

@@ -25,13 +25,14 @@ impl Supervisor {
             }
             Ok(_) => (),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.cli(
-                    ONLINE_CONFIG,
-                    &["capi", "register", "-f", files::CAPI],
-                    25,
-                    false,
-                )
-                .await?;
+                let registration = files::registration_file()?;
+                let path = registration
+                    .path()
+                    .to_str()
+                    .ok_or_else(|| io::Error::other("Invalid CAPI staging path"))?;
+                self.cli(ONLINE_CONFIG, &["capi", "register", "-f", path], 25, false)
+                    .await?;
+                files::publish_capi(registration.as_file())?;
             }
             Err(error) => return Err(error),
         }

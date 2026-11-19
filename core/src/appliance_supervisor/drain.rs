@@ -68,10 +68,17 @@ fn wait_for_exit(
     }
 }
 
+fn signal_remaining(task: &OwnedFd, signal: i32) -> io::Result<()> {
+    match signal_task(task, signal) {
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+        other => other,
+    }
+}
+
 fn drain(targets: &[OwnedFd], critical: &[OwnedFd], budget: Budget) -> io::Result<()> {
     for task in targets {
         if !exited(task)? {
-            signal_task(task, libc::SIGTERM)?;
+            signal_remaining(task, libc::SIGTERM)?;
         }
     }
     if wait_for_exit(targets, critical, budget.term)? {
@@ -79,7 +86,7 @@ fn drain(targets: &[OwnedFd], critical: &[OwnedFd], budget: Budget) -> io::Resul
     }
     for task in targets {
         if !exited(task)? {
-            signal_task(task, libc::SIGKILL)?;
+            signal_remaining(task, libc::SIGKILL)?;
         }
     }
     if let Some(forced) = budget.forced

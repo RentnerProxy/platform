@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 #[test]
 fn enrollment_requires_an_exact_single_request() {
     let id = "0123456789abcdef0123456789abcdef";
-    let key = ["fixture", "_Ab2"].join("-");
+    let key = ["fixture", "enroll", "_Ab2"].join("-");
     let valid = format!("{id}\n{key}\n");
     assert_eq!(files::enrollment_fields(&valid), Some((id, key.as_str())));
     for invalid in [
@@ -57,10 +57,9 @@ async fn cancelled_helper_and_owned_engine_are_reaped() {
     let cancel = shutdown.clone();
     let wait_pid = pid.clone();
     let interrupt = tokio::spawn(async move {
-        while !wait_pid.exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let pid = fixture_pid(&wait_pid).await;
         cancel.cancel();
+        pid
     });
     assert!(
         timeout(
@@ -71,9 +70,8 @@ async fn cancelled_helper_and_owned_engine_are_reaped() {
         .unwrap()
         .is_err()
     );
-    interrupt.await.unwrap();
-    let pid = fs::read_to_string(pid).unwrap();
-    assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
+    let pid = interrupt.await.unwrap();
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
 
     let mut engine = Some(Command::new("/bin/sleep").arg("30").spawn().unwrap());
     let pid = engine.as_ref().unwrap().id().unwrap();
@@ -100,4 +98,45 @@ async fn helper_capture_is_bounded_and_preserves_successful_output() {
             .await
             .is_err()
     );
+}
+
+async fn fixture_pid(path: &Path) -> u32 {
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(text) = fs::read_to_string(path)
+                && let Some(pid) = text
+                    .strip_suffix('\n')
+                    .and_then(|value| value.parse::<u32>().ok())
+                && pid > 1
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn helper_deadline_terminates_the_recorded_descendant() {
+    let temp = tempfile::tempdir().unwrap();
+    let pid = temp.path().join("descendant");
+    let mut command = Command::new("/bin/sh");
+    command
+        .args(["-c", "sleep 30 & echo $! > \"$1\"; wait", "fixture"])
+        .arg(&pid);
+    let shutdown = CancellationToken::new();
+    let (result, task) = tokio::join!(commands::bounded(command, 1, false, &shutdown), async {
+        let pid = fixture_pid(&pid).await;
+        crate::appliance_supervisor::process::open_pid(pid as i32).unwrap()
+    });
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    timeout(Duration::from_secs(2), async {
+        while !crate::appliance_supervisor::drain::exited(&task).unwrap() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
 }

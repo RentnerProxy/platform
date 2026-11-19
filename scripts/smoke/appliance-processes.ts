@@ -38,11 +38,12 @@ export async function readRuntimeProcesses(procRoot = '/proc') {
             const uid = Number(/^Uid:[\t ]+(\d+)/mu.exec(status)?.[1])
             const commandArguments = command.split('\0')
             const executable = commandArguments[0]?.split('/').at(-1)
-            // Health and version clients share the daemon executable but never own its serving lifecycle.
+            // The daemon uses its service UID. Privileged helpers share the binary.
             const role =
                 uid === 10002
                     ? 'web'
-                    : executable === 'rentnerproxy-controller' &&
+                    : uid === 10001 &&
+                        executable === 'rentnerproxy-controller' &&
                         commandArguments[1] !== '--healthcheck'
                       ? 'controller'
                       : executable === 'caddy' && commandArguments[1] !== 'version'

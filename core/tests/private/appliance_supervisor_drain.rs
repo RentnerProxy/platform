@@ -60,3 +60,14 @@ fn critical_exit_blocks_drain_even_if_the_target_is_already_gone() {
     child.wait().unwrap();
     assert!(drain(&[], &[critical], budget("apps").unwrap()).is_err());
 }
+
+#[test]
+fn already_reaped_pinned_target_satisfies_both_signal_phases() {
+    let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let task = owned_pid(child.id() as i32, std::process::id() as i32, None).unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    for signal in [libc::SIGTERM, libc::SIGKILL] {
+        super::signal_remaining(&task, signal).unwrap();
+    }
+}

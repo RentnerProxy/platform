@@ -1,4 +1,4 @@
-use aws_lc_rs::rand::{SecureRandom, SystemRandom};
+use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use std::{
     fs::{self, File, OpenOptions, Permissions},
     io::{self, Read},
@@ -20,7 +20,10 @@ pub(super) const CAPI: &str =
 pub(super) const CONSOLE: &str = "/var/lib/rentnerproxy/crowdsec/credentials/console.yaml";
 
 fn invalid() -> io::Error {
-    io::Error::other("Invalid CrowdSec control or credential file")
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "Invalid CrowdSec control or credential file",
+    )
 }
 
 fn regular(path: &Path, uid: u32, gid: u32, mode: Option<u32>, flags: i32) -> io::Result<File> {
@@ -73,37 +76,67 @@ fn shared(staging: &str, destination: &Path, bytes: &[u8]) -> io::Result<()> {
     )
 }
 
+pub(super) fn registration_file() -> io::Result<tempfile::NamedTempFile> {
+    let directory = Path::new(CAPI).parent().ok_or_else(invalid)?;
+    let file = tempfile::Builder::new()
+        .prefix(".capi-registration-")
+        .tempfile_in(directory)?;
+    std::os::unix::fs::fchown(file.as_file(), Some(10003), Some(10003))?;
+    Ok(file)
+}
+
+pub(super) fn publish_capi(registration: &File) -> io::Result<()> {
+    let contents = read(registration.try_clone()?, 65536)?;
+    if contents.trim().is_empty() {
+        return Err(invalid());
+    }
+    publish(
+        Path::new(KEY_STAGING),
+        Path::new(CAPI),
+        contents.as_bytes(),
+        Ownership {
+            uid: 10003,
+            gid: 10003,
+            mode: 0o600,
+        },
+        Publication::Create,
+    )
+}
+
 pub(super) fn status(name: &str, value: serde_json::Value) -> io::Result<()> {
     let mut bytes = serde_json::to_vec(&value)?;
     bytes.push(b'\n');
     shared(STATUS_STAGING, &Path::new(CONTROL).join(name), &bytes)
 }
 
-pub(super) fn key() -> io::Result<String> {
-    let value = read(regular(Path::new(KEY), 0, 10001, Some(0o440), 0)?, 65)?;
-    let key = value.trim_end_matches('\n');
-    if !lower_hex(key, 64) {
-        return Err(invalid());
-    }
-    Ok(key.to_owned())
+fn generated_key(key: &[u8]) -> bool {
+    key.len() == 43
+        && STANDARD_NO_PAD
+            .decode(key)
+            .is_ok_and(|bytes| bytes.len() == 32)
 }
 
-pub(super) fn rotate_key() -> io::Result<()> {
-    match key() {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-        _ => (),
+pub(super) fn check_previous_key() -> io::Result<()> {
+    match regular(Path::new(KEY), 0, 10001, Some(0o440), 0).and_then(|file| read(file, 65)) {
+        Ok(contents) => {
+            let key = contents.trim_end_matches('\n');
+            if lower_hex(key, 64) || generated_key(key.as_bytes()) {
+                Ok(())
+            } else {
+                Err(invalid())
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(invalid()),
     }
-    let mut random = [0; 32];
-    SystemRandom::new()
-        .fill(&mut random)
-        .map_err(|_| io::Error::other("Random source unavailable"))?;
-    let mut hex = String::with_capacity(65);
-    for byte in random {
-        use std::fmt::Write;
-        write!(hex, "{byte:02x}").expect("writing to String");
+}
+
+pub(super) fn publish_generated_key(mut key: Vec<u8>) -> io::Result<()> {
+    if !generated_key(&key) {
+        return Err(invalid());
     }
-    hex.push('\n');
-    shared(KEY_STAGING, Path::new(KEY), hex.as_bytes())
+    key.push(b'\n');
+    shared(KEY_STAGING, Path::new(KEY), &key)
 }
 
 fn lower_hex(value: &str, length: usize) -> bool {

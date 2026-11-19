@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 #[derive(Clone)]
 pub(super) struct Gateway {
@@ -28,17 +28,20 @@ pub(super) fn identity(id: &str, slot: &Slot) -> Value {
     json!({"appId":slot.app_id,"installationId":id,"generation":slot.generation,"uid":slot.uid})
 }
 
-pub(super) fn lease(identity: &Value) -> io::Result<Value> {
-    let expiry = OffsetDateTime::now_utc() + time::Duration::seconds(90);
-    let timestamp = expiry
+pub(super) fn lease(identity: &Value) -> io::Result<(Value, Instant)> {
+    let issued = Instant::now();
+    let now = OffsetDateTime::now_utc();
+    let expiry = (now + time::Duration::seconds(90))
         .replace_nanosecond(0)
-        .map_err(io::Error::other)?
-        .format(&Rfc3339)
         .map_err(io::Error::other)?;
+    let timestamp = expiry.format(&Rfc3339).map_err(io::Error::other)?;
     let prefix = timestamp
         .strip_suffix('Z')
         .ok_or_else(|| bad("Invalid lease clock"))?;
-    Ok(json!({"identity":identity,"leaseExpiresAt":format!("{prefix}.000Z")}))
+    Ok((
+        json!({"identity":identity,"leaseExpiresAt":format!("{prefix}.000Z")}),
+        issued + (expiry - now).unsigned_abs(),
+    ))
 }
 
 impl Gateway {
@@ -86,10 +89,23 @@ impl Gateway {
             }
             .map_err(io::Error::other)?;
             if response.status() != StatusCode::NO_CONTENT {
-                return Err(io::Error::other(format!(
-                    "Generation {action} rejected ({})",
-                    response.status().as_u16()
-                )));
+                let status = response.status();
+                let kind = if status.is_server_error()
+                    || matches!(
+                        status,
+                        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+                    ) {
+                    io::ErrorKind::WouldBlock
+                } else {
+                    io::ErrorKind::PermissionDenied
+                };
+                return Err(io::Error::new(
+                    kind,
+                    format!(
+                        "Generation {action} rejected ({})",
+                        response.status().as_u16()
+                    ),
+                ));
             }
             Ok(())
         })

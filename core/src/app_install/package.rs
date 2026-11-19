@@ -135,6 +135,14 @@ pub(super) fn verify_abi(linkage: &Value, target: &str) -> io::Result<()> {
     }
     let mut versions = BTreeMap::new();
     for library in libraries {
+        if library.contains('\\')
+            || Path::new(&library)
+                .file_name()
+                .and_then(|name| name.to_str())
+                != Some(library.as_str())
+        {
+            return Err(invalid("ELF dependency must name an appliance library"));
+        }
         let path = fs::canonicalize(directory.join(&library))?;
         filesystem::check_root_path(&path, false)?;
         let definitions = execute(

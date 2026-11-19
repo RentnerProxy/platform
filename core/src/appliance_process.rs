@@ -54,29 +54,68 @@ fn verify_writers_stopped(
         return Err(invalid_status());
     }
     let deadline = Instant::now() + SCAN_BUDGET;
-    for entry in fs::read_dir(proc)? {
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Process identity scan timed out",
-            ));
-        }
+    scan_tasks(proc, exclusions, deadline, &is_writer, true)
+}
+
+fn scan_tasks(
+    directory: &Path,
+    exclusions: &[u32],
+    deadline: Instant,
+    is_writer: &impl Fn(u32) -> bool,
+    inspect_siblings: bool,
+) -> io::Result<()> {
+    check_deadline(deadline)?;
+    let entries = fs::read_dir(directory)?;
+    let mut observed_task = false;
+    for entry in entries {
+        check_deadline(deadline)?;
         let entry = entry?;
         let Some(pid) = entry
             .file_name()
             .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
+            .and_then(|value| value.parse::<u32>().ok())
             .filter(|pid| *pid != 0 && !exclusions.contains(pid))
         else {
             continue;
         };
-        let directory = proc.join(pid.to_string());
-        let credentials = inspect_live_entry(&directory, deadline)?;
-        if credentials.is_some_and(|uids| uids.into_iter().any(&is_writer)) {
-            return Err(io::Error::other("A managed writer is still running"));
+        observed_task = true;
+        let process = directory.join(pid.to_string());
+        match inspect_live_entry(&process, deadline)? {
+            Some(uids) if uids.into_iter().any(is_writer) => {
+                return Err(io::Error::other("A managed writer is still running"));
+            }
+            None if inspect_siblings => {
+                if let Err(error) =
+                    scan_tasks(&process.join("task"), &[], deadline, is_writer, false)
+                    && !(error.kind() == io::ErrorKind::NotFound && disappeared(&process))
+                {
+                    return Err(error);
+                }
+            }
+            _ => (),
         }
     }
+    if !inspect_siblings && !observed_task {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "No visible thread identities",
+        ));
+    }
+    check_deadline(deadline)
+}
+
+fn check_deadline(deadline: Instant) -> io::Result<()> {
+    if Instant::now() >= deadline {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Process identity scan timed out",
+        ));
+    }
     Ok(())
+}
+
+fn disappeared(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
 }
 
 fn inspect_live_entry(directory: &Path, deadline: Instant) -> io::Result<Option<[u32; 4]>> {
@@ -84,12 +123,7 @@ fn inspect_live_entry(directory: &Path, deadline: Instant) -> io::Result<Option<
     for attempt in 0..3 {
         match inspect(&file) {
             Ok(credentials) => return Ok(credentials),
-            Err(_)
-                if fs::symlink_metadata(directory)
-                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound) =>
-            {
-                return Ok(None);
-            }
+            Err(_) if disappeared(directory) => return Ok(None),
             Err(_) if attempt < 2 && Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(20));
             }

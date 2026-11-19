@@ -49,6 +49,7 @@ struct Manager {
     journal: Journal,
     gateway: Gateway,
     running: BTreeMap<String, Running>,
+    fence_cursor: String,
 }
 
 impl Manager {
@@ -93,10 +94,13 @@ impl Manager {
                 continue;
             }
             verify_uid_stopped(uid)?;
-            runtime::database(uid, true).await?;
+            if !runtime::database_uid_vacant(uid).await? {
+                continue;
+            }
             return Ok(Slot {
                 uid,
                 app_id,
+                authority_recorded: Some(false),
                 ..Default::default()
             });
         }
@@ -130,9 +134,13 @@ impl Manager {
     }
 
     async fn writer(&self, uid: u32) -> io::Result<File> {
+        Self::wait_writer(self.journal.writer_path(uid), uid).await
+    }
+
+    async fn wait_writer(path: PathBuf, uid: u32) -> io::Result<File> {
         timeout(Duration::from_secs(11), async {
             loop {
-                match self.journal.writer(uid) {
+                match journal::lock(&path) {
                     Ok(file) => {
                         verify_uid_stopped(uid)?;
                         return Ok(file);
@@ -155,19 +163,22 @@ impl Manager {
         }
         let writer = self.writer(slot.uid).await?;
         if slot.pending_fence {
-            self.gateway
-                .post("retire", json!({"identity":identity(id,&slot)}))
-                .await?;
-            if slot.database_provisioned {
-                runtime::database(slot.uid, false).await?;
-            }
-            self.gateway
-                .post("workers-stopped", json!({"identity":identity(id,&slot)}))
-                .await?;
+            Self::retire(&self.gateway, id, &slot).await?;
             slot.pending_fence = false;
+            slot.authority_recorded = Some(true);
             self.journal.save(id, slot)?;
         }
         Ok(writer)
+    }
+
+    async fn retire(gateway: &Gateway, id: &str, slot: &Slot) -> io::Result<()> {
+        let body = json!({"identity":identity(id,slot)});
+        let authority = gateway.post("retire", body.clone()).await;
+        if slot.database_provisioned {
+            runtime::fence_database(slot.uid).await?;
+        }
+        authority?;
+        gateway.post("workers-stopped", body).await
     }
 
     async fn launch(
@@ -200,19 +211,25 @@ impl Manager {
         slot.pending_fence = true;
         self.journal.save(id, slot.clone())?;
         let who = identity(id, &slot);
-        let mut registration = lease(&who)?;
+        let (mut registration, deadline) = lease(&who)?;
         registration["capabilities"] = package.manifest["capabilities"].clone();
         registration["permissionKeys"] = package.manifest["permissions"].clone();
         registration["hasUi"] = package.manifest.get("ui").is_some().into();
         self.gateway.post("register", registration).await?;
+        let renewal = runtime::Renewal::start(self.gateway.clone(), who.clone(), deadline);
+        slot.authority_recorded = Some(true);
+        self.journal.save(id, slot.clone())?;
         if let Some(grants) = grants {
             self.gateway
                 .post("grants", json!({"identity":who,"grants":grants}))
                 .await?;
         }
         storage::claim(id, &slot)?;
-        if data.is_some() && !slot.database_provisioned {
-            runtime::database(slot.uid, true).await?;
+        if data.is_some()
+            && !slot.database_provisioned
+            && !runtime::database_uid_vacant(slot.uid).await?
+        {
+            return Err(bad("Database identity is already occupied"));
         }
         slot.database_provisioned |= data.is_some();
         self.journal.save(id, slot.clone())?;
@@ -222,8 +239,11 @@ impl Manager {
             .as_array()
             .is_none_or(|providers| !providers.is_empty());
         self.journal.save(id, slot.clone())?;
-        let mut live = Running::launch(id, &slot, &package, &writer).await?;
-        self.gateway.post("activate", lease(&who)?).await?;
+        let mut live = Running::launch(id, &slot, &package, &writer, renewal).await?;
+        if live.exited()? {
+            return Err(bad("App or lease expired before activation"));
+        }
+        self.gateway.post("activate", lease(&who)?.0).await?;
         if live.exited()? {
             return Err(bad("App exited during activation"));
         }
@@ -240,7 +260,6 @@ impl Manager {
         slot.desired_running = true;
         slot.recovery_required = false;
         self.journal.save(id, slot)?;
-        live.maintain(self.gateway.clone(), who);
         self.running.insert(id.to_owned(), live);
         Ok(())
     }
@@ -277,11 +296,22 @@ impl Manager {
         if cmd.id().is_some_and(|id| !valid_id(id)) {
             return Err(bad("Invalid installation ID"));
         }
-        if let Some(slot) = cmd.id().and_then(|id| self.journal.slots().get(id))
+        if let Some(id) = cmd.id()
+            && let Some(slot) = self.journal.slots().get(id)
             && slot.removal != Removal::Installed
             && !matches!(cmd, Command::Remove { .. } | Command::Purge { .. })
         {
-            return Err(bad("Installation is reserved for removal or purge"));
+            if matches!(cmd, Command::Start { .. })
+                && slot.removal == Removal::Removing
+                && slot.active.is_some()
+            {
+                self.fence(id).await?;
+                let mut slot = self.journal.slot(id)?.clone();
+                slot.removal = Removal::Installed;
+                self.journal.save(id, slot)?;
+            } else {
+                return Err(bad("Installation is reserved for removal or purge"));
+            }
         }
         match cmd {
             Command::Status => {
@@ -399,6 +429,7 @@ impl Manager {
         let listener = control::bind()?;
         self.reconcile().await?;
         let mut tick = tokio::time::interval(Duration::from_secs(2));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = tick.tick() => self.check_exits().await?,
@@ -408,19 +439,32 @@ impl Manager {
     }
 
     async fn check_exits(&mut self) -> io::Result<()> {
+        let pending: Vec<_> = self
+            .journal
+            .slots()
+            .iter()
+            .filter(|(id, s)| s.pending_fence && !self.running.contains_key(*id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let start = pending.partition_point(|id| id <= &self.fence_cursor);
+        let retry = pending[start..].iter().chain(&pending[..start]).take(8);
         let mut dead = Vec::new();
         for (id, live) in &mut self.running {
             if live.exited()? {
                 dead.push(id.clone());
             }
         }
-        for id in dead {
-            let mut slot = self.journal.slot(&id)?.clone();
+        for id in &dead {
+            let mut slot = self.journal.slot(id)?.clone();
             slot.recovery_required = true;
-            self.journal.save(&id, slot)?;
-            if let Err(error) = self.fence(&id).await {
-                eprintln!("Installation {id} fence pending: {error}");
-            }
+            self.journal.save(id, slot)?;
+        }
+        for id in retry {
+            self.fence_cursor.clone_from(id);
+            dead.push(id.clone());
+        }
+        if let Err(error) = self.drain_slots(dead).await {
+            eprintln!("Application retirement pending: {error}");
         }
         Ok(())
     }
@@ -440,25 +484,69 @@ impl Manager {
     }
 
     async fn shutdown(&mut self) -> io::Result<()> {
-        let mut jobs = JoinSet::new();
-        for (_, mut live) in std::mem::take(&mut self.running) {
-            live.close();
-            jobs.spawn(live.stop());
-        }
-        while let Some(result) = jobs.join_next().await {
-            result??;
-        }
         let pending: Vec<_> = self
             .journal
             .slots()
             .iter()
-            .filter(|(_, s)| s.pending_fence)
+            .filter(|(id, s)| s.pending_fence || self.running.contains_key(*id))
             .map(|(id, _)| id.clone())
             .collect();
-        for id in pending {
-            self.fence(&id).await?;
+        self.drain_slots(pending).await
+    }
+
+    async fn drain_slots(&mut self, ids: Vec<String>) -> io::Result<()> {
+        let mut jobs = JoinSet::new();
+        for id in ids {
+            let slot = self.journal.slot(&id)?.clone();
+            let path = self.journal.writer_path(slot.uid);
+            let gateway = self.gateway.clone();
+            let mut live = self.running.remove(&id);
+            if let Some(live) = &mut live {
+                live.close();
+            }
+            jobs.spawn(async move {
+                let stopped = match live {
+                    Some(live) => live.stop().await,
+                    None => Ok(()),
+                };
+                let fenced = async {
+                    let _guard = Self::wait_writer(path, slot.uid).await?;
+                    if slot.pending_fence {
+                        Self::retire(&gateway, &id, &slot).await?;
+                    }
+                    Ok::<_, io::Error>(())
+                }
+                .await;
+                (id, slot, stopped, fenced)
+            });
         }
-        Ok(())
+        let mut failures = Vec::new();
+        while let Some(job) = jobs.join_next().await {
+            match job {
+                Ok((id, mut slot, stopped, fenced)) => {
+                    if let Err(e) = stopped {
+                        failures.push(format!("{id} stop: {e}"));
+                    }
+                    match fenced {
+                        Ok(()) if slot.pending_fence => {
+                            slot.pending_fence = false;
+                            slot.authority_recorded = Some(true);
+                            if let Err(e) = self.journal.save(&id, slot) {
+                                failures.push(format!("{id} journal: {e}"));
+                            }
+                        }
+                        Ok(()) => (),
+                        Err(e) => failures.push(format!("{id} fence: {e}")),
+                    }
+                }
+                Err(e) => failures.push(e.to_string()),
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(io::Error::other(failures.join("; ")))
+        }
     }
 }
 
@@ -561,6 +649,7 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
         journal: Journal::open(Path::new("/var/lib/rentnerproxy/app-manager"))?,
         gateway: Gateway::open()?,
         running: BTreeMap::new(),
+        fence_cursor: String::new(),
     };
     let result = tokio::select! {
         biased;

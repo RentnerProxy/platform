@@ -9,7 +9,6 @@ import {
 import { constants } from 'node:fs'
 import {
     chmod,
-    link,
     lstat,
     mkdir,
     mkdtemp,
@@ -53,14 +52,33 @@ const limits = [
 const maximumPayloadBytes = limits.reduce((sum, bytes) => sum + bytes, 0)
 const nativeController = '/usr/local/bin/rentnerproxy-controller'
 
-function hasNativeEnvelope(): Promise<boolean> {
-    return process.platform === 'linux'
-        ? Bun.file(nativeController).exists()
-        : Promise.resolve(false)
+async function hasNativeEnvelope(signal: AbortSignal): Promise<boolean> {
+    if (process.platform !== 'linux' || !(await Bun.file(nativeController).exists())) return false
+    try {
+        const result = await runMaintenanceProcess(
+            [nativeController, '--backup-envelope', 'version'],
+            {
+                cwd: process.cwd(),
+                env: {},
+                signal,
+                timeoutMs: 2_000,
+                maximumOutputBytes: 64,
+            },
+        )
+        signal.throwIfAborted()
+        return (
+            result.stopped &&
+            !result.failed &&
+            Buffer.from(result.stdout).toString('ascii') === 'RPBAKENC/1\n'
+        )
+    } catch {
+        signal.throwIfAborted()
+        return false
+    }
 }
 
 async function transformNativeEnvelope(
-    operation: 'seal' | 'open',
+    operation: 'seal' | 'open' | 'publish',
     source: string,
     target: string,
     frame: Buffer,
@@ -245,7 +263,7 @@ export async function encryptBackup(
             verified.metadata.controllerState.sha256,
             verified.metadata.crowdSecState.sha256,
         ]
-        if (await hasNativeEnvelope()) {
+        if (await hasNativeEnvelope(signal)) {
             const privateDirectory = await mkdtemp(
                 join(dirname(resolve(outputFile)), '.rentnerproxy-encrypt-'),
             )
@@ -270,8 +288,22 @@ export async function encryptBackup(
                 )
                     throw new Error('invalid native encrypted backup receipt')
                 signal.throwIfAborted()
-                await link(sealed, outputFile)
-                ownsOutput = true
+                const sealedIdentity = await lstat(sealed, { bigint: true })
+                try {
+                    await transformNativeEnvelope(
+                        'publish',
+                        sealed,
+                        outputFile,
+                        Buffer.alloc(0),
+                        signal,
+                    )
+                } finally {
+                    const published = await lstat(outputFile, { bigint: true }).catch(() => null)
+                    ownsOutput =
+                        published?.dev === sealedIdentity.dev &&
+                        published.ino === sealedIdentity.ino
+                }
+                if (!ownsOutput) throw new Error('encrypted backup publication changed')
                 await syncBackupDirectory(dirname(resolve(outputFile)))
                 signal.throwIfAborted()
                 ownsOutput = false
@@ -365,7 +397,7 @@ export async function decryptBackup(
         const checkCapacity = backupCapacityGuard([dirname(destination)])
         staging = await mkdtemp(join(dirname(destination), '.rentnerproxy-decrypt-'))
         await chmod(staging, 0o700)
-        if (await hasNativeEnvelope()) {
+        if (await hasNativeEnvelope(signal)) {
             await transformNativeEnvelope(
                 'open',
                 inputFile,

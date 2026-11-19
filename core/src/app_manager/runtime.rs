@@ -17,7 +17,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin, Command},
     task::JoinHandle,
-    time::{sleep, timeout},
+    time::{Instant, sleep_until, timeout, timeout_at},
 };
 
 const USERS: &str = "/var/lib/rentnerproxy/apps";
@@ -43,24 +43,31 @@ pub(super) fn uid_available(uid: u32) -> io::Result<bool> {
     Ok(true)
 }
 
-pub(super) async fn database(uid: u32, require_vacant: bool) -> io::Result<()> {
+pub(super) async fn database_uid_vacant(uid: u32) -> io::Result<bool> {
     if !(20000..=59999).contains(&uid) {
         return Err(bad("Invalid database identity"));
     }
     let role = format!("rp_app_{uid}");
-    let sql = if require_vacant {
-        format!(
-            "SELECT 1 / ((NOT EXISTS (SELECT FROM pg_roles WHERE rolname IN ('{role}','rp_migrate_{uid}')) AND NOT EXISTS (SELECT FROM pg_database WHERE datname='{role}'))::int)"
-        )
-    } else {
-        format!(
-            "SELECT format('ALTER ROLE %I NOLOGIN', rolname) FROM pg_roles WHERE rolname='{role}'\n\\gexec\nSELECT 1 / pg_terminate_backend(pid, 2000)::int FROM pg_stat_activity WHERE usename='{role}';\nSELECT 1 / (NOT EXISTS (SELECT FROM pg_stat_activity WHERE usename='{role}'))::int;"
-        )
-    };
-    control_sql(&sql).await
+    let vacancy = control_sql(&format!("SELECT NOT EXISTS (SELECT FROM pg_roles WHERE rolname IN ('{role}','rp_migrate_{uid}')) AND NOT EXISTS (SELECT FROM pg_database WHERE datname='{role}')")).await?;
+    match vacancy.as_slice() {
+        b"t\n" => Ok(true),
+        b"f\n" => Ok(false),
+        _ => Err(bad("Unexpected database vacancy response")),
+    }
 }
 
-async fn control_sql(sql: &str) -> io::Result<()> {
+pub(super) async fn fence_database(uid: u32) -> io::Result<()> {
+    if !(20000..=59999).contains(&uid) {
+        return Err(bad("Invalid database identity"));
+    }
+    let role = format!("rp_app_{uid}");
+    let sql = format!(
+        "SELECT format('ALTER ROLE %I NOLOGIN', rolname) FROM pg_roles WHERE rolname='{role}'\n\\gexec\nSELECT 1 / pg_terminate_backend(pid, 2000)::int FROM pg_stat_activity WHERE usename='{role}';\nSELECT 1 / (NOT EXISTS (SELECT FROM pg_stat_activity WHERE usename='{role}'))::int;"
+    );
+    control_sql(&sql).await.map(drop)
+}
+
+async fn control_sql(sql: &str) -> io::Result<Vec<u8>> {
     let mut child = Command::new("/usr/local/bin/gosu")
         .args([
             "postgres",
@@ -68,6 +75,8 @@ async fn control_sql(sql: &str) -> io::Result<()> {
             "--no-psqlrc",
             "--no-password",
             "--quiet",
+            "--tuples-only",
+            "--no-align",
             "--host=/var/run/postgresql",
             "--username=postgres",
             "--dbname=postgres",
@@ -79,7 +88,7 @@ async fn control_sql(sql: &str) -> io::Result<()> {
             "-c statement_timeout=5000 -c lock_timeout=2000",
         )
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
@@ -90,8 +99,9 @@ async fn control_sql(sql: &str) -> io::Result<()> {
     timeout(Duration::from_secs(10), async {
         input.write_all(sql.as_bytes()).await?;
         drop(input);
-        if child.wait().await?.success() {
-            Ok(())
+        let output = child.wait_with_output().await?;
+        if output.status.success() {
+            Ok(output.stdout)
         } else {
             Err(bad("Database fence or reservation was rejected"))
         }
@@ -100,10 +110,10 @@ async fn control_sql(sql: &str) -> io::Result<()> {
 }
 
 pub(super) async fn purge_database(uid: u32) -> io::Result<()> {
-    database(uid, false).await?;
+    fence_database(uid).await?;
     control_sql(&format!(
         "DROP DATABASE IF EXISTS rp_app_{uid};\nDROP ROLE IF EXISTS rp_app_{uid};\nDROP ROLE IF EXISTS rp_migrate_{uid};"
-    )).await
+    )).await.map(drop)
 }
 fn inherit_writer(command: &mut Command, guard: &File) {
     let fd = guard.as_raw_fd();
@@ -141,7 +151,56 @@ pub(super) async fn provision(uid: u32, database: bool, guard: &File) -> io::Res
 pub(super) struct Running {
     child: Child,
     pipe: Option<ChildStdin>,
-    renew: Option<JoinHandle<()>>,
+    renewal: Option<Renewal>,
+}
+
+pub(super) struct Renewal(JoinHandle<()>);
+
+impl Renewal {
+    pub fn start(gateway: Gateway, identity: Value, confirmed: Instant) -> Self {
+        Self(tokio::spawn(renew_lease(
+            gateway,
+            identity,
+            confirmed,
+            Duration::from_secs(20),
+            Duration::from_secs(2),
+        )))
+    }
+}
+
+pub(super) async fn renew_lease(
+    gateway: Gateway,
+    identity: Value,
+    mut confirmed: Instant,
+    interval: Duration,
+    retry: Duration,
+) {
+    let mut delay = interval;
+    loop {
+        sleep_until((Instant::now() + delay).min(confirmed)).await;
+        if Instant::now() >= confirmed {
+            return;
+        }
+        let Ok((body, next)) = lease(&identity) else {
+            return;
+        };
+        match timeout_at(confirmed, gateway.post("renew", body)).await {
+            Ok(Ok(())) if Instant::now() < confirmed => {
+                confirmed = next;
+                delay = interval;
+            }
+            Ok(Err(error)) if error.kind() != io::ErrorKind::PermissionDenied => {
+                delay = retry;
+            }
+            _ => return,
+        }
+    }
+}
+
+impl Drop for Renewal {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl Running {
@@ -150,6 +209,7 @@ impl Running {
         slot: &Slot,
         package: &StagedPackage,
         guard: &File,
+        renewal: Renewal,
     ) -> io::Result<Self> {
         let m = &package.manifest;
         let data = Path::new(USERS).join(slot.uid.to_string()).join("data");
@@ -205,30 +265,15 @@ impl Running {
         Ok(Self {
             child,
             pipe: Some(pipe),
-            renew: None,
+            renewal: Some(renewal),
         })
-    }
-    pub fn maintain(&mut self, gateway: Gateway, identity: Value) {
-        self.renew = Some(tokio::spawn(async move {
-            loop {
-                sleep(Duration::from_secs(20)).await;
-                let Ok(body) = lease(&identity) else {
-                    return;
-                };
-                if gateway.post("renew", body).await.is_err() {
-                    return;
-                }
-            }
-        }));
     }
     pub fn exited(&mut self) -> io::Result<bool> {
         Ok(self.child.try_wait()?.is_some()
-            || self.renew.as_ref().is_some_and(JoinHandle::is_finished))
+            || self.renewal.as_ref().is_some_and(|r| r.0.is_finished()))
     }
     pub fn close(&mut self) {
-        if let Some(handle) = self.renew.take() {
-            handle.abort();
-        }
+        self.renewal.take();
         self.pipe.take();
     }
     pub async fn stop(mut self) -> io::Result<()> {
