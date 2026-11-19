@@ -91,13 +91,19 @@ async fn helper_capture_is_bounded_and_preserves_successful_output() {
             .unwrap(),
         b"fixture\n"
     );
-    let mut command = Command::new("/usr/bin/head");
-    command.args(["-c", "1048577", "/dev/zero"]);
-    assert!(
-        commands::bounded(command, 1, true, &shutdown)
-            .await
-            .is_err()
-    );
+    let head = |bytes| {
+        let mut command = Command::new("/usr/bin/head");
+        command.args(["-c", bytes, "/dev/zero"]);
+        command
+    };
+    let full = commands::bounded(head("1048576"), 10, true, &shutdown)
+        .await
+        .unwrap();
+    assert_eq!(full.len(), 1_048_576);
+    let oversized = commands::bounded(head("1048577"), 10, true, &shutdown)
+        .await
+        .unwrap_err();
+    assert_eq!(oversized.to_string(), "Command output exceeded limit");
 }
 
 async fn fixture_pid(path: &Path) -> u32 {

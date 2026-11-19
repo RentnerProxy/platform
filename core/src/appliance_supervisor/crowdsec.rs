@@ -317,7 +317,8 @@ impl Supervisor {
 
     async fn monitor(&mut self) -> io::Result<bool> {
         while !self.helpers.shutdown.is_cancelled() && self.alive()? {
-            match (self.running, desired()) {
+            let requested = desired();
+            match (self.running, requested) {
                 (_, Mode::Stopped) => break,
                 (Mode::Online, Mode::Local) => {
                     self.attempt = Instant::now();
@@ -351,6 +352,9 @@ impl Supervisor {
             }
             if self.helpers.shutdown.is_cancelled() {
                 break;
+            }
+            if desired() != requested {
+                continue;
             }
             if let Some(text) = files::take_enrollment()? {
                 self.enroll(&text).await?;

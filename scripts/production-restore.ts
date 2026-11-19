@@ -140,6 +140,12 @@ async function restore(): Promise<void> {
             throw new Error('interrupted restore requires --resume with the same backup')
         if (!pending && argumentsList.includes('--resume'))
             throw new Error('no interrupted restore is pending')
+        const previouslyRunning =
+            !pending &&
+            (await runCommand(
+                [...compose, 'ps', '--status', 'running', '--quiet', applianceService],
+                'inspect restore target',
+            )) !== ''
         await runCommand(
             [
                 ...compose,
@@ -151,7 +157,9 @@ async function restore(): Promise<void> {
             'quiesce restore target',
             180_000,
         )
-        await runCommand(
+        // A completed inventory rejection is a normal container exit. This lets the
+        // maintenance runner verify --rm cleanup separately from the inventory verdict.
+        const inventory = await runCommand(
             [
                 ...compose,
                 'run',
@@ -163,11 +171,32 @@ async function restore(): Promise<void> {
                 archiveVolume,
                 applianceService,
                 '-c',
+                'if bash -c "$1" >&2; then echo accepted; else echo rejected; fi',
+                'inventory',
                 postgresCommand('inventory', '/backup', metadata.version === 5, backupId),
             ],
             'check target application inventory',
             metadata.version === 5 ? BACKUP_RUNTIME_POLICY.databaseTimeoutMs : 180_000,
         )
+        if (inventory !== 'accepted') {
+            if (inventory === 'rejected' && previouslyRunning) {
+                commands.assertRestartSafe()
+                try {
+                    await runCommand(
+                        [...compose, 'start', applianceService],
+                        'restart rejected restore target',
+                        180_000,
+                    )
+                    await waitForAppliance(compose)
+                } catch (cause) {
+                    throw new Error(
+                        'Target inventory preflight failed and the previously running appliance could not be returned to readiness.',
+                        { cause },
+                    )
+                }
+            }
+            throw new Error('Could not check target application inventory')
+        }
         // Preparing a fresh database must never boot the old controller/web workers.
         // A resumed restore already has its initialized cluster and must retain its journal/key state.
         if (!pending)

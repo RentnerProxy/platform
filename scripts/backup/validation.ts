@@ -74,11 +74,7 @@ export const metadataSchema = z.discriminatedUnion('version', [
     metadata.extend({
         version: z.literal(APP_AWARE_BACKUP_VERSION),
         applications: artifact.extend({
-            bytes: z
-                .number()
-                .int()
-                .positive()
-                .max(48 * 1024 * 1024),
+            bytes: z.number().int().positive().max(BACKUP_RUNTIME_POLICY.maximumAppStateBytes),
             installations: appBackupInstallations,
         }),
     }),

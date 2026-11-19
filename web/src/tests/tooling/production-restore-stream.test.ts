@@ -34,6 +34,10 @@ type RestoreScenario =
     | 'resume'
     | 'wrong-backup'
     | 'resume-missing'
+    | 'inventory-running'
+    | 'inventory-stopped'
+    | 'inventory-pending'
+    | 'inventory-cleanup-failure'
     | 'prepare-failure'
     | 'replacement-failure'
     | 'off-host-pause-failure'
@@ -79,7 +83,7 @@ async function restore(scenario: RestoreScenario) {
     await writeFile(
         fake,
         `#!/usr/bin/env -S bun --no-env-file
-import { appendFileSync, readFileSync, writeFileSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 const args = process.argv.slice(2), command = args.join(' ')
 const directory = process.env.FIXTURE_DIRECTORY, scenario = process.env.FIXTURE_SCENARIO
@@ -90,8 +94,26 @@ if (command.includes('config --format=json')) {
 } else if (command.startsWith('image inspect ')) {
     console.log('sha256:' + 'a'.repeat(64))
 } else if (command.includes('inspect-production-restore')) {
-    if (scenario === 'resume') console.log(process.env.FIXTURE_BACKUP_ID)
+    if (scenario === 'resume' || scenario === 'inventory-pending') console.log(process.env.FIXTURE_BACKUP_ID)
     if (scenario === 'wrong-backup') console.log('b'.repeat(64))
+} else if (command.includes('ps --status running --quiet')) {
+    if (['inventory-running', 'inventory-cleanup-failure', 'inventory-pending'].includes(scenario)) console.log('existing-appliance')
+} else if (args.includes('inventory') && args.some(arg => arg.includes('CHECK_APP_INVENTORY'))) {
+    if (!args.includes('--rm')) process.exit(78)
+    if (scenario === 'inventory-cleanup-failure') {
+        const name = args[args.indexOf('--name') + 1], label = args[args.indexOf('--label') + 1]
+        writeFileSync(directory + '/maintenance', JSON.stringify({ name, label }))
+    }
+    console.log(scenario.startsWith('inventory-') ? 'rejected' : 'accepted')
+} else if (command.startsWith('container ls ') && existsSync(directory + '/maintenance')) {
+    const {name} = JSON.parse(readFileSync(directory + '/maintenance'))
+    console.log(JSON.stringify({ ID:'c'.repeat(64), Names:name }))
+} else if (command.startsWith('container inspect ') && existsSync(directory + '/maintenance')) {
+    const {name,label} = JSON.parse(readFileSync(directory + '/maintenance')), [key, value] = label.split('=')
+    console.log(JSON.stringify({ Id:'c'.repeat(64), Name:'/' + name, Config:{ Labels:{ [key]:value } } }))
+} else if (command.startsWith('container rm ') && existsSync(directory + '/maintenance')) {
+    if (scenario === 'inventory-cleanup-failure') process.exit(9)
+    unlinkSync(directory + '/maintenance')
 } else if (command.includes('--initialize-restore-target')) {
     if (scenario === 'prepare-failure') process.exit(9)
 } else if (command.includes('begin-production-restore')) {
@@ -123,7 +145,9 @@ if (command.includes('config --format=json')) {
                 '--input',
                 input,
                 '--confirm-replace',
-                ...(['resume', 'wrong-backup', 'resume-missing'].includes(scenario)
+                ...(['resume', 'wrong-backup', 'resume-missing', 'inventory-pending'].includes(
+                    scenario,
+                )
                     ? ['--resume']
                     : []),
             ],
@@ -177,6 +201,43 @@ test.skipIf(process.platform === 'win32')(
         assert.ok(result.calls.some((args) => args.includes('--force-recreate')))
     },
 )
+
+test
+    .skipIf(process.platform === 'win32')
+    .each([
+        'inventory-running',
+        'inventory-stopped',
+        'inventory-pending',
+        'inventory-cleanup-failure',
+    ] as const)('inventory rejection preserves the target lifecycle for %s', async (scenario) => {
+    const { exit, calls, stderr } = await restore(scenario)
+    assert.equal(exit, 1)
+    const stop = calls.findIndex((args) => args.includes('stop'))
+    const inventory = calls.findIndex((args) => args.includes('inventory'))
+    const cleanup = calls.findIndex((args, i) => i > inventory && args.includes('ls'))
+    assert.ok(stop >= 0 && inventory > stop && cleanup > inventory)
+    assert.ok(
+        !calls.some((args) => args.includes('begin-production-restore') || args.includes('up')),
+    )
+    const start = calls.findIndex((args) => args.includes('start'))
+    if (scenario === 'inventory-running') {
+        assert.ok(start > cleanup)
+        assert.ok(calls.some((args, i) => i > start && args.includes('exec')))
+    } else {
+        assert.equal(start, -1)
+    }
+    if (scenario === 'inventory-cleanup-failure') {
+        assert.ok(
+            calls.some((args, i) => i > cleanup && args.includes('rm') && args.includes('--force')),
+        )
+    }
+    assert.match(
+        stderr,
+        scenario === 'inventory-cleanup-failure'
+            ? /cleanup unresolved/i
+            : /check target application inventory/,
+    )
+})
 
 test.skipIf(process.platform === 'win32')(
     'restore CLI rejects corrupted input before any Docker call',

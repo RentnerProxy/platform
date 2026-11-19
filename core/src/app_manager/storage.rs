@@ -2,11 +2,11 @@ use super::{bad, journal::Slot};
 use crate::app_ipc::filesystem::require_safe_parents;
 use std::{
     ffi::CString,
-    fs::{self, DirBuilder, File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Write},
     os::unix::{
         ffi::OsStrExt,
-        fs::{self as unix, DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        fs::{self as unix, MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
 };
@@ -43,16 +43,29 @@ pub(super) fn owned(root: &Path, id: &str, slot: &Slot) -> io::Result<bool> {
 pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
     let root = Path::new(ROOT);
     require_safe_parents(root, 0)?;
-    match DirBuilder::new().mode(0o711).create(root) {
-        Ok(()) => (),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
+    let parent = root.parent().expect("application storage parent");
+    match fs::symlink_metadata(root) {
+        Ok(_) => (),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let tmp = tempfile::Builder::new()
+                .prefix(".apps-")
+                .tempdir_in(parent)?;
+            unix::chown(tmp.path(), Some(0), Some(0))?;
+            fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o711))?;
+            File::open(tmp.path())?.sync_all()?;
+            match rename_new(tmp.path(), root) {
+                Ok(()) => (),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
+                Err(e) => return Err(e),
+            }
+        }
         Err(e) => return Err(e),
     }
     let stat = fs::symlink_metadata(root)?;
     if !stat.is_dir() || stat.uid() != 0 || stat.gid() != 0 || stat.mode() & 0o7777 != 0o711 {
         return Err(bad("Unsafe application storage root"));
     }
-    File::open(root.parent().expect("application storage parent"))?.sync_all()?;
+    File::open(parent)?.sync_all()?;
     let root_directory = File::open(root)?;
     if owned(root, id, slot)? {
         return root_directory.sync_all();
@@ -67,13 +80,20 @@ pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
         .mode(0o400)
         .open(marker)?;
     writeln!(file, "{}\n{id}", slot.app_id)?;
+    unix::fchown(&file, Some(0), Some(0))?;
+    file.set_permissions(fs::Permissions::from_mode(0o400))?;
     file.sync_all()?;
     unix::chown(tmp.path(), Some(0), Some(slot.uid))?;
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o710))?;
     File::open(tmp.path())?.sync_all()?;
-    let from = CString::new(tmp.path().as_os_str().as_bytes())?;
-    let to = CString::new(directory(slot.uid).as_os_str().as_bytes())?;
-    // Both names belong to the verified root-owned parent. Never replace a legacy or concurrently allocated UID.
+    rename_new(tmp.path(), &directory(slot.uid))?;
+    root_directory.sync_all()
+}
+
+fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // Both names belong to a verified root-owned parent. Preserve an existing destination.
     if unsafe {
         libc::renameat2(
             libc::AT_FDCWD,
@@ -86,28 +106,15 @@ pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
-    root_directory.sync_all()
+    Ok(())
 }
 
 pub(super) fn purge(id: &str, slot: &Slot) -> io::Result<()> {
     let root = Path::new(ROOT);
     let retired = root.join(format!(".purge-{}", slot.uid));
     if owned(root, id, slot)? {
-        let from = CString::new(directory(slot.uid).as_os_str().as_bytes())?;
-        let to = CString::new(retired.as_os_str().as_bytes())?;
         // Publish a private tombstone before erasing any part of the tree, including the ownership marker.
-        if unsafe {
-            libc::renameat2(
-                libc::AT_FDCWD,
-                from.as_ptr(),
-                libc::AT_FDCWD,
-                to.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        } != 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        rename_new(&directory(slot.uid), &retired)?;
     }
     match fs::symlink_metadata(&retired) {
         Ok(meta)

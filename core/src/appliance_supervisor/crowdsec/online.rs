@@ -96,7 +96,10 @@ impl Supervisor {
     pub(super) async fn enroll(&mut self, text: &str) -> io::Result<()> {
         let (id, key) = files::enrollment_fields(text)
             .ok_or_else(|| io::Error::other("Invalid enrollment request"))?;
-        let result = if self.running != Mode::Online || self.community != "connected" {
+        let result = if self.running != Mode::Online
+            || self.community != "connected"
+            || super::desired() != Mode::Online
+        {
             "failed"
         } else if self
             .cli(

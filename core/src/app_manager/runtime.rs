@@ -11,11 +11,13 @@ use std::{
     os::{fd::AsRawFd, unix::process::CommandExt},
     path::Path,
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin, Command},
+    sync::Mutex,
     task::JoinHandle,
     time::{Instant, sleep_until, timeout, timeout_at},
 };
@@ -154,39 +156,75 @@ pub(super) struct Running {
     renewal: Option<Renewal>,
 }
 
-pub(super) struct Renewal(JoinHandle<()>);
+pub(super) struct Renewal {
+    confirmed: Arc<Mutex<Instant>>,
+    task: JoinHandle<()>,
+}
 
 impl Renewal {
     pub fn start(gateway: Gateway, identity: Value, confirmed: Instant) -> Self {
-        Self(tokio::spawn(renew_lease(
+        Self::with_timing(
             gateway,
             identity,
             confirmed,
             Duration::from_secs(20),
             Duration::from_secs(2),
-        )))
+        )
+    }
+
+    pub(super) fn with_timing(
+        gateway: Gateway,
+        identity: Value,
+        deadline: Instant,
+        interval: Duration,
+        retry: Duration,
+    ) -> Self {
+        let confirmed = Arc::new(Mutex::new(deadline));
+        let task = tokio::spawn(renew_lease(
+            gateway,
+            identity,
+            confirmed.clone(),
+            interval,
+            retry,
+        ));
+        Self { confirmed, task }
+    }
+
+    pub(super) async fn activate(&self, gateway: &Gateway, identity: &Value) -> io::Result<()> {
+        // Serialize lease-changing requests so the local deadline follows the gateway's commit order.
+        let mut confirmed = self.confirmed.lock().await;
+        let (body, deadline) = lease(identity)?;
+        timeout_at(*confirmed, gateway.post("activate", body)).await??;
+        *confirmed = deadline;
+        Ok(())
+    }
+
+    pub(super) fn finished(&self) -> bool {
+        self.task.is_finished()
     }
 }
 
-pub(super) async fn renew_lease(
+async fn renew_lease(
     gateway: Gateway,
     identity: Value,
-    mut confirmed: Instant,
+    deadline: Arc<Mutex<Instant>>,
     interval: Duration,
     retry: Duration,
 ) {
     let mut delay = interval;
     loop {
-        sleep_until((Instant::now() + delay).min(confirmed)).await;
-        if Instant::now() >= confirmed {
+        let wake = (Instant::now() + delay).min(*deadline.lock().await);
+        sleep_until(wake).await;
+        let mut confirmed = deadline.lock().await;
+        if Instant::now() >= *confirmed {
             return;
         }
         let Ok((body, next)) = lease(&identity) else {
             return;
         };
-        match timeout_at(confirmed, gateway.post("renew", body)).await {
-            Ok(Ok(())) if Instant::now() < confirmed => {
-                confirmed = next;
+        match timeout_at(*confirmed, gateway.post("renew", body)).await {
+            Ok(Ok(())) if Instant::now() < *confirmed => {
+                *confirmed = next.max(*confirmed);
                 delay = interval;
             }
             Ok(Err(error)) if error.kind() != io::ErrorKind::PermissionDenied => {
@@ -199,7 +237,7 @@ pub(super) async fn renew_lease(
 
 impl Drop for Renewal {
     fn drop(&mut self) {
-        self.0.abort();
+        self.task.abort();
     }
 }
 
@@ -269,8 +307,17 @@ impl Running {
         })
     }
     pub fn exited(&mut self) -> io::Result<bool> {
-        Ok(self.child.try_wait()?.is_some()
-            || self.renewal.as_ref().is_some_and(|r| r.0.is_finished()))
+        Ok(
+            self.child.try_wait()?.is_some()
+                || self.renewal.as_ref().is_some_and(Renewal::finished),
+        )
+    }
+    pub async fn activate(&self, gateway: &Gateway, identity: &Value) -> io::Result<()> {
+        self.renewal
+            .as_ref()
+            .ok_or_else(|| bad("Missing app lease"))?
+            .activate(gateway, identity)
+            .await
     }
     pub fn close(&mut self) {
         self.renewal.take();

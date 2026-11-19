@@ -110,6 +110,10 @@ pub(super) fn run(args: &[String]) -> io::Result<()> {
     {
         return Err(io::Error::other("Supervisor parent disappeared"));
     }
+    drain_children(phase, args, parent, budget)
+}
+
+fn drain_children(phase: &str, args: &[String], parent: i32, budget: Budget) -> io::Result<()> {
     let (targets, critical) = args.split_at(
         args.iter()
             .position(|arg| arg == "--")
@@ -127,9 +131,7 @@ pub(super) fn run(args: &[String]) -> io::Result<()> {
         };
         match owned_pid(pid(target)?, parent, ticks) {
             Ok(task) => pinned.push(task),
-            Err(error)
-                if phase == "web-recovery"
-                    && matches!(error.raw_os_error(), Some(libc::ESRCH | libc::ENOENT)) => {}
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ESRCH | libc::ENOENT)) => {}
             Err(error) => return Err(error),
         }
     }

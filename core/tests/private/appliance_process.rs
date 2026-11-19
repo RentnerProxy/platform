@@ -11,10 +11,12 @@ fn guards_every_kernel_credential_and_respects_the_uid_pool() {
     write_status(root, "21", "Z", [20_000, 20_000, 20_000, 20_000]);
     write_status(&root.join("21/task"), "21", "Z", [20_000; 4]);
     verify_writers_stopped(root, &[], is_app).unwrap();
+    assert!(!super::writers_present(root, &[], is_app).unwrap());
     for field in 0..4 {
         let mut identities = [0; 4];
         identities[field] = 59_999;
         write_status(root, "30", "S", identities);
+        assert!(super::writers_present(root, &[], is_app).unwrap());
         assert!(verify_writers_stopped(root, &[], is_app).is_err());
     }
 }
@@ -28,6 +30,7 @@ fn fails_closed_for_truncated_or_unreadable_identity() {
     assert!(verify_writers_stopped(root, &[], is_app).is_err());
     fs::write(root.join("42/status"), "State:\tS\nUid:\t0 0 0\n").unwrap();
     assert!(verify_writers_stopped(root, &[], is_app).is_err());
+    assert!(super::writers_present(root, &[], is_app).is_err());
     assert!(parse_status(b"State:\tS\nUid:\t0 0 0 0 0\n").is_err());
     assert_eq!(
         inspect_live_entry(&root.join("43"), std::time::Instant::now()).unwrap(),
@@ -100,7 +103,7 @@ fn hidden_group_requires_a_complete_cgroup_thread_census() {
     write_status(proc, "40", "Z", [0; 4]);
     let leader = proc.join("40/status");
     let run = || {
-        super::verify_hidden_group(
+        super::hidden_group_has_writer(
             proc,
             &cgroup,
             40,
@@ -109,7 +112,7 @@ fn hidden_group_requires_a_complete_cgroup_thread_census() {
         )
     };
     fs::write(&leader, "State: Z\nTgid: 40\nThreads: 1\n").unwrap();
-    run().unwrap();
+    assert!(!run().unwrap());
     fs::write(&leader, "State: Z\nTgid: 40\nThreads: 2\n").unwrap();
     fs::write(proc.join("40/cgroup"), "0::/\n").unwrap();
     fs::write(cgroup.join("cgroup.type"), "domain\n").unwrap();
@@ -122,15 +125,18 @@ fn hidden_group_requires_a_complete_cgroup_thread_census() {
         "State: S\nTgid: 42\nUid: 22000 0 0 0\n",
     )
     .unwrap();
-    run().unwrap();
+    assert!(!run().unwrap());
     fs::write(
         proc.join("41/status"),
         "State: S\nTgid: 40\nUid: 0 20000 0 0\n",
     )
     .unwrap();
-    assert!(run().is_err());
+    assert!(run().unwrap());
+    fs::write(proc.join("41/status"), "State: S\nTgid: 40\nUid: 0 0 0 0\n").unwrap();
     fs::write(cgroup.join("cgroup.threads"), "40\n").unwrap();
     assert!(run().is_err());
+    fs::write(cgroup.join("cgroup.threads"), "40\n41\n").unwrap();
+    assert!(!run().unwrap());
     fs::write(cgroup.join("cgroup.type"), "threaded\n").unwrap();
     assert!(run().is_err());
     fs::write(cgroup.join("cgroup.type"), "domain\n").unwrap();
@@ -138,12 +144,12 @@ fn hidden_group_requires_a_complete_cgroup_thread_census() {
     assert!(run().is_err());
     fs::write(cgroup.join("cgroup.threads"), b"\xff").unwrap();
     assert!(run().is_err());
+    fs::write(cgroup.join("cgroup.threads"), "40\n41\n").unwrap();
+    assert!(!run().unwrap());
     fs::write(proc.join("40/cgroup"), "0::/other\n").unwrap();
     assert!(run().is_err());
     fs::write(proc.join("40/cgroup"), "0::/\n").unwrap();
-    fs::write(cgroup.join("cgroup.threads"), "40\n41\n").unwrap();
-    fs::write(proc.join("41/status"), "State: S\nTgid: 40\nUid: 0 0 0 0\n").unwrap();
-    let changed = super::verify_hidden_group(
+    let changed = super::hidden_group_has_writer(
         proc,
         &cgroup,
         40,

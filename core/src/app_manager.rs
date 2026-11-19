@@ -9,7 +9,7 @@ mod storage;
 mod tests;
 
 use crate::app_install::{Installer, StagedPackage};
-use crate::appliance_process::verify_uid_stopped;
+use crate::appliance_process::{uid_in_use, verify_uid_stopped};
 use control::Command;
 pub use control::run_app_control;
 use gateway::{Gateway, identity, lease};
@@ -31,6 +31,9 @@ use tokio::{
 };
 
 const MAX_GENERATION: u64 = 9_007_199_254_740_991;
+// The supervisor permits 18 s for the manager. Reserve time for journal writes and exit.
+const DRAIN_IO_BUDGET: Duration = Duration::from_secs(16);
+const SHUTDOWN_BUDGET: Duration = Duration::from_secs(17);
 fn bad(message: &'static str) -> io::Error {
     io::Error::other(message)
 }
@@ -93,8 +96,7 @@ impl Manager {
             {
                 continue;
             }
-            verify_uid_stopped(uid)?;
-            if !runtime::database_uid_vacant(uid).await? {
+            if uid_in_use(uid)? || !runtime::database_uid_vacant(uid).await? {
                 continue;
             }
             return Ok(Slot {
@@ -142,8 +144,11 @@ impl Manager {
             loop {
                 match journal::lock(&path) {
                     Ok(file) => {
-                        verify_uid_stopped(uid)?;
-                        return Ok(file);
+                        return tokio::task::spawn_blocking(move || {
+                            verify_uid_stopped(uid)?;
+                            Ok(file)
+                        })
+                        .await?;
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                         sleep(Duration::from_millis(100)).await
@@ -172,13 +177,35 @@ impl Manager {
     }
 
     async fn retire(gateway: &Gateway, id: &str, slot: &Slot) -> io::Result<()> {
-        let body = json!({"identity":identity(id,slot)});
-        let authority = gateway.post("retire", body.clone()).await;
+        let (authority, database) = tokio::join!(
+            Self::retire_authority(gateway, id, slot),
+            Self::retire_database(slot)
+        );
+        database?;
+        authority
+    }
+
+    async fn retire_database(slot: &Slot) -> io::Result<()> {
         if slot.database_provisioned {
             runtime::fence_database(slot.uid).await?;
         }
-        authority?;
-        gateway.post("workers-stopped", body).await
+        Ok(())
+    }
+
+    async fn retire_authority(gateway: &Gateway, id: &str, slot: &Slot) -> io::Result<()> {
+        let body = json!({"identity":identity(id,slot)});
+        gateway.post("retire", body.clone()).await?;
+        timeout(Duration::from_secs(6), async {
+            loop {
+                match gateway.post("workers-stopped", body.clone()).await {
+                    Err(e) if e.kind() == io::ErrorKind::ResourceBusy => {
+                        sleep(Duration::from_millis(200)).await
+                    }
+                    result => return result,
+                }
+            }
+        })
+        .await?
     }
 
     async fn launch(
@@ -243,7 +270,7 @@ impl Manager {
         if live.exited()? {
             return Err(bad("App or lease expired before activation"));
         }
-        self.gateway.post("activate", lease(&who)?.0).await?;
+        live.activate(&self.gateway, &who).await?;
         if live.exited()? {
             return Err(bad("App exited during activation"));
         }
@@ -283,8 +310,17 @@ impl Manager {
                 self.fence(id).await?;
                 if before.desired_running
                     && let Some(active) = before.active
-                    && self.launch(id, active, Some(&[])).await.is_err()
                 {
+                    // The failed activation may have committed new grants. Replaying an old
+                    // grant set could also restore access an operator revoked during cutover.
+                    if self.launch(id, active, Some(&[])).await.is_ok() {
+                        return Err(io::Error::new(
+                            error.kind(),
+                            format!(
+                                "{error}. Previous release restarted with grants cleared. Reapprove the required grants."
+                            ),
+                        ));
+                    }
                     self.fence(id).await?;
                 }
                 Err(error)
@@ -507,40 +543,54 @@ impl Manager {
                 live.close();
             }
             jobs.spawn(async move {
-                let stopped = match live {
-                    Some(live) => live.stop().await,
-                    None => Ok(()),
-                };
-                let fenced = async {
-                    let _guard = Self::wait_writer(path, slot.uid).await?;
-                    if slot.pending_fence {
-                        Self::retire(&gateway, &id, &slot).await?;
-                    }
-                    Ok::<_, io::Error>(())
-                }
-                .await;
-                (id, slot, stopped, fenced)
+                let fenced = timeout(DRAIN_IO_BUDGET, async {
+                    // Authority can be withdrawn as the broker exits. A provisioning writer
+                    // could re-enable its DB role, so confirm writer and UID retirement first.
+                    let (broker, database, authority) = tokio::join!(
+                        async {
+                            if let Some(live) = live {
+                                live.stop().await?;
+                            }
+                            Ok::<_, io::Error>(())
+                        },
+                        async {
+                            let _guard = Self::wait_writer(path, slot.uid).await?;
+                            if slot.pending_fence {
+                                Self::retire_database(&slot).await?;
+                            }
+                            Ok::<_, io::Error>(())
+                        },
+                        async {
+                            if slot.pending_fence {
+                                Self::retire_authority(&gateway, &id, &slot).await?;
+                            }
+                            Ok::<_, io::Error>(())
+                        }
+                    );
+                    broker?;
+                    database?;
+                    authority
+                })
+                .await
+                .map_err(io::Error::from)
+                .and_then(|result| result);
+                (id, slot, fenced)
             });
         }
         let mut failures = Vec::new();
         while let Some(job) = jobs.join_next().await {
             match job {
-                Ok((id, mut slot, stopped, fenced)) => {
-                    if let Err(e) = stopped {
-                        failures.push(format!("{id} stop: {e}"));
-                    }
-                    match fenced {
-                        Ok(()) if slot.pending_fence => {
-                            slot.pending_fence = false;
-                            slot.authority_recorded = Some(true);
-                            if let Err(e) = self.journal.save(&id, slot) {
-                                failures.push(format!("{id} journal: {e}"));
-                            }
+                Ok((id, mut slot, fenced)) => match fenced {
+                    Ok(()) if slot.pending_fence => {
+                        slot.pending_fence = false;
+                        slot.authority_recorded = Some(true);
+                        if let Err(e) = self.journal.save(&id, slot) {
+                            failures.push(format!("{id} journal: {e}"));
                         }
-                        Ok(()) => (),
-                        Err(e) => failures.push(format!("{id} fence: {e}")),
                     }
-                }
+                    Ok(()) => (),
+                    Err(e) => failures.push(format!("{id} fence: {e}")),
+                },
                 Err(e) => failures.push(e.to_string()),
             }
         }
@@ -658,7 +708,7 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
         _ = crate::shutdown::wait_for_shutdown() => Ok(()),
         result = manager.serve() => result,
     };
-    timeout(Duration::from_secs(17), manager.shutdown()).await??;
+    timeout(SHUTDOWN_BUDGET, manager.shutdown()).await??;
     result
 }
 

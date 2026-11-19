@@ -55,7 +55,7 @@ test.skipIf(!enabled)(
             )
             expect(generated).toContain('--health-on-failure kill')
             expect(generated).toContain('ExecStop=/usr/bin/podman stop --ignore --time 50 ')
-            expect(generated).toContain('TimeoutStopSec=65')
+            expect(generated).toMatch(/^TimeoutStopSec=65\r?$/mu)
             expect(generated.indexOf('ExecStop=/usr/bin/podman stop')).toBeLessThan(
                 generated.indexOf('ExecStop=/usr/bin/podman rm'),
             )

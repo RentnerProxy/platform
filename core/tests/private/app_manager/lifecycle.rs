@@ -115,7 +115,15 @@ async fn invoke(controller: &Path, args: &[&str]) -> io::Result<Value> {
 }
 
 async fn mount_manager(controller: &Path, config: &Path, token: &Path) -> Child {
-    let mut child = Process::new(controller)
+    let mut command = Process::new(controller);
+    // Only the fixture's manager subprocess inherits this restrictive umask.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0o077);
+            Ok(())
+        });
+    }
+    let mut child = command
         .arg("--app-manager")
         .arg(config)
         .env(crate::config::CONTROLLER_TOKEN_FILE_ENV, token)
@@ -365,7 +373,13 @@ pub(super) async fn exercise() {
     let before = invoke(&controller, &["status"]).await.unwrap()[ID]["generation"]
         .as_u64()
         .unwrap();
-    assert!(invoke(&controller, &["activate", ID]).await.is_err());
+    let error = invoke(&controller, &["activate", ID]).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Previous release restarted with grants cleared"),
+        "{error}"
+    );
     let states = invoke(&controller, &["status"]).await.unwrap();
     assert_eq!(states[ID]["active"], "1.0.0");
     assert_eq!(states[ID]["candidate"], "1.2.0");

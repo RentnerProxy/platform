@@ -37,6 +37,25 @@ async fn privileged_postgres_uid_fencing() {
         query("SHOW data_directory").await,
         "/tmp/app-provision-postgres"
     );
+    let temp = tempfile::tempdir_in("/var/lib/rentnerproxy").unwrap();
+    let manager = Manager {
+        config: temp.path().join("offline"),
+        journal: Journal::open(&temp.path().join("manager")).unwrap(),
+        gateway: Gateway::fixture(temp.path().join("absent.sock"), 0),
+        running: BTreeMap::new(),
+        fence_cursor: String::new(),
+    };
+    let first = manager.allocate("fixture.app".into()).await.unwrap().uid;
+    let mut unrelated = Process::new("/bin/sleep")
+        .arg("15")
+        .uid(first)
+        .gid(first)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    assert!(uid_in_use(first).unwrap());
+    assert!(manager.allocate("fixture.app".into()).await.unwrap().uid > first);
+    unrelated.kill().await.unwrap();
     assert!(!runtime::database_uid_vacant(59182).await.unwrap());
     assert!(!runtime::database_uid_vacant(59183).await.unwrap());
     assert!(runtime::database_uid_vacant(59184).await.unwrap());
@@ -148,6 +167,23 @@ fn interrupted_generation_and_uid_reservations_survive_single_owner_reopen() {
     if unsafe { libc::geteuid() } != 0 {
         return;
     }
+    // A parallel fixture between fork and exec can temporarily retain our CLOEXEC
+    // descriptors. Exercise immediate flock release in an otherwise idle process.
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "app_manager::tests::journal_reopen_fixture",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+#[ignore = "private subprocess for the journal reopen test"]
+fn journal_reopen_fixture() {
+    assert_eq!(unsafe { libc::geteuid() }, 0);
     let tmp = tempfile::tempdir_in("/root").unwrap();
     let dir = tmp.path().join("manager");
     let mut journal = Journal::open(&dir).unwrap();
@@ -170,7 +206,7 @@ fn interrupted_generation_and_uid_reservations_survive_single_owner_reopen() {
     assert!(state.pending_fence && state.recovery_required);
     assert!(reopened.writer(20000).is_err());
     drop(writer);
-    assert!(reopened.writer(20000).is_ok());
+    drop(reopened.writer(20000).unwrap());
     drop(reopened);
     std::fs::write(dir.join("journal.json"), b"{").unwrap();
     assert!(Journal::open(&dir).is_err());

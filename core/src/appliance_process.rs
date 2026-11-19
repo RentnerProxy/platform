@@ -14,6 +14,10 @@ fn is_app(uid: u32) -> bool {
     (20_000..=59_999).contains(&uid)
 }
 
+pub(crate) fn uid_in_use(uid: u32) -> io::Result<bool> {
+    writers_present(Path::new("/proc"), &[], |current| current == uid)
+}
+
 pub(crate) fn verify_uid_stopped(uid: u32) -> io::Result<()> {
     verify_writers_stopped(Path::new("/proc"), &[], |current| current == uid)
 }
@@ -51,6 +55,17 @@ fn verify_writers_stopped(
     exclusions: &[u32],
     is_writer: impl Fn(u32) -> bool,
 ) -> io::Result<()> {
+    if writers_present(proc, exclusions, is_writer)? {
+        return Err(io::Error::other("A managed writer is still running"));
+    }
+    Ok(())
+}
+
+fn writers_present(
+    proc: &Path,
+    exclusions: &[u32],
+    is_writer: impl Fn(u32) -> bool,
+) -> io::Result<bool> {
     if inspect(&proc.join("self/status"))?.is_none() {
         return Err(invalid_status());
     }
@@ -64,7 +79,7 @@ fn scan_tasks(
     deadline: Instant,
     is_writer: &impl Fn(u32) -> bool,
     inspect_siblings: bool,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     check_deadline(deadline)?;
     let entries = fs::read_dir(directory)?;
     let mut observed_task = false;
@@ -82,29 +97,36 @@ fn scan_tasks(
         observed_task = true;
         let process = directory.join(pid.to_string());
         match inspect_live_entry(&process, deadline)? {
-            Some(uids) if uids.into_iter().any(is_writer) => {
-                return Err(io::Error::other("A managed writer is still running"));
-            }
+            Some(uids) if uids.into_iter().any(is_writer) => return Ok(true),
             None if inspect_siblings => {
-                if let Err(error) =
-                    scan_tasks(&process.join("task"), &[], deadline, is_writer, false)
-                {
-                    if !matches!(
-                        error.kind(),
-                        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-                    ) {
-                        return Err(error);
-                    }
-                    if let Err(fallback) = verify_hidden_group(
-                        directory,
-                        Path::new("/sys/fs/cgroup"),
-                        pid,
-                        deadline,
-                        is_writer,
-                    ) && !(fallback.kind() == io::ErrorKind::NotFound && disappeared(&process))
+                let siblings = scan_tasks(&process.join("task"), &[], deadline, is_writer, false);
+                let present = match siblings {
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                        ) =>
                     {
-                        return Err(fallback);
+                        match hidden_group_has_writer(
+                            directory,
+                            Path::new("/sys/fs/cgroup"),
+                            pid,
+                            deadline,
+                            is_writer,
+                        ) {
+                            Err(error)
+                                if error.kind() == io::ErrorKind::NotFound
+                                    && disappeared(&process) =>
+                            {
+                                false
+                            }
+                            result => result?,
+                        }
                     }
+                    result => result?,
+                };
+                if present {
+                    return Ok(true);
                 }
             }
             _ => (),
@@ -116,7 +138,8 @@ fn scan_tasks(
             "No visible thread identities",
         ));
     }
-    check_deadline(deadline)
+    check_deadline(deadline)?;
+    Ok(false)
 }
 
 fn status_number(status: &[u8], prefix: &[u8]) -> io::Result<u32> {
@@ -127,13 +150,13 @@ fn status_number(status: &[u8], prefix: &[u8]) -> io::Result<u32> {
         .ok_or_else(invalid_status)
 }
 
-fn verify_hidden_group(
+fn hidden_group_has_writer(
     proc: &Path,
     cgroup: &Path,
     pid: u32,
     deadline: Instant,
     is_writer: &impl Fn(u32) -> bool,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let leader = proc.join(pid.to_string());
     let thread_count = || -> io::Result<u32> {
         let status = read_bounded(&leader.join("status"))?;
@@ -144,7 +167,8 @@ fn verify_hidden_group(
     };
     let expected = thread_count()?;
     if expected == 1 {
-        return check_deadline(deadline);
+        check_deadline(deadline)?;
+        return Ok(false);
     }
     // In the appliance's private cgroup-v2 domain all siblings share one authoritative TID list.
     if read_bounded(&leader.join("cgroup"))? != b"0::/\n"
@@ -170,7 +194,7 @@ fn verify_hidden_group(
         };
         if status_number(&status, b"Tgid:")? == pid {
             if parse_status(&status)?.is_some_and(|uids| uids.into_iter().any(is_writer)) {
-                return Err(io::Error::other("A managed writer is still running"));
+                return Ok(true);
             }
             group.insert(tid);
         }
@@ -178,7 +202,8 @@ fn verify_hidden_group(
     if group.len() != expected as usize || thread_count()? != expected {
         return Err(invalid_status());
     }
-    check_deadline(deadline)
+    check_deadline(deadline)?;
+    Ok(false)
 }
 
 fn check_deadline(deadline: Instant) -> io::Result<()> {

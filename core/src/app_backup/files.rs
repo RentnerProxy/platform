@@ -1,4 +1,6 @@
 use super::{MAX_DATA, MAX_NODES};
+
+const MAX_OUTGOING_NODES: usize = 65_536;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use marketplace_artifacts::invalid;
 use serde::{Deserialize, Serialize};
@@ -192,7 +194,7 @@ pub(super) enum RestoreTarget {
 pub(super) fn inspect_target(
     root: &Path,
     uid: u32,
-    budget: &mut Budget,
+    outgoing_nodes: &mut usize,
 ) -> io::Result<RestoreTarget> {
     match fs::symlink_metadata(root) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(RestoreTarget::Missing),
@@ -204,21 +206,29 @@ pub(super) fn inspect_target(
         Ok(_) => return Err(invalid("Unsafe installation data directory")),
         Err(error) => return Err(error),
     }
-    walk_data(root, uid, |_, _| budget.add(0))?;
+    walk_data(root, uid, |_, _| {
+        if *outgoing_nodes >= MAX_OUTGOING_NODES {
+            return Err(invalid(
+                "Outgoing application inventory exceeds its inspection limit",
+            ));
+        }
+        *outgoing_nodes += 1;
+        Ok(())
+    })?;
     Ok(RestoreTarget::Existing)
 }
 
 pub(super) fn inspect_targets(
     roots: &BTreeMap<u32, PathBuf>,
     incoming: &BTreeMap<u32, Vec<Entry>>,
-    budget: &mut Budget,
+    outgoing_nodes: &mut usize,
 ) -> io::Result<Vec<(u32, RestoreTarget)>> {
     let mut shrinking = Vec::new();
     let mut growing = Vec::new();
     for (&uid, root) in roots {
-        let previous_nodes = budget.nodes;
-        let target = inspect_target(root, uid, budget)?;
-        if incoming[&uid].len() <= budget.nodes - previous_nodes {
+        let previous_nodes = *outgoing_nodes;
+        let target = inspect_target(root, uid, outgoing_nodes)?;
+        if incoming[&uid].len() <= *outgoing_nodes - previous_nodes {
             shrinking.push((uid, target));
         } else {
             growing.push((uid, target));
@@ -257,7 +267,7 @@ pub(super) fn validate(entries: &[Entry], budget: &mut Budget) -> io::Result<()>
 
 pub(super) fn check_staging(path: &Path) -> io::Result<()> {
     let stat = fs::symlink_metadata(path)?;
-    if !stat.is_dir() || stat.uid() != unsafe { libc::geteuid() } || stat.mode() & 0o7777 != 0o700 {
+    if !stat.is_dir() || stat.uid() != unsafe { libc::geteuid() } || stat.mode() & 0o7077 != 0 {
         return Err(invalid("Invalid restore staging directory"));
     }
     Ok(())
@@ -281,6 +291,19 @@ pub(super) fn restore(
         Err(error) => return Err(error),
     }
     fs::DirBuilder::new().mode(0o700).create(&stage)?;
+    // An installation parent may have a default ACL. Strip both inherited ACLs
+    // from our private directory before it can propagate them to snapshot files.
+    let stage_path = CString::new(stage.as_os_str().as_bytes())?;
+    for acl in [c"system.posix_acl_default", c"system.posix_acl_access"] {
+        if unsafe { libc::lremovexattr(stage_path.as_ptr(), acl.as_ptr()) } != 0 {
+            let error = io::Error::last_os_error();
+            if !matches!(error.raw_os_error(), Some(libc::ENODATA | libc::ENOTSUP)) {
+                return Err(error);
+            }
+        }
+    }
+    fs::set_permissions(&stage, Permissions::from_mode(0o700))?;
+    check_attributes(&stage)?;
     let tree = stage.join("data");
     fs::create_dir(&tree)?;
     for entry in entries {
@@ -317,6 +340,7 @@ pub(super) fn restore(
     fchown(&next, Some(uid), Some(uid))?;
     next.set_permissions(Permissions::from_mode(0o700))?;
     next.sync_all()?;
+    walk_data(&tree, uid, |_, _| Ok(()))?;
     let source = CString::new(tree.as_os_str().as_bytes())?;
     let target = CString::new(root.as_os_str().as_bytes())?;
     // Both directories are under root-owned installation parents, on the same filesystem.
@@ -390,7 +414,7 @@ mod tests {
         }
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("data");
-        let missing = inspect_target(&root, uid, &mut Budget::default()).unwrap();
+        let missing = inspect_target(&root, uid, &mut 0).unwrap();
         assert_eq!(missing, RestoreTarget::Missing);
         assert!(!root.exists());
         let entries = [dir("kiri")];
@@ -401,18 +425,52 @@ mod tests {
             .set_len(MAX_DATA as u64 + 1)
             .unwrap();
         assert_eq!(
-            inspect_target(&root, uid, &mut Budget::default()).unwrap(),
+            inspect_target(&root, uid, &mut 0).unwrap(),
             RestoreTarget::Existing
         );
         assert!(capture(&root, uid, &mut Budget::default()).is_err());
+        // An unrelated installation can already occupy the entire incoming snapshot entry budget.
+        let mut outgoing_nodes = MAX_NODES;
+        assert_eq!(
+            inspect_target(&root, uid, &mut outgoing_nodes).unwrap(),
+            RestoreTarget::Existing
+        );
+        assert_eq!(outgoing_nodes, MAX_NODES + 2);
+        let mut at_limit = MAX_OUTGOING_NODES;
+        assert!(inspect_target(&root, uid, &mut at_limit).is_err());
+        assert!(existing.is_file());
         let error = restore(&root, uid, &entries, ".app-restore-kiri", missing).unwrap_err();
         assert_eq!(error.raw_os_error(), Some(libc::EEXIST));
         assert!(existing.is_file());
         std::os::unix::fs::symlink(&existing, root.join("link")).unwrap();
-        assert!(inspect_target(&root, uid, &mut Budget::default()).is_err());
+        assert!(inspect_target(&root, uid, &mut 0).is_err());
         let link = fixture.path().join("linked-data");
         std::os::unix::fs::symlink(&root, &link).unwrap();
-        assert!(inspect_target(&link, uid, &mut Budget::default()).is_err());
+        assert!(inspect_target(&link, uid, &mut 0).is_err());
+    }
+
+    #[test]
+    fn verifies_a_live_tree_larger_than_the_incoming_snapshot_without_mutating_it() {
+        let uid = unsafe { libc::geteuid() };
+        if uid != unsafe { libc::getegid() } {
+            return;
+        }
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("data");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        for index in 0..=MAX_NODES {
+            File::create(root.join(index.to_string())).unwrap();
+        }
+        let roots = BTreeMap::from([(uid, root.clone())]);
+        let incoming = BTreeMap::from([(uid, vec![dir("replacement")])]);
+        let mut nodes = 0;
+        let plan = inspect_targets(&roots, &incoming, &mut nodes).unwrap();
+        assert_eq!(nodes, MAX_NODES + 1);
+        assert_eq!(plan, vec![(uid, RestoreTarget::Existing)]);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), MAX_NODES + 1);
+        assert!(!root.join("replacement").exists());
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 1);
     }
 
     #[test]
@@ -439,10 +497,7 @@ mod tests {
         }
         let incoming = BTreeMap::from([(grow, vec![dir("one"), dir("two")]), (shrink, vec![])]);
         // Other unchanged installations already occupy the rest of the global inventory budget.
-        let occupied = || Budget {
-            nodes: MAX_NODES - 2,
-            bytes: 0,
-        };
+        let occupied = || MAX_OUTGOING_NODES - 2;
         let first = inspect_targets(&roots, &incoming, &mut occupied()).unwrap()[0];
         assert_eq!(first.0, shrink);
         restore(
@@ -465,6 +520,71 @@ mod tests {
         }
         assert!(roots[&grow].join("two").is_dir());
         assert_eq!(fs::read_dir(&roots[&shrink]).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn restores_without_inheriting_the_installation_parents_default_acl() {
+        let uid = unsafe { libc::geteuid() };
+        if uid != unsafe { libc::getegid() } {
+            return;
+        }
+        let parent = tempfile::tempdir().unwrap();
+        // Linux's POSIX ACL xattr format: version, then (tag, permissions, id) entries.
+        let mut acl = 2_u32.to_le_bytes().to_vec();
+        for (tag, permissions, id) in [
+            (1_u16, 7_u16, u32::MAX),
+            (2, 4, 25001),
+            (4, 0, u32::MAX),
+            (16, 4, u32::MAX),
+            (32, 0, u32::MAX),
+        ] {
+            acl.extend(tag.to_le_bytes());
+            acl.extend(permissions.to_le_bytes());
+            acl.extend(id.to_le_bytes());
+        }
+        let path = CString::new(parent.path().as_os_str().as_bytes()).unwrap();
+        if unsafe {
+            libc::lsetxattr(
+                path.as_ptr(),
+                c"system.posix_acl_default".as_ptr(),
+                acl.as_ptr().cast(),
+                acl.len(),
+                0,
+            )
+        } != 0
+        {
+            assert!(matches!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::ENOTSUP | libc::EPERM)
+            ));
+            return;
+        }
+        let inherited = parent.path().join("inherited");
+        fs::create_dir(&inherited).unwrap();
+        assert!(check_attributes(&inherited).is_err());
+        let root = parent.path().join("data");
+        let entries = [
+            dir("folder"),
+            Entry {
+                path: "folder/note".into(),
+                mode: 0o640,
+                contents: Some(STANDARD.encode(b"kiri")),
+            },
+        ];
+        restore(
+            &root,
+            uid,
+            &entries,
+            ".app-restore-kiri",
+            RestoreTarget::Missing,
+        )
+        .unwrap();
+        assert_eq!(
+            capture(&root, uid, &mut Budget::default()).unwrap().len(),
+            2
+        );
+        assert_eq!(fs::read(root.join("folder/note")).unwrap(), b"kiri");
+        assert!(check_attributes(parent.path()).is_err());
     }
 
     #[test]
@@ -498,6 +618,22 @@ mod tests {
         assert!(capture(&root, uid, &mut Budget::default()).is_ok());
         assert_eq!(set_attr(&root), 0);
         assert!(capture(&root, uid, &mut Budget::default()).is_err());
+    }
+
+    #[test]
+    fn encoded_archive_budget_covers_maximum_data_paths_and_inventory() {
+        let longest = Entry {
+            path: "\"".repeat(1024),
+            mode: 0o777,
+            contents: Some(String::new()),
+        };
+        let entry_overhead = serde_json::to_vec(&longest).unwrap().len() + 1;
+        let file_contents = MAX_DATA.div_ceil(3) * 4 + MAX_NODES * 4;
+        let journal_and_uid_map = 4 * 1024 * 1024 + 65536;
+        assert!(
+            file_contents + MAX_NODES * entry_overhead + journal_and_uid_map
+                <= super::super::MAX_ARCHIVE
+        );
     }
 
     #[test]

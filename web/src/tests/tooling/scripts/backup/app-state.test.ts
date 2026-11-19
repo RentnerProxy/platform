@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
     appStateInstallations,
     appStateName,
+    maximumAppStateBytes,
     readAppStateMember,
 } from '../../../../../../scripts/backup/app-state.ts'
 import {
@@ -131,6 +132,14 @@ test('app snapshot survives publication and encrypted recovery and rejects downg
             version: 5,
             applications: { ...digest(snapshot), installations: [installation] },
         })
+        const sized = (bytes: number) =>
+            parseBackupMetadata({
+                ...metadata,
+                applications: { ...digest(snapshot), bytes, installations: [installation] },
+            })
+        expect(maximumAppStateBytes).toBe(64 * 1024 ** 2)
+        expect(() => sized(maximumAppStateBytes)).not.toThrow()
+        expect(() => sized(maximumAppStateBytes + 1)).toThrow()
         await publishProductionBackup(staging, source, metadata)
         const id = digest(await readFile(join(source, 'metadata.json'))).sha256
         expect((await readSnapshotMetadata(source, id)).metadata).toEqual(metadata)

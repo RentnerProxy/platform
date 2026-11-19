@@ -69,9 +69,19 @@ fingerprint=$(sha256sum "$credential")
 install -d -m 0700 -o postgres -g postgres "$database"
 install -d -m 0755 -o postgres -g postgres "$socket"
 gosu postgres "$postgres/initdb" --pgdata="$database" --auth-local=trust --auth-host=reject >/dev/null
+stop_postgres() {
+    local result=$?
+    if gosu postgres "$postgres/pg_ctl" --pgdata="$database" status >/dev/null 2>&1; then
+        if ! gosu postgres "$postgres/pg_ctl" --pgdata="$database" --mode=immediate --wait --timeout=15 stop >/dev/null &&
+            ((result == 0)); then
+            result=1
+        fi
+    fi
+    exit "$result"
+}
+trap stop_postgres EXIT
 gosu postgres "$postgres/pg_ctl" --pgdata="$database" --log="$database/server.log" \
     --options="-c listen_addresses= -c unix_socket_directories=$socket" --wait --timeout=15 start >/dev/null
-trap 'gosu postgres "$postgres/pg_ctl" --pgdata="$database" --mode=immediate --wait --timeout=15 stop >/dev/null' EXIT
 
 provision 59182 database
 chmod 0400 "$credential"

@@ -372,12 +372,14 @@ fn verifies_dynamic_abi_against_installed_appliance_libraries() {
     linkage["versions"]["libc.so.6"] = json!(["GLIBC_TEST_UNAVAILABLE"]);
     assert!(super::package::verify_abi(&json!([linkage]), target).is_err());
     for invalid_name in ["/lib/libc.so.6", "../libc.so.6", "lib\\libc.so.6", ".."] {
-        assert!(
+        assert_eq!(
             super::package::verify_abi(
                 &json!([{"needed": [invalid_name], "interpreter": null}]),
                 target,
             )
-            .is_err()
+            .unwrap_err()
+            .to_string(),
+            "ELF dependency must name an appliance library"
         );
     }
 }
@@ -405,8 +407,14 @@ fn staging_tree_refuses_special_files_before_touching_their_targets() {
     assert_eq!(fs::read(outside).unwrap(), b"preserved");
 
     assert!(super::filesystem::directory(&lock, 0o711).is_err());
-    fs::set_permissions(&stage, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&stage, fs::Permissions::from_mode(0o770)).unwrap();
     assert!(super::filesystem::directory(&stage, 0o711).is_err());
+    fs::set_permissions(&stage, fs::Permissions::from_mode(0o700)).unwrap();
+    super::filesystem::directory(&stage, 0o711).unwrap();
+    assert_eq!(
+        fs::metadata(&stage).unwrap().permissions().mode() & 0o777,
+        0o711
+    );
     assert!(super::filesystem::directory(&directory.path().join("absent/child"), 0o711).is_err());
 }
 
@@ -439,10 +447,14 @@ fn installer_respects_root_path_admission_and_retains_its_catalog_when_refresh_f
     }
     let temporary = tempfile::tempdir_in("/root").unwrap();
     let root = temporary.path();
-    let store = root.join("store");
+    let package_directory = tempfile::tempdir_in("/run").unwrap();
+    let store = package_directory.path().join("store");
     let pin = root.join("root.json");
     let config = root.join("installer.json");
     fs::create_dir(&store).unwrap();
+    fs::set_permissions(package_directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&store, fs::Permissions::from_mode(0o711)).unwrap();
+    fs::create_dir(root.join("private")).unwrap();
     fs::write(&pin, PIN).unwrap();
     let settings = json!({
         "storeDirectory":store,"pinnedRoot":pin,
@@ -451,6 +463,11 @@ fn installer_respects_root_path_admission_and_retains_its_catalog_when_refresh_f
     let write_settings =
         |value: &Value| fs::write(&config, serde_json::to_vec(value).unwrap()).unwrap();
     write_settings(&settings);
+    assert_eq!(
+        Installer::open(&config).err().unwrap().to_string(),
+        "Application package store paths must be searchable by app identities"
+    );
+    fs::set_permissions(package_directory.path(), fs::Permissions::from_mode(0o711)).unwrap();
     let installer = Installer::open(&config).unwrap();
     assert!(installer.recover(ID, VERSION, &"0".repeat(64)).is_err());
     let files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
@@ -475,7 +492,7 @@ fn installer_respects_root_path_admission_and_retains_its_catalog_when_refresh_f
     assert!(super::filesystem::check_root_path(Path::new("catalog.json"), false).is_err());
     assert!(super::filesystem::check_root_path(&pin, true).is_err());
     assert!(
-        super::filesystem::check_root_path(&root.join("store/../installer.json"), false).is_err()
+        super::filesystem::check_root_path(&root.join("private/../installer.json"), false).is_err()
     );
 
     let alias = root.join("alias.json");

@@ -14,7 +14,9 @@ use std::{
 };
 
 const APPS: &str = "/var/lib/rentnerproxy/apps";
-const MAX_ARCHIVE: usize = 48 * 1024 * 1024;
+// Base64 for 32 MiB plus per-file padding, 8192 escaped 1-KiB paths, JSON framing,
+// and the manager's 4-MiB journal all fit in a 64-MiB encoded member.
+const MAX_ARCHIVE: usize = 64 * 1024 * 1024;
 const MAX_DATA: usize = 32 * 1024 * 1024;
 const MAX_NODES: usize = 8192;
 
@@ -267,8 +269,7 @@ fn process(args: &[String]) -> io::Result<()> {
                     "Snapshot requires the same installed applications and releases",
                 ));
             }
-            let plan =
-                files::inspect_targets(&roots, &snapshot.data, &mut files::Budget::default())?;
+            let plan = files::inspect_targets(&roots, &snapshot.data, &mut 0)?;
             if action == "restore" {
                 for (uid, target) in plan {
                     files::restore(&roots[&uid], uid, &snapshot.data[&uid], &stage, target)?;

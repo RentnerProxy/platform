@@ -66,19 +66,104 @@ async fn transient_lease_failure_retries_until_confirmation_or_revocation() {
         }
     });
     let short = Duration::from_millis(10);
-    timeout(
-        Duration::from_secs(2),
-        runtime::renew_lease(
-            gateway,
-            json!({}),
-            Instant::now() + Duration::from_secs(1),
-            short,
-            short,
-        ),
-    )
+    let renewal = runtime::Renewal::with_timing(
+        gateway,
+        json!({}),
+        Instant::now() + Duration::from_secs(1),
+        short,
+        short,
+    );
+    timeout(Duration::from_secs(2), async {
+        while !renewal.finished() {
+            sleep(short).await;
+        }
+    })
     .await
     .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn activation_extends_the_confirmed_window_during_transient_renewal_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let registration = Instant::now() + Duration::from_millis(250);
+    let recovered = Arc::new(tokio::sync::Notify::new());
+    let seen = recovered.clone();
+    let gateway = authority(&dir.path().join("web.sock"), move |action, _| {
+        if action == "activate" {
+            StatusCode::NO_CONTENT
+        } else if Instant::now() < registration {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            seen.notify_one();
+            StatusCode::NO_CONTENT
+        }
+    });
+    let short = Duration::from_millis(10);
+    let renewal =
+        runtime::Renewal::with_timing(gateway.clone(), json!({}), registration, short, short);
+    renewal.activate(&gateway, &json!({})).await.unwrap();
+    timeout(Duration::from_secs(2), recovered.notified())
+        .await
+        .unwrap();
+    assert!(!renewal.finished());
+}
+
+#[tokio::test]
+async fn drain_retires_authority_while_a_writer_is_stopping_and_waits_for_workers() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let dir = tempfile::tempdir_in("/root").unwrap();
+    let retired = Arc::new(tokio::sync::Notify::new());
+    let seen = retired.clone();
+    let workers = Arc::new(AtomicUsize::new(0));
+    let checks = workers.clone();
+    let gateway = authority(&dir.path().join("web.sock"), move |action, _| {
+        if action == "retire" {
+            seen.notify_one();
+        }
+        if action == "workers-stopped" && checks.fetch_add(1, Ordering::SeqCst) == 0 {
+            return StatusCode::CONFLICT;
+        }
+        StatusCode::NO_CONTENT
+    });
+    let mut manager = Manager {
+        config: dir.path().join("offline"),
+        journal: Journal::open(&dir.path().join("journal")).unwrap(),
+        gateway,
+        running: BTreeMap::new(),
+        fence_cursor: String::new(),
+    };
+    let uid = 53337;
+    manager
+        .journal
+        .save(
+            "a",
+            Slot {
+                app_id: "fixture.a".into(),
+                uid,
+                generation: 1,
+                pending_fence: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let writer = manager.journal.writer(uid).unwrap();
+    timeout(Duration::from_secs(2), async {
+        let (_, result) = tokio::join!(
+            async {
+                retired.notified().await;
+                drop(writer);
+            },
+            manager.shutdown()
+        );
+        result.unwrap();
+    })
+    .await
+    .unwrap();
+    assert_eq!(workers.load(Ordering::SeqCst), 2);
+    assert!(!manager.journal.slot("a").unwrap().pending_fence);
 }
 
 #[tokio::test]

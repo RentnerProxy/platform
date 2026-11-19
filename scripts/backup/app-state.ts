@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
 import { lstat, type FileHandle } from 'node:fs/promises'
 import { z } from 'zod'
 import { readFileRange } from './artifact-file.ts'
@@ -7,7 +8,7 @@ import { appBackupInstallations } from './validation.ts'
 import type { BackupMetadata, StateArchiveFileEntry } from './Types/format.types.ts'
 
 export const appStateName = '.rentnerproxy-app-state-v1'
-export const maximumAppStateBytes = 48 * 1024 * 1024
+export const maximumAppStateBytes = BACKUP_RUNTIME_POLICY.maximumAppStateBytes
 export const appBackupCommand = '/usr/local/bin/rentnerproxy-controller'
 
 export async function hasNativeAppStorage() {

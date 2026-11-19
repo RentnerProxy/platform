@@ -45,8 +45,13 @@ case "$*" in
             rm /tmp/rentnerproxy-native-crowdsec/fail-probe
             exit 1
         fi ;;
-    '-o json console status') echo '{"console":{"authenticated":true,"enrolled":true}}' ;;
-    'console enroll --disable all -- -DEMO_0123456789-ab') ;;
+    '-o json console status')
+        if [ -e /tmp/rentnerproxy-native-crowdsec/hold-probe ]; then
+            echo ready > /tmp/rentnerproxy-native-crowdsec/probing
+            while [ -e /tmp/rentnerproxy-native-crowdsec/hold-probe ]; do sleep 0.05; done
+        fi
+        echo '{"console":{"authenticated":true,"enrolled":true}}' ;;
+    'console enroll --disable all -- -DEMO_0123456789-ab') echo called >> /tmp/rentnerproxy-native-crowdsec/enrollments ;;
     *) exit 11 ;;
 esac
 SH
@@ -149,13 +154,25 @@ until_match "$control/status.json" '"community":"connected".*"console":"connecte
 until_match "$fixture/launches" 'config-online.yaml$'
 [[ $(stat -c '%u:%g:%a:%h' "$capi") == 10003:10003:600:1 ]]
 id=0123456789abcdef0123456789abcdef
-printf '%s\n%s\n' "$id" -DEMO_0123456789-ab > "$fixture/request"
-chown 10001:10001 "$fixture/request"
-chmod 0600 "$fixture/request"
-mv "$fixture/request" "$control/console-enrollment-request"
+queue_enrollment() {
+    printf '%s\n%s\n' "$id" -DEMO_0123456789-ab > "$fixture/request"
+    chown 10001:10001 "$fixture/request"
+    chmod 0600 "$fixture/request"
+    mv "$fixture/request" "$control/console-enrollment-request"
+}
+queue_enrollment
 until_match "$control/console-enrollment-result.json" '"state":"pending"'
 mode managed
 until_match "$control/status.json" '"community":"disabled".*"state":"ready"'
+touch "$fixture/hold-probe"
+mode managed-online
+until_match "$fixture/probing" '^ready$'
+queue_enrollment
+mode managed
+rm "$fixture/hold-probe"
+until_match "$control/console-enrollment-result.json" '"state":"failed"'
+until_match "$control/status.json" '"community":"disabled".*"state":"ready"'
+[[ $(wc -l < "$fixture/enrollments") -eq 1 ]]
 mode managed-online
 until_match "$control/status.json" '"community":"connected".*"console":"connected"'
 kill -TERM "$(<"$fixture/engine.pid")"

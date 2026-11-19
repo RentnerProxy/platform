@@ -96,6 +96,8 @@ impl Gateway {
                         StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
                     ) {
                     io::ErrorKind::WouldBlock
+                } else if action == "workers-stopped" && status == StatusCode::CONFLICT {
+                    io::ErrorKind::ResourceBusy
                 } else {
                     io::ErrorKind::PermissionDenied
                 };

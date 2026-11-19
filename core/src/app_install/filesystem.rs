@@ -33,6 +33,11 @@ pub(super) fn check_root_path(path: &Path, directory: bool) -> io::Result<()> {
                     "Manager paths must be root-owned and protected against writes",
                 ));
             }
+            if directory && metadata.mode() & 0o001 == 0 {
+                return Err(invalid(
+                    "Application package store paths must be searchable by app identities",
+                ));
+            }
         }
     }
     Ok(())
@@ -77,11 +82,15 @@ pub(super) fn directory(path: &Path, mode: u32) -> io::Result<()> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::MetadataExt;
-                if metadata.mode() & 0o7777 != mode || metadata.uid() != unsafe { libc::geteuid() }
-                {
+                let actual = metadata.mode() & 0o7777;
+                if actual & !mode != 0 || metadata.uid() != unsafe { libc::geteuid() } {
                     return Err(invalid(
                         "Unexpected installer directory ownership or permissions",
                     ));
+                }
+                if actual != mode {
+                    permissions(path, mode)?;
+                    sync_directory(path)?;
                 }
             }
             sync_directory(parent)

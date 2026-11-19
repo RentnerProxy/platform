@@ -47,10 +47,10 @@ shutdown_children() {
     done
     deadline=$((SECONDS + 25))
     consumer_deadline=$((deadline - 2))
-    # Only the supervisor receives Tini's signal. Keep state services and the
-    # CrowdSec supervisor alive while web/controller consumers drain.
+    # Once apps are fenced, stop web/controller admission and the CrowdSec supervisor together.
+    # Its helper and engine cleanup can use the consumer window while state services remain available.
     for index in "${!child_pids[@]}"; do
-        case ${child_names[$index]} in app-manager|web|controller|backup-export) ;; *) continue ;; esac
+        case ${child_names[$index]} in app-manager|web|controller|backup-export|crowdsec-supervisor) ;; *) continue ;; esac
         pid=${child_pids[$index]}
         if kill -0 "$pid" 2>/dev/null; then
             kill -TERM "$pid" 2>/dev/null || true
@@ -60,7 +60,7 @@ shutdown_children() {
     while ((SECONDS < consumer_deadline)); do
         local running=false
         for index in "${!child_pids[@]}"; do
-            case ${child_names[$index]} in app-manager|web|controller|backup-export) ;; *) continue ;; esac
+            case ${child_names[$index]} in app-manager|web|controller|backup-export|crowdsec-supervisor) ;; *) continue ;; esac
             pid=${child_pids[$index]}
             if kill -0 "$pid" 2>/dev/null; then
                 running=true
@@ -78,7 +78,7 @@ shutdown_children() {
     done
     backup_stop_retained_caddy || log 'retained Caddy cleanup could not be confirmed'
     for index in "${!child_pids[@]}"; do
-        case ${child_names[$index]} in app-manager|web|controller|backup-export) continue ;; esac
+        case ${child_names[$index]} in app-manager|web|controller|backup-export|crowdsec-supervisor) continue ;; esac
         kill -TERM "${child_pids[$index]}" 2>/dev/null || true
     done
     while ((SECONDS < deadline)); do
