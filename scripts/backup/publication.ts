@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Verify and sync each bounded artifact before atomic publication.
 import { createHash } from 'node:crypto'
+import { controllerAllocation, readAppStateMember } from './app-state.ts'
 import { constants } from 'node:fs'
 import { open, rename, writeFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -79,10 +80,11 @@ export async function verifyPublishedBackup(
                 throw new Error('backup artifact checksum mismatch')
             if (name === 'app-encryption-key')
                 await parseApplicationEncryptionKeyFile(file, signal, progress)
-            if (name === 'controller-state.tar')
-                controllerState = stateArchiveAllocationEvidence(
-                    await validateStateArchiveFile(file, 'controller', signal, progress),
-                )
+            if (name === 'controller-state.tar') {
+                const entries = await validateStateArchiveFile(file, 'controller', signal, progress)
+                await readAppStateMember(file, entries, metadata)
+                controllerState = controllerAllocation(entries, metadata)
+            }
             if (name === 'crowdsec-state.tar')
                 crowdSecState = stateArchiveAllocationEvidence(
                     await validateStateArchiveFile(file, 'crowdsec', signal, progress),

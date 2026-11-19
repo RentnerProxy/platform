@@ -14,21 +14,59 @@ if [[ ${1:-} == --privileged-app-ipc ]]; then
     test -x "$controller"
     profiles=$(mktemp -d)
     trap 'rm -rf -- "$profiles"' EXIT
+    mkdir -m 1777 "$profiles/data"
+    # Keep coverage sections while keeping the executables copied into /run small.
+    objcopy --strip-debug "$ipc_tests" "$profiles/ipc-tests"
+    objcopy --strip-debug "$controller" "$profiles/controller"
+    rustc --edition=2024 -C opt-level=s -C strip=symbols \
+        core/tests/fixtures/app-manager/app.rs -o "$profiles/fixture-app"
+    rustc --edition=2024 -C opt-level=s -C strip=symbols \
+        core/tests/fixtures/appliance-supervisor/crowdsec.rs -o "$profiles/crowdsec-fixture"
 
     # Run only the app IPC fixtures that need real UID changes. The container
     # receives test executables and a profile directory, with no network or source tree.
-    docker run --rm --network none --read-only --user 0:0 \
+    runner=(
+        docker run --rm --network none --read-only --user 0:0
         --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add KILL --cap-add SETGID --cap-add SETUID \
         --security-opt no-new-privileges \
         --tmpfs /run:rw,exec,mode=0755,size=512m \
-        --mount "type=bind,source=$ipc_tests,target=/ipc-tests,readonly" \
-        --mount "type=bind,source=$controller,target=/controller,readonly" \
-        --mount "type=bind,source=$profiles,target=/profiles" \
+        --mount "type=bind,source=$profiles/ipc-tests,target=/ipc-tests,readonly" \
+        --mount "type=bind,source=$profiles/controller,target=/controller,readonly" \
+        --mount "type=bind,source=$profiles/data,target=/profiles" \
         --env LLVM_PROFILE_FILE=/profiles/app-ipc-%p-%m.profraw \
-        --env RENTNERPROXY_TEST_CONTROLLER=/controller \
+        --env RENTNERPROXY_TEST_CONTROLLER=/controller
+    )
+    "${runner[@]}" \
         mirror.gcr.io/library/ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8 \
-        /ipc-tests --ignored app_ipc::tests::privileged_
-    cp -- "$profiles"/*.profraw "$(dirname "$LLVM_PROFILE_FILE")/"
+        /ipc-tests --test-threads=1 --ignored app_ipc::tests::privileged_
+    # The application verifier cross-checks ELF linkage with the image's readelf.
+    native_fixture_image=mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31
+    "${runner[@]}" \
+        --tmpfs /var/lib/rentnerproxy:rw,exec,mode=0755,size=128m \
+        --tmpfs /tmp:rw,mode=01777,size=128m \
+        --mount "type=bind,source=$profiles/fixture-app,target=/fixture-app,readonly" \
+        --env RENTNERPROXY_TEST_APP=/fixture-app \
+        "$native_fixture_image" \
+        /ipc-tests --ignored --exact app_manager::tests::privileged_signed_lifecycle
+    "${runner[@]}" \
+        --tmpfs /var/lib/rentnerproxy:rw,mode=0755,size=64m \
+        --tmpfs /tmp:rw,mode=01777,size=64m \
+        --tmpfs /usr/local/bin:rw,exec,mode=0755,size=8m \
+        --mount "type=bind,source=$profiles/controller,target=/usr/local/bin/rentnerproxy-controller,readonly" \
+        --mount "type=bind,source=$profiles/crowdsec-fixture,target=/crowdsec-fixture,readonly" \
+        --mount "type=bind,source=$PWD/docker/production,target=/production,readonly" \
+        "$native_fixture_image" \
+        bash -eu -c 'bash /production/tests/crowdsec-supervisor.sh
+            bash /production/tests/fault-supervisor.sh
+            bash /production/tests/backups.sh --linux-processes'
+    "${runner[@]}" \
+        --tmpfs /var/lib/rentnerproxy:rw,mode=0755,size=64m \
+        --tmpfs /tmp:rw,mode=01777,size=128m \
+        --mount "type=bind,source=$PWD/docker/production/tests/app-provision.sh,target=/app-provision.sh,readonly" \
+        --entrypoint /bin/bash \
+        mirror.gcr.io/library/postgres:18.7@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61 \
+        /app-provision.sh
+    cp -- "$profiles/data"/*.profraw "$(dirname "$LLVM_PROFILE_FILE")/"
     exit
 fi
 

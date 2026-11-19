@@ -22,6 +22,7 @@ import { createMaintenanceCommands } from './backup/maintenance-commands.ts'
 import { commandOption, composeArguments, readComposeProject } from './backup/compose.ts'
 import { assertDeploymentCompatible } from './backup/format.ts'
 import { snapshotProductionRestore } from './backup/restore-snapshot.ts'
+import { appBackupCommand, appStateName } from './backup/app-state.ts'
 import { deploymentSchema } from './backup/validation.ts'
 import { smokeDockerArguments } from './smoke/resources.ts'
 
@@ -104,7 +105,7 @@ async function restore(): Promise<void> {
                 snapshot + ':/backup:ro',
                 imageId,
                 '-c',
-                postgresCommand(true),
+                postgresCommand(true, '/backup', metadata.version === 5),
             ],
             'restore PostgreSQL',
             BACKUP_RUNTIME_POLICY.databaseTimeoutMs,
@@ -142,6 +143,23 @@ async function restore(): Promise<void> {
         await runCommand(
             [...compose, 'stop', '--timeout', '30', applianceService],
             'quiesce restore target',
+            180_000,
+        )
+        await runCommand(
+            [
+                ...compose,
+                'run',
+                '--no-TTY',
+                '--rm',
+                '--no-deps',
+                '--entrypoint=bash',
+                '--volume',
+                archiveVolume,
+                applianceService,
+                '-c',
+                postgresCommand('inventory', '/backup', metadata.version === 5),
+            ],
+            'check target application inventory',
             180_000,
         )
         // Preparing a fresh database must never boot the old controller/web workers.
@@ -217,7 +235,7 @@ async function restore(): Promise<void> {
                     archiveVolume,
                     applianceService,
                     '-c',
-                    controllerRestoreCommand(),
+                    controllerRestoreCommand(metadata.version === 5),
                 ],
                 'restore controller state',
                 BACKUP_RUNTIME_POLICY.captureTimeoutMs,
@@ -239,6 +257,25 @@ async function restore(): Promise<void> {
                 'restore managed CrowdSec state',
                 BACKUP_RUNTIME_POLICY.captureTimeoutMs,
             )
+            if (metadata.version === 5)
+                await runCommand(
+                    [
+                        ...compose,
+                        'run',
+                        '--no-TTY',
+                        '--rm',
+                        '--no-deps',
+                        '--entrypoint=' + appBackupCommand,
+                        '--volume',
+                        archiveVolume,
+                        applianceService,
+                        '--app-backup',
+                        'restore',
+                        '/backup/' + appStateName,
+                    ],
+                    'restore verified application files',
+                    BACKUP_RUNTIME_POLICY.captureTimeoutMs,
+                )
             await runCommand(
                 [
                     ...compose,

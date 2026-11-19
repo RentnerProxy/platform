@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use crate::models::{ProxyHost, UpstreamPool, UpstreamSelectionPolicy};
 
 use super::is_valid_forward_host;
+use super::revision::SNAPSHOT_LAYOUT;
 
 pub(crate) const MAX_UPSTREAM_MEMBERS: usize = 16;
 
@@ -42,11 +43,11 @@ pub(crate) fn configuration_version(hosts: &[ProxyHost]) -> u8 {
             .as_ref()
             .is_some_and(|pool| pool.failover.is_some())
     }) {
-        9
+        SNAPSHOT_LAYOUT.versions.failover
     } else if hosts.iter().any(|host| host.upstream_pool.is_some()) {
-        8
+        SNAPSHOT_LAYOUT.versions.upstream_pool
     } else {
-        7
+        SNAPSHOT_LAYOUT.versions.base
     }
 }
 

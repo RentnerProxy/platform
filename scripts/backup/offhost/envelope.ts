@@ -9,6 +9,7 @@ import {
 import { constants } from 'node:fs'
 import {
     chmod,
+    link,
     lstat,
     mkdir,
     mkdtemp,
@@ -26,6 +27,7 @@ import {
 } from '../artifact-file.ts'
 import { syncBackupDirectory, verifyPublishedBackup } from '../publication.ts'
 import { assertBackupCapacity, backupCapacityGuard } from '../capacity.ts'
+import { runMaintenanceProcess } from '../maintenance-process.ts'
 import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 
 // v1 has a fixed 96-byte AAD header and exactly five concatenated artifact bodies,
@@ -49,6 +51,41 @@ const limits = [
     BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
 ]
 const maximumPayloadBytes = limits.reduce((sum, bytes) => sum + bytes, 0)
+const nativeController = '/usr/local/bin/rentnerproxy-controller'
+
+function hasNativeEnvelope(): Promise<boolean> {
+    return process.platform === 'linux'
+        ? Bun.file(nativeController).exists()
+        : Promise.resolve(false)
+}
+
+async function transformNativeEnvelope(
+    operation: 'seal' | 'open',
+    source: string,
+    target: string,
+    frame: Buffer,
+    signal: AbortSignal,
+): Promise<Uint8Array> {
+    try {
+        const result = await runMaintenanceProcess(
+            [nativeController, '--backup-envelope', operation, resolve(source), resolve(target)],
+            {
+                cwd: process.cwd(),
+                env: {},
+                signal,
+                timeoutMs: BACKUP_RUNTIME_POLICY.operationTimeoutMs,
+                maximumOutputBytes: 1024,
+                input: frame,
+            },
+        )
+        signal.throwIfAborted()
+        if (result.failed || !result.stopped)
+            throw new Error('invalid or incomplete encrypted backup transfer')
+        return result.stdout
+    } finally {
+        frame.fill(0)
+    }
+}
 
 function parseRecoveryKey(value: string): Buffer {
     if (!/^[A-Za-z0-9+/]{43}=$/u.test(value))
@@ -208,6 +245,41 @@ export async function encryptBackup(
             verified.metadata.controllerState.sha256,
             verified.metadata.crowdSecState.sha256,
         ]
+        if (await hasNativeEnvelope()) {
+            const privateDirectory = await mkdtemp(
+                join(dirname(resolve(outputFile)), '.rentnerproxy-encrypt-'),
+            )
+            const sealed = join(privateDirectory, 'envelope')
+            try {
+                const frame = Buffer.concat([
+                    key,
+                    header,
+                    ...expected.map((hash) => Buffer.from(hash, 'hex')),
+                ])
+                const raw = await transformNativeEnvelope('seal', directory, sealed, frame, signal)
+                const receipt: unknown = JSON.parse(new TextDecoder().decode(raw))
+                if (
+                    typeof receipt !== 'object' ||
+                    receipt === null ||
+                    !('bytes' in receipt) ||
+                    receipt.bytes !==
+                        headerBytes + tagBytes + lengths.reduce((sum, bytes) => sum + bytes, 0) ||
+                    !('sha256' in receipt) ||
+                    typeof receipt.sha256 !== 'string' ||
+                    !/^[a-f0-9]{64}$/u.test(receipt.sha256)
+                )
+                    throw new Error('invalid native encrypted backup receipt')
+                signal.throwIfAborted()
+                await link(sealed, outputFile)
+                ownsOutput = true
+                await syncBackupDirectory(dirname(resolve(outputFile)))
+                signal.throwIfAborted()
+                ownsOutput = false
+                return { bytes: receipt.bytes, sha256: receipt.sha256, keyId }
+            } finally {
+                await rm(privateDirectory, { recursive: true, force: true })
+            }
+        }
         const cipher = createCipheriv('aes-256-gcm', key, header.subarray(12, 24), {
             authTagLength: tagBytes,
         })
@@ -291,37 +363,47 @@ export async function decryptBackup(
             throw new Error('encrypted backup recovery key does not match')
         await assertBackupCapacity([{ path: dirname(destination), bytes: payloadBytes }])
         const checkCapacity = backupCapacityGuard([dirname(destination)])
-        const decipher = createDecipheriv('aes-256-gcm', key, header.subarray(12, 24), {
-            authTagLength: tagBytes,
-        })
-        decipher.setAAD(header)
-        decipher.setAuthTag(await readFileRange(input, headerBytes + payloadBytes, tagBytes))
         staging = await mkdtemp(join(dirname(destination), '.rentnerproxy-decrypt-'))
         await chmod(staging, 0o700)
-        let inputOffset = headerBytes
-        for (const [index, name] of names.entries()) {
-            const output = await open(join(staging, name), 'wx', 0o600)
-            try {
-                await output.chmod(0o600)
-                for (let offset = 0; offset < lengths[index]!; offset += chunkBytes) {
-                    if (offset % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0)
-                        await checkCapacity()
-                    signal?.throwIfAborted()
-                    const bytes = Math.min(chunkBytes, lengths[index]! - offset)
-                    await writeFileChunk(
-                        output,
-                        decipher.update(await readFileRange(input, inputOffset, bytes)),
-                    )
-                    inputOffset += bytes
+        if (await hasNativeEnvelope()) {
+            await transformNativeEnvelope(
+                'open',
+                inputFile,
+                staging,
+                Buffer.concat([key, header]),
+                signal,
+            )
+        } else {
+            const decipher = createDecipheriv('aes-256-gcm', key, header.subarray(12, 24), {
+                authTagLength: tagBytes,
+            })
+            decipher.setAAD(header)
+            decipher.setAuthTag(await readFileRange(input, headerBytes + payloadBytes, tagBytes))
+            let inputOffset = headerBytes
+            for (const [index, name] of names.entries()) {
+                const output = await open(join(staging, name), 'wx', 0o600)
+                try {
+                    await output.chmod(0o600)
+                    for (let offset = 0; offset < lengths[index]!; offset += chunkBytes) {
+                        if (offset % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0)
+                            await checkCapacity()
+                        signal?.throwIfAborted()
+                        const bytes = Math.min(chunkBytes, lengths[index]! - offset)
+                        await writeFileChunk(
+                            output,
+                            decipher.update(await readFileRange(input, inputOffset, bytes)),
+                        )
+                        inputOffset += bytes
+                    }
+                    await output.sync()
+                } finally {
+                    await output.close()
                 }
-                await output.sync()
-            } finally {
-                await output.close()
             }
+            if (decipher.final().length !== 0) throw new Error('invalid encrypted backup payload')
         }
         if ((await input.stat()).size !== headerBytes + payloadBytes + tagBytes)
             throw new Error('encrypted backup changed during decryption')
-        if (decipher.final().length !== 0) throw new Error('invalid encrypted backup payload')
         signal?.throwIfAborted()
         await verifyPublishedBackup(staging, signal)
         const applicationKeyFile = await regularFile(

@@ -268,6 +268,10 @@ export async function validateControllerEncryptionFile(
     file: FileHandle,
     entries: StateArchiveFileEntry[],
     decrypt: (ciphertext: Uint8Array, iv: Uint8Array, context: string) => void,
+    validateNative?: (
+        kind: 'dns-registry' | 'certificate-index',
+        bytes: Uint8Array,
+    ) => Promise<void>,
 ): Promise<void> {
     const files = new Map(
         entries.filter((entry) => !entry.directory).map((entry) => [entry.name, entry.size]),
@@ -291,6 +295,16 @@ export async function validateControllerEncryptionFile(
             files,
             decrypt,
         )
+        const kind =
+            entry.name === 'dns-connections.json'
+                ? 'dns-registry'
+                : entry.name === 'certificates/certificate-metadata.json'
+                  ? 'certificate-index'
+                  : null
+        if (validateNative && kind) {
+            // oxlint-disable-next-line no-await-in-loop -- Only keep one metadata body and child active.
+            await validateNative(kind, bytes)
+        }
     }
 }
 

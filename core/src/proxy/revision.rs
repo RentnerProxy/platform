@@ -1,18 +1,78 @@
 use crate::models::{DefaultSite, ProxyHost, ProxyHttpSettings, RedirectHost, TrustedCa};
 use aws_lc_rs::digest::{SHA256, digest};
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
-#[derive(Serialize)]
+pub(super) static SNAPSHOT_LAYOUT: LazyLock<SnapshotLayout> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("snapshot-layout.json"))
+        .expect("invalid proxy snapshot layout")
+});
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+enum SnapshotField {
+    Version,
+    ProxyHosts,
+    RedirectHosts,
+    HttpSettings,
+    TrustedCas,
+    DefaultSite,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct SnapshotVersions {
+    pub(super) base: u8,
+    pub(super) upstream_pool: u8,
+    pub(super) failover: u8,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SnapshotLayout {
+    pub(super) versions: SnapshotVersions,
+    fields: [SnapshotField; 6],
+}
+
 struct CanonicalSnapshot<'a> {
     version: u8,
     proxy_hosts: &'a [ProxyHost],
     redirect_hosts: &'a [RedirectHost],
     http_settings: &'a ProxyHttpSettings,
     trusted_cas: &'a [TrustedCa],
-    #[serde(skip_serializing_if = "DefaultSite::is_default")]
     default_site: &'a DefaultSite,
+}
+
+impl Serialize for CanonicalSnapshot<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let default_site = !self.default_site.is_default();
+        let mut map = serializer.serialize_map(Some(
+            SNAPSHOT_LAYOUT.fields.len() - usize::from(!default_site),
+        ))?;
+        for field in &SNAPSHOT_LAYOUT.fields {
+            match field {
+                SnapshotField::Version => map.serialize_entry("version", &self.version)?,
+                SnapshotField::ProxyHosts => map.serialize_entry("proxyHosts", self.proxy_hosts)?,
+                SnapshotField::RedirectHosts => {
+                    map.serialize_entry("redirectHosts", self.redirect_hosts)?;
+                }
+                SnapshotField::HttpSettings => {
+                    map.serialize_entry("httpSettings", self.http_settings)?;
+                }
+                SnapshotField::TrustedCas => map.serialize_entry("trustedCas", self.trusted_cas)?,
+                SnapshotField::DefaultSite if default_site => {
+                    map.serialize_entry("defaultSite", self.default_site)?;
+                }
+                SnapshotField::DefaultSite => {}
+            }
+        }
+        map.end()
+    }
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { link, lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import type {
     BootstrapSecretName,
@@ -13,6 +13,7 @@ import type {
 } from './Types/bootstrap-secrets.types.ts'
 
 const maximumSecretBytes = 4_096
+const nativeController = '/usr/local/bin/rentnerproxy-controller'
 const stateDirectory = '/var/lib/rentnerproxy/bootstrap'
 const statePath = join(stateDirectory, 'secrets-v1.json')
 const pendingAppKeyRestorePath = join(stateDirectory, 'app-key-restore-v1.json')
@@ -454,6 +455,27 @@ async function writeAtomic(
 ): Promise<void> {
     const directory = dirname(path)
     await mkdir(directory, { recursive: true, mode: 0o700 })
+    if (
+        directory === stateDirectory &&
+        mode === 0o400 &&
+        (replace || exclusive) &&
+        process.platform === 'linux' &&
+        process.getuid?.() === 0 &&
+        (await Bun.file(nativeController).exists())
+    ) {
+        const publish = Bun.spawn(
+            [
+                nativeController,
+                '--write-bootstrap-state',
+                basename(path),
+                replace ? 'replace' : 'create',
+            ],
+            { stdin: new Blob([value]), stdout: 'ignore', stderr: 'ignore' },
+        )
+        if ((await publish.exited) !== 0)
+            throw new Error('Unable to publish protected bootstrap state')
+        return
+    }
     const temporaryPath = join(directory, `.bootstrap-${randomUUID()}`)
 
     try {

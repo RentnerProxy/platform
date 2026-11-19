@@ -155,7 +155,7 @@ ENV APP_DIR=/opt/rentnerproxy/web \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.46-1~deb13u3' \
-    && apt-get install -y --no-install-recommends ca-certificates curl openssl tini libcap2-bin libsystemd0 \
+    && apt-get install -y --no-install-recommends binutils ca-certificates curl openssl tini libcap2-bin libsystemd0 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 rentnerproxy \
     && useradd --uid 10001 --gid rentnerproxy --no-create-home --shell /usr/sbin/nologin rentnerproxy \

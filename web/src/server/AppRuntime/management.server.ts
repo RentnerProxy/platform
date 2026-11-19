@@ -16,6 +16,7 @@ import {
 } from './contract.ts'
 import {
     activateAppRuntimeGenerationInTransaction,
+    checkAppRuntimeDependenciesInTransaction,
     registerAppRuntimeGenerationInTransaction,
     renewAppRuntimeGenerationLeaseInTransaction,
     replaceAppRuntimeGrantsInTransaction,
@@ -94,9 +95,20 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
                             : renewAppRuntimeGenerationLeaseInTransaction
                     return update(transaction, input.identity, input.leaseExpiresAt)
                 }
-                case 'revoke': {
+                case 'workers-stopped':
+                case 'removable':
+                case 'purge-data': {
+                    const { identity } = parseAppInput(generationRequest, body)
+                    return checkAppRuntimeDependenciesInTransaction(transaction, identity, action)
+                }
+                case 'revoke':
+                case 'retire': {
                     const input = parseAppInput(generationRequest, body)
-                    return revokeAppRuntimeGenerationInTransaction(transaction, input.identity)
+                    return revokeAppRuntimeGenerationInTransaction(
+                        transaction,
+                        input.identity,
+                        action === 'retire',
+                    )
                 }
                 case 'grants': {
                     const { identity, grants } = parseAppInput(grantUpdate, body)

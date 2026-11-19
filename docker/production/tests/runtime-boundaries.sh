@@ -95,7 +95,10 @@ test_environment() (
     done
     (
         export SMTP_USER=dummy-user SMTP_PASSWORD=dummy-password
-        source /dev/stdin <<< "$(sed '/^readonly config_file=/,$d' "$supervisor")"
+        exec() {
+            [[ $* == '/usr/local/bin/rentnerproxy-controller --appliance-supervisor crowdsec' ]] || fail 'unexpected CrowdSec supervisor invocation'
+        }
+        source "$supervisor"
         bash -c '[[ ! -v SMTP_USER && ! -v SMTP_PASSWORD ]]' \
             || fail 'standalone CrowdSec supervisor retained SMTP credentials'
     )
@@ -112,7 +115,7 @@ test_controller_startup_progress() (
     local permanent=false budgets='' status probe_cost remaining
     start_child() { [[ $1 == controller ]] || fail 'unexpected controller launch role'; }
     assert_children_running() { child_checks=$((child_checks + 1)); }
-    sleep() { [[ $1 == 1 ]] || fail 'unexpected startup sleep'; SECONDS=$((SECONDS + 1)); }
+    sleep() { [[ $1 == 0.2 ]] || fail 'unexpected startup sleep'; SECONDS=$((SECONDS + 1)); }
     gosu() {
         case $* in
             'rentnerproxy /usr/local/bin/rentnerproxy-controller --healthcheck ready') return 0 ;;
@@ -261,7 +264,6 @@ test_filesystem() (
     }
     load_function "$entrypoint" initialize_crowdsec_layout
     load_function "$entrypoint" initialize_controller_app_key
-    load_function "$supervisor" ensure_online_credentials
 
     local crowdsec_directory="$scratch/crowdsec" protected="$scratch/protected"
     install -d -m 0700 -o rentnerproxy -g rentnerproxy "$protected"
@@ -316,56 +318,7 @@ test_filesystem() (
     gosu rentnerproxy cat "$controller_app_key_file" >/dev/null
     if gosu rentnerproxy rm "$controller_app_key_file" 2>/dev/null; then fail 'controller could select its leaf'; fi
 
-    local capi_credentials_file="$crowdsec_directory/credentials/online_api_credentials.yaml"
-    local online_config_file=dummy-config
-    gosu crowdsec touch "$capi_credentials_file"
-    gosu crowdsec chmod 0644 "$capi_credentials_file"
-    ensure_online_credentials || fail 'existing credential chmod failed'
-    [[ $(stat -c '%a' "$capi_credentials_file") == 600 ]] || fail 'credential mode was not repaired'
-
-    # Registration is a local dummy writer; no cscli or network is invoked.
-    timeout() { shift; "$@"; }
-    gosu() {
-        shift
-        if [[ $1 == cscli ]]; then
-            setpriv --reuid=10003 --regid=10003 --clear-groups -- touch "$capi_credentials_file"
-        else
-            setpriv --reuid=10003 --regid=10003 --clear-groups -- "$@"
-        fi
-    }
-    rm -f -- "$capi_credentials_file"
-    ensure_online_credentials || fail 'registered credential chmod failed'
-    [[ $(stat -c '%a' "$capi_credentials_file") == 600 ]] || fail 'registered credential mode was not repaired'
-
-    # Force replacement precisely between the checks and metadata operation.
-    # The protected root-owned target must remain unchanged and chmod must fail.
-    local protected_file="$scratch/protected-root-file"
-    printf 'dummy-protected\n' > "$protected_file"
-    chmod 0644 "$protected_file"
-    rm -f -- "$capi_credentials_file"
-    ln -s "$protected_file" "$capi_credentials_file"
-    if ensure_online_credentials; then fail 'accepted an initially linked credential'; fi
-    rm -f -- "$capi_credentials_file"
-    touch "$capi_credentials_file"
-    if ensure_online_credentials; then fail 'accepted a credential owned by root'; fi
-    rm -f -- "$capi_credentials_file"
-    setpriv --reuid=10003 --regid=10003 --clear-groups -- touch "$capi_credentials_file"
-    gosu() {
-        shift
-        if [[ $1 == cscli ]]; then
-            setpriv --reuid=10003 --regid=10003 --clear-groups -- touch "$capi_credentials_file"
-            return
-        fi
-        rm -f -- "$capi_credentials_file"
-        ln -s "$protected_file" "$capi_credentials_file"
-        setpriv --reuid=10003 --regid=10003 --clear-groups -- "$@" 2>/dev/null
-    }
-    if ensure_online_credentials; then fail 'raced credential chmod did not fail closed'; fi
-    [[ $(stat -c '%a' "$protected_file") == 644 ]] || fail 'credential chmod crossed its identity boundary'
-    rm -f -- "$capi_credentials_file"
-    if ensure_online_credentials; then fail 'registered credential race did not fail closed'; fi
-    [[ $(stat -c '%a' "$protected_file") == 644 ]] || fail 'registered chmod crossed its identity boundary'
-    printf 'PASS: real directories, retained key selectors and lower-identity chmod\n'
+    printf 'PASS: real directories and retained key selectors\n'
 )
 
 test_shutdown() (
@@ -376,6 +329,7 @@ test_shutdown() (
     load_function "$entrypoint" on_shutdown_signal
     load_function "$entrypoint" start_child
     log() { :; }
+    backup_stop_retained_caddy() { :; }
     (
         declare -a child_pids=() child_names=()
         trap shutdown_children EXIT

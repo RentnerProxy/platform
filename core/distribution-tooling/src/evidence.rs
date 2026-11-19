@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{BUNDLE_BYTES, decode};
 
 const MAX_FILES: usize = 4096;
+const MAX_DIRECTORIES: usize = 4096;
 const SMALL_JSON: u64 = 4096;
 const MAX_RUN_ATTEMPT: u64 = 9_007_199_254_740_991;
 const MAX_OCI_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -145,16 +146,13 @@ fn files(root: &Path) -> io::Result<BTreeSet<String>> {
         directory: &Path,
         prefix: &str,
         depth: usize,
-        remaining: &mut usize,
+        remaining_directories: &mut usize,
         files: &mut BTreeSet<String>,
     ) -> io::Result<()> {
         if depth > 32 || !fs::symlink_metadata(directory)?.is_dir() {
             return Err(invalid("Invalid distribution artifact directory"));
         }
         for entry in fs::read_dir(directory)? {
-            *remaining = remaining
-                .checked_sub(1)
-                .ok_or_else(|| invalid("Artifact bundle is too large"))?;
             let entry = entry?;
             let name = entry.file_name();
             let name = name
@@ -168,14 +166,20 @@ fn files(root: &Path) -> io::Result<BTreeSet<String>> {
                 .ok_or_else(|| invalid("Invalid artifact path"))?;
             let kind = entry.file_type()?;
             if kind.is_dir() {
+                *remaining_directories = remaining_directories
+                    .checked_sub(1)
+                    .ok_or_else(|| invalid("Artifact directory count exceeds its limit"))?;
                 visit(
                     &entry.path(),
                     &format!("{prefix}{name}/"),
                     depth + 1,
-                    remaining,
+                    remaining_directories,
                     files,
                 )?;
             } else if kind.is_file() {
+                if files.len() == MAX_FILES {
+                    return Err(invalid("Artifact bundle is too large"));
+                }
                 files.insert(format!("{prefix}{name}"));
             } else {
                 return Err(invalid("Artifact links are forbidden"));
@@ -184,8 +188,8 @@ fn files(root: &Path) -> io::Result<BTreeSet<String>> {
         Ok(())
     }
     let mut paths = BTreeSet::new();
-    let mut remaining = MAX_FILES;
-    visit(root, "", 0, &mut remaining, &mut paths)?;
+    let mut remaining_directories = MAX_DIRECTORIES;
+    visit(root, "", 0, &mut remaining_directories, &mut paths)?;
     Ok(paths)
 }
 

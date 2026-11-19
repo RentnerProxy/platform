@@ -135,6 +135,8 @@ export async function runBackupOrchestrationFixture(scenario: string) {
             [
                 'docker/production/backups/export.ts',
                 'docker/production/backups/restore.ts',
+                'docker/production/backups/app-database.ts',
+                'scripts/backup/app-state.ts',
                 'docker/production/backups/storage.ts',
                 'docker/production/backups/agent.ts',
                 'docker/production/backups/download.ts',

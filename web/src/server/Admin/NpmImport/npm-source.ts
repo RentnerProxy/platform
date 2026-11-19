@@ -3,80 +3,16 @@ import type { NpmRecord, NpmSource } from './Types/npm-source.types.ts'
 import '@tanstack/react-start/server-only'
 
 import { Database } from 'bun:sqlite'
+import { z } from 'zod'
+import contract from '../../../../../core/src/npm-import-contract.json'
 
 export const NPM_IMPORT_MAX_BYTES = 32 * 1024 * 1024
 const MAX_ROWS = 500
 
 // Exact Knex migration names shipped by the upstream v2.16.0 tag.
-export const NPM_216_MIGRATIONS = [
-    '20180618015850_initial.js',
-    '20180929054513_websockets.js',
-    '20181019052346_forward_host.js',
-    '20181113041458_http2_support.js',
-    '20181213013211_forward_scheme.js',
-    '20190104035154_disabled.js',
-    '20190215115310_customlocations.js',
-    '20190218060101_hsts.js',
-    '20190227065017_settings.js',
-    '20200410143839_access_list_client.js',
-    '20200410143840_access_list_client_fix.js',
-    '20201014143841_pass_auth.js',
-    '20210210154702_redirection_scheme.js',
-    '20210210154703_redirection_status_code.js',
-    '20210423103500_stream_domain.js',
-    '20211108145214_regenerate_default_host.js',
-    '20240427161436_stream_ssl.js',
-    '20251111090000_redirect_auto_scheme.js',
-    '20260131163528_trust_forwarded_proto.js',
-] as const
+export const NPM_216_MIGRATIONS = contract.migrations
 
-const REQUIRED_COLUMNS = {
-    knex_migrations: ['name'],
-    proxy_host: [
-        'id',
-        'is_deleted',
-        'domain_names',
-        'forward_scheme',
-        'forward_host',
-        'forward_port',
-        'access_list_id',
-        'certificate_id',
-        'ssl_forced',
-        'caching_enabled',
-        'block_exploits',
-        'advanced_config',
-        'allow_websocket_upgrade',
-        'http2_support',
-        'enabled',
-        'locations',
-        'hsts_enabled',
-        'hsts_subdomains',
-        'trust_forwarded_proto',
-    ],
-    redirection_host: [
-        'id',
-        'is_deleted',
-        'domain_names',
-        'forward_domain_name',
-        'forward_scheme',
-        'forward_http_code',
-        'preserve_path',
-        'certificate_id',
-        'ssl_forced',
-        'block_exploits',
-        'advanced_config',
-        'http2_support',
-        'enabled',
-        'hsts_enabled',
-        'hsts_subdomains',
-    ],
-    access_list: ['id', 'is_deleted', 'name', 'satisfy_any', 'pass_auth'],
-    access_list_auth: ['id', 'access_list_id'],
-    access_list_client: ['id', 'access_list_id', 'address', 'directive'],
-    certificate: ['id', 'is_deleted', 'provider', 'nice_name', 'domain_names'],
-    dead_host: ['id', 'is_deleted', 'domain_names'],
-    stream: ['id', 'is_deleted', 'incoming_port'],
-} as const
+const REQUIRED_COLUMNS = contract.tables
 
 export class NpmSourceError extends Error {
     constructor(readonly code: 'invalid_source' | 'unsupported_schema' | 'source_limit') {
@@ -132,58 +68,20 @@ export function readNpmSqliteSource(path: string): NpmSource {
     try {
         database = new Database(path, { readonly: true, strict: true })
         assertSchema(database)
-        const proxyHosts = boundedRows(
-            database,
-            `select id, domain_names, forward_scheme,
-            forward_host, forward_port, access_list_id, certificate_id, ssl_forced,
-            caching_enabled, block_exploits, length(advanced_config) as advanced_length,
-            allow_websocket_upgrade, http2_support, enabled, locations, hsts_enabled,
-            hsts_subdomains, trust_forwarded_proto from proxy_host where is_deleted = 0 order by id limit 501`,
-        )
-        const redirectHosts = boundedRows(
-            database,
-            `select id, domain_names, forward_domain_name,
-            forward_scheme, forward_http_code, preserve_path, certificate_id, ssl_forced,
-            block_exploits, length(advanced_config) as advanced_length, http2_support,
-            enabled, hsts_enabled, hsts_subdomains from redirection_host
-            where is_deleted = 0 order by id limit 501`,
-        )
-        const accessLists = boundedRows(
-            database,
-            `select id, name, satisfy_any, pass_auth
-            from access_list where is_deleted = 0 order by id limit 501`,
-        )
-        const accessClients = boundedRows(
-            database,
-            `select id, access_list_id, address, directive
-            from access_list_client order by id limit 501`,
-        )
+        const proxyHosts = boundedRows(database, contract.queries.proxyHosts)
+        const redirectHosts = boundedRows(database, contract.queries.redirectHosts)
+        const accessLists = boundedRows(database, contract.queries.accessLists)
+        const accessClients = boundedRows(database, contract.queries.accessClients)
         // Never read NPM's plaintext access_list_auth.password into the process.
-        const authCounts = boundedRows(
-            database,
-            `select access_list_id, count(*) as count
-            from access_list_auth group by access_list_id order by access_list_id limit 501`,
-        )
+        const authCounts = boundedRows(database, contract.queries.authCounts)
         // Certificate metadata only. PEM files, ACME state, and DNS credentials are separate.
-        const certificates = boundedRows(
-            database,
-            `select id, provider, nice_name, domain_names
-            from certificate where is_deleted = 0 order by id limit 501`,
-        )
+        const certificates = boundedRows(database, contract.queries.certificates)
         const authRowCount = Number(
             queryRows(database, 'select count(*) as count from access_list_auth')[0]?.count ?? 0,
         )
         if (authRowCount > MAX_ROWS) throw new NpmSourceError('source_limit')
-        const deadHosts = boundedRows(
-            database,
-            `select id, domain_names from dead_host
-            where is_deleted = 0 order by id limit 501`,
-        )
-        const streams = boundedRows(
-            database,
-            `select id, incoming_port from stream
-            where is_deleted = 0 order by id limit 501`,
-        )
+        const deadHosts = boundedRows(database, contract.queries.deadHosts)
+        const streams = boundedRows(database, contract.queries.streams)
         return {
             schema: 'npm-2.16-schema',
             proxyHosts,
@@ -201,4 +99,52 @@ export function readNpmSqliteSource(path: string): NpmSource {
     } finally {
         database?.close()
     }
+}
+
+const nativeController = '/usr/local/bin/rentnerproxy-controller'
+const row = z.record(z.string(), z.unknown())
+const rows = z.array(row).max(MAX_ROWS)
+const nativeResult = z.union([
+    z.strictObject({
+        source: z.strictObject({
+            schema: z.literal('npm-2.16-schema'),
+            proxyHosts: rows,
+            redirectHosts: rows,
+            accessLists: rows,
+            accessClients: rows,
+            authCounts: rows,
+            certificates: rows,
+            deadHosts: rows,
+            streams: rows,
+        }),
+    }),
+    z.strictObject({ error: z.enum(['invalid_source', 'unsupported_schema', 'source_limit']) }),
+])
+
+export async function readNpmSqliteUpload(path: string): Promise<NpmSource> {
+    if (process.platform !== 'linux' || !(await Bun.file(nativeController).exists())) {
+        return readNpmSqliteSource(path)
+    }
+    const reader = Bun.spawn([nativeController, '--read-npm-sqlite', path], {
+        env: {},
+        stdin: 'ignore',
+        stdout: 'pipe',
+        stderr: 'ignore',
+        signal: AbortSignal.timeout(6_000),
+    })
+    let value: unknown
+    try {
+        const [output, exit] = await Promise.all([
+            new Response(reader.stdout).json(),
+            reader.exited,
+        ])
+        if (exit !== 0) throw new NpmSourceError('invalid_source')
+        value = output
+    } catch {
+        throw new NpmSourceError('invalid_source')
+    }
+    const parsed = nativeResult.safeParse(value)
+    if (!parsed.success) throw new NpmSourceError('invalid_source')
+    if ('error' in parsed.data) throw new NpmSourceError(parsed.data.error)
+    return parsed.data.source
 }

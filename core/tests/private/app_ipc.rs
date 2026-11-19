@@ -67,6 +67,8 @@ fn launch(uid: u32, executable: PathBuf, data_directory: PathBuf) -> LaunchConfi
         app_protocol: ">=1.0.0 <2.0.0".into(),
         platform_api: ">=1.0.0 <1.1.0".into(),
         ui_bridge: None,
+        startup_timeout_ms: None,
+        process_limit: None,
     }
 }
 

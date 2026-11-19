@@ -72,9 +72,11 @@ if (import.meta.main) {
     const [directory] = process.argv.slice(2)
     if (!directory) throw new Error('Expected a distribution fixture directory')
     const server = await serveFixture(directory, '192.0.2.1', 18888)
-    const stop = async () => {
-        await server.stop(true)
-        process.exit(0)
+    const stop = () => {
+        void server.stop(true).then(
+            () => process.exit(0),
+            () => process.exit(1),
+        )
     }
     process.once('SIGTERM', stop)
     process.once('SIGINT', stop)

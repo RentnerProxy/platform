@@ -1,7 +1,15 @@
-import { chmod, lstat, mkdir, open, readdir, rm } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, readFile, readdir, rm } from 'node:fs/promises'
+import {
+    appBackupCommand,
+    hasNativeAppStorage,
+    appStateName,
+    maximumAppStateBytes,
+    appStateInstallations,
+} from '../../../scripts/backup/app-state.ts'
+import { checkLiveAppDatabase } from './app-database.ts'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { CURRENT_COMPATIBILITY_PROFILE } from '../../../web/src/config/compatibility.config.ts'
+import { APP_AWARE_BACKUP_VERSION } from '../../../web/src/config/compatibility.config.ts'
 import { readDeploymentEnvironmentVariable } from '../../../web/src/lib/Environment/deployment-environment.ts'
 import { managedBackupStateSchema } from '../../../web/src/lib/Backups/validation.ts'
 import { deploymentSchema } from '../../../scripts/backup/validation.ts'
@@ -40,7 +48,12 @@ async function capture(
             timeoutMs: BACKUP_RUNTIME_POLICY.captureTimeoutMs,
             checkCapacity: backupCapacityGuard([artifactsRoot, '/var/lib/rentnerproxy']),
             signal,
-            env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/tmp', LC_ALL: 'C' },
+            env: {
+                PATH: '/usr/local/bin:/usr/bin:/bin',
+                HOME: '/tmp',
+                LC_ALL: 'C',
+                RENTNERPROXY_APP_INSTALLER_CONFIG: process.env.RENTNERPROXY_APP_INSTALLER_CONFIG,
+            },
             outputFile: { file, maximumBytes },
         })
         if (!result.stopped) throw new IncompleteBackupCleanup('backup command cleanup incomplete')
@@ -75,6 +88,22 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
             128,
             signal,
         )
+        const appFile = join(stagingPath, appStateName)
+        const appBytes = (await hasNativeAppStorage())
+            ? await capture(
+                  [appBackupCommand, '--app-backup', 'capture'],
+                  appFile,
+                  maximumAppStateBytes,
+                  signal,
+              )
+            : undefined
+        const applications = !appBytes?.bytes
+            ? undefined
+            : {
+                  ...appBytes,
+                  installations: appStateInstallations(await readFile(appFile)),
+              }
+        await checkLiveAppDatabase(applications?.installations ?? [], signal)
         const dump = await capture(
             [
                 'gosu',
@@ -105,6 +134,7 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
                 '--directory=/var/lib/rentnerproxy/proxy',
                 ...stateArchiveExclusions.map((entry) => '--exclude=' + entry),
                 '.',
+                ...(applications ? ['--directory=' + stagingPath, appStateName] : []),
             ],
             join(stagingPath, 'controller-state.tar'),
             undefined,
@@ -123,6 +153,7 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
             undefined,
             signal,
         )
+        if (appBytes) await rm(appFile)
         const metadata: BackupMetadata = {
             applicationEncryptionKey: { ...key, file: 'app-encryption-key' },
             controllerState: { ...controller, archive: 'controller-state.tar' },
@@ -143,7 +174,9 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
                 user: 'rentnerproxy',
             },
             redis: 'excluded',
-            version: CURRENT_COMPATIBILITY_PROFILE.backup.writtenVersion,
+            ...(applications
+                ? { version: APP_AWARE_BACKUP_VERSION, applications }
+                : { version: 4 }),
         }
         await chmod(stagingPath, 0o700)
         try {
@@ -211,6 +244,15 @@ if (import.meta.main) {
                 success: result === 'success',
                 ...(result === 'success' ? {} : { error: result }),
             })
+        } else if (args.length === 2 && args[0] === '--check-app-restore-inventory') {
+            const path = args[1]!
+            if (!/^\/(?:backup|tmp\/rentnerproxy-offline-[A-Za-z0-9_-]+)$/u.test(path))
+                throw new Error('Invalid snapshot path')
+            const { metadata } = await verifyPublishedBackup(path, controller.signal)
+            await checkLiveAppDatabase(
+                metadata.version === 5 ? metadata.applications.installations : [],
+                controller.signal,
+            )
         } else if (args.length === 2 && args[0] === '--run') {
             await exportManagedBackup(z.uuid().parse(args[1]), controller.signal)
         } else if (args.length === 2 && args[0] === '--restore') {

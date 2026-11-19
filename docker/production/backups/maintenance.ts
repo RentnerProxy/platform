@@ -14,6 +14,7 @@ import {
 } from 'node:fs/promises'
 import { join } from 'node:path'
 import { CURRENT_COMPATIBILITY_PROFILE } from '../../../web/src/config/compatibility.config.ts'
+
 import { managedBackupSourceSchema } from '../../../web/src/lib/Backups/validation.ts'
 import { readDeploymentEnvironmentVariable } from '../../../web/src/lib/Environment/deployment-environment.ts'
 import { deploymentSchema } from '../../../scripts/backup/validation.ts'
@@ -27,6 +28,7 @@ import { assertBackupCapacity, backupCapacityGuard } from '../../../scripts/back
 import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 import { publishProductionBackup } from '../../../scripts/backup/publication.ts'
 import { snapshotProductionRestore } from '../../../scripts/backup/restore-snapshot.ts'
+import { appBackupCommand, appStateName } from '../../../scripts/backup/app-state.ts'
 import {
     postgresCommand,
     postgresDumpCommand,
@@ -266,6 +268,7 @@ async function offlineRestore(options: readonly string[]) {
             snapshot,
             operationSignal,
         )
+
         if (capacity.backupId !== backupId)
             throw new Error('Backup changed after isolated validation')
         assertDeploymentCompatible(
@@ -288,13 +291,28 @@ async function offlineRestore(options: readonly string[]) {
         operationSignal.throwIfAborted()
         await assertRestoreCapacity(capacity, stateCapacity)
         operationSignal.throwIfAborted()
+        await command([
+            'bash',
+            '-c',
+            postgresCommand('inventory', snapshot, metadata.version === 5),
+        ])
         if (!pending)
             await command(['/usr/local/bin/rentnerproxy-production', '--initialize-restore-target'])
         await beginProductionRestore()
         await beginAppEncryptionKeyRestore(join(snapshot, 'app-encryption-key'))
         await command(['bash', '-c', postgresCommand(false, snapshot)])
-        for (const script of [controllerRestoreCommand(), crowdSecRestoreCommand()])
+        for (const script of [
+            controllerRestoreCommand(metadata.version === 5),
+            crowdSecRestoreCommand(),
+        ])
             await command(['bash', '-c', script.replaceAll('/backup/', snapshot + '/')])
+        if (metadata.version === 5)
+            await command([
+                appBackupCommand,
+                '--app-backup',
+                'restore',
+                join(snapshot, appStateName),
+            ])
         await command(['sync', '--file-system', '/var/lib/rentnerproxy'])
         await completeAppEncryptionKeyRestore()
         await completeProductionRestore()

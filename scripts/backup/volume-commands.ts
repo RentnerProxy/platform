@@ -1,4 +1,5 @@
 import { postgresShutdownScript } from './postgres-shutdown.ts'
+import { appStateName, rejectAppDatabasesSql, rejectLegacyAppRowsSql } from './app-state.ts'
 import { stateArchiveExclusions } from './controller-state-archive.ts'
 
 export function postgresRestoreCommand(validateOnly: boolean, backupDirectory = '/backup'): string {
@@ -38,25 +39,53 @@ export function postgresRestoreCommand(validateOnly: boolean, backupDirectory = 
     ].join('\n')
 }
 
-export function postgresCommand(validateOnly: boolean, backupDirectory = '/backup'): string {
+const legacyFilesGuard =
+    'for path in /var/lib/rentnerproxy/apps /var/lib/rentnerproxy/app-manager; do if [[ -e $path || -L $path ]]; then /usr/local/bin/rentnerproxy-controller --app-backup empty; break; fi; done'
+const legacyDatabaseGuard = [
+    'gosu postgres psql --host="$socket_directory" --username=postgres --dbname=rentnerproxy --no-psqlrc --no-password --set=ON_ERROR_STOP=1 --quiet --tuples-only <<\'CHECK_APP_INVENTORY\' >/dev/null',
+    rejectAppDatabasesSql,
+    rejectLegacyAppRowsSql,
+    'CHECK_APP_INVENTORY',
+].join('\n')
+
+export function postgresCommand(
+    validateOnly: boolean | 'inventory',
+    backupDirectory = '/backup',
+    appAware = false,
+): string {
+    if (!/^\/[A-Za-z0-9_./-]+$/u.test(backupDirectory) || backupDirectory.split('/').includes('..'))
+        throw new Error('Invalid backup snapshot path')
     return [
         'set -Eeuo pipefail',
         'umask 077',
         'restore_phase=initialize',
         'trap \'status=$?; printf "RESTORE_PHASE=%s\\n" "$restore_phase" >&2; exit "$status"\' ERR',
         'restore_directory=""; rendered_sql_path=""; restore_sql_path=""',
-        validateOnly
+        ...(validateOnly === 'inventory'
+            ? [
+                  appAware
+                      ? '/usr/local/bin/rentnerproxy-controller --app-backup verify ' +
+                        backupDirectory +
+                        '/' +
+                        appStateName
+                      : legacyFilesGuard,
+                  appAware
+                      ? 'test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION'
+                      : '[[ -s /var/lib/rentnerproxy/postgres-data/PG_VERSION ]] || exit 0',
+              ]
+            : []),
+        validateOnly === true
             ? 'data_directory=/tmp/backup-postgres; socket_directory=/tmp/backup-postgres-socket'
             : 'data_directory=/var/lib/rentnerproxy/postgres-data; socket_directory=/var/run/postgresql',
         'install -d -m 0700 -o postgres -g postgres "$socket_directory"',
-        ...(validateOnly
+        ...(validateOnly === true
             ? [
                   'install -d -m 0700 -o postgres -g postgres "$data_directory"',
                   'gosu postgres initdb --auth=trust --username=postgres -D "$data_directory" >&2',
               ]
             : ['test -s "$data_directory/PG_VERSION"']),
         'gosu postgres postgres -D "$data_directory" -c listen_addresses=' +
-            (validateOnly ? '127.0.0.1' : '') +
+            (validateOnly === true ? '127.0.0.1' : '') +
             ' -c unix_socket_directories="$socket_directory" >&2 & postgres_pid=$!',
         postgresShutdownScript(),
         'cleanup() { rm -f -- "$rendered_sql_path" "$restore_sql_path"; rmdir -- "$restore_directory" 2>/dev/null || true; stop_postgres; }',
@@ -64,21 +93,33 @@ export function postgresCommand(validateOnly: boolean, backupDirectory = '/backu
         'ready=false',
         'for attempt in $(seq 1 60); do if gosu postgres pg_isready --host="$socket_directory" --username=postgres >/dev/null 2>&1; then ready=true; break; fi; kill -0 "$postgres_pid" 2>/dev/null || exit 1; sleep 1; done',
         '"$ready"',
-        ...(validateOnly
+        ...(validateOnly === true
             ? ['gosu postgres createdb --host="$socket_directory" --username=postgres rentnerproxy']
             : []),
-        validateOnly
-            ? postgresRestoreCommand(true, backupDirectory)
-            : postgresRestoreCommand(false, backupDirectory).replace(
-                  '--username=postgres --dbname=rentnerproxy',
-                  '--username=rentnerproxy --dbname=rentnerproxy',
-              ),
-        ...(validateOnly ? ['bun /opt/rentnerproxy/web/docker/web/validate-backup.ts'] : []),
+        validateOnly === 'inventory'
+            ? appAware
+                ? 'bun --no-env-file /opt/rentnerproxy/web/backup-export.js --check-app-restore-inventory ' +
+                  backupDirectory
+                : legacyDatabaseGuard
+            : validateOnly
+              ? postgresRestoreCommand(true, backupDirectory)
+              : postgresRestoreCommand(false, backupDirectory).replace(
+                    '--username=postgres --dbname=rentnerproxy',
+                    '--username=rentnerproxy --dbname=rentnerproxy',
+                ),
+        ...(validateOnly === true && !appAware ? [legacyDatabaseGuard] : []),
+        ...(validateOnly === true
+            ? ['bun /opt/rentnerproxy/web/docker/web/validate-backup.ts']
+            : []),
     ].join('\n')
 }
 
-export function controllerRestoreCommand(): string {
-    const exclusions = stateArchiveExclusions.map((entry) => '--exclude=' + entry).join(' ')
+export function controllerRestoreCommand(appAware = false): string {
+    const exclusions = (
+        appAware ? [...stateArchiveExclusions, appStateName] : stateArchiveExclusions
+    )
+        .map((entry) => '--exclude=' + entry)
+        .join(' ')
     return [
         'set -Eeuo pipefail',
         'umask 077',
@@ -123,12 +164,16 @@ export function crowdSecRestoreCommand(): string {
 export function postgresDumpCommand(): string {
     return (
         'set -Eeuo pipefail; ' +
+        legacyFilesGuard +
+        '; ' +
         postgresShutdownScript() +
         '; test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION; install -d -m 0700 -o postgres -g postgres /var/run/postgresql; chmod 00700 /var/run/postgresql; gosu postgres postgres -D /var/lib/rentnerproxy/postgres-data -c listen_addresses= -c unix_socket_directories=/var/run/postgresql >&2 & postgres_pid=$!; cleanup() { stop_postgres; }; trap cleanup EXIT; ready=false; for attempt in $(seq 1 60); do if gosu postgres pg_isready --host=/var/run/postgresql --username=' +
         'rentnerproxy' +
         ' --dbname=' +
         'rentnerproxy' +
-        ' >/dev/null 2>&1; then ready=true; break; fi; kill -0 "$postgres_pid" 2>/dev/null || exit 1; sleep 1; done; "$ready"; gosu postgres pg_dump --host=/var/run/postgresql --format=custom --no-owner --no-acl --username=' +
+        ' >/dev/null 2>&1; then ready=true; break; fi; kill -0 "$postgres_pid" 2>/dev/null || exit 1; sleep 1; done; "$ready"; socket_directory=/var/run/postgresql; ' +
+        legacyDatabaseGuard +
+        '\ngosu postgres pg_dump --host=/var/run/postgresql --format=custom --no-owner --no-acl --username=' +
         'rentnerproxy' +
         ' --dbname=' +
         'rentnerproxy'

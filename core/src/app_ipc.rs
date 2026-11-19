@@ -1,7 +1,8 @@
-mod filesystem;
+pub(crate) mod filesystem;
 mod gateway;
 mod lease;
 mod process;
+mod provision;
 mod wire_json;
 
 use std::{
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{timeout, timeout_at};
 
 pub use process::run_app_watchdog;
+pub use provision::run_app_provision;
 
 const APP_ROOT: &str = "/run/rentnerproxy/apps";
 const GATEWAY_SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
@@ -43,6 +45,8 @@ struct LaunchConfig {
     app_protocol: String,
     platform_api: String,
     ui_bridge: Option<String>,
+    startup_timeout_ms: Option<u64>,
+    process_limit: Option<u8>,
 }
 
 impl LaunchConfig {
@@ -68,6 +72,12 @@ impl LaunchConfig {
             || !(1..=9_007_199_254_740_991).contains(&self.generation)
             || !(20_000..=59_999).contains(&self.uid)
             || self.gid != self.uid
+            || self
+                .process_limit
+                .is_some_and(|limit| !(1..=64).contains(&limit))
+            || self
+                .startup_timeout_ms
+                .is_some_and(|milliseconds| !(100..=120_000).contains(&milliseconds))
         {
             return Err(io::Error::other("Invalid app launch identity"));
         }
@@ -237,6 +247,9 @@ async fn run_generation(
         result = timeout_at(launch_deadline, process::Watchdog::start(paths.controller, &config, &descriptor, &sockets.lock, handoff_deadline)) => result??,
     };
 
+    let startup_timeout = config
+        .startup_timeout_ms
+        .map_or(STARTUP_TIMEOUT, Duration::from_millis);
     let mut ready = false;
     let child_exited = tokio::select! {
         biased;
@@ -244,7 +257,7 @@ async fn run_generation(
         _ = lease::maintain(&state, deadline) => Ok(false),
         result = watchdog.wait() => result.and_then(process::app_exit).map(|()| true),
         result = gateway::serve(listener, Arc::clone(&state)) => result.map(|()| false),
-        result = announce_when_ready(&bootstrap, config.uid, &mut ready) => result.map(|()| false),
+        result = announce_when_ready(&bootstrap, config.uid, startup_timeout, &mut ready) => result.map(|()| false),
     };
     let stopped = watchdog.stop().await;
     if child_exited? && !ready {
@@ -256,9 +269,10 @@ async fn run_generation(
 async fn announce_when_ready(
     bootstrap: &Bootstrap<'_>,
     uid: u32,
+    startup_timeout: Duration,
     ready: &mut bool,
 ) -> io::Result<()> {
-    timeout(STARTUP_TIMEOUT, gateway::app_ready(bootstrap, uid)).await??;
+    timeout(startup_timeout, gateway::app_ready(bootstrap, uid)).await??;
     // The supervisor consumes this line. App stdout and stderr are discarded.
     use std::io::Write as _;
     writeln!(io::stdout().lock(), "ready")?;

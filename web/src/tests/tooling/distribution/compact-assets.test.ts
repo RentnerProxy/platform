@@ -162,6 +162,7 @@ test('archive readers reject duplicate, traversal and link entries; consumers de
             changed.fill(32, 148, 156)
             const checksum = [...changed.subarray(0, 512)].reduce((sum, byte) => sum + byte, 0)
             changed.write(checksum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii')
+            // oxlint-disable-next-line no-await-in-loop -- Check each malformed archive independently.
             await expect(readVerificationArchive(gzipSync(changed))).rejects.toThrow()
         }
         const installer = (await readdir(output)).find((name) => name.endsWith('.deb'))!

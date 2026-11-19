@@ -44,7 +44,7 @@ shutdown_children() {
     # Only the supervisor receives Tini's signal. Keep state services and the
     # CrowdSec supervisor alive while web/controller consumers drain.
     for index in "${!child_pids[@]}"; do
-        case ${child_names[$index]} in web|controller|backup-export) ;; *) continue ;; esac
+        case ${child_names[$index]} in app-manager|web|controller|backup-export) ;; *) continue ;; esac
         pid=${child_pids[$index]}
         if kill -0 "$pid" 2>/dev/null; then
             kill -TERM "$pid" 2>/dev/null || true
@@ -54,7 +54,7 @@ shutdown_children() {
     while ((SECONDS < consumer_deadline)); do
         local running=false
         for index in "${!child_pids[@]}"; do
-            case ${child_names[$index]} in web|controller|backup-export) ;; *) continue ;; esac
+            case ${child_names[$index]} in app-manager|web|controller|backup-export) ;; *) continue ;; esac
             pid=${child_pids[$index]}
             if kill -0 "$pid" 2>/dev/null; then
                 running=true
@@ -66,13 +66,13 @@ shutdown_children() {
     done
 
     for index in "${!child_pids[@]}"; do
-        case ${child_names[$index]} in web|controller|backup-export) ;; *) continue ;; esac
+        case ${child_names[$index]} in app-manager|web|controller|backup-export) ;; *) continue ;; esac
         pid=${child_pids[$index]}
         kill -KILL "$pid" 2>/dev/null || true
     done
     backup_stop_retained_caddy || log 'retained Caddy cleanup could not be confirmed'
     for index in "${!child_pids[@]}"; do
-        case ${child_names[$index]} in web|controller|backup-export) continue ;; esac
+        case ${child_names[$index]} in app-manager|web|controller|backup-export) continue ;; esac
         kill -TERM "${child_pids[$index]}" 2>/dev/null || true
     done
     while ((SECONDS < deadline)); do
@@ -123,6 +123,12 @@ assert_children_running() {
     local index
     for index in "${!child_pids[@]}"; do
         if ! kill -0 "${child_pids[$index]}" 2>/dev/null; then
+            if [[ ${child_names[$index]} == app-manager ]]; then
+                wait "${child_pids[$index]}" 2>/dev/null || true
+                unset "child_pids[$index]" "child_names[$index]"
+                log 'app manager stopped; installed app operations are unavailable'
+                continue
+            fi
             if [[ ${child_names[$index]} == web && ${supervisor_phase:-starting} == running && ${web_recovery_active:-false} == false ]]; then
                 recover_web "$index" exit
                 continue
@@ -386,6 +392,13 @@ start_web() {
     web_process_start=$(supervisor_process_start "${child_pids[-1]}") || web_process_start=''
 }
 
+start_app_manager() {
+    local config=${RENTNERPROXY_APP_INSTALLER_CONFIG:-}
+    [[ -n $config ]] || return 0
+    start_child app-manager env RENTNERPROXY_CONTROLLER_TOKEN_FILE="$controller_token_file" \
+        /usr/local/bin/rentnerproxy-controller --app-manager "$config"
+}
+
 # Allow at most 60 seconds for dependency-aware readiness, with each probe bounded to the remaining budget.
 # Continue checking owned children while waiting so startup or recovery cannot hide a service exit.
 wait_for_web_readiness() {
@@ -465,5 +478,6 @@ wait_for_web_readiness
 # A failed final restart can finish recovery only after this boot proves every
 # service ready. The agent records the matching completion and releases web writers.
 bun --no-env-file "$backup_exporter" --confirm-restarted-restore
+start_app_manager
 supervisor_phase=running
 monitor_children

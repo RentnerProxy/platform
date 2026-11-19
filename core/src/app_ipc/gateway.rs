@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll},
@@ -24,6 +24,7 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioIo, TokioTimer};
+use rentnerproxy_app_contracts::{HttpDescriptor, HttpMethod, HttpOperation};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::json;
 use tokio::{
@@ -186,6 +187,24 @@ struct Operation {
     events: bool,
 }
 
+static APP_OPERATIONS: LazyLock<[HttpDescriptor; 12]> = LazyLock::new(|| {
+    [
+        HttpOperation::GetPlatformContext,
+        HttpOperation::SubscribeToEvents,
+        HttpOperation::CheckAuthorization,
+        HttpOperation::ListProxyHosts,
+        HttpOperation::UpdateOwnedProxyHost,
+        HttpOperation::ProbeUpstream,
+        HttpOperation::PublishNotification,
+        HttpOperation::RecordAuditEvent,
+        HttpOperation::ReadSecret,
+        HttpOperation::GetProvider,
+        HttpOperation::GetOperation,
+        HttpOperation::CancelOperation,
+    ]
+    .map(HttpOperation::descriptor)
+});
+
 fn operation(request: &Request<Incoming>) -> Result<Operation, Problem> {
     let uri = request.uri();
     if request.version() != Version::HTTP_11
@@ -195,38 +214,34 @@ fn operation(request: &Request<Incoming>) -> Result<Operation, Problem> {
     {
         return Err(Problem::Request);
     }
-    let suffix = uri
-        .path()
-        .strip_prefix("/platform/v1/")
-        .ok_or(Problem::Route)?;
-    let json = match (request.method(), suffix) {
-        (&Method::GET, "context" | "events") => false,
-        (
-            &Method::POST,
-            "authorization"
-            | "proxy-hosts/query"
-            | "proxy-hosts/owned"
-            | "diagnostics/upstream"
-            | "notifications"
-            | "audit-events",
-        ) => true,
-        (method, path) => {
-            let (kind, id) = path.split_once('/').ok_or(Problem::Route)?;
-            match (method, kind) {
-                (&Method::GET, "secrets" | "providers" | "operations") if record_id(id) => false,
-                (&Method::POST, "operations")
-                    if id.strip_suffix("/cancel").is_some_and(record_id) =>
-                {
-                    false
-                }
-                _ => return Err(Problem::Route),
-            }
-        }
+    let method = match *request.method() {
+        Method::GET => HttpMethod::Get,
+        Method::POST => HttpMethod::Post,
+        _ => return Err(Problem::Route),
     };
+    let descriptor = APP_OPERATIONS
+        .iter()
+        .find(|operation| operation.method == method && route_matches(operation, uri.path()))
+        .ok_or(Problem::Route)?;
     Ok(Operation {
-        json,
-        events: suffix == "events",
+        json: descriptor.request.is_some(),
+        events: descriptor.event.is_some(),
     })
+}
+
+fn route_matches(operation: &HttpDescriptor, path: &str) -> bool {
+    if operation.path_parameter.is_none() {
+        return path == operation.path;
+    }
+    let Some((prefix, parameter)) = operation.path.split_once('{') else {
+        return false;
+    };
+    let Some((_, suffix)) = parameter.split_once('}') else {
+        return false;
+    };
+    path.strip_prefix(prefix)
+        .and_then(|id| id.strip_suffix(suffix))
+        .is_some_and(record_id)
 }
 
 async fn forward(

@@ -1,5 +1,5 @@
 // oxlint-disable no-await-in-loop -- Exercise immutable signing, retries and tamper rejection against real GPG/RPM tools.
-import { expect, test } from 'bun:test'
+import { beforeAll, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -35,9 +35,12 @@ import {
     verifyCompactReleaseAssets,
 } from '../../../../../.github/scripts/distribution/compact-assets.ts'
 import { identity, platformFixture, workflow } from '../github/fixtures/oci.ts'
+import { ensureNativeDistributionVerifier } from './fixtures/native-verifier.ts'
 
 const enabled = process.platform === 'linux' && process.env.RENTNERPROXY_PACKAGE_TEST === '1'
 const source = fileURLToPath(new URL('../../../../../', import.meta.url))
+
+if (enabled) beforeAll(ensureNativeDistributionVerifier, 120_000)
 
 test.skipIf(!enabled)(
     'the trusted signer binds all native gates, signs provenance/SBOM and preserves byte-identical release retries',

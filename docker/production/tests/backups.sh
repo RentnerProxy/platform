@@ -18,123 +18,11 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 fatal() { printf '%s\n' "$*" >&2; exit 1; }
 log() { :; }
 
-test_identity() (
-    local scratch identity field
-    scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-backup-identities.XXXXXX")
-    trap 'rm -rf -- "$scratch"' EXIT
-    load_function "$backup_supervisor" backup_status_has_consumer_identity
-    for identity in 0 10001 10002 10003 999; do
-        for field in 1 2 3 4; do
-            local -a identities=(0 0 0 0)
-            identities[$((field - 1))]=$identity
-            printf 'Name:\tfixture\nUid:\t%s\t%s\t%s\t%s\n' "${identities[@]}" > "$scratch/status"
-            if backup_status_has_consumer_identity "$scratch/status"; then
-                case $identity in 10001|10002|10003) ;; *) fail 'rejected a non-consumer identity' ;; esac
-            else
-                case $identity in 10001|10002|10003) fail 'missed a surviving consumer identity' ;; esac
-            fi
-        done
-    done
-    printf 'State:\tZ (zombie)\nUid:\t10001\t10001\t10001\t10001\n' > "$scratch/status"
-    if backup_status_has_consumer_identity "$scratch/status"; then fail 'a reaped writer was mistaken for a live consumer'; fi
-    printf 'PASS: surviving consumer identities are detected in every UID field\n'
-)
-
-test_identity_visibility() (
-    local scratch variant result
-    scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-backup-visibility.XXXXXX")
-    trap 'rm -rf -- "$scratch"' EXIT
-    load_function "$backup_supervisor" backup_status_has_consumer_identity
-    mkdir "$scratch/present"
-    sleep() { [[ $1 == 0.1 ]] || fail 'unexpected identity retry delay'; }
-    for variant in empty missing truncated malformed extra unreadable; do
-        case $variant in
-            empty) : > "$scratch/present/status" ;;
-            missing) printf 'Name:\tfixture\nState:\tS (sleeping)\n' > "$scratch/present/status" ;;
-            truncated) printf 'Uid:\t0\t0\t0\n' > "$scratch/present/status" ;;
-            malformed) printf 'Uid:\t0\tunknown\t0\t0\n' > "$scratch/present/status" ;;
-            extra) printf 'Uid:\t0\t0\t0\t0\t10002\n' > "$scratch/present/status" ;;
-            unreadable) rm "$scratch/present/status"; mkdir "$scratch/present/status" ;;
-        esac
-        result=0
-        backup_status_has_consumer_identity "$scratch/present/status" || result=$?
-        [[ $result == 2 ]] || fail "$variant identity was accepted as a non-consumer"
-    done
-    rmdir "$scratch/present/status"
-    result=0
-    backup_status_has_consumer_identity "$scratch/present/status" || result=$?
-    [[ $result == 2 ]] || fail 'missing status of an existing process was accepted'
-    rmdir "$scratch/present"
-    result=0
-    backup_status_has_consumer_identity "$scratch/present/status" || result=$?
-    [[ $result == 1 ]] || fail 'vanished process was rejected'
-    printf 'PASS: unknown existing process identities remain distinct from safe and vanished processes\n'
-)
-
-test_identity_retry() (
-    local scratch variant result retries
-    scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-backup-retry.XXXXXX")
-    trap 'rm -rf -- "$scratch"' EXIT
-    load_function "$backup_supervisor" backup_status_has_consumer_identity
-    for variant in safe consumer vanished unknown; do
-        mkdir "$scratch/present"
-        : > "$scratch/present/status"
-        retries=0
-        sleep() {
-            [[ $1 == 0.1 ]] || fail 'unexpected identity retry delay'
-            retries=$((retries + 1))
-            case $variant in
-                safe) printf 'Uid:\t0\t0\t0\t0\n' > "$scratch/present/status" ;;
-                consumer) printf 'Uid:\t10001\t0\t0\t0\n' > "$scratch/present/status" ;;
-                vanished) rm "$scratch/present/status"; rmdir "$scratch/present" ;;
-                unknown) : ;;
-            esac
-        }
-        result=0
-        backup_status_has_consumer_identity "$scratch/present/status" || result=$?
-        case $variant in
-            safe|vanished) [[ $result == 1 && $retries == 1 ]] || fail "$variant retry lost fresh evidence" ;;
-            consumer) [[ $result == 0 && $retries == 1 ]] || fail 'retried consumer bypassed the fence' ;;
-            unknown) [[ $result == 2 && $retries == 2 ]] || fail 'unknown identity escaped the bounded retry fence' ;;
-        esac
-        [[ $variant == vanished ]] || { rm "$scratch/present/status"; rmdir "$scratch/present"; }
-    done
-    printf 'PASS: identity retries reopen for fresh evidence and never admit persistent uncertainty\n'
-)
-
-test_identity_exceptions() (
-    local scratch identity field result variant
-    scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-backup-exceptions.XXXXXX")
-    trap 'rm -rf -- "$scratch"' EXIT
-    load_function "$backup_supervisor" backup_status_has_consumer_identity
-    for identity in 10001 10002 10003; do
-        for field in 0 1 2 3; do
-            local -a identities=(10002 10002 10002 10002)
-            identities[$field]=$identity
-            printf 'Uid:\t%s\t%s\t%s\t%s\n' "${identities[@]}" > "$scratch/status"
-            result=0
-            backup_status_has_consumer_identity "$scratch/status" preserve-web || result=$?
-            if [[ $identity == 10002 ]]; then
-                [[ $result == 1 ]] || fail 'restore maintenance web was rejected'
-            else
-                [[ $result == 0 ]] || fail 'preserve-web admitted a mixed consumer credential'
-            fi
-        done
-    done
-    for variant in Z X; do
-        printf 'State:\t%s (exited)\nUid:\t10001\t10001\t10001\t10001\n' "$variant" > "$scratch/status"
-        result=0
-        backup_status_has_consumer_identity "$scratch/status" || result=$?
-        [[ $result == 1 ]] || fail 'exited consumer was rejected'
-    done
-    printf 'PASS: restore web exemption never admits controller or CrowdSec credentials; exited tasks are safe\n'
-)
-
 test_unknown_consumer_scan() (
     load_function "$backup_supervisor" backup_assert_consumers_stopped
     declare -a child_pids=(2147483647) child_names=(valkey)
     backup_assert_state_children_running() { :; }
-    backup_status_has_consumer_identity() { return 2; }
+    appliance_supervision() { return 1; }
     local result=0
     (backup_assert_consumers_stopped) >/dev/null 2>&1 || result=$?
     [[ $result != 0 ]] || fail 'consumer scan admitted an unknown live identity'
@@ -148,10 +36,8 @@ test_consumer_scan_exceptions() (
     load_function "$backup_supervisor" backup_assert_consumers_stopped
     declare -a child_pids=(2147483647) child_names=(valkey)
     backup_assert_state_children_running() { :; }
-    backup_status_has_consumer_identity() {
-        [[ $1 != /proc/$backup_caddy_pid/status ]] || fail 'retained Caddy bypassed ownership verification'
-        [[ ${2:-} == preserve-web ]] || fail 'restore web mode was not passed to the identity guard'
-        return 1
+    appliance_supervision() {
+        [[ $* == "verify-backup preserve-web 2147483647 $backup_caddy_pid" ]] || fail 'invalid native scan scope'
     }
     bun() {
         [[ $* == "--no-env-file fixture-exporter --assert-retained-caddy fixture-operation $backup_caddy_pid" ]] \
@@ -159,7 +45,7 @@ test_consumer_scan_exceptions() (
         printf 'verified\n' >> "$scratch/verified"
     }
     backup_assert_consumers_stopped preserve-web
-    [[ $(cat "$scratch/verified") == verified ]] || fail 'retained Caddy was not verified exactly once'
+    [[ $(wc -l < "$scratch/verified") == 2 ]] || fail 'retained Caddy ownership must bracket the writer scan'
     bun() { return 1; }
     local result=0
     (backup_assert_consumers_stopped preserve-web) >/dev/null 2>&1 || result=$?
@@ -220,6 +106,7 @@ test_maintenance() (
                 record restart-controller
                 [[ $scenario != recovery_failed ]] || fatal 'failed recovery fixture'
             }
+            start_app_manager() { record apps; }
             start_web() { record restart-web; }
             wait_for_web_readiness() { record ready; }
             perform_managed_backup
@@ -233,7 +120,8 @@ test_maintenance() (
         case $scenario in
             success|execution_failed)
                 ((status == 0)) || fail "$scenario maintenance failed"
-                [[ $events == "drain web
+                [[ $events == "drain apps
+drain web
 retain-controller
 drain crowdsec
 writer-check
@@ -245,7 +133,8 @@ restart-crowdsec
 restart-controller
 restart-web
 ready
-result 12345678-1234-4234-8234-123456789abc $scenario" ]] || fail "$scenario ordering or result changed"
+result 12345678-1234-4234-8234-123456789abc $scenario
+apps" ]] || fail "$scenario ordering or result changed"
                 ;;
             recovery_failed)
                 ((status != 0)) || fail 'failed recovery was accepted'
@@ -274,36 +163,20 @@ test_drain() (
         (
             declare -a child_pids=(101 102 103 104 105 106)
             declare -a child_names=(web postgres controller valkey crowdsec-supervisor backups)
-            local signals='' SECONDS=0
-            local -a alive=(101 102 103 104 105 106)
-            backup_assert_state_children_running() { :; }
-            sleep() { SECONDS=$((SECONDS + 1)); }
-            kill() {
-                local candidate
-                if [[ $1 == -0 ]]; then
-                    for candidate in "${alive[@]}"; do [[ $2 != "$candidate" ]] || return 0; done
-                    return 1
-                fi
-                signals+="$1:$2 "
-                if [[ $mode != forced || $1 == -KILL ]]; then
-                    for candidate in "${!alive[@]}"; do
-                        [[ ${alive[$candidate]} != "$2" ]] || unset "alive[$candidate]"
-                    done
-                fi
+            appliance_drain() {
+                [[ $* == "application 101 103 -- 102 104 106" ]] || fail 'drain selected incorrect targets or critical processes'
+                [[ $mode != forced ]]
             }
             wait() { [[ $mode != abnormal ]]; }
-            if backup_stop_consumer_phase application 3; then
+            if backup_stop_consumer_phase application; then
                 [[ $mode == graceful ]] || fail "$mode stop was accepted"
             else
                 [[ $mode != graceful ]] || fail 'graceful drain was rejected'
             fi
-            [[ $signals == *'-TERM:101 '* && $signals == *'-TERM:103 '* ]] || fail 'application TERM was incomplete'
-            [[ $signals != *':102 '* && $signals != *':104 '* && $signals != *':105 '* && $signals != *':106 '* ]] \
-                || fail 'application drain signalled a preserved service'
-            [[ ${child_names[*]} == 'postgres valkey crowdsec-supervisor backups' ]] || fail 'stopped children were not removed'
             if [[ $mode == forced ]]; then
-                ((SECONDS == 3)) || fail 'forced drain exceeded its budget'
-                [[ $signals == *'-KILL:101 '* && $signals == *'-KILL:103 '* ]] || fail 'forced drain did not reap owned children'
+                [[ ${#child_pids[@]} == 6 ]] || fail 'unsafe drain lost child ownership before teardown'
+            else
+                [[ ${child_names[*]} == 'postgres valkey crowdsec-supervisor backups' ]] || fail 'reaped children still owned'
             fi
         )
     done
@@ -387,7 +260,7 @@ test_process_guard() (
         done
     }
     trap cleanup EXIT
-    load_function "$backup_supervisor" backup_status_has_consumer_identity
+    load_function "$production_directory/fault-supervisor.sh" appliance_supervision
     load_function "$backup_supervisor" backup_assert_consumers_stopped
     load_function "$backup_supervisor" backup_assert_state_children_running
     setpriv --reuid=10001 --regid=10001 --clear-groups -- sleep 30 &
@@ -398,11 +271,13 @@ test_process_guard() (
     survivor_pid=$!
     local attempt
     for attempt in $(seq 1 100); do
-        if backup_status_has_consumer_identity "/proc/$survivor_pid/status"; then break; fi
+        if grep -q $'^Uid:\t10001\t' "/proc/$survivor_pid/status"; then break; fi
         sleep 0.01
     done
-    backup_status_has_consumer_identity "/proc/$survivor_pid/status" || fail 'survivor fixture did not drop identity'
-    if (backup_assert_consumers_stopped); then fail 'an independent surviving consumer was accepted'; fi
+    grep -q $'^Uid:\t10001\t' "/proc/$survivor_pid/status" || fail 'survivor fixture did not drop identity'
+    if appliance_supervision verify-backup all "$valkey_pid" 0; then
+        fail 'an independent surviving consumer was accepted'
+    fi
     printf 'PASS: actual detached consumer identity blocks export while the owned Valkey PID is preserved\n'
 )
 
@@ -431,6 +306,7 @@ test_startup_admission() (
         start_valkey() { :; }
         run_migrations() { :; }
         start_web() { touch "$scratch/web-started"; }
+        start_app_manager() { [[ -e $scratch/restore-confirmed ]] || fail 'apps resumed before restore completion'; }
         timeout() {
             [[ $1 == --signal=TERM && $2 == --kill-after=1s && $3 == 5s ]] \
                 || fail 'web readiness probe lost its timeout'
@@ -565,6 +441,7 @@ test_restore_maintenance() (
             start_crowdsec_supervisor() { record crowdsec; }
             start_controller() { record controller; }
             run_migrations() { record migrations; }
+            start_app_manager() { record apps; }
             start_web() { record web; }
             wait_for_web_readiness() { record ready; [[ $scenario != web_failed ]] || fatal 'restored web failed readiness'; }
             perform_managed_restore
@@ -577,14 +454,14 @@ test_restore_maintenance() (
         fi
         case $scenario in
             success)
-                [[ $(cat "$scratch/$scenario/events") == $'drain controller\ndrain crowdsec\nwriter-check\nrestore\nstate-check\ndrain web\nstop-retained-caddy\nfinal-writer-check\nlayout\nsecrets\ncrowdsec\ncontroller\nmigrations\nweb\nready\nresult success' ]] \
+                [[ $(cat "$scratch/$scenario/events") == $'drain apps\ndrain controller\ndrain crowdsec\nwriter-check\nrestore\nstate-check\ndrain web\nstop-retained-caddy\nfinal-writer-check\nlayout\nsecrets\ncrowdsec\ncontroller\nmigrations\nweb\nready\nresult success\napps' ]] \
                     || fail 'restore lost writer fences, maintenance web continuity, key reload or verified success ordering'
                 ;;
             execution_failed)
                 [[ $(cat "$scratch/$scenario/events") != *$'drain web'* ]] || fail 'failed replacement restarted consumers'
                 ;;
             layout_failed)
-                [[ $(cat "$scratch/$scenario/events") == $'drain controller\ndrain crowdsec\nwriter-check\nrestore\nstate-check\ndrain web\nstop-retained-caddy\nfinal-writer-check\nlayout\nresult recovery_failed' ]] \
+                [[ $(cat "$scratch/$scenario/events") == $'drain apps\ndrain controller\ndrain crowdsec\nwriter-check\nrestore\nstate-check\ndrain web\nstop-retained-caddy\nfinal-writer-check\nlayout\nresult recovery_failed' ]] \
                     || fail 'unsafe restored layout continued service startup'
                 ;;
         esac
@@ -671,10 +548,6 @@ if [[ ${1:-} == --linux-processes ]]; then
     exit
 fi
 
-test_identity
-test_identity_visibility
-test_identity_retry
-test_identity_exceptions
 test_unknown_consumer_scan
 test_consumer_scan_exceptions
 test_maintenance

@@ -78,10 +78,11 @@ async function inspectOwnedArtifactDirectory(directory: string, partial: boolean
     const info = await lstat(directory)
     if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o077) !== 0)
         throw new UnsafeBackupArtifact('invalid backup directory')
-    const entries = await boundedDirectoryEntries(directory, artifactNames.length)
+    const allowedNames = partial ? [...artifactNames, '.rentnerproxy-app-state-v1'] : artifactNames
+    const entries = await boundedDirectoryEntries(directory, allowedNames.length)
     if (
         (!partial && entries.length !== artifactNames.length) ||
-        entries.some((name) => !artifactNames.includes(name))
+        entries.some((name) => !allowedNames.includes(name))
     )
         throw new UnsafeBackupArtifact('invalid backup entries')
     for (const name of entries) {

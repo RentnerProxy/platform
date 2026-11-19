@@ -64,7 +64,7 @@ backup_quiesce_controller() {
     backup_maintenance_id=$id
     bun --no-env-file "$backup_exporter" --prepare-controller-maintenance "$id" "$controller_pid" \
         || fatal 'controller maintenance could not be prepared'
-    backup_stop_consumer_phase controller 23 || fatal 'controller could not quiesce safely'
+    backup_stop_consumer_phase controller || fatal 'controller could not quiesce safely'
     backup_caddy_pid=$(bun --no-env-file "$backup_exporter" --claim-controller-maintenance "$id") \
         || fatal 'controller maintenance handoff could not be confirmed'
     [[ $backup_caddy_pid =~ ^(0|[1-9][0-9]*)$ ]] || fatal 'invalid retained Caddy process'
@@ -88,39 +88,20 @@ backup_assert_state_children_running() {
 }
 
 backup_stop_consumer_phase() {
-    local phase=$1 budget=$2 index pid deadline running status failed=false
-    local -a stopping=()
+    local phase=$1 index pid status failed=false
+    local -a stopping=() targets=() critical=()
     for index in "${!child_pids[@]}"; do
         case $phase:${child_names[$index]} in
-            application:web|application:controller|controller:controller|web:web|crowdsec:crowdsec-supervisor) ;;
-            *) continue ;;
+            apps:app-manager|application:web|application:controller|controller:controller|web:web|crowdsec:crowdsec-supervisor)
+                stopping+=("$index")
+                targets+=("${child_pids[$index]}")
+                ;;
+            *:backups|*:postgres|*:valkey) critical+=("${child_pids[$index]}") ;;
         esac
-        stopping+=("$index")
-        pid=${child_pids[$index]}
-        if ! kill -0 "$pid" 2>/dev/null || ! kill -TERM "$pid" 2>/dev/null; then
-            failed=true
-        fi
     done
-    deadline=$((SECONDS + budget))
-    while ((SECONDS < deadline)); do
-        backup_assert_state_children_running
-        running=false
-        for index in "${stopping[@]}"; do
-            if kill -0 "${child_pids[$index]}" 2>/dev/null; then
-                running=true
-                break
-            fi
-        done
-        "$running" || break
-        sleep 0.1
-    done
+    appliance_drain "$phase" "${targets[@]}" -- "${critical[@]}" || return 1
     for index in "${stopping[@]}"; do
         pid=${child_pids[$index]}
-        if kill -0 "$pid" 2>/dev/null; then
-            log "${child_names[$index]} did not drain for backup maintenance"
-            kill -KILL "$pid" 2>/dev/null || true
-            failed=true
-        fi
         if wait "$pid"; then
             :
         else
@@ -133,54 +114,22 @@ backup_stop_consumer_phase() {
     [[ $failed == false ]]
 }
 
-backup_status_has_consumer_identity() {
-    local status_file=$1 field real effective saved filesystem remainder attempt
-    # Return 0 for a consumer, 1 for proven safe/gone, and 2 for unknown identity.
-    # Reopen transient proc entries; waiting alone never proves quiescence.
-    for ((attempt=1; attempt<=3; attempt++)); do
-        while read -r field real effective saved filesystem remainder; do
-            if [[ $field == State: && ( $real == Z || $real == X ) ]]; then return 1; fi
-            [[ $field == Uid: ]] || continue
-            [[ $real =~ ^[0-9]+$ && $effective =~ ^[0-9]+$ && $saved =~ ^[0-9]+$ \
-                && $filesystem =~ ^[0-9]+$ && -z $remainder ]] || break
-            case " $real $effective $saved $filesystem " in
-                *' 10001 '*|*' 10003 '*) return 0 ;;
-                *' 10002 '*) [[ ${2:-} != preserve-web ]]; return ;;
-                *) return 1 ;;
-            esac
-        done 2>/dev/null < "$status_file" || :
-        [[ ! -d ${status_file%/*} ]] && return 1
-        if ((attempt < 3)); then sleep 0.1; fi
-    done
-    return 2
-}
-
 backup_assert_consumers_stopped() {
-    local index valkey_pid='' status_file pid identity_status
-    [[ -r /proc/self/status ]] || fatal 'backup maintenance requires process identity visibility'
+    local index valkey_pid='' caddy_pid=${backup_caddy_pid:-0} mode=${1:-all}
     for index in "${!child_pids[@]}"; do
         if [[ ${child_names[$index]} == valkey ]]; then valkey_pid=${child_pids[$index]}; fi
     done
     [[ -n $valkey_pid ]] || fatal 'backup maintenance has no owned Valkey process'
-    # Caddy deliberately starts a separate process group. Inspect identities,
-    # rather than trusting a consumer-writable PID file or killing by a name.
-    for status_file in /proc/[0-9]*/status; do
-        pid=${status_file#/proc/}
-        pid=${pid%/status}
-        [[ $pid != "$valkey_pid" ]] || continue
-        if [[ $pid == "${backup_caddy_pid:-}" ]]; then
-            bun --no-env-file "$backup_exporter" --assert-retained-caddy "$backup_maintenance_id" "$pid" \
-                || fatal 'retained Caddy ownership changed during maintenance'
-            continue
-        fi
-        if backup_status_has_consumer_identity "$status_file" "${1:-}" 2>/dev/null; then
-            fatal 'an application or CrowdSec process survived backup quiescing'
-        else
-            identity_status=$?
-            [[ $identity_status == 1 ]] \
-                || fatal 'backup maintenance cannot inspect a surviving process identity'
-        fi
-    done
+    if [[ $caddy_pid != 0 ]]; then
+        bun --no-env-file "$backup_exporter" --assert-retained-caddy "$backup_maintenance_id" "$caddy_pid" \
+            || fatal 'retained Caddy ownership changed during maintenance'
+    fi
+    appliance_supervision verify-backup "$mode" "$valkey_pid" "$caddy_pid" \
+        || fatal 'backup maintenance cannot prove all writers stopped'
+    if [[ $caddy_pid != 0 ]]; then
+        bun --no-env-file "$backup_exporter" --assert-retained-caddy "$backup_maintenance_id" "$caddy_pid" \
+            || fatal 'retained Caddy ownership changed during the writer scan'
+    fi
     backup_assert_state_children_running
 }
 
@@ -219,8 +168,9 @@ perform_managed_restore() {
     backup_recovery_job=$id
     # Web drains its workers and DB pool after the root progress fence appears.
     # It keeps serving authenticated maintenance status while state writers stop.
+    backup_stop_consumer_phase apps || fatal 'apps could not quiesce safely for restore'
     backup_quiesce_controller "$id"
-    backup_stop_consumer_phase crowdsec 40 || fatal 'CrowdSec could not quiesce safely for restore'
+    backup_stop_consumer_phase crowdsec || fatal 'CrowdSec could not quiesce safely for restore'
     backup_assert_consumers_stopped preserve-web
     if ! backup_run_exporter "$id" --restore; then
         backup_write_result "$id" execution_failed
@@ -228,7 +178,7 @@ perform_managed_restore() {
     fi
     backup_assert_state_children_running
     # The web process caches the application key and has closed its DB pool.
-    backup_stop_consumer_phase web 23 || fatal 'maintenance web could not stop safely'
+    backup_stop_consumer_phase web || fatal 'maintenance web could not stop safely'
     backup_stop_retained_caddy || fatal 'retained Caddy could not stop safely'
     backup_assert_consumers_stopped
     # Replacement restores private archive modes; recreate the appliance's shared
@@ -242,6 +192,7 @@ perform_managed_restore() {
     start_web
     wait_for_web_readiness
     backup_write_result "$id" success
+    start_app_manager
     backup_recovery_job=''
     log "managed restore maintenance completed ($id)"
 }
@@ -257,10 +208,11 @@ perform_managed_backup() {
     # Preserve state services and CrowdSec while application consumers drain.
     # Drain web while its controller is still available, then leave only Caddy's
     # in-memory proxy running. Its live logs are excluded from the archive.
-    backup_stop_consumer_phase web 23 || fatal 'web could not quiesce safely for backup'
+    backup_stop_consumer_phase apps || fatal 'apps could not quiesce safely for backup'
+    backup_stop_consumer_phase web || fatal 'web could not quiesce safely for backup'
     backup_quiesce_controller "$id"
     # An in-flight cscli call has a 25s bound; the engine then gets 12s to stop.
-    backup_stop_consumer_phase crowdsec 40 \
+    backup_stop_consumer_phase crowdsec \
         || fatal 'CrowdSec could not quiesce safely for backup'
     backup_assert_consumers_stopped
     if ! backup_run_exporter "$id"; then outcome=execution_failed; fi
@@ -277,6 +229,7 @@ perform_managed_backup() {
     start_web
     wait_for_web_readiness
     backup_write_result "$id" "$outcome"
+    start_app_manager
     backup_recovery_job=''
     log "managed backup maintenance completed ($id, $outcome)"
 }

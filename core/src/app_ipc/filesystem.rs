@@ -22,7 +22,7 @@ fn invalid_path() -> io::Error {
     io::Error::other("Unsafe application runtime path or ownership")
 }
 
-fn require_safe_parents(path: &Path, trusted_uid: u32) -> io::Result<()> {
+pub(crate) fn require_safe_parents(path: &Path, trusted_uid: u32) -> io::Result<()> {
     let normalized: PathBuf = path.components().collect();
     if !path.is_absolute() || path.as_os_str() != normalized.as_os_str() {
         return Err(invalid_path());
@@ -84,7 +84,7 @@ pub(super) fn validate_child_paths(config: &LaunchConfig) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn bridge_authorization(path: &Path) -> io::Result<HeaderValue> {
+pub(crate) fn bridge_authorization(path: &Path) -> io::Result<HeaderValue> {
     require_safe_parents(path, CONTROLLER_UID)?;
     let file = OpenOptions::new()
         .read(true)
@@ -299,7 +299,7 @@ fn create_checked_directory(path: &Path, gid: u32, mode: u32) -> io::Result<()> 
     Ok(())
 }
 
-fn lock_file(file: &File) -> io::Result<()> {
+pub(crate) fn lock_file(file: &File) -> io::Result<()> {
     // SAFETY: The file owns a valid descriptor throughout flock.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(io::Error::last_os_error());
@@ -372,7 +372,7 @@ fn publish_identity(path: &Path, identity: &Path, contents: &str) -> io::Result<
     fs::rename(&pending, identity)
 }
 
-pub(super) async fn connect_peer(path: &Path, uid: u32) -> io::Result<UnixStream> {
+pub(crate) async fn connect_peer(path: &Path, uid: u32) -> io::Result<UnixStream> {
     let socket = fs::symlink_metadata(path)?;
     if !socket.file_type().is_socket() || socket.uid() != uid {
         return Err(invalid_path());

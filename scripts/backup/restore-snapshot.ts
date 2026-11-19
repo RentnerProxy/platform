@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Snapshot each bounded artifact before any target mutation.
 import { createDecipheriv, createHash } from 'node:crypto'
+import { appStateName, controllerAllocation, readAppStateMember } from './app-state.ts'
 import { constants } from 'node:fs'
 import { chmod, open, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -57,6 +58,7 @@ export async function snapshotProductionRestore(
                 metadata.applicationEncryptionKey.bytes +
                 metadata.controllerState.bytes +
                 metadata.crowdSecState.bytes +
+                (metadata.version === 5 ? metadata.applications.bytes : 0) +
                 65_536,
         },
     ])
@@ -93,7 +95,10 @@ export async function snapshotProductionRestore(
             'controller',
             signal,
         )
-        controllerState = stateArchiveAllocationEvidence(controllerEntries)
+        const appState = await readAppStateMember(controllerFile, controllerEntries, metadata)
+        if (appState)
+            await writeFile(join(snapshot, appStateName), appState, { mode: 0o600, flag: 'wx' })
+        controllerState = controllerAllocation(controllerEntries, metadata)
         await validateControllerEncryptionFile(
             controllerFile,
             controllerEntries,

@@ -8,6 +8,7 @@ import {
     appRuntimeGenerations,
     appRuntimeGrants,
     appRuntimeInstallations,
+    appRuntimeOperations,
     appRuntimeSecrets,
     permissions,
     rolePermissions,
@@ -33,6 +34,7 @@ import {
 } from '@/server/AppRuntime/events.server.ts'
 import {
     activateAppRuntimeGenerationInTransaction,
+    checkAppRuntimeDependenciesInTransaction,
     registerAppRuntimeGenerationInTransaction,
     renewAppRuntimeGenerationLeaseInTransaction,
     replaceAppRuntimeGrantsInTransaction,
@@ -412,7 +414,40 @@ integrationTest(
                     ).rejects.toMatchObject({
                         code: 'conflict',
                     })
+                    await expect(
+                        checkAppRuntimeDependenciesInTransaction(transaction, next, 'purge-data'),
+                    ).rejects.toMatchObject({ code: 'conflict' })
                     await revokeAppRuntimeGenerationInTransaction(transaction, next)
+                    const operation = crypto.randomUUID()
+                    await transaction.insert(appRuntimeOperations).values({
+                        id: operation,
+                        installationId,
+                        generation: next.generation,
+                        requestId: 'fixture-work',
+                        status: 'accepted',
+                        input: { action: 'remove', hostId: 'fixture', expectedRevision: 'one' },
+                    })
+                    await expect(
+                        checkAppRuntimeDependenciesInTransaction(transaction, next, 'removable'),
+                    ).rejects.toMatchObject({ code: 'conflict' })
+                    await transaction
+                        .update(appRuntimeOperations)
+                        .set({ status: 'cancelled' })
+                        .where(eq(appRuntimeOperations.id, operation))
+                    await checkAppRuntimeDependenciesInTransaction(
+                        transaction,
+                        next,
+                        'workers-stopped',
+                    )
+                    await checkAppRuntimeDependenciesInTransaction(transaction, next, 'removable')
+                    await checkAppRuntimeDependenciesInTransaction(transaction, next, 'purge-data')
+                    await expect(
+                        checkAppRuntimeDependenciesInTransaction(
+                            transaction,
+                            { ...next, uid: next.uid + 1 },
+                            'purge-data',
+                        ),
+                    ).rejects.toMatchObject({ code: 'unauthorized' })
                     await expect(
                         resolveAppRuntimePrincipalInTransaction(transaction, { identity: next }),
                     ).rejects.toMatchObject({
