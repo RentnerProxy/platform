@@ -44,7 +44,7 @@ if [[ ${1:-} == --privileged-app-ipc ]]; then
     "${runner[@]}" \
         --tmpfs /root:rw,mode=0700,size=64m \
         "$native_fixture_image" \
-        /ipc-tests --test-threads=1 app_manager::tests:: app_install::tests::
+        /ipc-tests --test-threads=1 app_manager::tests:: app_install::tests:: app_backup::tests::
     "${runner[@]}" \
         --tmpfs /var/lib/rentnerproxy:rw,exec,mode=0755,size=128m \
         --tmpfs /tmp:rw,mode=01777,size=128m \

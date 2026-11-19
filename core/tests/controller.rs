@@ -1,3 +1,9 @@
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[path = "controller/backup_envelope.rs"]
+mod backup_envelope;
 mod common;
 #[path = "controller/configuration.rs"]
 mod configuration;

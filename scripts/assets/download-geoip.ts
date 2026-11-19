@@ -5,9 +5,14 @@ import { writeFile } from 'node:fs/promises'
 
 const repositoryApi = 'https://api.github.com/repos/sapics/ip-location-db'
 const metadataUrl = repositoryApi + '/releases/tags/latest'
+const releasePage = 'https://github.com/sapics/ip-location-db/releases/expanded_assets/latest'
+const databasePath = '/sapics/ip-location-db/releases/download/latest/user-country.mmdb'
+const downloadUrl = 'https://github.com' + databasePath
 const maximumDatabaseBytes = 64 * 1024 * 1024
+const sha256 = /^sha256:[a-f0-9]{64}$/u
 
 class PublicationTransition extends Error {}
+class PublicApiRestricted extends Error {}
 
 async function readBounded(
     response: Response,
@@ -64,11 +69,17 @@ async function fetchBytes(
         // Keep Content-Length comparable to streamed bytes when fetch decodes responses.
         headers: { Accept: accept, 'Accept-Encoding': 'identity', 'Cache-Control': 'no-cache' },
         signal: AbortSignal.timeout(60_000),
+        ...(url === releasePage ? { redirect: 'error' } : {}),
     })
     if (!response.ok) {
         await response.body?.cancel().catch(() => undefined)
         const message = 'GeoIP ' + label + ' download failed (HTTP ' + response.status + ')'
         if (response.status === 404) throw new PublicationTransition(message)
+        if (
+            (response.status === 403 || response.status === 429) &&
+            url.startsWith(repositoryApi + '/')
+        )
+            throw new PublicApiRestricted(message)
         throw new Error(message)
     }
     return readBounded(response, label, minimum, maximum)
@@ -116,29 +127,87 @@ async function latestAsset(fetchAsset: DownloadFetch): Promise<GeoipAsset> {
         !isRecord(asset) ||
         !isPositiveId(asset.id) ||
         asset.url !== repositoryApi + '/releases/assets/' + asset.id ||
-        asset.browser_download_url !==
-            'https://github.com/sapics/ip-location-db/releases/download/latest/user-country.mmdb' ||
+        asset.browser_download_url !== downloadUrl ||
         asset.state !== 'uploaded' ||
         typeof asset.size !== 'number' ||
         !Number.isSafeInteger(asset.size) ||
         asset.size < 1 ||
         asset.size > maximumDatabaseBytes ||
         typeof asset.digest !== 'string' ||
-        !/^sha256:[a-f0-9]{64}$/u.test(asset.digest)
+        !sha256.test(asset.digest)
     )
         throw new Error('GeoIP asset metadata is invalid')
     return { id: asset.id, size: asset.size, digest: asset.digest, url: asset.url }
 }
 
-export async function downloadGeoip(fetchAsset: DownloadFetch = fetch): Promise<ArrayBuffer> {
+async function latestPublishedAsset(fetchAsset: DownloadFetch): Promise<GeoipAsset> {
+    const bytes = await fetchBytes(
+        fetchAsset,
+        releasePage,
+        'release page',
+        1,
+        1024 ** 2,
+        'text/html',
+    )
+    const rows: { links: number; digests: string[] }[] = []
+    let row: (typeof rows)[number] | undefined
+    const parser = new HTMLRewriter()
+        .on('li.Box-row', {
+            element(element) {
+                const previous = row
+                const current = { links: 0, digests: [] as string[] }
+                row = current
+                element.onEndTag(() => {
+                    if (current.links !== 0) rows.push(current)
+                    row = previous
+                })
+            },
+        })
+        .on('li.Box-row a[href="' + databasePath + '"]', {
+            element() {
+                if (row) row.links += 1
+            },
+        })
+        .on(
+            'li.Box-row clipboard-copy[aria-label="Copy to clipboard digest for user-country.mmdb"]',
+            {
+                element(element) {
+                    row?.digests.push(element.getAttribute('value') ?? '')
+                },
+            },
+        )
+    await parser.transform(new Response(bytes.buffer as ArrayBuffer)).arrayBuffer()
+    const digest = rows[0]?.digests[0]
+    if (
+        rows.length !== 1 ||
+        rows[0]?.links !== 1 ||
+        rows[0].digests.length !== 1 ||
+        !digest ||
+        !sha256.test(digest)
+    )
+        throw new Error('GeoIP release page asset digest is invalid')
+    return { url: downloadUrl, digest }
+}
+
+async function verifiedDownload(
+    fetchAsset: DownloadFetch,
+    readAsset: (fetchAsset: DownloadFetch) => Promise<GeoipAsset>,
+): Promise<ArrayBuffer> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
-            const before = await latestAsset(fetchAsset)
-            const bytes = await fetchBytes(fetchAsset, before.url, 'asset', 1, before.size)
-            if (bytes.byteLength !== before.size) throw new Error('GeoIP asset size mismatch')
+            const before = await readAsset(fetchAsset)
+            const bytes = await fetchBytes(
+                fetchAsset,
+                before.url,
+                'asset',
+                1,
+                before.size ?? maximumDatabaseBytes,
+            )
+            if (before.size !== undefined && bytes.byteLength !== before.size)
+                throw new Error('GeoIP asset size mismatch')
             if (createHash('sha256').update(bytes).digest('hex') !== before.digest.slice(7))
                 throw new Error('GeoIP asset checksum mismatch')
-            const after = await latestAsset(fetchAsset)
+            const after = await readAsset(fetchAsset)
             if (
                 before.id !== after.id ||
                 before.digest !== after.digest ||
@@ -151,6 +220,15 @@ export async function downloadGeoip(fetchAsset: DownloadFetch = fetch): Promise<
         }
     }
     throw new Error('GeoIP asset download failed')
+}
+
+export async function downloadGeoip(fetchAsset: DownloadFetch = fetch): Promise<ArrayBuffer> {
+    try {
+        return await verifiedDownload(fetchAsset, latestAsset)
+    } catch (error) {
+        if (!(error instanceof PublicApiRestricted)) throw error
+        return verifiedDownload(fetchAsset, latestPublishedAsset)
+    }
 }
 
 if (import.meta.main) {
