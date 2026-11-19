@@ -82,8 +82,10 @@ updated-dependencies:
         reads: 0,
     }
     const calls: { method: string; path: string; body: unknown }[] = []
+    const files: Record<string, unknown>[] = [{ filename: 'package.json', status: 'modified' }]
     const request: GitHubRequest = (method, path, body) => {
         calls.push({ method, path, body })
+        if (method === 'PATCH') return Promise.resolve({ state: 'closed' })
         if (method === 'PUT') {
             if (settings.refusal) throw new GitHubRequestError(settings.refusal)
             return Promise.resolve({ merged: true })
@@ -106,7 +108,7 @@ updated-dependencies:
         }
         if (path.includes('/commits?')) return Promise.resolve(commits)
         if (path.includes('/files?')) {
-            return Promise.resolve([{ filename: 'package.json', status: 'modified' }])
+            return Promise.resolve(files)
         }
         if (path === '/graphql') {
             if (settings.graphErrors) return Promise.resolve({ errors: [{ message: 'denied' }] })
@@ -114,10 +116,71 @@ updated-dependencies:
         }
         throw new Error(`Unexpected test request: ${method} ${path}`)
     }
-    const writes = () => calls.filter((call) => call.method === 'PUT')
+    const writes = () => calls.filter((call) => call.method === 'PUT' || call.method === 'PATCH')
     const run = (dryRun = false) => maintainPullRequests(request, { repository, dryRun })
-    return { pull, commits, graph, settings, calls, request, writes, run }
+    return { pull, commits, files, graph, settings, calls, request, writes, run }
 }
+
+describe('Docker digest-only updates', () => {
+    const oldDigest = 'a'.repeat(64)
+    const newDigest = 'b'.repeat(64)
+
+    function dockerUpdate(previousTag = '1.0.0', nextTag = previousTag) {
+        const state = fixture()
+        state.pull.head.ref = 'dependabot/docker/example'
+        state.settings.behind = 1
+        state.files[0] = {
+            filename: 'Dockerfile',
+            status: 'modified',
+            additions: 1,
+            deletions: 1,
+            patch: `@@ -1 +1 @@\n-FROM example:${previousTag}@sha256:${oldDigest}\n+FROM example:${nextTag}@sha256:${newDigest}`,
+        }
+        return state
+    }
+
+    test('closes an unchanged Docker tag before updating the branch or waiting for CI', async () => {
+        const state = dockerUpdate()
+        expect((await state.run())[0]?.action).toBe('closed')
+        expect(state.writes()).toEqual([
+            { method: 'PATCH', path: `${prefix}/pulls/42`, body: { state: 'closed' } },
+        ])
+    })
+
+    test('reports a quoted Compose digest refresh in a dry run', async () => {
+        const state = dockerUpdate()
+        state.pull.head.ref = 'dependabot/docker-compose/example'
+        state.files[0] = {
+            ...state.files[0],
+            filename: 'docker-compose.yml',
+            patch: `@@ -1 +1 @@\n-    image: 'example:1.0.0@sha256:${oldDigest}'\n+    image: 'example:1.0.0@sha256:${newDigest}'`,
+        }
+        expect((await state.run(true))[0]?.action).toBe('would-close')
+        expect(state.writes()).toHaveLength(0)
+    })
+
+    test('preserves version changes, including patch releases with a new digest', async () => {
+        const state = dockerUpdate('1.0.0', '1.0.1')
+        expect((await state.run())[0]?.action).toBe('update-requested')
+        expect(state.writes()[0]?.method).toBe('PUT')
+    })
+
+    test('preserves security-labeled updates and updates with incomplete diffs', async () => {
+        const securityUpdate = dockerUpdate()
+        securityUpdate.pull.labels.push({ name: 'security' })
+        expect((await securityUpdate.run())[0]?.action).toBe('update-requested')
+        const incomplete = dockerUpdate()
+        incomplete.files[0]!.deletions = 2
+        expect((await incomplete.run())[0]?.action).toBe('update-requested')
+    })
+
+    test('leaves a PR open if its head changes during validation', async () => {
+        const state = dockerUpdate()
+        state.settings.headChanged = true
+        expect((await state.run())[0]?.action).toBe('skipped')
+        expect(state.writes()).toHaveLength(0)
+    })
+})
 
 describe('PR branch maintenance', () => {
     test('updates stale human and draft branches with the expected head and never merges them', async () => {
