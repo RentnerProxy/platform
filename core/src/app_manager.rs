@@ -105,6 +105,7 @@ impl Manager {
                 uid,
                 app_id,
                 authority_recorded: Some(false),
+                storage_claimed: Some(false),
                 ..Default::default()
             });
         }
@@ -224,18 +225,33 @@ impl Manager {
         id: &str,
         release: Release,
         grants: Option<&[Grant]>,
+        mut boot_lock_retries: Option<&mut usize>,
     ) -> io::Result<()> {
         let slot = self.journal.slot(id)?.clone();
+        let config = self.config.clone();
         let package = self
-            .during(
-                id,
-                Self::package(
-                    self.config.clone(),
-                    slot.app_id.clone(),
-                    release.version.clone(),
-                    Some(release.clone()),
-                ),
-            )
+            .during(id, async {
+                loop {
+                    let result = Self::package(
+                        config.clone(),
+                        slot.app_id.clone(),
+                        release.version.clone(),
+                        Some(release.clone()),
+                    )
+                    .await;
+                    if result
+                        .as_ref()
+                        .is_err_and(|e| e.kind() == io::ErrorKind::WouldBlock)
+                        && let Some(remaining) = boot_lock_retries.as_deref_mut()
+                        && *remaining > 0
+                    {
+                        *remaining -= 1;
+                        sleep(Duration::from_millis(200)).await;
+                        continue;
+                    }
+                    return result;
+                }
+            })
             .await?;
         let data = package.manifest.get("data").map(read_data).transpose()?;
         if !slot.accepts(&release, data.as_ref()) {
@@ -266,7 +282,17 @@ impl Manager {
                 .post("grants", json!({"identity":who,"grants":grants}))
                 .await?;
         }
+        // A crash between filesystem publication and its acknowledgement is ambiguous.
+        // Legacy/unknown evidence keeps backup's conservative positive-generation checks.
+        if slot.storage_claimed == Some(false) {
+            slot.storage_claimed = None;
+            self.journal.save(id, slot.clone())?;
+        }
         storage::claim(id, &slot)?;
+        if slot.storage_claimed != Some(true) {
+            slot.storage_claimed = Some(true);
+            self.journal.save(id, slot.clone())?;
+        }
         if data.is_some()
             && !slot.database_provisioned
             && !runtime::database_uid_vacant(slot.uid).await?
@@ -313,7 +339,7 @@ impl Manager {
         grants: Option<&[Grant]>,
     ) -> io::Result<()> {
         let before = self.journal.slot(id)?.clone();
-        match self.launch(id, target, grants).await {
+        match self.launch(id, target, grants, None).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 let after = self.journal.slot(id)?;
@@ -330,7 +356,7 @@ impl Manager {
                     // grant set could also restore access an operator revoked during cutover.
                     let uncertain = self.journal.slot(id)?.uncertain_grants();
                     if self
-                        .launch(id, active, uncertain.then_some([].as_slice()))
+                        .launch(id, active, uncertain.then_some([].as_slice()), None)
                         .await
                         .is_ok()
                     {
@@ -380,6 +406,19 @@ impl Manager {
                 version,
             } => self.stage(&installation_id, app_id, version).await?,
             Command::Remove { installation_id } => self.remove(&installation_id).await?,
+            Command::Discard {
+                installation_id,
+                release,
+            } => {
+                let mut slot = self.journal.slot(&installation_id)?.clone();
+                let retained = match release {
+                    control::InactiveRelease::Candidate => &mut slot.candidate,
+                    control::InactiveRelease::Previous => &mut slot.previous,
+                };
+                if retained.take().is_some() {
+                    self.journal.save(&installation_id, slot)?;
+                }
+            }
             Command::Purge { installation_id } => self.purge(&installation_id).await?,
             Command::Activate {
                 installation_id,
@@ -431,6 +470,8 @@ impl Manager {
     }
 
     async fn reconcile(&mut self) -> io::Result<()> {
+        // Share extra attempts across the boot. Healthy starts do not consume the budget.
+        let mut lock_retries = 7;
         let slots: Vec<_> = self.journal.slots().keys().cloned().collect();
         for id in slots {
             let mut slot = self.journal.slot(&id)?.clone();
@@ -451,6 +492,7 @@ impl Manager {
                         &id,
                         target,
                         slot.uncertain_grants().then_some([].as_slice()),
+                        Some(&mut lock_retries),
                     )
                     .await?;
                 }

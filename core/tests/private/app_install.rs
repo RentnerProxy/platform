@@ -221,6 +221,25 @@ pub(crate) fn lifecycle_packages(
     (config, packages)
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn revoke_lifecycle_release(config: &Path, version: &str) {
+    let installer = Installer::open(config).unwrap();
+    let _guard = installer.lock().unwrap();
+    let (_, current) = installer.checkpoint().unwrap().unwrap();
+    let mut next: Value = serde_json::from_slice(current.catalog_bytes()).unwrap();
+    next["revision"] = (next["revision"].as_u64().unwrap() + 1).into();
+    next["releases"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|release| release["version"] != version);
+    next["revocations"].as_array_mut().unwrap().push(json!({
+        "appId": ID, "version": version, "revokedAt": "2026-11-01T12:00:00.000Z", "reason": "withdrawn"
+    }));
+    let mut files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
+    files.extend(update(&current, next));
+    refresh(&installer, &files, now()).unwrap();
+}
+
 #[test]
 fn persisted_roles_protect_against_rollback_expiry_and_partial_metadata() {
     let temp = tempfile::tempdir().unwrap();

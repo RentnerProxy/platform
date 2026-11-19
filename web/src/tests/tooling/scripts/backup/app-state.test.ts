@@ -1,4 +1,7 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
+import * as filesystem from 'node:fs/promises'
+import { pathToFileURL } from 'node:url'
+import { copyCoverageFixtureModules } from '@/tests/Helpers/coverageFixture.ts'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -13,11 +16,7 @@ import {
     parseBackupMetadata,
     validateStateArchiveFile,
 } from '../../../../../../scripts/backup/format.ts'
-import {
-    createRecoveryKey,
-    decryptBackup,
-    encryptBackup,
-} from '../../../../../../scripts/backup/offhost/envelope.ts'
+import * as productionEnvelope from '../../../../../../scripts/backup/offhost/envelope.ts'
 import { publishProductionBackup } from '../../../../../../scripts/backup/publication.ts'
 import { assertBackupAppRows } from '../../../../../../docker/web/validate-backup.ts'
 import { readSnapshotMetadata } from '../../../../../../scripts/backup/restore-snapshot.ts'
@@ -182,9 +181,39 @@ test('app snapshot survives publication and encrypted recovery and rejects downg
         expect(preflight).toContain('--check-app-restore-inventory /backup ' + id)
         expect(() => postgresCommand('inventory', '/backup', true)).toThrow()
 
-        const recoveryKey = createRecoveryKey()
-        await encryptBackup(source, encrypted, recoveryKey)
-        await decryptBackup(encrypted, restored, recoveryKey)
+        const recoveryKey = productionEnvelope.createRecoveryKey()
+        // Exercise the application member through the fallback envelope with deterministic
+        // workspace capacity. Native envelope interoperability has its own fixture.
+        let envelope = productionEnvelope
+        const controllerPath = '/usr/local/bin/rentnerproxy-controller'
+        if (process.platform === 'linux' && (await Bun.file(controllerPath).exists())) {
+            const moduleName = 'scripts/backup/offhost/envelope.ts'
+            const code = join(workspace, 'code')
+            await copyCoverageFixtureModules(code, [moduleName], {
+                [controllerPath]: join(workspace, 'absent-controller'),
+            })
+            envelope = await import(pathToFileURL(join(code, moduleName)).href)
+        }
+        const statfs = filesystem.statfs
+        const fixtureStats = await statfs(workspace)
+        const capacity = spyOn(filesystem, 'statfs').mockImplementation(((
+            ...args: Parameters<typeof statfs>
+        ) => {
+            if (args[0] === workspace && !args[1]?.bigint) {
+                return Promise.resolve({
+                    ...fixtureStats,
+                    bavail: Math.ceil((4 * 1024 ** 3) / fixtureStats.bsize),
+                })
+            }
+            return statfs(...args)
+        }) as typeof statfs)
+        try {
+            await envelope.encryptBackup(source, encrypted, recoveryKey)
+            await envelope.decryptBackup(encrypted, restored, recoveryKey)
+            expect(capacity.mock.calls.some(([path]) => path === workspace)).toBe(true)
+        } finally {
+            capacity.mockRestore()
+        }
         expect((await readSnapshotMetadata(restored, id)).metadata).toEqual(metadata)
         expect(maximumBackupMetadataBytes).toBe(512 * 1024)
         const padded = Buffer.alloc(maximumBackupMetadataBytes, 32)

@@ -60,6 +60,7 @@ impl Manager {
         }
         slot.written = None;
         slot.database_provisioned = false;
+        slot.storage_claimed = Some(false);
         slot.recovery_required = false;
         slot.removal = Removal::Purged;
         self.journal.save(id, slot)

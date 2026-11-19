@@ -15,6 +15,8 @@ const CONTROL: &str = "/run/rentnerproxy/crowdsec";
 const STATUS_STAGING: &str = "/run/rentnerproxy/crowdsec-supervisor";
 const KEY_STAGING: &str = "/var/lib/rentnerproxy/crowdsec-supervisor";
 const KEY: &str = "/var/lib/rentnerproxy/crowdsec/bouncer/caddy-bouncer-key";
+const LOCAL_CREDENTIAL: &str =
+    "/var/lib/rentnerproxy/crowdsec/credentials/local_api_credentials.yaml";
 pub(super) const CAPI: &str =
     "/var/lib/rentnerproxy/crowdsec/credentials/online_api_credentials.yaml";
 pub(super) const CONSOLE: &str = "/var/lib/rentnerproxy/crowdsec/credentials/console.yaml";
@@ -74,6 +76,22 @@ fn shared(staging: &str, destination: &Path, bytes: &[u8]) -> io::Result<()> {
         },
         Publication::Replace,
     )
+}
+
+pub(super) fn local_credentials_present() -> io::Result<bool> {
+    match fs::symlink_metadata(LOCAL_CREDENTIAL) {
+        Ok(file)
+            if file.is_file()
+                && file.nlink() == 1
+                && file.uid() == 10003
+                && file.gid() == 10003 =>
+        {
+            Ok(file.len() > 0)
+        }
+        Ok(_) => Err(invalid()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 pub(super) fn registration_file() -> io::Result<tempfile::NamedTempFile> {

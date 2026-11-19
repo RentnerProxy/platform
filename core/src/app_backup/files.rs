@@ -79,18 +79,31 @@ fn mount_id(path: &Path) -> io::Result<u64> {
     Ok(stat.stx_mnt_id)
 }
 
+// Linux returns NUL-terminated attribute names. Only the destination-managed
+// SELinux context is accepted; its value is never read or written by backup.
+const SELINUX_ATTRIBUTE: &[u8] = b"security.selinux\0";
+
+fn supported_attribute_names(names: &[u8]) -> bool {
+    names.is_empty() || names == SELINUX_ATTRIBUTE
+}
+
 fn check_attributes(path: &Path) -> io::Result<()> {
     let path = CString::new(path.as_os_str().as_bytes())?;
-    let attrs = unsafe { libc::llistxattr(path.as_ptr(), std::ptr::null_mut(), 0) };
-    if attrs < 0 {
+    let mut names = [0u8; SELINUX_ATTRIBUTE.len()];
+    let count = unsafe { libc::llistxattr(path.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
+    if count < 0 {
         let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ENOTSUP) {
-            return Err(error);
-        }
-    } else if attrs > 0 {
-        return Err(invalid("Extended application metadata is unsupported"));
+        return match error.raw_os_error() {
+            Some(libc::ENOTSUP) => Ok(()),
+            Some(libc::ERANGE) => Err(invalid("Extended application metadata is unsupported")),
+            _ => Err(error),
+        };
     }
-    Ok(())
+    if supported_attribute_names(&names[..count as usize]) {
+        Ok(())
+    } else {
+        Err(invalid("Extended application metadata is unsupported"))
+    }
 }
 
 fn walk_data(
@@ -285,22 +298,28 @@ pub(super) fn restore(
         .parent()
         .ok_or_else(|| invalid("Missing installation directory"))?;
     let stage = parent.join(stage_name);
+    let parent = File::open(parent)?;
     match check_staging(&stage) {
-        Ok(()) => fs::remove_dir_all(&stage)?,
+        // The previous exchange may still need its durability barrier on retry.
+        Ok(()) => discard_exchanged_stage(&parent, &stage)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => (),
         Err(error) => return Err(error),
     }
     fs::DirBuilder::new().mode(0o700).create(&stage)?;
     if let Err(error) = stage_and_exchange(&stage, root, uid, entries, target_state) {
         fs::remove_dir_all(&stage)?;
-        File::open(parent)?.sync_all()?;
+        parent.sync_all()?;
         return Err(error);
     }
     // After exchange, staging may hold the only copy of the outgoing tree. Keep
     // it available for resume until the exchange is durable.
-    File::open(parent)?.sync_all()?;
-    fs::remove_dir_all(&stage)?;
-    File::open(parent)?.sync_all()
+    discard_exchanged_stage(&parent, &stage)
+}
+
+fn discard_exchanged_stage(parent: &File, stage: &Path) -> io::Result<()> {
+    parent.sync_all()?;
+    fs::remove_dir_all(stage)?;
+    parent.sync_all()
 }
 
 fn stage_and_exchange(
@@ -465,6 +484,36 @@ mod tests {
         let link = fixture.path().join("linked-data");
         std::os::unix::fs::symlink(&root, &link).unwrap();
         assert!(inspect_target(&link, uid, &mut 0).is_err());
+    }
+
+    #[test]
+    fn accepts_only_the_filesystem_selinux_context() {
+        assert!(supported_attribute_names(b""));
+        assert!(supported_attribute_names(b"security.selinux\0"));
+        for names in [
+            b"security.selinux".as_slice(),
+            b"security.selinux2\0",
+            b"security.capability\0",
+            b"system.posix_acl_access\0",
+            b"system.posix_acl_default\0",
+            b"security.selinux\0user.extra\0",
+        ] {
+            assert!(!supported_attribute_names(names));
+        }
+    }
+
+    #[test]
+    fn retains_the_outgoing_copy_until_the_parent_sync_succeeds() {
+        let fixture = tempfile::tempdir().unwrap();
+        let stage = fixture.path().join(".app-restore-kiri");
+        fs::create_dir(&stage).unwrap();
+        let outgoing = stage.join("data");
+        fs::write(&outgoing, b"last copy").unwrap();
+        let unsyncable = File::open("/dev/null").unwrap();
+        assert!(discard_exchanged_stage(&unsyncable, &stage).is_err());
+        assert_eq!(fs::read(&outgoing).unwrap(), b"last copy");
+        discard_exchanged_stage(&File::open(fixture.path()).unwrap(), &stage).unwrap();
+        assert!(!stage.exists());
     }
 
     #[test]

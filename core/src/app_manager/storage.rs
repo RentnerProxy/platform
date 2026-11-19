@@ -68,7 +68,21 @@ pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
     File::open(parent)?.sync_all()?;
     let root_directory = File::open(root)?;
     if owned(root, id, slot)? {
+        if slot.active.is_some() && slot.storage_claimed == Some(true) {
+            // A committed release already used this data tree. Do not recreate it empty.
+            let data = fs::symlink_metadata(directory(slot.uid).join("data"))?;
+            if !data.is_dir()
+                || data.uid() != slot.uid
+                || data.gid() != slot.uid
+                || data.mode() & 0o7777 != 0o700
+            {
+                return Err(bad("Invalid previously provisioned app data"));
+            }
+        }
         return root_directory.sync_all();
+    }
+    if slot.storage_claimed == Some(true) {
+        return Err(bad("Previously claimed installation storage is missing"));
     }
     // A power loss may leave a reservation behind. Keep it outside the scanned app inventory.
     let tmp = tempfile::Builder::new()

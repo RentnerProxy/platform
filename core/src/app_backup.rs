@@ -28,6 +28,23 @@ struct Snapshot {
     data: BTreeMap<u32, Vec<files::Entry>>,
 }
 
+// None preserves the legacy generation-zero case: it may already own storage.
+// Explicit journal evidence distinguishes a failed activation before its first claim.
+fn storage_requirement(slot: &Value) -> io::Result<Option<bool>> {
+    let generation = slot["generation"]
+        .as_u64()
+        .ok_or_else(|| invalid("Missing generation"))?;
+    let claimed = slot
+        .get("storageClaimed")
+        .map(|v| v.as_bool().ok_or_else(|| invalid("Invalid storage claim")))
+        .transpose()?;
+    match slot["removal"].as_str() {
+        Some("purged") if claimed != Some(true) => Ok(Some(false)),
+        Some("installed" | "removed") => Ok(claimed.or((generation != 0).then_some(true))),
+        _ => Err(invalid("Invalid application storage state")),
+    }
+}
+
 fn app_roots(
     root: &Path,
     installations: &Value,
@@ -43,25 +60,10 @@ fn app_roots(
             .as_u64()
             .filter(|u| (20000..=59999).contains(u))
             .ok_or_else(|| invalid("Invalid backup UID"))? as u32;
-        let removal = slot["removal"].as_str();
-        if !matches!(removal, Some("installed" | "removed" | "purged"))
-            || slot["databaseProvisioned"] != false
-            || !slot["written"].is_null()
-        {
+        if slot["databaseProvisioned"] != false || !slot["written"].is_null() {
             return Err(invalid("Application database recovery is unavailable"));
         }
-        if slots
-            .insert(
-                uid,
-                (
-                    slot["generation"]
-                        .as_u64()
-                        .ok_or_else(|| invalid("Missing generation"))?,
-                    removal == Some("purged"),
-                ),
-            )
-            .is_some()
-        {
+        if slots.insert(uid, storage_requirement(slot)?).is_some() {
             return Err(invalid("Duplicate installation UID"));
         }
     }
@@ -78,7 +80,8 @@ fn app_roots(
             .to_str()
             .and_then(|s| s.parse::<u32>().ok())
             .filter(|u| {
-                u.to_string().as_str() == name && slots.get(u).is_some_and(|(_, purged)| !purged)
+                u.to_string().as_str() == name
+                    && slots.get(u).is_some_and(|claim| *claim != Some(false))
             })
             .ok_or_else(|| invalid("Untracked installation data"))?;
         let root = entry.path();
@@ -133,7 +136,7 @@ fn app_roots(
     }
     if slots
         .iter()
-        .any(|(uid, (generation, purged))| *generation != 0 && !purged && !roots.contains_key(uid))
+        .any(|(uid, claim)| *claim == Some(true) && !roots.contains_key(uid))
     {
         return Err(invalid("Provisioned application data is missing"));
     }
@@ -154,19 +157,14 @@ fn validate_snapshot(snapshot: &Snapshot) -> io::Result<()> {
             .as_u64()
             .filter(|uid| (20000..=59999).contains(uid))
             .ok_or_else(|| invalid("Invalid app snapshot UID"))? as u32;
-        let generation = slot["generation"]
-            .as_u64()
-            .ok_or_else(|| invalid("Missing snapshot generation"))?;
-        let removal = slot["removal"].as_str();
+        let claimed = storage_requirement(slot)?;
         if !uids.insert(uid)
             || slot
                 .get("authorityRecorded")
                 .is_some_and(|v| !v.is_boolean())
-            || !matches!(removal, Some("installed" | "removed" | "purged"))
             || slot["databaseProvisioned"] != false
             || !slot["written"].is_null()
-            || (removal == Some("purged") && snapshot.data.contains_key(&uid))
-            || (removal != Some("purged") && generation != 0 && !snapshot.data.contains_key(&uid))
+            || claimed.is_some_and(|was_claimed| was_claimed != snapshot.data.contains_key(&uid))
         {
             return Err(invalid("Invalid app snapshot storage"));
         }
@@ -250,6 +248,15 @@ fn process(args: &[String]) -> io::Result<()> {
                 {
                     slot["authorityRecorded"] =
                         Value::Bool(slot["generation"].as_u64().is_some_and(|n| n > 0));
+                }
+                if slot.get("storageClaimed").is_none()
+                    && inventory[id].get("storageClaimed").is_some()
+                {
+                    let uid = slot["uid"]
+                        .as_u64()
+                        .ok_or_else(|| invalid("Missing snapshot UID"))?
+                        as u32;
+                    slot["storageClaimed"] = Value::Bool(snapshot.data.contains_key(&uid));
                 }
                 let current = &inventory[id]["generation"];
                 if slot["generation"]

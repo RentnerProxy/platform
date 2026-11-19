@@ -80,6 +80,8 @@ pub(super) struct Slot {
     pub generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority_recorded: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_claimed: Option<bool>,
     pub candidate: Option<Release>,
     pub active: Option<Release>,
     pub previous: Option<Release>,

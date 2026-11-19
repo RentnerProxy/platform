@@ -6,7 +6,7 @@ use hyper_util::rt::TokioIo;
 use std::{
     convert::Infallible,
     fs,
-    os::unix::fs::{PermissionsExt, chown},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt, chown},
     process::Stdio,
     sync::{Arc, Mutex},
 };
@@ -17,6 +17,7 @@ use tokio::{
 };
 
 const ID: &str = "fixture-install";
+const UNCLAIMED: &str = "never-provisioned";
 const UID: u32 = 59553;
 const ROOT: &str = "/var/lib/rentnerproxy/app-manager";
 const SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
@@ -32,6 +33,18 @@ async fn authority(
     );
     let body = request.into_body().collect().await.unwrap().to_bytes();
     let value: Value = serde_json::from_slice(&body).unwrap();
+    if value["identity"]["installationId"] == UNCLAIMED {
+        assert_eq!(value["identity"]["uid"], UID + 1);
+        let status = match path.rsplit('/').next().unwrap() {
+            "register" => StatusCode::SERVICE_UNAVAILABLE,
+            "retire" | "workers-stopped" | "removable" => StatusCode::NO_CONTENT,
+            action => panic!("unexpected unclaimed fixture action {action}"),
+        };
+        return Ok(Response::builder()
+            .status(status)
+            .body(Full::new(Bytes::new()))
+            .unwrap());
+    }
     assert_eq!(value["identity"]["installationId"], ID);
     assert_eq!(value["identity"]["uid"], UID);
     let generation = value["identity"]["generation"].as_u64().unwrap();
@@ -203,6 +216,14 @@ async fn backup_files(controller: &Path, config: &Path, temporary: &Path) {
     );
     let mut manifest: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(manifest["installations"][ID]["active"]["version"], "1.0.0");
+    assert_eq!(manifest["installations"][ID]["storageClaimed"], true);
+    assert_eq!(
+        manifest["installations"][UNCLAIMED]["storageClaimed"],
+        false
+    );
+    assert_eq!(manifest["installations"][UNCLAIMED]["generation"], 1);
+    assert_eq!(manifest["installations"][UNCLAIMED]["removal"], "removed");
+    assert!(manifest["data"].get((UID + 1).to_string()).is_none());
     let snapshot = temporary.join("app-snapshot");
     fs::write(&snapshot, output.stdout).unwrap();
     fs::write(&note, b"changed fixture").unwrap();
@@ -398,6 +419,18 @@ pub(super) async fn exercise() {
     let mut journal = Journal::open(Path::new(ROOT)).unwrap();
     journal
         .save(
+            UNCLAIMED,
+            Slot {
+                app_id: "example.probe".into(),
+                uid: UID + 1,
+                candidate: Some(release(&packages[0])),
+                storage_claimed: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    journal
+        .save(
             ID,
             Slot {
                 app_id: "example.probe".into(),
@@ -410,7 +443,33 @@ pub(super) async fn exercise() {
         )
         .unwrap();
     drop(journal);
-    let mut manager = mount_manager(&controller, &config, &token, true).await;
+    let installer_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(temp.path().join("store/.install.lock"))
+        .unwrap();
+    installer_lock.lock().unwrap();
+    let release_lock = async {
+        while UnixStream::connect("/run/rentnerproxy/app-manager/control.sock")
+            .await
+            .is_err()
+        {
+            sleep(Duration::from_millis(20)).await;
+        }
+        // Outlast the installer's own 500 ms lock wait during boot.
+        sleep(Duration::from_millis(1300)).await;
+        drop(installer_lock);
+    };
+    let (mut manager, ()) = tokio::join!(
+        mount_manager(&controller, &config, &token, true),
+        release_lock
+    );
+    assert!(invoke(&controller, &["activate", UNCLAIMED]).await.is_err());
+    invoke(&controller, &["remove", UNCLAIMED]).await.unwrap();
+    assert!(!super::super::storage::directory(UID + 1).exists());
     let states = invoke(&controller, &["status"]).await.unwrap();
     assert_eq!(states[ID]["active"], "1.0.0");
     assert_eq!(states[ID]["candidate"], "1.1.0");
@@ -459,6 +518,47 @@ pub(super) async fn exercise() {
     assert_eq!(states[ID]["candidate"], "1.2.0");
     assert_eq!(states[ID]["running"], true);
     assert_eq!(states[ID]["generation"], before + 2);
+    halt(&mut manager).await;
+    let capture = || {
+        let mut command = Process::new(&controller);
+        command
+            .args(["--app-backup", "capture"])
+            .env("RENTNERPROXY_APP_INSTALLER_CONFIG", &config);
+        command
+    };
+    crate::app_install::tests::revoke_lifecycle_release(&config, "1.1.0");
+    assert!(!capture().output().await.unwrap().status.success());
+    let mut manager = mount_manager(&controller, &config, &token, true).await;
+    let before = invoke(&controller, &["status"]).await.unwrap()[ID].clone();
+    assert_eq!(before["previous"], "1.1.0");
+    assert!(
+        invoke(&controller, &["discard", ID, "active"])
+            .await
+            .is_err()
+    );
+    invoke(&controller, &["discard", ID, "previous"])
+        .await
+        .unwrap();
+    invoke(&controller, &["discard", ID, "candidate"])
+        .await
+        .unwrap();
+    let status = invoke(&controller, &["status"]).await.unwrap();
+    assert_eq!(status[ID]["generation"], before["generation"]);
+    assert_eq!(status[ID]["active"], before["active"]);
+    assert_eq!(status[ID]["running"], true);
+    halt(&mut manager).await;
+    let backup = capture().output().await.unwrap();
+    assert!(
+        backup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&backup.stderr)
+    );
+    let snapshot: Value = serde_json::from_slice(&backup.stdout).unwrap();
+    assert!(snapshot["installations"][ID]["previous"].is_null());
+    assert!(snapshot["installations"][ID]["candidate"].is_null());
+    crate::app_install::tests::revoke_lifecycle_release(&config, "1.0.0");
+    assert!(!capture().output().await.unwrap().status.success());
+    let mut manager = mount_manager(&controller, &config, &token, false).await;
     invoke(&controller, &["remove", ID]).await.unwrap();
     let data = super::super::storage::directory(UID);
     assert!(data.join("data/app-pid").is_file());

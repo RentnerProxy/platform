@@ -245,7 +245,9 @@ impl Supervisor {
         let machines = self
             .cli(LOCAL_CONFIG, &["machines", "list", "-o", "json"], 25, true)
             .await?;
-        if !online::has_json_field(&machines, "machineId", &json!(MACHINE)) {
+        if !files::local_credentials_present()?
+            || !online::has_json_field(&machines, "machineId", &json!(MACHINE))
+        {
             let _ = self
                 .cli(LOCAL_CONFIG, &["machines", "delete", MACHINE], 25, false)
                 .await;
@@ -256,6 +258,11 @@ impl Supervisor {
                 false,
             )
             .await?;
+            if !files::local_credentials_present()? {
+                return Err(io::Error::other(
+                    "CrowdSec local credentials were not created",
+                ));
+            }
         }
         if self.rotate {
             files::check_previous_key()?;

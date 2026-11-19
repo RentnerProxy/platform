@@ -58,6 +58,51 @@ fn missing_data_requires_an_existing_verified_installation_owner() {
 }
 
 #[test]
+fn removed_installation_without_a_storage_claim_accepts_only_absent_data() {
+    let uid = 25001;
+    let slot = json!({"uid":uid,"appId":"app.kiri","generation":1,"removal":"removed","databaseProvisioned":false,"written":null,"storageClaimed":false});
+    let check = |slot: &Value, data: Value| {
+        validate_snapshot(
+            &serde_json::from_value(json!({
+                "formatVersion": 1, "installations":{"kiri":slot}, "data":data
+            }))
+            .unwrap(),
+        )
+    };
+    let absent = json!({});
+    let present = json!({"25001":[]});
+    check(&slot, absent.clone()).unwrap();
+    assert!(check(&slot, present.clone()).is_err());
+    let mut claimed = slot.clone();
+    claimed["storageClaimed"] = true.into();
+    check(&claimed, present.clone()).unwrap();
+    assert!(check(&claimed, absent.clone()).is_err());
+    let mut legacy = slot.clone();
+    legacy.as_object_mut().unwrap().remove("storageClaimed");
+    check(&legacy, present).unwrap();
+    assert!(check(&legacy, absent).is_err());
+
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let inventory = json!({"kiri": slot});
+    assert!(
+        app_roots(directory.path(), &inventory, None)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(app_roots(directory.path(), &json!({"kiri":claimed}), None).is_err());
+    fs::create_dir(directory.path().join(uid.to_string())).unwrap();
+    assert_eq!(
+        app_roots(directory.path(), &inventory, None)
+            .unwrap_err()
+            .to_string(),
+        "Untracked installation data"
+    );
+}
+
+#[test]
 fn inventory_requires_unique_owned_data_and_durable_retirement() {
     let live = json!({
         "uid": 25180,
@@ -98,6 +143,7 @@ fn inventory_requires_unique_owned_data_and_durable_retirement() {
         ("uid", json!(25181)),
         ("generation", Value::Null),
         ("authorityRecorded", json!("true")),
+        ("storageClaimed", json!("false")),
         ("removal", json!("removing")),
         ("databaseProvisioned", json!(true)),
         ("written", json!({})),

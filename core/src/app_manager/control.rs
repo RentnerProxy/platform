@@ -22,6 +22,13 @@ const SOCKET: &str = "/run/rentnerproxy/app-manager/control.sock";
 const LIMIT: usize = 96 * 1024;
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum InactiveRelease {
+    Candidate,
+    Previous,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(
     tag = "action",
     rename_all = "camelCase",
@@ -49,6 +56,10 @@ pub(super) enum Command {
     Rollback {
         installation_id: String,
     },
+    Discard {
+        installation_id: String,
+        release: InactiveRelease,
+    },
     Remove {
         installation_id: String,
     },
@@ -64,6 +75,9 @@ impl Command {
                 installation_id, ..
             }
             | Self::Activate {
+                installation_id, ..
+            }
+            | Self::Discard {
                 installation_id, ..
             }
             | Self::Start { installation_id }
@@ -140,6 +154,14 @@ fn command(args: Vec<String>) -> io::Result<Command> {
         ["rollback", id] => Command::Rollback {
             installation_id: id.to_string(),
         },
+        ["discard", id, role] => Command::Discard {
+            installation_id: id.to_string(),
+            release: match *role {
+                "candidate" => InactiveRelease::Candidate,
+                "previous" => InactiveRelease::Previous,
+                _ => return Err(bad("Discard requires previous or candidate")),
+            },
+        },
         ["remove", id] => Command::Remove {
             installation_id: id.to_string(),
         },
@@ -148,7 +170,7 @@ fn command(args: Vec<String>) -> io::Result<Command> {
         },
         _ => {
             return Err(bad(
-                "Expected status, stage ID APP VERSION, activate ID [GRANTS_FILE], start ID, stop ID, rollback ID, remove ID, or purge ID",
+                "Expected status, stage ID APP VERSION, activate ID [GRANTS_FILE], start ID, stop ID, rollback ID, discard ID previous|candidate, remove ID, or purge ID",
             ));
         }
     })

@@ -31,6 +31,11 @@ set -eu
 shift 2
 case "$*" in
     'machines list -o json') printf '[{"machineId":"rentnerproxy-managed"}]\n' ;;
+    'machines delete rentnerproxy-managed') echo delete >> /tmp/rentnerproxy-native-crowdsec/machine-recovery ;;
+    'machines add rentnerproxy-managed --auto --force')
+        echo add >> /tmp/rentnerproxy-native-crowdsec/machine-recovery
+        umask 077
+        echo fixture > /var/lib/rentnerproxy/crowdsec/credentials/local_api_credentials.yaml ;;
     'bouncers delete rentnerproxy-caddy') ;;
     'bouncers add rentnerproxy-caddy -o raw') head -c 32 /dev/urandom | base64 | tr -d '=\n' ;;
     'capi register -f '*)
@@ -128,6 +133,9 @@ trap 'stop_supervisor || exit 1' EXIT
 until_match "$control/status.json" '"state":"stopped"'
 mode managed
 until_match "$control/status.json" '"restarts":1.*"state":"ready"'
+local_credential="$state/credentials/local_api_credentials.yaml"
+[[ $(stat -c '%u:%g:%a:%h' "$local_credential") == 10003:10003:600:1 ]]
+[[ $(<"$fixture/machine-recovery") == $'delete\nadd' ]]
 readonly key="$state/bouncer/caddy-bouncer-key"
 [[ $(stat -c '%u:%g:%a:%h' "$key") == 0:10001:440:1 && $(stat -c '%u:%g:%a' "$control/status.json") == 0:10001:440 ]]
 first=$(<"$key")
@@ -206,6 +214,7 @@ until_match "$control/status.json" '"state":"stopped"'
 mode managed
 until_match "$control/status.json" '"state":"ready"'
 [[ $(<"$key") != "$first" ]]
+[[ $(<"$fixture/machine-recovery") == $'delete\nadd' ]]
 kill -TERM "$(<"$fixture/engine.pid")"
 until_match "$control/status.json" '"restarts":1.*"state":"ready"'
 engine=$(<"$fixture/engine.pid")

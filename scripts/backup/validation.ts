@@ -5,6 +5,10 @@ import { APP_AWARE_BACKUP_VERSION } from '../../web/src/config/compatibility.con
 // Covers 256 installation summaries plus escaped deployment strings in formatted JSON.
 export const maximumBackupMetadataBytes = 512 * 1024
 
+export function isCrowdSecBouncerKey(value: string): boolean {
+    return /^[a-f0-9]{64}$/u.test(value) || /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]$/u.test(value)
+}
+
 const digest = z.string().regex(/^[a-f0-9]{64}$/u)
 
 const artifact = z.strictObject({

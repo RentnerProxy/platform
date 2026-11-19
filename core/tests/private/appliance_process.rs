@@ -2,6 +2,15 @@ use std::{fs, path::Path};
 
 use super::{Consumers, inspect_live_entry, is_app, parse_status, verify_writers_stopped};
 
+fn app_writers_present(root: &Path) -> std::io::Result<bool> {
+    super::writers_present(
+        root,
+        &[],
+        std::time::Instant::now() + super::SCAN_BUDGET,
+        is_app,
+    )
+}
+
 #[test]
 fn guards_every_kernel_credential_and_respects_the_uid_pool() {
     let fixture = tempfile::tempdir().unwrap();
@@ -11,12 +20,12 @@ fn guards_every_kernel_credential_and_respects_the_uid_pool() {
     write_status(root, "21", "Z", [20_000, 20_000, 20_000, 20_000]);
     write_status(&root.join("21/task"), "21", "Z", [20_000; 4]);
     verify_writers_stopped(root, &[], is_app).unwrap();
-    assert!(!super::writers_present(root, &[], is_app).unwrap());
+    assert!(!app_writers_present(root).unwrap());
     for field in 0..4 {
         let mut identities = [0; 4];
         identities[field] = 59_999;
         write_status(root, "30", "S", identities);
-        assert!(super::writers_present(root, &[], is_app).unwrap());
+        assert!(app_writers_present(root).unwrap());
         assert!(verify_writers_stopped(root, &[], is_app).is_err());
     }
 }
@@ -30,7 +39,7 @@ fn fails_closed_for_truncated_or_unreadable_identity() {
     assert!(verify_writers_stopped(root, &[], is_app).is_err());
     fs::write(root.join("42/status"), "State:\tS\nUid:\t0 0 0\n").unwrap();
     assert!(verify_writers_stopped(root, &[], is_app).is_err());
-    assert!(super::writers_present(root, &[], is_app).is_err());
+    assert!(app_writers_present(root).is_err());
     assert!(parse_status(b"State:\tS\nUid:\t0 0 0 0 0\n").is_err());
     assert!(
         inspect_live_entry(&root.join("43"), std::time::Instant::now())
@@ -102,7 +111,7 @@ fn live_leaders_require_every_worker_identity() {
     let root = fixture.path();
     write_status(root, "self", "S", [0; 4]);
     write_status(root, "80", "S", [0; 4]);
-    let census = || super::writers_present(root, &[], is_app);
+    let census = || app_writers_present(root);
     assert!(!census().unwrap());
 
     let status = root.join("80/status");
@@ -123,6 +132,55 @@ fn live_leaders_require_every_worker_identity() {
         .unwrap();
         assert!(census().is_err());
     }
+}
+
+#[test]
+fn uid_census_retries_churn_with_one_shared_deadline() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    write_status(root, "self", "S", [0; 4]);
+    write_status(root, "80", "S", [0; 4]);
+    fs::write(
+        root.join("80/status"),
+        "State: S\nUid: 0 0 0 0\nThreads: 2\n",
+    )
+    .unwrap();
+    let tasks = root.join("80/task");
+    write_status(&tasks, "80", "S", [0; 4]);
+
+    let mut deadlines = Vec::new();
+    let present = super::retry_uid_scan(|deadline| {
+        deadlines.push(deadline);
+        let result = super::writers_present(root, &[], deadline, is_app);
+        if deadlines.len() == 1 {
+            assert_eq!(
+                result.as_ref().unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+            write_status(&tasks, "81", "S", [20_000; 4]);
+        }
+        result
+    })
+    .unwrap();
+    assert!(present);
+    assert_eq!(deadlines, [deadlines[0]; 2]);
+    fs::remove_dir_all(tasks.join("81")).unwrap();
+    let mut attempts = 0;
+    let error = super::retry_uid_scan(|deadline| {
+        attempts += 1;
+        super::writers_present(root, &[], deadline, is_app)
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(attempts, 3);
+    let mut attempts = 0;
+    let error = super::retry_uid_scan(|_| {
+        attempts += 1;
+        Err(std::io::ErrorKind::PermissionDenied.into())
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(attempts, 1);
 }
 
 #[test]

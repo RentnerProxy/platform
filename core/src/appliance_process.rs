@@ -15,11 +15,31 @@ fn is_app(uid: u32) -> bool {
 }
 
 pub(crate) fn uid_in_use(uid: u32) -> io::Result<bool> {
-    writers_present(Path::new("/proc"), &[], |current| current == uid)
+    retry_uid_scan(|deadline| {
+        writers_present(Path::new("/proc"), &[], deadline, |current| current == uid)
+    })
 }
 
 pub(crate) fn verify_uid_stopped(uid: u32) -> io::Result<()> {
-    verify_writers_stopped(Path::new("/proc"), &[], |current| current == uid)
+    require_stopped(uid_in_use(uid)?)
+}
+
+fn retry_uid_scan(mut scan: impl FnMut(Instant) -> io::Result<bool>) -> io::Result<bool> {
+    let deadline = Instant::now() + SCAN_BUDGET;
+    let mut retries = 2;
+    loop {
+        match scan(deadline) {
+            Err(error)
+                if error.kind() == io::ErrorKind::InvalidData
+                    && retries > 0
+                    && Instant::now() < deadline =>
+            {
+                retries -= 1;
+                thread::yield_now();
+            }
+            result => return result,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -55,7 +75,16 @@ fn verify_writers_stopped(
     exclusions: &[u32],
     is_writer: impl Fn(u32) -> bool,
 ) -> io::Result<()> {
-    if writers_present(proc, exclusions, is_writer)? {
+    require_stopped(writers_present(
+        proc,
+        exclusions,
+        Instant::now() + SCAN_BUDGET,
+        is_writer,
+    )?)
+}
+
+fn require_stopped(present: bool) -> io::Result<()> {
+    if present {
         return Err(io::Error::other("A managed writer is still running"));
     }
     Ok(())
@@ -64,12 +93,12 @@ fn verify_writers_stopped(
 fn writers_present(
     proc: &Path,
     exclusions: &[u32],
+    deadline: Instant,
     is_writer: impl Fn(u32) -> bool,
 ) -> io::Result<bool> {
     if inspect(&proc.join("self/status"))?.uids.is_none() {
         return Err(invalid_status());
     }
-    let deadline = Instant::now() + SCAN_BUDGET;
     scan_tasks(proc, exclusions, deadline, &is_writer, None)
 }
 
