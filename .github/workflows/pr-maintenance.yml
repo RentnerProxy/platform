@@ -28,7 +28,7 @@ on:
     workflow_dispatch:
         inputs:
             dry_run:
-                description: Report branch updates and merges without changing any PR
+                description: Report branch updates, digest-only closures and merges without changing any PR
                 type: boolean
                 default: true
 
