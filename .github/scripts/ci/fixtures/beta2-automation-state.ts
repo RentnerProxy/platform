@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Appliance fixtures deliberately sequence offline state replacement and runtime assertions.
 import assert from 'node:assert/strict'
+import { BACKUP_RUNTIME_POLICY } from '../../../../web/src/config/backup-runtime.config.ts'
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 import { discoveryRegistrySchema } from '../../../../web/src/lib/DockerDiscovery/management.ts'
 import {
@@ -560,7 +561,16 @@ export function createBeta2AutomationFixture(runId: string) {
             )
             assert.equal(activation.status, 200)
             const connectorRevision = JSON.parse(activation.body).configuration.revision
-            await command([...compose, 'stop', '--timeout', '30', 'rentnerproxy'], 180_000)
+            await command(
+                [
+                    ...compose,
+                    'stop',
+                    '--timeout',
+                    String(BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds),
+                    'rentnerproxy',
+                ],
+                180_000,
+            )
             generation += 1
             const runtime = queue(configuration, false)
             armedDeliveryId = runtime.engine.deliveries[0]!.id

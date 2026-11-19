@@ -1,6 +1,7 @@
 use super::{Budget, budget, drain};
 use crate::appliance_supervisor::process::owned_pid;
 use std::{
+    os::unix::process::ExitStatusExt,
     process::{Command, Stdio},
     time::Duration,
 };
@@ -48,7 +49,7 @@ fn forced_stop_fails_backup_and_can_prove_isolated_web_exit() {
             .is_ok(),
             forced.is_some()
         );
-        assert!(!child.wait().unwrap().success());
+        assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGKILL));
     }
 }
 

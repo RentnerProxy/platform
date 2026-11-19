@@ -62,7 +62,7 @@ pub(super) async fn fence_database(uid: u32) -> io::Result<()> {
     }
     let role = format!("rp_app_{uid}");
     let sql = format!(
-        "SELECT format('ALTER ROLE %I NOLOGIN', rolname) FROM pg_roles WHERE rolname='{role}'\n\\gexec\nSELECT 1 / pg_terminate_backend(pid, 2000)::int FROM pg_stat_activity WHERE usename='{role}';\nSELECT 1 / (NOT EXISTS (SELECT FROM pg_stat_activity WHERE usename='{role}'))::int;"
+        "SELECT format('ALTER ROLE %I NOLOGIN', rolname) FROM pg_roles WHERE rolname='{role}'\n\\gexec\nSELECT pg_terminate_backend(pid, 2000) FROM pg_stat_activity WHERE usename='{role}';\nSELECT 1 / (NOT EXISTS (SELECT FROM pg_stat_activity WHERE usename='{role}'))::int;"
     );
     control_sql(&sql).await.map(drop)
 }

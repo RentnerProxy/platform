@@ -89,10 +89,11 @@ describe('restore target maintenance entrypoint', () => {
             [
                 'set -eu',
                 'child_names=(web postgres app-manager); child_pids=(101 102 103)',
-                'backup_stop_consumer_phase() { echo "drain-$1"; unset "child_names[2]" "child_pids[2]"; }',
+                'SECONDS=0',
+                'backup_stop_consumer_phase() { echo "drain-$1"; SECONDS=18; unset "child_names[2]" "child_pids[2]"; }',
                 'backup_stop_retained_caddy() { :; }',
                 'live_web=true',
-                'kill() { if [[ $1 == -0 ]]; then [[ $2 == 101 && $live_web == true ]]; else echo "$1-$2"; if [[ $2 == 101 ]]; then live_web=false; fi; fi; }',
+                'kill() { if [[ $1 == -0 ]]; then [[ $2 == 101 && $live_web == true ]]; else echo "$1-$2"; if [[ $2 == 101 ]]; then live_web=false; echo "web-budget-$((consumer_deadline - SECONDS))"; fi; fi; }',
                 'wait() { :; }',
                 shutdown!,
                 'shutdown_children',
@@ -102,6 +103,7 @@ describe('restore target maintenance entrypoint', () => {
         const signals = result.stdout.toString().trim().split(/\r?\n/u)
         expect(signals[0]).toBe('drain-apps')
         expect(signals).toContain('-TERM-101')
+        expect(signals.find((line) => /^web-budget-2[23]$/u.test(line))).toBeDefined()
         expect(signals).toContain('-TERM-102')
     })
 

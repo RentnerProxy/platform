@@ -31,7 +31,14 @@ const installation = { ...legacyInstallation, authorityRecorded: true }
 const snapshot = Buffer.from(
     JSON.stringify({
         formatVersion: 1,
-        installations: { 'kiri-1': installation },
+        installations: {
+            'kiri-1': {
+                ...installation,
+                removal: 'installed',
+                databaseProvisioned: false,
+                written: null,
+            },
+        },
         data: { 20000: [{ path: 'note', mode: 384, contents: 'a2lyaQ==' }] },
     }),
 )
@@ -144,7 +151,19 @@ test('app snapshot survives publication and encrypted recovery and rejects downg
         const file = await open(join(restored, 'controller-state.tar'), 'r')
         try {
             const entries = await validateStateArchiveFile(file, 'controller')
-            expect(await readAppStateMember(file, entries, metadata)).toEqual(snapshot)
+            const recovered = await readAppStateMember(file, entries, metadata)
+            expect(recovered).toEqual(snapshot)
+            const nativeController =
+                process.env.RENTNERPROXY_TEST_CONTROLLER ?? Bun.which('rentnerproxy-controller')
+            if (process.platform === 'linux' && nativeController) {
+                const member = join(workspace, appStateName)
+                await writeFile(member, recovered!, { flag: 'wx', mode: 0o600 })
+                const inspect = Bun.spawn([nativeController, '--app-backup', 'inspect', member], {
+                    stdout: 'ignore',
+                    stderr: 'pipe',
+                })
+                expect(await inspect.exited, await new Response(inspect.stderr).text()).toBe(0)
+            }
             await expect(
                 readAppStateMember(file, entries, parseBackupMetadata({ ...base, version: 4 })),
             ).rejects.toThrow()

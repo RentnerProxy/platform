@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Smoke setup, maintenance, and recovery must run in a fixed order.
 import assert from 'node:assert/strict'
+import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -88,7 +89,7 @@ export function managedBackupSmokeCompose(image: string, scope: string): string 
                 rentnerproxy: {
                     image,
                     restart: 'no',
-                    stop_grace_period: '35s',
+                    stop_grace_period: `${BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds}s`,
                     labels,
                     environment: {
                         PUBLIC_ORIGIN: 'https://managed-backup.invalid',

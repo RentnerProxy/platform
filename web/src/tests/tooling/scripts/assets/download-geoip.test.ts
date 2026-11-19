@@ -379,4 +379,24 @@ describe('GeoIP release asset download', () => {
             }),
         ).rejects.toThrow('GeoIP asset checksum mismatch')
     })
+
+    test('retries a public asset that is replaced before the browser download', async () => {
+        const replacement = new TextEncoder().encode('updated country database')
+        let metadataReads = 0
+        let downloads = 0
+        const result = await downloadGeoip(async (url) => {
+            if (url === metadataUrl) return new Response(null, { status: 403 })
+            if (url === releasePage) {
+                const digest = metadata(metadataReads++ === 0 ? database : replacement).assets[0]!
+                    .digest
+                return new Response('<ul>' + releaseRow(digest) + '</ul>')
+            }
+            expect(url).toBe(publishedDatabase)
+            downloads += 1
+            return new Response(replacement)
+        })
+        expect(new Uint8Array(result)).toEqual(replacement)
+        expect(metadataReads).toBe(4)
+        expect(downloads).toBe(2)
+    })
 })

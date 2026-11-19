@@ -81,10 +81,10 @@ pub(super) fn stage(
                 "promote-package",
                 json!({"stagingPath": tree, "outputDirectory": destination}),
             )?;
-            filesystem::sync_directory(&packages)?;
         }
         Err(error) => return Err(error),
     }
+    filesystem::sync_directory(&packages)?;
     Ok(destination)
 }
 

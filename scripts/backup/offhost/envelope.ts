@@ -268,6 +268,7 @@ export async function encryptBackup(
                 join(dirname(resolve(outputFile)), '.rentnerproxy-encrypt-'),
             )
             const sealed = join(privateDirectory, 'envelope')
+            let result: { bytes: number; sha256: string; keyId: string }
             try {
                 const frame = Buffer.concat([
                     key,
@@ -305,12 +306,13 @@ export async function encryptBackup(
                 }
                 if (!ownsOutput) throw new Error('encrypted backup publication changed')
                 await syncBackupDirectory(dirname(resolve(outputFile)))
-                signal.throwIfAborted()
-                ownsOutput = false
-                return { bytes: receipt.bytes, sha256: receipt.sha256, keyId }
+                result = { bytes: receipt.bytes, sha256: receipt.sha256, keyId }
             } finally {
                 await rm(privateDirectory, { recursive: true, force: true })
             }
+            signal.throwIfAborted()
+            ownsOutput = false
+            return result
         }
         const cipher = createCipheriv('aes-256-gcm', key, header.subarray(12, 24), {
             authTagLength: tagBytes,

@@ -11,7 +11,7 @@ use std::{
         ffi::OsStrExt,
         fs::{MetadataExt, OpenOptionsExt, PermissionsExt, fchown},
     },
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 #[derive(Deserialize, Serialize)]
@@ -208,6 +208,27 @@ pub(super) fn inspect_target(
     Ok(RestoreTarget::Existing)
 }
 
+pub(super) fn inspect_targets(
+    roots: &BTreeMap<u32, PathBuf>,
+    incoming: &BTreeMap<u32, Vec<Entry>>,
+    budget: &mut Budget,
+) -> io::Result<Vec<(u32, RestoreTarget)>> {
+    let mut shrinking = Vec::new();
+    let mut growing = Vec::new();
+    for (&uid, root) in roots {
+        let previous_nodes = budget.nodes;
+        let target = inspect_target(root, uid, budget)?;
+        if incoming[&uid].len() <= budget.nodes - previous_nodes {
+            shrinking.push((uid, target));
+        } else {
+            growing.push((uid, target));
+        }
+    }
+    // Every intermediate inventory stays within the validated old/new node totals on retry.
+    shrinking.extend(growing);
+    Ok(shrinking)
+}
+
 pub(super) fn validate(entries: &[Entry], budget: &mut Budget) -> io::Result<()> {
     let mut parents = BTreeMap::new();
     for entry in entries {
@@ -392,6 +413,58 @@ mod tests {
         let link = fixture.path().join("linked-data");
         std::os::unix::fs::symlink(&root, &link).unwrap();
         assert!(inspect_target(&link, uid, &mut Budget::default()).is_err());
+    }
+
+    #[test]
+    fn resumes_after_the_first_exchange_when_old_and_new_counts_move_between_apps() {
+        use std::os::unix::fs::chown;
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let grow = 25001;
+        let shrink = 25002;
+        let mut roots = BTreeMap::new();
+        for uid in [grow, shrink] {
+            let root = temp.path().join(uid.to_string());
+            fs::create_dir(&root).unwrap();
+            chown(&root, Some(uid), Some(uid)).unwrap();
+            fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+            roots.insert(uid, root);
+        }
+        for name in ["one", "two"] {
+            let file = roots[&shrink].join(name);
+            fs::write(&file, b"old").unwrap();
+            chown(&file, Some(shrink), Some(shrink)).unwrap();
+        }
+        let incoming = BTreeMap::from([(grow, vec![dir("one"), dir("two")]), (shrink, vec![])]);
+        // Other unchanged installations already occupy the rest of the global inventory budget.
+        let occupied = || Budget {
+            nodes: MAX_NODES - 2,
+            bytes: 0,
+        };
+        let first = inspect_targets(&roots, &incoming, &mut occupied()).unwrap()[0];
+        assert_eq!(first.0, shrink);
+        restore(
+            &roots[&first.0],
+            first.0,
+            &incoming[&first.0],
+            ".app-restore-kiri",
+            first.1,
+        )
+        .unwrap();
+        for (uid, target) in inspect_targets(&roots, &incoming, &mut occupied()).unwrap() {
+            restore(
+                &roots[&uid],
+                uid,
+                &incoming[&uid],
+                ".app-restore-kiri",
+                target,
+            )
+            .unwrap();
+        }
+        assert!(roots[&grow].join("two").is_dir());
+        assert_eq!(fs::read_dir(&roots[&shrink]).unwrap().count(), 0);
     }
 
     #[test]

@@ -47,6 +47,9 @@ fn wait_for_exit(
 ) -> io::Result<bool> {
     let deadline = Instant::now() + duration;
     loop {
+        let done = targets
+            .iter()
+            .try_fold(true, |done, task| exited(task).map(|exited| done && exited))?;
         for task in critical {
             if exited(task)? {
                 return Err(io::Error::other(
@@ -54,10 +57,7 @@ fn wait_for_exit(
                 ));
             }
         }
-        if targets
-            .iter()
-            .try_fold(true, |done, task| exited(task).map(|exited| done && exited))?
-        {
+        if done {
             return Ok(true);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());

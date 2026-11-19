@@ -53,8 +53,8 @@ async fn cancelled_helper_and_owned_engine_are_reaped() {
     command
         .args(["-c", "echo $$ > \"$1\"; exec sleep 30", "fixture"])
         .arg(&pid);
-    let shutdown = CancellationToken::new();
-    let cancel = shutdown.clone();
+    let shutdown = commands::Helpers::new(CancellationToken::new());
+    let cancel = shutdown.shutdown.clone();
     let wait_pid = pid.clone();
     let interrupt = tokio::spawn(async move {
         let pid = fixture_pid(&wait_pid).await;
@@ -82,7 +82,7 @@ async fn cancelled_helper_and_owned_engine_are_reaped() {
 
 #[tokio::test]
 async fn helper_capture_is_bounded_and_preserves_successful_output() {
-    let shutdown = CancellationToken::new();
+    let shutdown = commands::Helpers::new(CancellationToken::new());
     let mut command = Command::new("/bin/echo");
     command.arg("fixture");
     assert_eq!(
@@ -126,7 +126,7 @@ async fn helper_deadline_terminates_the_recorded_descendant() {
     command
         .args(["-c", "sleep 30 & echo $! > \"$1\"; wait", "fixture"])
         .arg(&pid);
-    let shutdown = CancellationToken::new();
+    let shutdown = commands::Helpers::new(CancellationToken::new());
     let (result, task) = tokio::join!(commands::bounded(command, 1, false, &shutdown), async {
         let pid = fixture_pid(&pid).await;
         crate::appliance_supervisor::process::open_pid(pid as i32).unwrap()
@@ -139,4 +139,87 @@ async fn helper_deadline_terminates_the_recorded_descendant() {
     })
     .await
     .unwrap();
+}
+
+#[test]
+fn console_probe_requires_authentication_and_typed_enrollment() {
+    for (response, expected) in [
+        (
+            json!({"console":{"authenticated": false, "enrolled": true}}),
+            "degraded",
+        ),
+        (
+            json!({"console":{"authenticated": true, "enrolled": true}}),
+            "connected",
+        ),
+        (
+            json!({"console":{"authenticated": true, "enrolled": false}}),
+            "pending",
+        ),
+        (json!({"enrolled":true}), "degraded"),
+        (json!({"console":{"authenticated":true}}), "degraded"),
+    ] {
+        assert_eq!(
+            online::console_status(&serde_json::to_vec(&response).unwrap()),
+            expected
+        );
+    }
+    assert_eq!(online::console_status(b"invalid-json"), "degraded");
+}
+
+#[tokio::test]
+async fn unconfirmed_reaping_has_a_bounded_failure() {
+    let mut child = Command::new("/bin/sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let result = commands::reap_killed(&mut child, Duration::from_millis(1)).await;
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    child.start_kill().unwrap();
+    commands::reap_killed(&mut child, Duration::from_secs(2))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn unconfirmed_cleanup_stops_subsequent_helper_launches() {
+    for (sent, reaped) in [
+        (false, Ok(())),
+        (true, Err(std::io::Error::other("fixture"))),
+    ] {
+        let helpers = commands::Helpers::new(CancellationToken::new());
+        assert!(helpers.confirm_cleanup(sent, reaped).is_err());
+        assert!(helpers.shutdown.is_cancelled());
+        assert!(helpers.ensure_reaped().is_err());
+        assert!(
+            commands::bounded(Command::new("/bin/true"), 1, false, &helpers)
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn engine_ignoring_term_is_killed_and_reaped_within_the_forced_window() {
+    let temp = tempfile::tempdir().unwrap();
+    let pidfile = temp.path().join("pid");
+    let mut engine = Some(
+        Command::new("/bin/sh")
+            .args([
+                "-c",
+                "trap '' TERM; echo $$ > \"$1\"; exec sleep 30",
+                "fixture",
+            ])
+            .arg(&pidfile)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = fixture_pid(&pidfile).await;
+    commands::stop_with_grace(&mut engine, Duration::from_millis(10))
+        .await
+        .unwrap();
+    assert!(engine.is_none());
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
 }

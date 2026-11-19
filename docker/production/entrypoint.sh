@@ -39,14 +39,14 @@ shutdown_children() {
         backup_write_result "$backup_recovery_job" recovery_failed \
             || log 'could not persist the backup recovery failure'
     fi
-    deadline=$((SECONDS + 25))
-    consumer_deadline=$((deadline - 2))
     for index in "${!child_names[@]}"; do
         if [[ ${child_names[$index]} == app-manager ]]; then
             backup_stop_consumer_phase apps || log 'app retirement could not be confirmed during shutdown'
             break
         fi
     done
+    deadline=$((SECONDS + 25))
+    consumer_deadline=$((deadline - 2))
     # Only the supervisor receives Tini's signal. Keep state services and the
     # CrowdSec supervisor alive while web/controller consumers drain.
     for index in "${!child_pids[@]}"; do

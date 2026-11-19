@@ -1,4 +1,9 @@
-use std::{io, process::Stdio, time::Duration};
+use std::{
+    io,
+    process::Stdio,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 use tokio::{
     io::AsyncReadExt,
     process::{Child, Command},
@@ -7,6 +12,55 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const OUTPUT_LIMIT: u64 = 1024 * 1024;
+const REAP_BUDGET: Duration = Duration::from_secs(2);
+
+pub(super) struct Helpers {
+    pub(super) shutdown: CancellationToken,
+    failed: AtomicBool,
+}
+
+impl Helpers {
+    pub(super) fn new(shutdown: CancellationToken) -> Self {
+        Self {
+            shutdown,
+            failed: AtomicBool::new(false),
+        }
+    }
+
+    pub(super) fn ensure_reaped(&self) -> io::Result<()> {
+        if self.failed.load(Ordering::Relaxed) {
+            Err(io::Error::other(
+                "CrowdSec helper cleanup could not be confirmed",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn confirm_cleanup(
+        &self,
+        signalled: bool,
+        reaped: io::Result<()>,
+    ) -> io::Result<()> {
+        if signalled && reaped.is_ok() {
+            return Ok(());
+        }
+
+        self.failed.store(true, Ordering::Relaxed);
+        self.shutdown.cancel();
+        self.ensure_reaped()
+    }
+}
+
+pub(super) async fn reap_killed(child: &mut Child, budget: Duration) -> io::Result<()> {
+    timeout(budget, child.wait()).await.map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "CrowdSec process did not exit after SIGKILL",
+        )
+    })??;
+    Ok(())
+}
 
 pub(super) fn service(binary: &str, args: &[&str]) -> Command {
     let mut command = Command::new("/usr/local/bin/gosu");
@@ -25,9 +79,9 @@ pub(super) async fn bounded(
     mut command: Command,
     seconds: u64,
     capture: bool,
-    shutdown: &CancellationToken,
+    helpers: &Helpers,
 ) -> io::Result<Vec<u8>> {
-    if shutdown.is_cancelled() {
+    if helpers.shutdown.is_cancelled() {
         return Err(io::Error::other("Supervisor stopping"));
     }
     let mut child = command
@@ -72,19 +126,24 @@ pub(super) async fn bounded(
     };
     let result = tokio::select! {
         biased;
-        _ = shutdown.cancelled() => Err(io::Error::other("Supervisor stopping")),
+        _ = helpers.shutdown.cancelled() => Err(io::Error::other("Supervisor stopping")),
         result = timeout(Duration::from_secs(seconds), work) =>
             result.unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "CrowdSec helper timed out"))),
     };
     if result.is_err() && child.id().is_some() {
         // The group leader is our unreaped child. Its PID cannot have been recycled.
-        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
-        child.wait().await?;
+        let sent = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) } == 0
+            || io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        helpers.confirm_cleanup(sent, reap_killed(&mut child, REAP_BUDGET).await)?;
     }
     result
 }
 
 pub(super) async fn stop(child: &mut Option<Child>) -> io::Result<()> {
+    stop_with_grace(child, Duration::from_secs(12)).await
+}
+
+pub(super) async fn stop_with_grace(child: &mut Option<Child>, grace: Duration) -> io::Result<()> {
     if let Some(mut child) = child.take()
         && child.try_wait()?.is_none()
     {
@@ -93,11 +152,18 @@ pub(super) async fn stop(child: &mut Option<Child>) -> io::Result<()> {
             .ok_or_else(|| io::Error::other("Missing engine identity"))?;
         // The supervisor is the sole reaper of this engine child.
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-        match timeout(Duration::from_secs(12), child.wait()).await {
+        match timeout(grace, child.wait()).await {
             Ok(result) => {
                 result?;
             }
-            Err(_) => child.kill().await?,
+            Err(_) => {
+                if let Err(error) = child.start_kill()
+                    && error.raw_os_error() != Some(libc::ESRCH)
+                {
+                    return Err(error);
+                }
+                reap_killed(&mut child, REAP_BUDGET).await?;
+            }
         }
     }
     Ok(())

@@ -438,6 +438,8 @@ impl Manager {
         }
     }
 
+    /// After an unexpected exit, ticks retry retirement and leave the app stopped for manual recovery with `start`.
+    /// The next manager boot reconciles the saved running intent.
     async fn check_exits(&mut self) -> io::Result<()> {
         let pending: Vec<_> = self
             .journal

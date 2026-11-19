@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Bounded smoke scenarios preserve their sequential polling.
 import assert from 'node:assert/strict'
+import { BACKUP_RUNTIME_POLICY } from '../../../../web/src/config/backup-runtime.config.ts'
 import { randomBytes } from 'node:crypto'
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -155,7 +156,13 @@ export async function verifyApplianceRestoreSafety(context: ApplianceRestoreSafe
     )
     context.passed('restore rejects a deployment mismatch before stopping or replacing the target')
     await context.command(
-        [...context.restoreCompose, 'stop', '--timeout', '30', 'rentnerproxy'],
+        [
+            ...context.restoreCompose,
+            'stop',
+            '--timeout',
+            String(BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds),
+            'rentnerproxy',
+        ],
         180_000,
     )
     await context.commandWithEnvironment(

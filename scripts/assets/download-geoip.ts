@@ -205,8 +205,15 @@ async function verifiedDownload(
             )
             if (before.size !== undefined && bytes.byteLength !== before.size)
                 throw new Error('GeoIP asset size mismatch')
-            if (createHash('sha256').update(bytes).digest('hex') !== before.digest.slice(7))
+            if (createHash('sha256').update(bytes).digest('hex') !== before.digest.slice(7)) {
+                // The browser download URL follows replacements of the latest asset.
+                if (
+                    before.id === undefined &&
+                    (await readAsset(fetchAsset)).digest !== before.digest
+                )
+                    throw new PublicationTransition('GeoIP asset changed during download')
                 throw new Error('GeoIP asset checksum mismatch')
+            }
             const after = await readAsset(fetchAsset)
             if (
                 before.id !== after.id ||

@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Bounded smoke scenarios preserve their sequential polling.
 import assert from 'node:assert/strict'
+import { BACKUP_RUNTIME_POLICY } from '../../../../web/src/config/backup-runtime.config.ts'
 import { verifyApplianceStartup } from '../appliance-startup-smoke.ts'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -267,7 +268,16 @@ export async function verifyApplianceBackup(context: ApplianceBackupContext) {
         persistenceFixture.ownerUserId,
         context.generatedSecrets.appEncryptionKey!,
     )
-    await context.command([...context.compose, 'stop', '--timeout', '30', 'rentnerproxy'], 180_000)
+    await context.command(
+        [
+            ...context.compose,
+            'stop',
+            '--timeout',
+            String(BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds),
+            'rentnerproxy',
+        ],
+        180_000,
+    )
     // DNS tokens are seeded offline: production DNS providers remain pinned and are never contacted.
     await beta2Automation.seedStoppedController(context.command, context.compose)
     const backupRoot = join(context.temporaryRoot, 'backups')

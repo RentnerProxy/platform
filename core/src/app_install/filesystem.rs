@@ -1,7 +1,7 @@
 use std::{
     fs::{self, DirBuilder, File, OpenOptions},
     io,
-    path::Path,
+    path::{Component, Path},
 };
 
 use marketplace_artifacts::{file_identity, invalid};
@@ -9,6 +9,7 @@ use marketplace_artifacts::{file_identity, invalid};
 pub(super) fn check_root_path(path: &Path, directory: bool) -> io::Result<()> {
     if !path.is_absolute()
         || path.parent().is_none()
+        || path.components().any(|part| part == Component::ParentDir)
         || path.as_os_str()
             != path
                 .components()
@@ -56,6 +57,7 @@ pub(super) fn lock(directory: &Path) -> io::Result<File> {
 }
 
 pub(super) fn directory(path: &Path, mode: u32) -> io::Result<()> {
+    let parent = path.parent().expect("child directory");
     let builder = &mut DirBuilder::new();
     #[cfg(unix)]
     {
@@ -65,7 +67,7 @@ pub(super) fn directory(path: &Path, mode: u32) -> io::Result<()> {
     match builder.create(path) {
         Ok(()) => {
             permissions(path, mode)?;
-            sync_directory(path.parent().expect("child directory"))
+            sync_directory(parent)
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             let metadata = fs::symlink_metadata(path)?;
@@ -82,7 +84,7 @@ pub(super) fn directory(path: &Path, mode: u32) -> io::Result<()> {
                     ));
                 }
             }
-            Ok(())
+            sync_directory(parent)
         }
         Err(error) => Err(error),
     }

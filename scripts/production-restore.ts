@@ -141,7 +141,13 @@ async function restore(): Promise<void> {
         if (!pending && argumentsList.includes('--resume'))
             throw new Error('no interrupted restore is pending')
         await runCommand(
-            [...compose, 'stop', '--timeout', '30', applianceService],
+            [
+                ...compose,
+                'stop',
+                '--timeout',
+                String(BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds),
+                applianceService,
+            ],
             'quiesce restore target',
             180_000,
         )

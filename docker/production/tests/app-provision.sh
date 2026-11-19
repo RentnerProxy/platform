@@ -33,7 +33,8 @@ reject "$controller" --app-provision 60000
 reject "$controller" --app-provision 59180 other
 reject "$controller" --app-provision 59180 files extra
 "$controller" --app-backup empty
-[[ -z $("$controller" --app-backup capture) ]]
+captured=$("$controller" --app-backup capture)
+[[ -z $captured ]]
 reject "$controller" --app-backup unknown
 reject "$controller" --app-backup inspect /tmp/missing-snapshot
 reject "$controller" --app-manager

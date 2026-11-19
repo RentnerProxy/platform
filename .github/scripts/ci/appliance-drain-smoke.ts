@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Readiness, admission and scoped cleanup depend on prior attempts.
 import assert from 'node:assert/strict'
+import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -177,7 +178,10 @@ async function drain(seconds: 16 | 60) {
     await admitted(ids)
     const admittedAt = performance.now()
     const stopStarted = performance.now()
-    await command(['stop', '--time', '30', container], { timeoutMs: 40_000 })
+    await command(
+        ['stop', '--time', String(BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds), container],
+        { timeoutMs: (BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds + 10) * 1_000 },
+    )
     const stopFinished = performance.now()
     const responses = await Promise.all(requests)
     const lifecycle = await events(since)
@@ -255,7 +259,10 @@ try {
     const composeSource = Bun.YAML.parse(
         await readFile(join(repositoryRoot, 'docker-compose.yml'), 'utf8'),
     ) as { services: { rentnerproxy: { stop_grace_period?: string } } }
-    assert.equal(composeSource.services.rentnerproxy.stop_grace_period, '30s')
+    assert.equal(
+        composeSource.services.rentnerproxy.stop_grace_period,
+        `${BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds}s`,
+    )
     if (sharedSmokeImage('appliance')) {
         await verifySharedSmokeImage(async (args, options) => {
             if (args[0] === 'git') {
@@ -379,7 +386,7 @@ try {
         '--pids-limit',
         '512',
         '--stop-timeout',
-        '30',
+        String(BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds),
         '--publish',
         '127.0.0.1::8080',
         '--publish',

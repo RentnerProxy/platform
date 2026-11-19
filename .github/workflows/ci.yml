@@ -511,6 +511,11 @@ jobs:
             - name: 'Build affected controller artifacts'
               if: "${{ needs.changes.outputs.build_core == 'true' }}"
               run: 'bun --no-env-file run build:core'
+            - name: Verify recovered application state with the built controller
+              if: "${{ needs.changes.outputs.build_web == 'true' && needs.changes.outputs.build_core == 'true' }}"
+              env:
+                  RENTNERPROXY_TEST_CONTROLLER: '${{ github.workspace }}/core/target/release/rentnerproxy-controller'
+              run: bun --no-env-file test web/src/tests/tooling/scripts/backup/app-state.test.ts
 
             - name: Save Rust release build outputs
               if: "${{ needs.changes.outputs.build_core == 'true' && (github.event_name != 'pull_request' && steps.rust-release-cache.outputs.cache-hit != 'true') }}"

@@ -474,6 +474,9 @@ fn installer_respects_root_path_admission_and_retains_its_catalog_when_refresh_f
     assert_eq!(fs::read(&checkpoint).unwrap(), accepted);
     assert!(super::filesystem::check_root_path(Path::new("catalog.json"), false).is_err());
     assert!(super::filesystem::check_root_path(&pin, true).is_err());
+    assert!(
+        super::filesystem::check_root_path(&root.join("store/../installer.json"), false).is_err()
+    );
 
     let alias = root.join("alias.json");
     symlink(&config, &alias).unwrap();

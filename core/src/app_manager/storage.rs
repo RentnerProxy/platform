@@ -44,7 +44,7 @@ pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
     let root = Path::new(ROOT);
     require_safe_parents(root, 0)?;
     match DirBuilder::new().mode(0o711).create(root) {
-        Ok(()) => File::open(root.parent().expect("application storage parent"))?.sync_all()?,
+        Ok(()) => (),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
         Err(e) => return Err(e),
     }
@@ -52,8 +52,10 @@ pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
     if !stat.is_dir() || stat.uid() != 0 || stat.gid() != 0 || stat.mode() & 0o7777 != 0o711 {
         return Err(bad("Unsafe application storage root"));
     }
+    File::open(root.parent().expect("application storage parent"))?.sync_all()?;
+    let root_directory = File::open(root)?;
     if owned(root, id, slot)? {
-        return Ok(());
+        return root_directory.sync_all();
     }
     let tmp = tempfile::Builder::new()
         .prefix(".reserve-")
@@ -84,7 +86,7 @@ pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
-    File::open(root)?.sync_all()
+    root_directory.sync_all()
 }
 
 pub(super) fn purge(id: &str, slot: &Slot) -> io::Result<()> {
@@ -106,7 +108,6 @@ pub(super) fn purge(id: &str, slot: &Slot) -> io::Result<()> {
         {
             return Err(io::Error::last_os_error());
         }
-        File::open(root)?.sync_all()?;
     }
     match fs::symlink_metadata(&retired) {
         Ok(meta)
@@ -116,8 +117,10 @@ pub(super) fn purge(id: &str, slot: &Slot) -> io::Result<()> {
                 && meta.mode() & 0o7777 == 0o710 =>
         {
             require_safe_parents(&retired, 0)?;
+            let root_directory = File::open(root)?;
+            root_directory.sync_all()?;
             fs::remove_dir_all(retired)?;
-            File::open(root)?.sync_all()?;
+            root_directory.sync_all()?;
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             match OpenOptions::new()

@@ -267,17 +267,11 @@ fn process(args: &[String]) -> io::Result<()> {
                     "Snapshot requires the same installed applications and releases",
                 ));
             }
-            let mut current_budget = files::Budget::default();
-            let mut targets = BTreeMap::new();
-            for (uid, root) in &roots {
-                targets.insert(
-                    *uid,
-                    files::inspect_target(root, *uid, &mut current_budget)?,
-                );
-            }
+            let plan =
+                files::inspect_targets(&roots, &snapshot.data, &mut files::Budget::default())?;
             if action == "restore" {
-                for (uid, entries) in &snapshot.data {
-                    files::restore(&roots[uid], *uid, entries, &stage, targets[uid])?;
+                for (uid, target) in plan {
+                    files::restore(&roots[&uid], uid, &snapshot.data[&uid], &stage, target)?;
                 }
             }
             Ok(())

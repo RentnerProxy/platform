@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs::{self, File},
     io::{self, Read},
     path::Path,
@@ -87,9 +88,23 @@ fn scan_tasks(
             None if inspect_siblings => {
                 if let Err(error) =
                     scan_tasks(&process.join("task"), &[], deadline, is_writer, false)
-                    && !(error.kind() == io::ErrorKind::NotFound && disappeared(&process))
                 {
-                    return Err(error);
+                    if !matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                    ) {
+                        return Err(error);
+                    }
+                    if let Err(fallback) = verify_hidden_group(
+                        directory,
+                        Path::new("/sys/fs/cgroup"),
+                        pid,
+                        deadline,
+                        is_writer,
+                    ) && !(fallback.kind() == io::ErrorKind::NotFound && disappeared(&process))
+                    {
+                        return Err(fallback);
+                    }
                 }
             }
             _ => (),
@@ -100,6 +115,68 @@ fn scan_tasks(
             io::ErrorKind::NotFound,
             "No visible thread identities",
         ));
+    }
+    check_deadline(deadline)
+}
+
+fn status_number(status: &[u8], prefix: &[u8]) -> io::Result<u32> {
+    status
+        .split(|byte| *byte == b'\n')
+        .find_map(|line| line.strip_prefix(prefix))
+        .and_then(|field| std::str::from_utf8(field).ok()?.trim().parse().ok())
+        .ok_or_else(invalid_status)
+}
+
+fn verify_hidden_group(
+    proc: &Path,
+    cgroup: &Path,
+    pid: u32,
+    deadline: Instant,
+    is_writer: &impl Fn(u32) -> bool,
+) -> io::Result<()> {
+    let leader = proc.join(pid.to_string());
+    let thread_count = || -> io::Result<u32> {
+        let status = read_bounded(&leader.join("status"))?;
+        if parse_status(&status)?.is_some() || status_number(&status, b"Tgid:")? != pid {
+            return Err(invalid_status());
+        }
+        status_number(&status, b"Threads:")
+    };
+    let expected = thread_count()?;
+    if expected == 1 {
+        return check_deadline(deadline);
+    }
+    // In the appliance's private cgroup-v2 domain all siblings share one authoritative TID list.
+    if read_bounded(&leader.join("cgroup"))? != b"0::/\n"
+        || read_bounded(&cgroup.join("cgroup.type"))? != b"domain\n"
+    {
+        return Err(invalid_status());
+    }
+    let list = read_bounded(&cgroup.join("cgroup.threads"))?;
+    let mut group = HashSet::from([pid]);
+    for field in std::str::from_utf8(&list)
+        .map_err(|_| invalid_status())?
+        .split_ascii_whitespace()
+    {
+        check_deadline(deadline)?;
+        let tid = field.parse::<u32>().map_err(|_| invalid_status())?;
+        if tid == 0 || group.contains(&tid) {
+            continue;
+        }
+        let task = proc.join(tid.to_string());
+        let status = match read_bounded(&task.join("status")) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound && disappeared(&task) => continue,
+            result => result?,
+        };
+        if status_number(&status, b"Tgid:")? == pid {
+            if parse_status(&status)?.is_some_and(|uids| uids.into_iter().any(is_writer)) {
+                return Err(io::Error::other("A managed writer is still running"));
+            }
+            group.insert(tid);
+        }
+    }
+    if group.len() != expected as usize || thread_count()? != expected {
+        return Err(invalid_status());
     }
     check_deadline(deadline)
 }
@@ -134,6 +211,10 @@ fn inspect_live_entry(directory: &Path, deadline: Instant) -> io::Result<Option<
 }
 
 fn inspect(path: &Path) -> io::Result<Option<[u32; 4]>> {
+    parse_status(&read_bounded(path)?)
+}
+
+fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
     let mut status = Vec::with_capacity(2048);
     File::open(path)?
         .take(MAXIMUM_STATUS + 1)
@@ -141,7 +222,7 @@ fn inspect(path: &Path) -> io::Result<Option<[u32; 4]>> {
     if status.len() as u64 > MAXIMUM_STATUS {
         return Err(invalid_status());
     }
-    parse_status(&status)
+    Ok(status)
 }
 
 fn parse_status(status: &[u8]) -> io::Result<Option<[u32; 4]>> {

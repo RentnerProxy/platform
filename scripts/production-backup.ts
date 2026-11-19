@@ -146,7 +146,13 @@ async function backup(): Promise<void> {
             )) !== ''
         if (restartAppliance) {
             await runCommand(
-                [...compose, 'stop', '--timeout', '30', applianceService],
+                [
+                    ...compose,
+                    'stop',
+                    '--timeout',
+                    String(BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds),
+                    applianceService,
+                ],
                 'quiesce appliance',
             )
         }

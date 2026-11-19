@@ -17,6 +17,24 @@ pub(super) fn has_json_field(bytes: &[u8], field: &str, expected: &Value) -> boo
     serde_json::from_slice::<Value>(bytes).is_ok_and(|value| contains(&value, field, expected))
 }
 
+pub(super) fn console_status(bytes: &[u8]) -> &'static str {
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return "degraded";
+    };
+    if value
+        .pointer("/console/authenticated")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return "degraded";
+    }
+    match value.pointer("/console/enrolled").and_then(Value::as_bool) {
+        Some(true) => "connected",
+        Some(false) => "pending",
+        None => "degraded",
+    }
+}
+
 impl Supervisor {
     pub(super) async fn enable_online(&self) -> io::Result<()> {
         match fs::symlink_metadata(files::CAPI) {
@@ -39,6 +57,7 @@ impl Supervisor {
         self.protect_online().await?;
         self.cli(ONLINE_CONFIG, &["capi", "status"], 8, false)
             .await?;
+        self.validate(ONLINE_CONFIG).await?;
         Ok(())
     }
 
@@ -47,7 +66,7 @@ impl Supervisor {
             "/usr/local/bin/rentnerproxy-controller",
             &["--appliance-supervisor", "protect-capi"],
         );
-        bounded(protect, 8, false, &self.shutdown).await?;
+        bounded(protect, 8, false, &self.helpers).await?;
         Ok(())
     }
 
@@ -67,8 +86,7 @@ impl Supervisor {
                 .cli(ONLINE_CONFIG, &["-o", "json", "console", "status"], 8, true)
                 .await
             {
-                Ok(data) if has_json_field(&data, "enrolled", &json!(true)) => "connected",
-                Ok(_) => "pending",
+                Ok(data) => console_status(&data),
                 Err(_) => "degraded",
             },
             _ => "degraded",
@@ -83,7 +101,7 @@ impl Supervisor {
         } else if self
             .cli(
                 ONLINE_CONFIG,
-                &["console", "enroll", "--disable", "all", key],
+                &["console", "enroll", "--disable", "all", "--", key],
                 25,
                 false,
             )

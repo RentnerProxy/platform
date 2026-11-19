@@ -45,8 +45,8 @@ case "$*" in
             rm /tmp/rentnerproxy-native-crowdsec/fail-probe
             exit 1
         fi ;;
-    '-o json console status') echo '{"enrolled":true}' ;;
-    'console enroll --disable all DEMO_0123456789-ab') ;;
+    '-o json console status') echo '{"console":{"authenticated":true,"enrolled":true}}' ;;
+    'console enroll --disable all -- -DEMO_0123456789-ab') ;;
     *) exit 11 ;;
 esac
 SH
@@ -60,6 +60,13 @@ if [ "$1" = -t ]; then
     if [ -e /tmp/rentnerproxy-native-crowdsec/interrupt-validation ]; then
         rm /tmp/rentnerproxy-native-crowdsec/interrupt-validation
         kill -TERM "$$"
+    fi
+    if [ "$3" = /usr/share/rentnerproxy/crowdsec/config-online.yaml ]; then
+        [ ! -e /tmp/rentnerproxy-native-crowdsec/invalid-online ] || exit 1
+        if [ -e /tmp/rentnerproxy-native-crowdsec/hold-validation ]; then
+            echo ready > /tmp/rentnerproxy-native-crowdsec/validating
+            while [ -e /tmp/rentnerproxy-native-crowdsec/hold-validation ]; do sleep 0.05; done
+        fi
     fi
     if [ -e /tmp/rentnerproxy-native-crowdsec/invalid-config ]; then exit 1; fi
     exit 0
@@ -124,6 +131,15 @@ mode managed-online
 until_match "$control/status.json" '"community":"degraded".*"state":"ready"'
 [[ $(<"$capi") == fixture ]]
 registered=$(stat -c '%d:%i' "$capi")
+local_engine=$(<"$fixture/engine.pid")
+mode managed
+until_match "$control/status.json" '"community":"disabled".*"state":"ready"'
+touch "$fixture/invalid-online"
+mode managed-online
+until_match "$control/status.json" '"community":"degraded".*"state":"ready"'
+[[ $(<"$fixture/engine.pid") == "$local_engine" ]]
+kill -0 "$local_engine"
+rm "$fixture/invalid-online"
 mode managed
 until_match "$control/status.json" '"community":"disabled".*"state":"ready"'
 mode managed-online
@@ -133,7 +149,7 @@ until_match "$control/status.json" '"community":"connected".*"console":"connecte
 until_match "$fixture/launches" 'config-online.yaml$'
 [[ $(stat -c '%u:%g:%a:%h' "$capi") == 10003:10003:600:1 ]]
 id=0123456789abcdef0123456789abcdef
-printf '%s\n%s\n' "$id" DEMO_0123456789-ab > "$fixture/request"
+printf '%s\n%s\n' "$id" -DEMO_0123456789-ab > "$fixture/request"
 chown 10001:10001 "$fixture/request"
 chmod 0600 "$fixture/request"
 mv "$fixture/request" "$control/console-enrollment-request"
@@ -145,6 +161,16 @@ until_match "$control/status.json" '"community":"connected".*"console":"connecte
 kill -TERM "$(<"$fixture/engine.pid")"
 until_match "$control/status.json" '"community":"degraded".*"console":"degraded".*"state":"ready"'
 [[ $(<"$key") == "$first" ]]
+mode stopped
+until_match "$control/status.json" '"state":"stopped"'
+online_launches=$(grep -c 'config-online.yaml$' "$fixture/launches")
+touch "$fixture/hold-validation"
+mode managed-online
+until_match "$fixture/validating" '^ready$'
+mode managed
+rm "$fixture/hold-validation"
+until_match "$control/status.json" '"restarts":0.*"state":"ready"'
+[[ $(grep -c 'config-online.yaml$' "$fixture/launches") == "$online_launches" ]]
 mode stopped
 until_match "$control/status.json" '"state":"stopped"'
 touch "$fixture/invalid-config"

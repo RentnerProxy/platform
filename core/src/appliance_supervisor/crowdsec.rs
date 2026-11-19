@@ -2,7 +2,7 @@ mod commands;
 mod files;
 mod online;
 
-use commands::{bounded, pause, service, stop};
+use commands::{Helpers, bounded, pause, service, stop};
 use files::{desired, status};
 use serde_json::json;
 use std::{
@@ -40,7 +40,7 @@ struct Supervisor {
     restarts: u32,
     blocked: bool,
     rotate: bool,
-    shutdown: CancellationToken,
+    helpers: Helpers,
 }
 
 pub(super) fn protect_capi() -> io::Result<()> {
@@ -63,6 +63,7 @@ pub(super) async fn serve() -> io::Result<()> {
     let mut supervisor = Supervisor::new(shutdown);
     let result = supervisor.run().await;
     stop(&mut supervisor.engine).await?;
+    supervisor.helpers.ensure_reaped()?;
     result
 }
 
@@ -80,7 +81,7 @@ impl Supervisor {
             restarts: 0,
             blocked: false,
             rotate: true,
-            shutdown,
+            helpers: Helpers::new(shutdown),
         }
     }
 
@@ -93,8 +94,9 @@ impl Supervisor {
 
     async fn run(&mut self) -> io::Result<()> {
         self.publish("stopped")?;
-        while !self.shutdown.is_cancelled() {
-            if desired() == Mode::Stopped {
+        while !self.helpers.shutdown.is_cancelled() {
+            let requested = desired();
+            if requested == Mode::Stopped {
                 stop(&mut self.engine).await?;
                 self.running = Mode::Stopped;
                 self.restarts = 0;
@@ -105,19 +107,22 @@ impl Supervisor {
                 self.community = "disabled";
                 self.console = "not_enrolled";
                 self.publish("stopped")?;
-                pause(1, &self.shutdown).await;
+                pause(1, &self.helpers.shutdown).await;
                 continue;
             }
             if self.blocked {
                 self.publish("degraded")?;
-                pause(1, &self.shutdown).await;
+                pause(1, &self.helpers.shutdown).await;
                 continue;
             }
             self.publish("starting")?;
-            if let Err(error) = self.start().await {
-                if self.shutdown.is_cancelled() {
-                    break;
-                }
+            let started = self.start(requested).await;
+            self.helpers.ensure_reaped()?;
+            if self.helpers.shutdown.is_cancelled() || desired() != requested {
+                stop(&mut self.engine).await?;
+                continue;
+            }
+            if let Err(error) = started {
                 if error.kind() == io::ErrorKind::InvalidInput {
                     self.blocked = true;
                     self.publish("degraded")?;
@@ -126,16 +131,19 @@ impl Supervisor {
                 }
                 continue;
             }
+            if self.engine.is_none() {
+                continue;
+            }
             let ready = self.ready().await?;
             let ready_since = Instant::now();
             let switched = if ready {
                 self.publish("ready")?;
                 self.monitor().await?
             } else {
-                false
+                desired() != requested
             };
             stop(&mut self.engine).await?;
-            if self.shutdown.is_cancelled() || desired() == Mode::Stopped || switched {
+            if self.helpers.shutdown.is_cancelled() || desired() == Mode::Stopped || switched {
                 continue;
             }
             if self.running == Mode::Online {
@@ -161,16 +169,16 @@ impl Supervisor {
             self.publish("degraded")
         } else {
             self.publish("restarting")?;
-            pause(1 << (self.restarts - 1), &self.shutdown).await;
+            pause(1 << (self.restarts - 1), &self.helpers.shutdown).await;
             Ok(())
         }
     }
 
-    async fn start(&mut self) -> io::Result<()> {
+    async fn start(&mut self, requested: Mode) -> io::Result<()> {
         self.initialize_credentials().await?;
         self.running = Mode::Local;
         let mut config = LOCAL_CONFIG;
-        if desired() == Mode::Online
+        if requested == Mode::Online
             && Instant::now() >= self.suspended
             && fs::symlink_metadata(files::CAPI).is_ok_and(|file| file.is_file())
         {
@@ -187,6 +195,10 @@ impl Supervisor {
         if config == LOCAL_CONFIG {
             self.validate(config).await?;
         }
+        self.helpers.ensure_reaped()?;
+        if self.helpers.shutdown.is_cancelled() || desired() != requested {
+            return Ok(());
+        }
         let mut command = service(ENGINE, &["-c", config]);
         if self.running == Mode::Local {
             command.arg("-no-capi");
@@ -200,7 +212,7 @@ impl Supervisor {
             service(ENGINE, &["-t", "-c", config]),
             15,
             false,
-            &self.shutdown,
+            &self.helpers,
         )
         .await
         .map_err(|error| {
@@ -224,7 +236,7 @@ impl Supervisor {
     ) -> io::Result<Vec<u8>> {
         let mut command = service(CSCLI, &["-c", config]);
         command.args(args);
-        bounded(command, seconds, capture, &self.shutdown).await
+        bounded(command, seconds, capture, &self.helpers).await
     }
 
     async fn initialize_credentials(&mut self) -> io::Result<()> {
@@ -274,7 +286,12 @@ impl Supervisor {
 
     async fn ready(&mut self) -> io::Result<bool> {
         for _ in 0..30 {
-            if self.shutdown.is_cancelled() || desired() == Mode::Stopped || !self.alive()? {
+            let wanted = desired();
+            if self.helpers.shutdown.is_cancelled()
+                || wanted == Mode::Stopped
+                || (self.running == Mode::Online && wanted != Mode::Online)
+                || !self.alive()?
+            {
                 break;
             }
             let mut command = Command::new("/usr/bin/curl");
@@ -287,16 +304,19 @@ impl Supervisor {
                 "1",
                 "http://127.0.0.1:18080/health",
             ]);
-            if bounded(command, 1, false, &self.shutdown).await.is_ok() {
-                return Ok(true);
+            if bounded(command, 1, false, &self.helpers).await.is_ok() {
+                let wanted = desired();
+                return Ok(!self.helpers.shutdown.is_cancelled()
+                    && wanted != Mode::Stopped
+                    && (self.running != Mode::Online || wanted == Mode::Online));
             }
-            pause(1, &self.shutdown).await;
+            pause(1, &self.helpers.shutdown).await;
         }
         Ok(false)
     }
 
     async fn monitor(&mut self) -> io::Result<bool> {
-        while !self.shutdown.is_cancelled() && self.alive()? {
+        while !self.helpers.shutdown.is_cancelled() && self.alive()? {
             match (self.running, desired()) {
                 (_, Mode::Stopped) => break,
                 (Mode::Online, Mode::Local) => {
@@ -315,7 +335,7 @@ impl Supervisor {
                 }
                 (Mode::Local, Mode::Online) if Instant::now() >= self.attempt => {
                     self.attempt = Instant::now() + RETRY;
-                    if self.enable_online().await.is_ok() {
+                    if self.enable_online().await.is_ok() && desired() == Mode::Online {
                         self.community = "starting";
                         return Ok(true);
                     }
@@ -329,11 +349,14 @@ impl Supervisor {
                 }
                 _ => (),
             }
+            if self.helpers.shutdown.is_cancelled() {
+                break;
+            }
             if let Some(text) = files::take_enrollment()? {
                 self.enroll(&text).await?;
                 self.publish("ready")?;
             }
-            pause(1, &self.shutdown).await;
+            pause(1, &self.helpers.shutdown).await;
         }
         Ok(false)
     }

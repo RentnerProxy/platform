@@ -90,3 +90,70 @@ fn checks_live_siblings_of_an_exited_leader_and_requires_a_visible_task_list() {
     write_status(&tasks, "71", "X", [20_001; 4]);
     verify_writers_stopped(root, &[], is_app).unwrap();
 }
+
+#[test]
+fn hidden_group_requires_a_complete_cgroup_thread_census() {
+    let fixture = tempfile::tempdir().unwrap();
+    let proc = fixture.path();
+    let cgroup = proc.join("domain");
+    fs::create_dir(&cgroup).unwrap();
+    write_status(proc, "40", "Z", [0; 4]);
+    let leader = proc.join("40/status");
+    let run = || {
+        super::verify_hidden_group(
+            proc,
+            &cgroup,
+            40,
+            std::time::Instant::now() + super::SCAN_BUDGET,
+            &is_app,
+        )
+    };
+    fs::write(&leader, "State: Z\nTgid: 40\nThreads: 1\n").unwrap();
+    run().unwrap();
+    fs::write(&leader, "State: Z\nTgid: 40\nThreads: 2\n").unwrap();
+    fs::write(proc.join("40/cgroup"), "0::/\n").unwrap();
+    fs::write(cgroup.join("cgroup.type"), "domain\n").unwrap();
+    fs::write(cgroup.join("cgroup.threads"), "0\n3\n40\n41\n41\n42\n").unwrap();
+    write_status(proc, "41", "S", [0; 4]);
+    fs::write(proc.join("41/status"), "State: S\nTgid: 40\nUid: 0 0 0 0\n").unwrap();
+    write_status(proc, "42", "S", [0; 4]);
+    fs::write(
+        proc.join("42/status"),
+        "State: S\nTgid: 42\nUid: 22000 0 0 0\n",
+    )
+    .unwrap();
+    run().unwrap();
+    fs::write(
+        proc.join("41/status"),
+        "State: S\nTgid: 40\nUid: 0 20000 0 0\n",
+    )
+    .unwrap();
+    assert!(run().is_err());
+    fs::write(cgroup.join("cgroup.threads"), "40\n").unwrap();
+    assert!(run().is_err());
+    fs::write(cgroup.join("cgroup.type"), "threaded\n").unwrap();
+    assert!(run().is_err());
+    fs::write(cgroup.join("cgroup.type"), "domain\n").unwrap();
+    fs::write(cgroup.join("cgroup.threads"), b"invalid-tid\n").unwrap();
+    assert!(run().is_err());
+    fs::write(cgroup.join("cgroup.threads"), b"\xff").unwrap();
+    assert!(run().is_err());
+    fs::write(proc.join("40/cgroup"), "0::/other\n").unwrap();
+    assert!(run().is_err());
+    fs::write(proc.join("40/cgroup"), "0::/\n").unwrap();
+    fs::write(cgroup.join("cgroup.threads"), "40\n41\n").unwrap();
+    fs::write(proc.join("41/status"), "State: S\nTgid: 40\nUid: 0 0 0 0\n").unwrap();
+    let changed = super::verify_hidden_group(
+        proc,
+        &cgroup,
+        40,
+        std::time::Instant::now() + super::SCAN_BUDGET,
+        &|_| {
+            fs::write(&leader, "State: Z\nTgid: 40\nThreads: 3\n").unwrap();
+            false
+        },
+    );
+    assert!(changed.is_err());
+    fs::write(&leader, "State: S\nTgid: 40\nThreads: 1\nUid: 0 0 0 0\n").unwrap();
+    assert!(run().is_err());
+}
