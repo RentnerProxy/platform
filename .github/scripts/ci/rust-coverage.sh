@@ -43,6 +43,7 @@ if [[ ${1:-} == --privileged-app-ipc ]]; then
     native_fixture_image=mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31
     "${runner[@]}" \
         --tmpfs /root:rw,mode=0700,size=64m \
+        --tmpfs /tmp:rw,mode=01777,size=128m \
         "$native_fixture_image" \
         /ipc-tests --test-threads=1 app_manager::tests:: app_install::tests:: app_backup::tests::
     "${runner[@]}" \

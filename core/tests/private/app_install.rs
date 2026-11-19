@@ -295,6 +295,14 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
             .directory,
         staged.directory
     );
+    let unexpected = staged.directory.join("bin/unrecorded");
+    fs::write(&unexpected, b"not in the signed archive").unwrap();
+    assert!(
+        offline
+            .recover(ID, VERSION, &staged.archive_sha256)
+            .is_err()
+    );
+    fs::remove_file(unexpected).unwrap();
     fs::write(&file, b"changed").unwrap();
     assert!(
         offline
@@ -309,16 +317,33 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
             .directory,
         staged.directory
     );
-    fs::write(
-        store.path().join("archives").join(&staged.archive_sha256),
-        b"changed",
-    )
-    .unwrap();
+    let cached_archive = store.path().join("archives").join(&staged.archive_sha256);
+    fs::write(&cached_archive, b"changed").unwrap();
     assert!(
         offline
             .recover(ID, VERSION, &staged.archive_sha256)
             .is_err()
     );
+    fs::remove_file(&cached_archive).unwrap();
+    assert!(
+        offline
+            .recover(ID, VERSION, &staged.archive_sha256)
+            .is_err()
+    );
+    fs::write(&cached_archive, &archive).unwrap();
+
+    files.extend(update(&catalog, json!({
+        "formatVersion":1,"revision":3,"releases":[],"revocations":[
+            {"appId":ID,"version":VERSION,"revokedAt":"2026-11-01T12:00:00.000Z","reason":"withdrawn"}
+        ]
+    })));
+    refresh(&installer, &files, now()).unwrap();
+    assert!(
+        offline
+            .recover(ID, VERSION, &staged.archive_sha256)
+            .is_err()
+    );
+    assert_eq!(fs::read(file).unwrap(), fixture_elf());
 }
 
 #[cfg(all(
@@ -374,6 +399,15 @@ fn staging_tree_refuses_special_files_before_touching_their_targets() {
         fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
         0o600
     );
+    let lock = directory.path().join(".install.lock");
+    symlink(&outside, &lock).unwrap();
+    assert!(super::filesystem::lock(directory.path()).is_err());
+    assert_eq!(fs::read(outside).unwrap(), b"preserved");
+
+    assert!(super::filesystem::directory(&lock, 0o711).is_err());
+    fs::set_permissions(&stage, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(super::filesystem::directory(&stage, 0o711).is_err());
+    assert!(super::filesystem::directory(&directory.path().join("absent/child"), 0o711).is_err());
 }
 
 #[test]

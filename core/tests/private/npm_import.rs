@@ -36,6 +36,10 @@ fn sqlite_projection_excludes_credentials_and_bounds_the_schema() {
     let output = read_source(&file).unwrap_or_else(|error| panic!("{}", error.code()));
     assert_eq!(output["authCounts"][0]["count"], 1);
     assert!(!output.to_string().contains("fixture-secret"));
+    assert_eq!(
+        run_read_npm_sqlite(std::iter::once(file.to_str().unwrap().to_owned())),
+        ExitCode::SUCCESS
+    );
 
     for (sql, expected) in [
         (
