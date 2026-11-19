@@ -70,6 +70,19 @@ jobs:
                   SOURCE_DIRECTORY: source
                   REPORT_DIRECTORY: ${{ runner.temp }}/dependency-source-report
               run: bash automation/.github/scripts/security/audit-bun.sh
+            - name: Scan CrowdSec Go workspace pins for upgrades
+              if: ${{ !cancelled() && github.event_name == 'schedule' && needs.changes.outputs.dependencies == 'true' }}
+              shell: bash
+              run: |
+                  updates=$(docker run --rm --workdir /pins \
+                    --mount "type=bind,source=$GITHUB_WORKSPACE/source/docker/crowdsec/tooling/engine-build,target=/pins,readonly" \
+                    --env GOWORK=off --env GOTOOLCHAIN=local \
+                    mirror.gcr.io/library/golang:1.27.3-trixie@sha256:af1bfc2614ebb1dbd31af514b78740fd678850e76498762b425ecee4c5c6ea80 \
+                    go list -m -u -mod=readonly -f '{{with or .Replace .}}{{if .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}{{end}}' all)
+                  {
+                    printf '### CrowdSec Go module updates\n\n'
+                    printf '%s\n' "$updates" | sed -e '/^$/d' -e 's/^/    /'
+                  } >> "$GITHUB_STEP_SUMMARY"
             - name: Store exact-source advisory evidence
               if: always() && needs.changes.outputs.dependencies == 'true'
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
