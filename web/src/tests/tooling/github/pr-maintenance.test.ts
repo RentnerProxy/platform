@@ -5,6 +5,7 @@ import {
     arrayPages,
     createGitHubRequest,
     GitHubRequestError,
+    record,
 } from '../../../../../.github/scripts/automation/github.ts'
 import { maintainPullRequests } from '../../../../../.github/scripts/automation/pr-maintenance.ts'
 import type { GitHubRequest } from '../../../../../.github/scripts/automation/Types/pr-maintenance.types.ts'
@@ -77,6 +78,7 @@ updated-dependencies:
         behind: 0,
         headChanged: false,
         breakingLabelAdded: false,
+        changeOnClose: '' as '' | 'head' | 'security',
         graphErrors: false,
         refusal: 0,
         reads: 0,
@@ -85,7 +87,15 @@ updated-dependencies:
     const files: Record<string, unknown>[] = [{ filename: 'package.json', status: 'modified' }]
     const request: GitHubRequest = (method, path, body) => {
         calls.push({ method, path, body })
-        if (method === 'PATCH') return Promise.resolve({ state: 'closed' })
+        if (method === 'PATCH') {
+            const state = record(body).state
+            const value = { ...structuredClone(pull), state }
+            if (state === 'closed' && settings.changeOnClose === 'head')
+                value.head.sha = 'd'.repeat(40)
+            if (state === 'closed' && settings.changeOnClose === 'security')
+                value.labels.push({ name: 'security' })
+            return Promise.resolve(value)
+        }
         if (method === 'PUT') {
             if (settings.refusal) throw new GitHubRequestError(settings.refusal)
             return Promise.resolve({ merged: true })
@@ -180,6 +190,19 @@ describe('Docker digest-only updates', () => {
         expect((await state.run())[0]?.action).toBe('skipped')
         expect(state.writes()).toHaveLength(0)
     })
+
+    test.each(['head', 'security'] as const)(
+        'reopens a PR when its %s changes during closure',
+        async (change) => {
+            const state = dockerUpdate()
+            state.settings.changeOnClose = change
+            expect((await state.run())[0]?.action).toBe('skipped')
+            expect(state.writes()).toEqual([
+                { method: 'PATCH', path: `${prefix}/pulls/42`, body: { state: 'closed' } },
+                { method: 'PATCH', path: `${prefix}/pulls/42`, body: { state: 'open' } },
+            ])
+        },
+    )
 })
 
 describe('PR branch maintenance', () => {

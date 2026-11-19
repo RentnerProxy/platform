@@ -11,7 +11,7 @@ const composeDigest =
     /^([ \t]*image:[ \t]*["']?[^ \t"']+@sha256:)([a-f0-9]{64})(["']?(?:[ \t]+.*)?)$/u
 
 function isRoutineDockerPull(pull: Record<string, unknown>, repository: string): boolean {
-    if (pull.state !== 'open' || pull.draft !== false) return false
+    if (pull.draft !== false) return false
     const head = record(pull.head)
     if (typeof head.ref !== 'string' || !/^dependabot\/docker(?:-compose)?\//u.test(head.ref))
         return false
@@ -77,7 +77,7 @@ export async function closeDigestOnlyDockerUpdate(
     path: string,
     pull: Record<string, unknown>,
 ): Promise<MaintenanceResult | undefined> {
-    if (!isRoutineDockerPull(pull, options.repository)) return undefined
+    if (pull.state !== 'open' || !isRoutineDockerPull(pull, options.repository)) return undefined
     const headSha = commitSha(record(pull.head).sha)
     const baseSha = commitSha(record(pull.base).sha)
     const files = await arrayPages(request, path + '/files')
@@ -91,13 +91,14 @@ export async function closeDigestOnlyDockerUpdate(
     const reason = 'Docker image digests changed while the tags stayed the same'
     if (options.dryRun) return { number, action: 'would-close', reason }
 
+    const matchesCheckedUpdate = (current: Record<string, unknown>) =>
+        isRoutineDockerPull(current, options.repository) &&
+        record(current.head).sha === headSha &&
+        record(current.base).sha === baseSha &&
+        current.changed_files === files.length
+
     const latest = record(await request('GET', path))
-    if (
-        !isRoutineDockerPull(latest, options.repository) ||
-        record(latest.head).sha !== headSha ||
-        record(latest.base).sha !== baseSha ||
-        latest.changed_files !== files.length
-    ) {
+    if (latest.state !== 'open' || !matchesCheckedUpdate(latest)) {
         return {
             number,
             action: 'skipped',
@@ -108,5 +109,18 @@ export async function closeDigestOnlyDockerUpdate(
     const closed = record(await request('PATCH', path, { state: 'closed' }))
     if (closed.state !== 'closed')
         throw new Error('GitHub did not close the digest-only pull request')
+    if (closed.merged === true)
+        return {
+            number,
+            action: 'skipped',
+            reason: 'Pull request was merged during digest validation',
+        }
+    // GitHub does not accept an expected head SHA when changing the PR state.
+    if (!matchesCheckedUpdate(closed)) {
+        const reopened = record(await request('PATCH', path, { state: 'open' }))
+        if (reopened.state !== 'open')
+            throw new Error('GitHub did not reopen the changed pull request')
+        return { number, action: 'skipped', reason: 'Reopened after the pull request changed' }
+    }
     return { number, action: 'closed', reason }
 }
