@@ -13,11 +13,6 @@ import {
     readRepositoryCatalog,
     updatePackageRepository,
 } from '../../../../../.github/scripts/distribution/repository.ts'
-import {
-    assertPackageFiles,
-    packageCpio,
-    packageTar,
-} from '../../../../../.github/scripts/distribution/archive.ts'
 
 test('repository replay rejects orphaned version, revision and architecture directories before rebuilding indexes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rp-catalog-tree-'))
@@ -117,27 +112,4 @@ test('refuses wrong, revoked, missing and soon-expiring signing keys', () => {
         listing('u', Math.floor(now / 1000) + 90 * 86400, 'B'.repeat(40)),
     ])
         expect(() => assertSigningKey(raw, fingerprint, now)).toThrow()
-})
-
-test('archive validation fails closed on malformed files, duplicates, modes and substitution', () => {
-    for (const bytes of [
-        Buffer.alloc(0),
-        Buffer.alloc(80),
-        Buffer.from('070701' + 'z'.repeat(104)),
-    ]) {
-        expect(() => packageCpio(bytes)).toThrow()
-        expect(() => packageTar(bytes)).toThrow()
-    }
-    expect(packageTar(Buffer.alloc(1024))).toEqual([])
-    const file = { path: 'usr/bin/rentnerproxy', mode: 0o755, content: '#!/bin/bash\n' } as const
-    const entry = { ...file, content: Buffer.from(file.content) }
-    expect(() => assertPackageFiles([entry], [file])).not.toThrow()
-    for (const entries of [
-        [],
-        [entry, entry],
-        [{ ...entry, mode: 0o4755 }],
-        [{ ...entry, path: '../evil' }],
-        [{ ...entry, content: Buffer.from('changed') }],
-    ])
-        expect(() => assertPackageFiles(entries, [file])).toThrow()
 })

@@ -2,7 +2,7 @@
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
-import { hashOciFile, ociText, readOciJson } from '../lib/oci-layout.ts'
+import { ociText } from '../lib/oci-layout.ts'
 import { verifyMultiarchImage } from '../release/multiarch-image.ts'
 import { bundleFiles, distributionFileHash, writeDistributionBundle } from './bundle.ts'
 import {
@@ -12,6 +12,7 @@ import {
 } from './candidate.ts'
 import { distributionWorkflowIdentity } from './prepare.ts'
 import { distributionCommand } from './process.ts'
+import { verifyDistributionNative } from './native-verifier.ts'
 
 export async function bindDistribution(options: {
     candidate: string
@@ -81,12 +82,13 @@ export async function bindDistribution(options: {
 
 export async function bindDistributionCommand(env: NodeJS.ProcessEnv = process.env) {
     const candidate = resolve(ociText(env.CANDIDATE_DIRECTORY))
-    if (
-        (await hashOciFile(join(candidate, 'candidate-image.tar'))).slice(7) !==
-            env.ARCHIVE_SHA256 ||
-        (await hashOciFile(join(candidate, 'evidence.json'))).slice(7) !== env.EVIDENCE_SHA256
+    const archiveSha256 = ociText(env.ARCHIVE_SHA256)
+    const evidence: unknown = JSON.parse(
+        await verifyDistributionNative('oci-input', candidate, {
+            archiveSha256,
+            evidenceSha256: ociText(env.EVIDENCE_SHA256),
+        }),
     )
-        throw new Error('Assessed image artifact checksum mismatch')
     const temporary = await mkdtemp(join(tmpdir(), 'rentnerproxy-distribution-bind-'))
     try {
         const layout = join(temporary, 'layout')
@@ -107,8 +109,8 @@ export async function bindDistributionCommand(env: NodeJS.ProcessEnv = process.e
             output: resolve(ociText(env.DISTRIBUTION_DIRECTORY)),
             reports: resolve(ociText(env.NATIVE_REPORT_DIRECTORY)),
             layout,
-            evidence: await readOciJson(join(candidate, 'evidence.json')),
-            archiveSha256: ociText(env.ARCHIVE_SHA256),
+            evidence,
+            archiveSha256,
             identity: distributionWorkflowIdentity(env),
         })
         if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, 'bundle_sha256=' + hash + '\n')

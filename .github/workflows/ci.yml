@@ -254,12 +254,17 @@ jobs:
               run: docker build -f docker/tooling/coverage/Dockerfile -t rentnerproxy-ts-coverage:test .
               if: "${{ needs.changes.outputs.web == 'true' }}"
 
+            - name: Build native distribution verifier for web tests
+              run: bash .github/scripts/distribution/install-verifier.sh
+              if: "${{ needs.changes.outputs.web == 'true' }}"
+
             - name: Run web, database and property tests with complete coverage
               run: |
                   mkdir -p coverage/typescript
                   docker run --rm --network host --workdir /workspace \
                     --init \
                     --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" \
+                    --mount "type=bind,source=$RUNNER_TEMP/distribution-verifier-bin/rentnerproxy-distribution-verify,target=/usr/local/bin/rentnerproxy-distribution-verify,readonly" \
                     --env DATABASE_URL --env VALKEY_URL \
                     --env RENTNERPROXY_DATABASE_INTEGRATION --env RENTNERPROXY_VALKEY_INTEGRATION \
                     rentnerproxy-ts-coverage:test run coverage:ts --database

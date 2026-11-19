@@ -178,7 +178,7 @@ test.skipIf(!enabled)(
             await prepareCompactReleaseAssets(options.assets, compact, expected.version)
             const compactProof = await verifyCompactReleaseAssets(compact, expected.version)
             expect(compactProof.installers).toHaveLength(6)
-            const metadata = readVerificationArchive(
+            const metadata = await readVerificationArchive(
                 await readFile(join(compact, verificationArchiveName(expected.version))),
             )
             const extracted = join(directory, 'extracted-verification')

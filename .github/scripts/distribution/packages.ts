@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
-import { gunzipSync } from 'node:zlib'
 import {
     distributionPayload,
     packagePreinstall,
@@ -16,8 +15,8 @@ import {
     packageArchitecture,
     parseDistributionRelease,
 } from './release.ts'
-import { distributionBytes, distributionCommand } from './process.ts'
-import { assertPackageFiles, packageCpio, packageTar } from './archive.ts'
+import { distributionCommand } from './process.ts'
+import { verifyDistributionNative } from './native-verifier.ts'
 import type { DistributionPayloadFile, DistributionRelease } from './Types/distribution.types.ts'
 
 const debDependencies = 'bash, coreutils, nftables, util-linux, podman (>= 5.4), systemd (>= 252)'
@@ -32,6 +31,14 @@ const debPostrm =
     '#!/bin/bash\nset -eu\ncase ${1:-} in remove|purge)\n' +
     packageRemoved.split('\n').slice(2).join('\n') +
     ';; esac\n'
+
+function inventory(files: readonly DistributionPayloadFile[]) {
+    return files.map(({ path, mode, content }) => ({
+        path,
+        mode,
+        sha256: createHash('sha256').update(content).digest('hex'),
+    }))
+}
 
 function quadletInstaller(payload: readonly DistributionPayloadFile[]): string {
     return (
@@ -74,14 +81,14 @@ export async function verifyQuadletArchive(
     identity: DistributionRelease,
 ): Promise<void> {
     const payload = await distributionPayload(source, identity)
-    assertPackageFiles(
-        packageTar(gunzipSync(await readFile(path), { maxOutputLength: 4 * 1024 * 1024 })),
-        [
+    await verifyDistributionNative('package', path, {
+        format: 'quadlet',
+        payload: inventory([
             ...payload,
             { path: 'install.sh', mode: 0o755, content: quadletInstaller(payload) },
             { path: 'uninstall.sh', mode: 0o755, content: quadletUninstaller(payload) },
-        ],
-    )
+        ]),
+    })
 }
 
 function debControl(identity: DistributionRelease): readonly DistributionPayloadFile[] {
@@ -123,96 +130,26 @@ export async function verifyDistributionPackage(
     const release = parseDistributionRelease(identity)
     const payload = await distributionPayload(source, release)
     if (path.endsWith('.deb')) {
-        assertPackageFiles(
-            packageTar(await distributionBytes(['dpkg-deb', '--fsys-tarfile', path])),
-            payload,
-        )
-        assertPackageFiles(
-            packageTar(await distributionBytes(['dpkg-deb', '--ctrl-tarfile', path])),
-            debControl(release),
-        )
+        await verifyDistributionNative('package', path, {
+            format: 'deb',
+            payload: inventory(payload),
+            control: inventory(debControl(release)),
+        })
     } else if (path.endsWith('.rpm')) {
-        assertPackageFiles(packageCpio(await distributionBytes(['rpm2cpio', path])), payload)
         const version = distributionPackageVersion(release.version, release.packageRevision)
-        const query = (format: string) => distributionCommand(['rpm', '-qp', '--qf', format, path])
-        const headerFiles = (
-            await query(
-                '[%{FILENAMES}|%{FILEMODES:octal}|%{FILEUSERNAME}|%{FILEGROUPNAME}|%{FILEFLAGS}|%{FILECAPS}|%{FILELINKTOS}\n]',
-            )
-        )
-            .trim()
-            .split('\n')
-        if (headerFiles.length !== payload.length) throw new Error('Unexpected RPM file header')
-        for (const file of payload) {
-            const parts = headerFiles
-                .find((line) => line.startsWith('/' + file.path + '|'))
-                ?.split('|')
-            if (
-                !parts ||
-                Number.parseInt(parts[1]!, 8) !== (0o100000 | file.mode) ||
-                parts[2] !== 'root' ||
-                parts[3] !== 'root' ||
-                parts[4] !== '0' ||
-                parts[5] !== '(none)' ||
-                parts[6]
-            )
-                throw new Error('Unsafe RPM file metadata')
-        }
-        const dependencies = (
-            await query('[%{REQUIRENAME}|%{REQUIREFLAGS:depflags}|%{REQUIREVERSION}\n]')
-        )
-            .trim()
-            .split('\n')
-        const expectedDependencies = [
-            '/bin/bash||',
-            'bash||',
-            'coreutils||',
-            'util-linux||',
-            'podman|>=|5.4',
-            'systemd|>=|252',
-            'rpmlib(CompressedFileNames)|<=|3.0.4-1',
-            'rpmlib(FileDigests)|<=|4.6.0-1',
-            'rpmlib(PayloadFilesHavePrefix)|<=|4.0-1',
-            'rpmlib(PayloadIsXz)|<=|5.2-1',
-        ]
-        if (
-            dependencies.some((line) => !expectedDependencies.includes(line)) ||
-            expectedDependencies.some((line) => !dependencies.includes(line))
-        )
-            throw new Error('Unexpected RPM dependencies')
-        if (
-            (await query('%{NAME}\n%{VERSION}\n%{RELEASE}\n%{ARCH}\n')) !==
-            `rentnerproxy\n${version.rpmVersion}\n${version.rpmRelease}\n${packageArchitecture(release.platform, 'rpm')}\n`
-        )
-            throw new Error('RPM identity mismatch')
-        const hooks = [
-            packagePreinstall,
-            packagePostinstall,
-            'if [[ $1 == 0 ]]; then\n' + packageStop.split('\n').slice(1).join('\n') + 'fi',
-            'if [[ $1 == 0 ]]; then\n' + packageRemoved.split('\n').slice(1).join('\n') + 'fi',
-        ]
-        for (const [index, tag] of ['PREIN', 'POSTIN', 'PREUN', 'POSTUN'].entries()) {
-            const expected =
-                index < 2 ? hooks[index]!.split('\n').slice(1).join('\n') : hooks[index]!
-            if (
-                (await query(`%{${tag}}`)).trim() !== expected.trim() ||
-                (await query(`[%{${tag}PROG}]`)) !== '/bin/bash'
-            )
-                throw new Error('Unexpected RPM scriptlet')
-        }
-        for (const tag of [
-            'PRETRANS',
-            'POSTTRANS',
-            'VERIFYSCRIPT',
-            'TRIGGERSCRIPTS',
-            'FILETRIGGERSCRIPTS',
-            'TRANSFILETRIGGERSCRIPTS',
-        ]) {
-            const value = (await query(`[%{${tag}}]`)).trim()
-            if (value && value !== '(none)') throw new Error('Unexpected RPM execution hook')
-        }
-        if ((await query('[%{FILECAPS}]')).replaceAll('(none)', '').trim())
-            throw new Error('Unexpected package capabilities')
+        await verifyDistributionNative('package', path, {
+            format: 'rpm',
+            payload: inventory(payload),
+            version: version.rpmVersion,
+            release: version.rpmRelease,
+            architecture: packageArchitecture(release.platform, 'rpm'),
+            hooks: [
+                packagePreinstall.split('\n').slice(1).join('\n'),
+                packagePostinstall.split('\n').slice(1).join('\n'),
+                'if [[ $1 == 0 ]]; then\n' + packageStop.split('\n').slice(1).join('\n') + 'fi',
+                'if [[ $1 == 0 ]]; then\n' + packageRemoved.split('\n').slice(1).join('\n') + 'fi',
+            ],
+        })
     } else throw new Error('Unsupported distribution package')
 }
 

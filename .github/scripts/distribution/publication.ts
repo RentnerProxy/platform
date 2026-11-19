@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { ociRecord, ociText } from '../lib/oci-layout.ts'
 import { parseNativeImageEvidence, parsePortabilityEvidence } from '../release/multiarch-image.ts'
 import { verifyDistributionBundle, bundleFiles, distributionFileHash } from './bundle.ts'
-import { verifyBoundDistribution, validateDistributionReports } from './candidate.ts'
+import { readBoundDistribution, validateDistributionReports } from './candidate.ts'
 import { distributionWorkflowIdentity } from './prepare.ts'
 import { distributionPayload } from './payload.ts'
 import { parseDistributionRelease, distributionPackageVersion } from './release.ts'
@@ -42,18 +42,9 @@ export async function validateNativeDistributionProofs(
     reports: string,
     identity: ReturnType<typeof distributionWorkflowIdentity>,
 ): Promise<void> {
-    const candidateHash = await verifyBoundDistribution(bundle, identity)
+    const { candidateHash, imageEvidence: raw } = await readBoundDistribution(bundle, identity)
     await validateDistributionReports(reports, identity, candidateHash)
-    const raw = ociRecord(JSON.parse(await readFile(join(bundle, 'image-evidence.json'), 'utf8')))
-    if (
-        raw.schemaVersion !== 1 ||
-        raw.digest !== identity.digest ||
-        raw.revision !== identity.revision ||
-        raw.version !== identity.version ||
-        raw.runId !== identity.runId ||
-        !Array.isArray(raw.native) ||
-        raw.native.length !== 2
-    )
+    if (!Array.isArray(raw.native) || raw.native.length !== 2)
         throw new Error('Invalid assessed image evidence')
     const nativeEntries = raw.native
     const native = (['amd64', 'arm64'] as const).map((architecture, index) =>

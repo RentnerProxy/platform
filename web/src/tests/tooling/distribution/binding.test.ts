@@ -1,9 +1,10 @@
 // oxlint-disable no-await-in-loop -- Mutate each immutable proof independently to check rejection.
-import { expect, test } from 'bun:test'
+import { beforeAll, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { bindDistribution } from '../../../../../.github/scripts/distribution/bind.ts'
+import { verifyDistributionNative } from '../../../../../.github/scripts/distribution/native-verifier.ts'
 import {
     validateDistributionCandidate,
     verifyCandidateDistribution,
@@ -12,6 +13,7 @@ import {
 } from '../../../../../.github/scripts/distribution/candidate.ts'
 import {
     bundleFiles,
+    distributionFileHash,
     verifyDistributionBundle,
     writeDistributionBundle,
 } from '../../../../../.github/scripts/distribution/bundle.ts'
@@ -21,6 +23,9 @@ import {
 } from '../../../../../.github/scripts/distribution/publication.ts'
 import { assembleCandidateImage } from '../../../../../.github/scripts/release/multiarch-image.ts'
 import { identity, platformFixture, workflow } from '../github/fixtures/oci.ts'
+import { ensureNativeDistributionVerifier } from './fixtures/native-verifier.ts'
+
+beforeAll(ensureNativeDistributionVerifier, 120_000)
 
 async function fixture(root: string) {
     const amd = await platformFixture(join(root, 'amd64'), 'amd64'),
@@ -102,6 +107,39 @@ test('unassessed candidates validate exact workflow identity without making an a
         expect(() =>
             validateDistributionCandidate({ ...metadata, ...change }, expected, archive),
         ).toThrow()
+})
+
+test('OCI handoff checks the archive and returns only checksum-verified evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rp-oci-handoff-'))
+    try {
+        const archive = join(root, 'candidate-image.tar'),
+            evidence = join(root, 'evidence.json')
+        await writeFile(archive, 'fixture archive')
+        await writeFile(evidence, '{"schemaVersion":1}')
+        const archiveSha256 = await distributionFileHash(archive),
+            evidenceSha256 = await distributionFileHash(evidence)
+        const verified = await verifyDistributionNative('oci-input', root, {
+            archiveSha256,
+            evidenceSha256,
+        })
+        expect(JSON.parse(verified)).toEqual({ schemaVersion: 1 })
+        await writeFile(evidence, '{"schemaVersion":1,"schemaVersion":2}')
+        await expect(
+            verifyDistributionNative('oci-input', root, { archiveSha256, evidenceSha256 }),
+        ).rejects.toThrow('evidence checksum')
+        await expect(
+            verifyDistributionNative('oci-input', root, {
+                archiveSha256,
+                evidenceSha256: await distributionFileHash(evidence),
+            }),
+        ).rejects.toThrow('Duplicate JSON member')
+        await writeFile(archive, 'fixture substitute')
+        await expect(
+            verifyDistributionNative('oci-input', root, { archiveSha256 }),
+        ).rejects.toThrow('archive checksum')
+    } finally {
+        await rm(root, { recursive: true, force: true })
+    }
 })
 
 test('late binding preserves every candidate byte and creates a distinct closed assessed bundle', async () => {

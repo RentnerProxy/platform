@@ -28,7 +28,10 @@ cleanup() {
     sudo systemctl stop "$machine.service" || true
     docker rm --force "$registry" >/dev/null 2>&1 || true
     if [[ -n "$exported" ]]; then docker rm --force "$exported" >/dev/null 2>&1 || true; fi
-    if [[ -n ${server_pid:-} ]]; then kill "$server_pid" 2>/dev/null || true; fi
+    if [[ -n ${server_pid:-} ]]; then
+        kill "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
     if [[ "$added_return" == true ]]; then sudo iptables -D FORWARD -o rp-host -d 192.0.2.0/30 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT || true; fi
     if [[ "$added_outbound" == true ]]; then sudo iptables -D FORWARD -i rp-host -s 192.0.2.0/30 -j ACCEPT || true; fi
     if [[ "$added_nat" == true ]]; then sudo iptables -t nat -D POSTROUTING -s 192.0.2.0/30 ! -o rp-host -j MASQUERADE || true; fi
@@ -78,7 +81,13 @@ docker export --output "$work/rootfs.tar" "$exported"
 sudo tar --extract --file "$work/rootfs.tar" --directory "$rootfs"
 sudo chown root:root "$rootfs"
 # HTTP consumer traffic is anonymous. The fixture key and all packages are public test data.
-python3 -m http.server 18888 --bind 192.0.2.1 --directory "$DISTRIBUTION_DIRECTORY" > "$work/http.log" 2>&1 & server_pid=$!
+bun --no-env-file "$SOURCE_DIRECTORY/.github/scripts/ci/distribution/fixture-server.ts" "$DISTRIBUTION_DIRECTORY" > "$work/http.log" 2>&1 & server_pid=$!
+for (( attempt=0; attempt<15; attempt++ )); do
+    if curl --fail --silent --max-time 1 --head http://192.0.2.1:18888/repo-initial/apt/dists/beta/InRelease >/dev/null; then break; fi
+    kill -0 "$server_pid" 2>/dev/null || exit 1
+    (( attempt < 14 )) || exit 1
+    sleep 1
+done
 # Match systemd-nspawn@.service: --keep-unit reports guest reboot as exit 133.
 sudo systemd-run --unit "$machine" --property=Delegate=yes --property=KillMode=mixed \
     --property=RestartForceExitStatus=133 --property=SuccessExitStatus=133 \
