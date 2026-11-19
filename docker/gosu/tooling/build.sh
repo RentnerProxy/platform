@@ -35,7 +35,7 @@ go build -trimpath -buildvcs=false -o "$output_root/gosu" .
 sha256sum --check --strict "$work_root/locks.sha256"
 go version -m "$output_root/gosu" > "$output_root/buildinfo.txt"
 grep -Eq '^.*: go1\.27\.3$' "$output_root/buildinfo.txt"
-grep -Eq 'dep[[:space:]]+github\.com/moby/sys/user[[:space:]]+v0\.4\.1[[:space:]]' "$output_root/buildinfo.txt"
+grep -Eq 'dep[[:space:]]+github\.com/moby/sys/user[[:space:]]+v0\.5\.0[[:space:]]' "$output_root/buildinfo.txt"
 grep -Eq 'build[[:space:]]+CGO_ENABLED=0$' "$output_root/buildinfo.txt"
 test "$("$output_root/gosu" --version)" = "1.20 (go1.27.3 on $target_platform; gc)"
 test "$("$output_root/gosu" nobody id -u)" = 65534

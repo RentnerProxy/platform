@@ -49,9 +49,8 @@ updates:
 
     - package-ecosystem: 'gomod'
       directories:
+          # Only source modules belong here. Tidy removes the gosu and CrowdSec overlays used by the appliance build.
           - '/core/caddy-modules/responsecache'
-          - '/docker/crowdsec/tooling/engine-build'
-          - '/docker/gosu/tooling'
       schedule:
           interval: 'cron'
           cronjob: '0 3 * * *'
