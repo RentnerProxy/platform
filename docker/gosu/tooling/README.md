@@ -2,7 +2,7 @@
 
 The appliance rebuilds the official gosu 1.20 source at
 `29b939aa5bd4dc588af765b8248f6e39150d2565` with Go 1.27.3 and the frozen
-`github.com/moby/sys/user` 0.5.0 dependency. This version includes the fix for
+`github.com/moby/sys/user` 0.4.1 dependency. That dependency fixes
 [CVE-2026-61801](https://github.com/advisories/GHSA-mjcv-p78q-w5fw), which affects
 the gosu binary inherited from the PostgreSQL image.
 

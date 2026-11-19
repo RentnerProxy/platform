@@ -28,8 +28,8 @@ func fixture(profile string) *debug.BuildInfo {
 	} else {
 		info.Deps = []*debug.Module{
 			{Path: "google.golang.org/grpc", Version: "v1.85.0"},
-			{Path: "golang.org/x/crypto", Version: "v0.58.0"},
-			{Path: "golang.org/x/net", Version: "v0.62.0"},
+			{Path: "golang.org/x/crypto", Version: "v0.59.0"},
+			{Path: "golang.org/x/net", Version: "v0.63.0"},
 			{Path: "golang.org/x/time", Version: "v0.16.0", Replace: &debug.Module{Path: "github.com/crowdsecurity/time", Version: "v0.13.0-crowdsec.20250912"}},
 			{Path: "github.com/corazawaf/coraza/v3", Version: "v3.8.1", Replace: &debug.Module{Path: "github.com/crowdsecurity/coraza/v3", Version: "v3.8.0-crowdsec.20261002"}},
 		}

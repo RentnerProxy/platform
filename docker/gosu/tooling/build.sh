@@ -30,12 +30,19 @@ sha256sum go.mod go.sum > "$work_root/locks.sha256"
 go mod download
 go mod verify
 sha256sum --check --strict "$work_root/locks.sha256"
+user_dependency_version=$(go list -m -f '{{if not .Replace}}{{.Version}}{{end}}' github.com/moby/sys/user)
+printf '%s\n' "$user_dependency_version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+# Keep the security floor for CVE-2026-61801.
+dpkg --compare-versions "${user_dependency_version#v}" ge 0.4.1
 mkdir -p "$output_root"
 go build -trimpath -buildvcs=false -o "$output_root/gosu" .
 sha256sum --check --strict "$work_root/locks.sha256"
 go version -m "$output_root/gosu" > "$output_root/buildinfo.txt"
 grep -Eq '^.*: go1\.27\.3$' "$output_root/buildinfo.txt"
-grep -Eq 'dep[[:space:]]+github\.com/moby/sys/user[[:space:]]+v0\.5\.0[[:space:]]' "$output_root/buildinfo.txt"
+awk -v version="$user_dependency_version" '
+    $1 == "dep" && $2 == "github.com/moby/sys/user" && $3 == version { matches++ }
+    END { exit matches != 1 }
+' "$output_root/buildinfo.txt"
 grep -Eq 'build[[:space:]]+CGO_ENABLED=0$' "$output_root/buildinfo.txt"
 test "$("$output_root/gosu" --version)" = "1.20 (go1.27.3 on $target_platform; gc)"
 test "$("$output_root/gosu" nobody id -u)" = 65534

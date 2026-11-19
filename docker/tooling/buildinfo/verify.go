@@ -54,8 +54,8 @@ func validate(profile string, info *debug.BuildInfo) error {
 		compiler = "go1.27.3"
 		expected = map[string]string{
 			"google.golang.org/grpc": "v1.85.0",
-			"golang.org/x/crypto":    "v0.58.0",
-			"golang.org/x/net":       "v0.62.0",
+			"golang.org/x/crypto":    "v0.59.0",
+			"golang.org/x/net":       "v0.63.0",
 		}
 		settings = map[string]string{"CGO_ENABLED": "1", "-tags": crowdsecTags}
 	default:
