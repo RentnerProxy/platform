@@ -1,6 +1,12 @@
 FROM mirror.gcr.io/oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS bun
 
-FROM mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d8f867cd4d520021545a9a50c120eae3b
+FROM mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31 AS controller
+WORKDIR /build
+COPY core/Cargo.toml core/Cargo.lock ./
+COPY core/src ./src
+RUN CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked
+
+FROM mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d8f867cd4d520021545a9a50c120eae3b AS tooling
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
 RUN apt-get update \
@@ -15,3 +21,6 @@ RUN apt-get update \
 WORKDIR /workspace
 ENV RENTNERPROXY_PACKAGE_TEST=1
 ENTRYPOINT ["bun", "--no-env-file"]
+
+FROM tooling AS coverage
+COPY --from=controller /build/target/debug/rentnerproxy-controller /usr/local/libexec/rentnerproxy-test-controller

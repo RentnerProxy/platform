@@ -1,7 +1,7 @@
 #!/usr/local/bin/bun
 
 import assert from 'node:assert/strict'
-import { writeFile } from 'node:fs/promises'
+import { rm, writeFile } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 
 interface Bootstrap {
@@ -21,7 +21,8 @@ const identity = {
     uid: 20_991,
     generation: 1,
 }
-const dataDirectory = '/var/lib/rentnerproxy/apps/20991/data'
+const installationDirectory = '/var/lib/rentnerproxy/apps/20991'
+const dataDirectory = installationDirectory + '/data'
 const databaseUrlFile = dataDirectory + '/database-url'
 const progressFile = dataDirectory + '/fixture-progress'
 const controllerTokenFile = '/run/rentnerproxy/controller-token/value'
@@ -236,7 +237,7 @@ async function verifyManager() {
             stderr: 'ignore',
         }).exited
     assert.equal(await provision('files'), 0, 'Could not create isolated app paths')
-    await writeFile('/var/lib/rentnerproxy/apps/20991/database-password', '', {
+    await writeFile(installationDirectory + '/database-password', '', {
         flag: 'wx',
         mode: 0o600,
     })
@@ -288,6 +289,42 @@ async function verifyManager() {
         await Promise.resolve(broker.stdin.end()).catch(() => undefined)
         assert.equal(await broker.exited, 0, 'App broker failed')
     }
+    await setManagerStage('cleanup')
+    const cleanup = Bun.spawn(
+        [
+            'gosu',
+            'postgres',
+            'psql',
+            '--no-psqlrc',
+            '--no-password',
+            '--set=ON_ERROR_STOP=1',
+            '--set=fixture_id=' + identity.installationId,
+            '--host=/var/run/postgresql',
+            '--username=postgres',
+            '--dbname=rentnerproxy',
+        ],
+        {
+            stdin: new Blob([
+                [
+                    'BEGIN;',
+                    "DELETE FROM rentnerproxy.app_runtime_events WHERE installation_id = :'fixture_id';",
+                    "DELETE FROM rentnerproxy.app_runtime_event_retention WHERE installation_id = :'fixture_id';",
+                    "DELETE FROM rentnerproxy.app_runtime_messages WHERE installation_id = :'fixture_id';",
+                    "DELETE FROM rentnerproxy.app_runtime_grants WHERE installation_id = :'fixture_id';",
+                    "DELETE FROM rentnerproxy.app_runtime_generations WHERE installation_id = :'fixture_id';",
+                    "DELETE FROM rentnerproxy.app_runtime_installations WHERE id = :'fixture_id';",
+                    'COMMIT;',
+                    'DROP DATABASE rp_app_20991;',
+                    'DROP ROLE rp_app_20991, rp_migrate_20991;',
+                    '',
+                ].join('\n'),
+            ]),
+            stdout: 'ignore',
+            stderr: 'ignore',
+        },
+    )
+    assert.equal(await cleanup.exited, 0, 'Could not remove isolated database and roles')
+    await rm(installationDirectory, { recursive: true })
 }
 
 if (process.env.RENTNERPROXY_APP_BOOTSTRAP_FD === '0') {

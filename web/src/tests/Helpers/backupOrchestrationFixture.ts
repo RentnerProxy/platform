@@ -159,6 +159,12 @@ export async function runBackupOrchestrationFixture(scenario: string) {
                 '/tmp/rentnerproxy-validate-': join(directory, 'validation-'),
                 '/tmp/rentnerproxy-restore.': join(directory, 'rendered-restore.'),
             },
+            {
+                'scripts/backup/app-state.ts': {
+                    '/usr/local/bin/rentnerproxy-controller':
+                        '/usr/local/libexec/rentnerproxy-test-controller',
+                },
+            },
         )
         const storage = (await import(
             pathToFileURL(join(code, 'docker/production/backups/storage.ts')).href
@@ -285,9 +291,24 @@ export async function runBackupOrchestrationFixture(scenario: string) {
         await writeFile(
             join(app, 'proxy/certificates/certificate-metadata.json'),
             JSON.stringify({
-                id: certificateId,
-                acme: {
-                    dnsProvider: { version: 1, nonce: [...nonce], ciphertext: [...ciphertext] },
+                certificates: {
+                    [certificateId]: {
+                        id: certificateId,
+                        source: 'acme',
+                        environment: 'staging',
+                        domains: ['fixture.example.test'],
+                        status: 'pending',
+                        operation: 'idle',
+                        updatedAt: '2026-01-01T00:00:00Z',
+                        acme: {
+                            challengeType: 'dns-01',
+                            dnsProvider: {
+                                version: 1,
+                                nonce: [...nonce],
+                                ciphertext: [...ciphertext],
+                            },
+                        },
+                    },
                 },
             }),
             { mode: 0o600 },

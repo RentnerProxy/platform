@@ -8,6 +8,7 @@ export const RELIABILITY_FIXTURE_SOURCE_PATHS = [
 
 export const RELIABILITY_FIXTURE_ARCHIVE_PATHS = [
     'web/src',
+    'core/src',
     'tsconfig.json',
     'package.json',
     'bun.lock',
