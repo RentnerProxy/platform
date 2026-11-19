@@ -84,8 +84,8 @@ describe('pinned pristine CrowdSec appliance rebuild', () => {
         const sums = await readFile(join(buildRoot, 'go.sum'), 'utf8')
         for (const [module, version] of [
             ['google.golang.org/grpc', 'v1.85.0'],
-            ['golang.org/x/crypto', 'v0.58.0'],
-            ['golang.org/x/net', 'v0.62.0'],
+            ['golang.org/x/crypto', 'v0.59.0'],
+            ['golang.org/x/net', 'v0.63.0'],
         ]) {
             expect(mod).toContain(`${module} ${version}`)
             for (const suffix of ['', '/go.mod'])
