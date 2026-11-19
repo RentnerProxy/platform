@@ -1,5 +1,6 @@
 import { appendFile } from 'node:fs/promises'
 import { evaluateDependabotEligibility } from './dependabot-policy.ts'
+import { closeDigestOnlyDockerUpdate } from './docker-digest-update.ts'
 import {
     arrayPages,
     commitSha,
@@ -81,6 +82,8 @@ async function maintainPullRequest(
     const path = `${prefix}/pulls/${number}`
     const skipped = (reason: string): MaintenanceResult => ({ number, action: 'skipped', reason })
     const pull = record(await request('GET', path))
+    const closed = await closeDigestOnlyDockerUpdate(request, options, number, path, pull)
+    if (closed) return closed
     const base = record(pull.base)
     const head = record(pull.head)
     if (

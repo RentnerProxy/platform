@@ -2,7 +2,9 @@ version: 2
 
 updates:
     - package-ecosystem: 'bun'
-      directory: '/'
+      directories:
+          - '/'
+          - '/web/src/tests/fixtures/app-runtime-reference'
       schedule:
           interval: 'cron'
           cronjob: '0 3 * * *'
@@ -23,7 +25,9 @@ updates:
                   - 'patch'
 
     - package-ecosystem: 'cargo'
-      directory: '/core'
+      directories:
+          - '/core'
+          - '/core/tests/fixtures/app-runtime-reference'
       schedule:
           interval: 'cron'
           cronjob: '0 3 * * *'
@@ -46,6 +50,8 @@ updates:
     - package-ecosystem: 'gomod'
       directories:
           - '/core/caddy-modules/responsecache'
+          - '/docker/crowdsec/tooling/engine-build'
+          - '/docker/gosu/tooling'
       schedule:
           interval: 'cron'
           cronjob: '0 3 * * *'
@@ -69,7 +75,10 @@ updates:
       directories:
           - '/docker/production'
           - '/docker/proxy-runtime'
+          - '/docker/tooling/coverage'
+          - '/docker/tooling/distribution'
           - '/docker/web'
+          - '/scripts/smoke/http3'
       schedule:
           interval: 'cron'
           cronjob: '0 3 * * *'
@@ -102,7 +111,9 @@ updates:
           - dependency-name: 'rentnerproxy/platform'
 
     - package-ecosystem: 'github-actions'
-      directory: '/'
+      directories:
+          - '/'
+          - '/.github/actions/*'
       schedule:
           interval: 'cron'
           cronjob: '0 3 * * *'
