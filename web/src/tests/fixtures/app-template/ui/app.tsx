@@ -35,7 +35,7 @@ function Greeting() {
                     <label htmlFor="greeting">{labels.field}</label>
                     <input
                         id="greeting"
-                        disabled={!state.ready || state.busy}
+                        disabled={!state.editable}
                         value={state.draft}
                         maxLength={maxGreetingLength}
                         onChange={(event) => setter.setDraft(event.currentTarget.value)}
@@ -57,7 +57,7 @@ function Greeting() {
                             ? labels[state.status]
                             : state.busy
                               ? labels.busy
-                              : !state.ready
+                              : !state.editable
                                 ? labels.waiting
                                 : ''}
                     </output>

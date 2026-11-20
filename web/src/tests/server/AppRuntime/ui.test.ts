@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { appUiAssetPolicy, appUiAssetType } from '@/lib/AppUi/asset-policy.ts'
+import { appRpcLimits } from '@/server/AppRuntime/contract.ts'
 import { getAdminUiSecurityHeaders } from '@/server/security-headers.ts'
 import {
     appUiFrameSource,
@@ -8,6 +9,7 @@ import {
 } from '@/server/AppRuntime/ui/assets.server.ts'
 import {
     nativeAppUi,
+    readAppUiCall,
     readAppUiJson,
     validUiPackagePath,
     type NativeAppUi,
@@ -81,6 +83,9 @@ describe('app UI asset boundary', () => {
         )
         expect(appUiAssetType(script(origin), 'scripts/app.js', false)).toBeNull()
         expect(appUiAssetType(script('null'), 'scripts/js', false)).toBeNull()
+        expect(appUiAssetType(script('null'), 'scripts/App.JS', false)).toStartWith(
+            'text/javascript',
+        )
         expect(appUiAssetType(script('null'), 'files/image.svg', false)).toBeNull()
         expect(
             appUiAssetType(new Request(origin, { headers: iframe }), 'other.html', false),
@@ -193,4 +198,28 @@ test('preserves native rate limiting separately from an unavailable or stale app
     } finally {
         fetch.mockRestore()
     }
+})
+
+test('allows room for a call envelope around an exact-size app payload', async () => {
+    const value = 'x'.repeat(appRpcLimits.jsonBytes - JSON.stringify({ value: '' }).length)
+    const call = {
+        installationId: 'greeting',
+        generation: 2,
+        frameToken: 'a'.repeat(16) + '.' + 'b'.repeat(128),
+        requestId: 'ui-request',
+        operationId: 'read-greeting',
+        idempotencyKey: 'ui-call',
+    }
+    const request = (payload: { value: string }) =>
+        new Request(origin, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...call, payload }),
+        })
+    const signal = AbortSignal.timeout(1_000)
+    const parsed = await readAppUiCall(request({ value }), signal)
+    expect(parsed.payload.value).toBe(value)
+    await expect(readAppUiCall(request({ value: value + 'x' }), signal)).rejects.toMatchObject({
+        status: 413,
+    })
 })

@@ -57,6 +57,7 @@ pub(super) struct Registry {
 
 struct Entry {
     package: Package,
+    broker_socket: PathBuf,
     cancelled: CancellationToken,
     operations: Semaphore,
 }
@@ -68,8 +69,17 @@ pub(super) struct Publication {
 
 impl Registry {
     pub(super) fn publish(&self, package: Package) -> Option<Publication> {
+        self.publish_in(package, Path::new(APP_ROOT))
+    }
+
+    fn publish_in(&self, package: Package, app_root: &Path) -> Option<Publication> {
+        let broker_socket = app_root
+            .join(package.metadata.uid.to_string())
+            .join(package.metadata.generation.to_string())
+            .join("core.sock");
         let entry = Arc::new(Entry {
             package,
+            broker_socket,
             cancelled: CancellationToken::new(),
             operations: Semaphore::new(MAX_OPERATIONS_PER_INSTALLATION),
         });
@@ -120,7 +130,10 @@ impl Drop for Publication {
 }
 
 pub(super) fn bind() -> io::Result<UnixListener> {
-    let path = Path::new(SOCKET);
+    bind_path(Path::new(SOCKET))
+}
+
+fn bind_path(path: &Path) -> io::Result<UnixListener> {
     require_safe_parents(path.parent().expect("socket directory"), 0)?;
     let parent = path.parent().expect("socket directory");
     match DirBuilder::new().mode(0o700).create(parent) {
@@ -343,13 +356,6 @@ async fn list(registry: &Registry) -> Result<Response<Body>, StatusCode> {
 }
 
 impl Entry {
-    fn socket(&self) -> PathBuf {
-        Path::new(APP_ROOT)
-            .join(self.package.metadata.uid.to_string())
-            .join(self.package.metadata.generation.to_string())
-            .join("core.sock")
-    }
-
     fn broker_request(&self) -> hyper::http::request::Builder {
         Request::builder()
             .header(header::HOST, "localhost")
@@ -369,7 +375,7 @@ impl Entry {
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         let (response, _) = timeout(
             Duration::from_secs(3),
-            send_to_peer(&self.socket(), 0, request),
+            send_to_peer(&self.broker_socket, 0, request),
         )
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
@@ -409,7 +415,7 @@ impl Entry {
             .header("idempotency-key", idempotency)
             .body(Full::new(body))
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        let (reply, _connection) = send_to_peer(&self.socket(), 0, request)
+        let (reply, _connection) = send_to_peer(&self.broker_socket, 0, request)
             .await
             .map_err(socket_status)?;
         match reply.status() {

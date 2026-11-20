@@ -15,16 +15,15 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
 use crate::{
-    app_install::StagedPackage,
-    app_ipc::{filesystem::require_safe_parents, gateway::APP_API_PREFIX, wire_json},
+    app_install::{StagedPackage, UI_ASSET_LIMIT, UI_DOCUMENT_LIMIT, parse_ui_api},
+    app_ipc::{filesystem::require_safe_parents, gateway::APP_API_PREFIX},
 };
 
 use super::super::{bad, journal::Capability, valid_id};
 
-const MAX_ASSET_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_DOCUMENT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ENTRIES: usize = 100;
 const MAX_UI_ENTRIES: usize = 32;
+const MAX_REFERENCE_BYTES: usize = 1024;
 const MAX_SCHEMA_NODES: usize = 192;
 const MAX_SCHEMA_DEPTH: usize = 20;
 const MAX_SCHEMA_BYTES: usize = 32 * 1024;
@@ -103,19 +102,16 @@ impl Package {
             .ok_or_else(invalid)?;
         let root = open_package(&package.directory)?;
         let ui_directory = open_directory(&root, "ui")?;
-        open_beneath(&ui_directory, relative_entry, MAX_ASSET_BYTES)?;
+        open_beneath(&ui_directory, relative_entry, UI_ASSET_LIMIT)?;
         let permission_keys: Vec<String> = decode_member(manifest, "permissions")?;
         let capabilities: Vec<Capability> = decode_member(manifest, "capabilities")?;
-        let document = field(manifest, "api")
-            .and_then(|path| read_beneath(&root, path, MAX_DOCUMENT_BYTES))
-            .ok()
-            .filter(|bytes| wire_json::valid(bytes))
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .filter(|document| {
-                document["openapi"]
-                    .as_str()
-                    .is_some_and(|version| version.starts_with("3.1."))
-            });
+        let document = manifest
+            .get("api")
+            .map(|_| {
+                let bytes = read_beneath(&root, field(manifest, "api")?, UI_DOCUMENT_LIMIT)?;
+                parse_ui_api(&bytes)
+            })
+            .transpose()?;
         let declarations: UiDeclarations = document
             .as_ref()
             .and_then(|value| value.get("x-rentnerproxy-ui"))
@@ -164,7 +160,7 @@ impl Package {
     }
 
     pub(super) fn asset(&self, path: &str) -> io::Result<Vec<u8>> {
-        read_beneath(&self.ui_directory, path, MAX_ASSET_BYTES)
+        read_beneath(&self.ui_directory, path, UI_ASSET_LIMIT)
     }
 }
 
@@ -327,15 +323,49 @@ fn read_operation(
     }
     Some(Operation {
         access,
-        request: compile(
-            document,
-            post["requestBody"]["content"]["application/json"].get("schema")?,
-        )?,
+        request: compile(document, content_schema(document, &post["requestBody"])?)?,
         response: compile(
             document,
-            post["responses"]["200"]["content"]["application/json"].get("schema")?,
+            content_schema(document, &post["responses"]["200"])?,
         )?,
     })
+}
+
+fn content_schema<'a>(document: &'a Value, mut object: &'a Value) -> Option<&'a Value> {
+    for _ in 0..=MAX_SCHEMA_DEPTH {
+        let Some(reference) = object.get("$ref") else {
+            return object["content"]["application/json"].get("schema");
+        };
+        object = document.pointer(&local_pointer(reference.as_str()?)?)?;
+    }
+    None
+}
+
+fn local_pointer(reference: &str) -> Option<String> {
+    let fragment = reference.strip_prefix('#')?;
+    if fragment.len() > MAX_REFERENCE_BYTES || fragment.contains('#') {
+        return None;
+    }
+    let mut bytes = fragment.bytes();
+    let mut pointer = Vec::with_capacity(fragment.len());
+    while let Some(byte) = bytes.next() {
+        pointer.push(if byte == b'%' {
+            let high = char::from(bytes.next()?).to_digit(16)?;
+            let low = char::from(bytes.next()?).to_digit(16)?;
+            (high * 16 + low) as u8
+        } else {
+            byte
+        });
+    }
+    let pointer = String::from_utf8(pointer).ok()?;
+    if !pointer.starts_with('/')
+        || pointer.as_bytes().iter().enumerate().any(|(index, byte)| {
+            *byte == b'~' && !matches!(pointer.as_bytes().get(index + 1), Some(b'0' | b'1'))
+        })
+    {
+        return None;
+    }
+    Some(pointer)
 }
 
 fn valid_field(field: &str) -> bool {

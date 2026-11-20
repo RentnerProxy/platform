@@ -45,7 +45,7 @@ export function appUiAssetType(request: Request, path: string, document: boolean
             : null
     const file = path.slice(path.lastIndexOf('/') + 1)
     const dot = file.lastIndexOf('.')
-    const type = dot > 0 ? mimeTypes.get(file.slice(dot + 1)) : undefined
+    const type = dot > 0 ? mimeTypes.get(file.slice(dot + 1).toLowerCase()) : undefined
     const origin = request.headers.get('origin')
     return (origin === null || origin === 'null') &&
         (mode === 'no-cors' || mode === 'cors') &&

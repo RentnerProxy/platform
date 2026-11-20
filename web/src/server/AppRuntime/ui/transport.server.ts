@@ -79,7 +79,7 @@ const appUiPayload = z.custom<AppUiPayload>(
         !Array.isArray(value) &&
         isAppWireJson(value),
 )
-export const appUiCallInput = appUiBinding.extend({
+const appUiCallInput = appUiBinding.extend({
     frameToken: z.string().regex(appUiTokenPattern),
     requestId: appRecordId,
     operationId: appRecordId,
@@ -136,6 +136,18 @@ export async function readAppUiJson(
         signal.removeEventListener('abort', cancel)
         reader.releaseLock()
     }
+}
+
+export async function readAppUiCall(
+    request: Request,
+    signal: AbortSignal,
+): Promise<AppUiCallInput> {
+    const envelopeLimit = appRpcLimits.jsonBytes + 4_096
+    const input = appUiCallInput.safeParse(await readAppUiJson(request, signal, envelopeLimit))
+    if (!input.success) throw uiProblems.invalid
+    if (Buffer.byteLength(JSON.stringify(input.data.payload), 'utf8') > appRpcLimits.jsonBytes)
+        throw uiProblems.tooLarge
+    return input.data
 }
 
 async function nativeRequest(path: string, signal: AbortSignal, init?: RequestInit) {

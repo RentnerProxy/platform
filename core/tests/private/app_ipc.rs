@@ -19,6 +19,9 @@ use tokio::{
 
 use super::*;
 
+#[path = "app_ipc_ui.rs"]
+mod root_ui_dispatch;
+
 const TOKEN: &str = "Bearer manager-test-token";
 const CREDENTIAL: &str = "Bearer native-app-test-token";
 const CONTEXT: &str = "/platform/v1/context";

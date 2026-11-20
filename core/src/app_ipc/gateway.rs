@@ -277,6 +277,7 @@ async fn dispatch_app(
         .await
         .map_err(|_| Problem::Unavailable)?;
     if response.status() == StatusCode::CONFLICT {
+        require_lease(generation).await?;
         return Response::builder()
             .status(StatusCode::CONFLICT)
             .body(Body::empty())

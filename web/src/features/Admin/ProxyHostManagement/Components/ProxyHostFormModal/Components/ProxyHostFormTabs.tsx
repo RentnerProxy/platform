@@ -44,7 +44,7 @@ export default function ProxyHostFormTabs({
         if (!next) return
         event.preventDefault()
         next.select()
-        document.getElementById(`${formId}-tab-${next.id}`)?.focus({ preventScroll: true })
+        document.getElementById(`${formId}-tab-${next.id}`)?.focus()
     }
 
     return (

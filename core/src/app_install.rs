@@ -15,6 +15,11 @@ use std::{
 };
 
 use marketplace_artifacts::{invalid, parse_json, read_file};
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) use package::{UI_ASSET_LIMIT, UI_DOCUMENT_LIMIT, parse_ui_api};
 use rentnerproxy_app_contracts::{Contracts, ManifestEnvironment};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

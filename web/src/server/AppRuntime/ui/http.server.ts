@@ -7,13 +7,7 @@ import { getPublicOrigin } from '@/server/env.server.ts'
 import { AppRuntimeProblem } from '../problem.ts'
 import { executeAppUiCall } from './access.server.ts'
 import { requireAppUiFrameGrant, serveAppUiAsset } from './assets.server.ts'
-import {
-    appUiCallInput,
-    appUiEnabled,
-    appUiSignal,
-    readAppUiJson,
-    uiProblems,
-} from './transport.server.ts'
+import { appUiEnabled, appUiSignal, readAppUiCall, uiProblems } from './transport.server.ts'
 
 async function requestSessionId(request: Request): Promise<string | undefined> {
     const token = new Bun.CookieMap(request.headers.get('cookie') ?? '').get(SESSION_COOKIE_NAME)
@@ -49,16 +43,10 @@ export async function serveAppUiHttp(request: Request, url: URL): Promise<Respon
             throw uiProblems.forbidden
         const sessionId = await requestSessionId(request)
         if (!sessionId) throw uiProblems.frameRevoked
-        const input = appUiCallInput.safeParse(await readAppUiJson(request, signal))
-        if (!input.success) throw uiProblems.invalid
-        requestId = input.data.requestId
-        const grant = await requireAppUiFrameGrant(
-            input.data.frameToken,
-            input.data,
-            sessionId,
-            origin,
-        )
-        const payload = await executeAppUiCall(sessionId, input.data, grant, signal)
+        const input = await readAppUiCall(request, signal)
+        requestId = input.requestId
+        const grant = await requireAppUiFrameGrant(input.frameToken, input, sessionId, origin)
+        const payload = await executeAppUiCall(sessionId, input, grant, signal)
         return Response.json({ ok: true, payload }, { headers: safeResponseHeaders() })
     } catch (error) {
         const problem = error instanceof AppRuntimeProblem ? error : uiProblems.unavailable

@@ -6,8 +6,7 @@ interface Binding {
     readonly generation: number
 }
 
-export interface Context {
-    readonly generation: number
+export interface Context extends Binding {
     readonly theme: 'light' | 'dark'
     readonly locale: string
     readonly route: string
@@ -81,7 +80,7 @@ export function connectGreetingBridge(onContext: (context: Context | undefined) 
                 typeof message.ready === 'boolean'
             ) {
                 onContext({
-                    generation,
+                    ...binding,
                     theme: message.theme,
                     locale: message.locale,
                     route: message.route,

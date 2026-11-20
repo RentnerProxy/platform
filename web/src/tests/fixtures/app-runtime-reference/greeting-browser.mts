@@ -65,6 +65,7 @@ function observeAppPort() {
 function serveFixture(ui: string, hostBundle: Blob) {
     let greeting = defaultGreeting
     let writes = 0
+    const initialRead = Promise.withResolvers<void>()
     const assetPrefix = APP_UI_PREFIX + token + '/'
     const server = Bun.serve({
         hostname: '127.0.0.1',
@@ -78,7 +79,10 @@ function serveFixture(ui: string, hostBundle: Blob) {
                 if (request.headers.get('sec-fetch-site') !== 'same-origin') {
                     return new Response(null, { status: 403 })
                 }
-                if (request.method === 'GET') return Response.json({ greeting })
+                if (request.method === 'GET') {
+                    await initialRead.promise
+                    return Response.json({ greeting })
+                }
                 if (
                     request.method !== 'POST' ||
                     request.headers.get('origin') !== origin ||
@@ -122,7 +126,7 @@ function serveFixture(ui: string, hostBundle: Blob) {
             })
         },
     })
-    return { server, writes: () => writes }
+    return { server, writes: () => writes, releaseInitialRead: initialRead.resolve }
 }
 
 const [ui, report] = Bun.argv.slice(2)
@@ -136,7 +140,7 @@ const host = await Bun.build({
 })
 if (!host.success || !host.outputs[0])
     throw new AggregateError(host.logs, 'Greeting browser host build failed')
-const { server, writes } = serveFixture(ui, host.outputs[0])
+const { server, writes, releaseInitialRead } = serveFixture(ui, host.outputs[0])
 const origin = server.url.origin
 
 try {
@@ -158,6 +162,9 @@ try {
         await expect(page.locator('#greeting-app')).toHaveAttribute('sandbox', 'allow-scripts', {
             timeout,
         })
+        await expect(page.locator('body')).toHaveAttribute('data-app-rpcs', '1', { timeout })
+        await expect(frame.getByRole('textbox', { name: 'New greeting' })).toBeDisabled({ timeout })
+        releaseInitialRead()
         await expect(frame.getByText(defaultGreeting)).toBeVisible({ timeout })
         assert.equal(await frame.locator('html').evaluate(() => self.origin), 'null')
 
@@ -254,6 +261,7 @@ try {
                         'opaque-frame',
                         'direct-html-denied',
                         'wrong-generation-rejected',
+                        'greeting-load-before-edit',
                         'confirmed-greeting-update',
                         'host-theme-and-language',
                         'host-navigation',
@@ -268,5 +276,6 @@ try {
         await browser.close()
     }
 } finally {
+    releaseInitialRead()
     await server.stop(true)
 }

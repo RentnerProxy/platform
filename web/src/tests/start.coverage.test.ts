@@ -112,7 +112,9 @@ await mock.module('@/server/Admin/NpmImport/npm-temp.ts', () => ({ pruneStaleNpm
 
 test('server bootstrap validates production, binds every worker and coalesces temporary-file pruning with stop cleanup', async () => {
     const previous = process.env.NODE_ENV
+    const previousAppRuntime = process.env.RENTNERPROXY_APP_RUNTIME
     process.env.NODE_ENV = 'production'
+    delete process.env.RENTNERPROXY_APP_RUNTIME
     const interval = spyOn(globalThis, 'setInterval')
     const clear = spyOn(globalThis, 'clearInterval')
     let cleanup: Worker | undefined
@@ -178,6 +180,13 @@ test('server bootstrap validates production, binds every worker and coalesces te
         expect(responseHeaders).toHaveBeenCalledWith(expect.any(Headers))
         expect(applyHeaders).toHaveBeenCalledWith(original, headers)
         expect(result.response).toBe(secured)
+        process.env.RENTNERPROXY_APP_RUNTIME = '1'
+        await handlers[0]!({ next })
+        expect(securityHeaders).toHaveBeenCalledWith(
+            'https',
+            nonce,
+            'https://appliance.example.test',
+        )
     } finally {
         releasePrune?.()
         if (cleanup) await cleanup.stop()
@@ -185,5 +194,7 @@ test('server bootstrap validates production, binds every worker and coalesces te
         clear.mockRestore()
         if (previous === undefined) delete process.env.NODE_ENV
         else process.env.NODE_ENV = previous
+        if (previousAppRuntime === undefined) delete process.env.RENTNERPROXY_APP_RUNTIME
+        else process.env.RENTNERPROXY_APP_RUNTIME = previousAppRuntime
     }
 })

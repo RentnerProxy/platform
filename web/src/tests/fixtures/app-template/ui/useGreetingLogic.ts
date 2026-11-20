@@ -36,8 +36,11 @@ export function useGreetingLogic() {
     const [draft, setDraft] = useState('')
     const [busy, setBusy] = useState(false)
     const [status, setStatus] = useState<'saved' | 'unavailable'>()
+    const [loadedBinding, setLoadedBinding] = useState<string>()
     const ready = context?.ready ?? false
-    const generation = context?.generation
+    const binding = context
+        ? `${context.installId}:${context.installationGeneration}:${context.generation}`
+        : undefined
 
     useEffect(() => {
         const channel = connectGreetingBridge(setContext)
@@ -55,13 +58,14 @@ export function useGreetingLogic() {
 
     useEffect(() => {
         const channel = bridge.current
-        if (!ready || generation === undefined || !channel) return
+        if (!ready || binding === undefined || !channel) return
         let current = true
         void channel.greeting('get-greeting', {}).then(
             (value) => {
                 if (!current) return
                 setGreeting(value)
                 setDraft(value)
+                setLoadedBinding(binding)
             },
             () => {
                 if (current) setStatus('unavailable')
@@ -70,10 +74,11 @@ export function useGreetingLogic() {
         return () => {
             current = false
         }
-    }, [ready, generation])
+    }, [ready, binding])
 
     const labels = context?.locale.toLowerCase().startsWith('de') ? copy.de : copy.en
-    const disabled = busy || !ready || !draft.trim() || draft.trim() === greeting
+    const editable = ready && binding !== undefined && loadedBinding === binding && !busy
+    const disabled = !editable || !draft.trim() || draft.trim() === greeting
 
     async function save() {
         const channel = bridge.current
@@ -94,7 +99,17 @@ export function useGreetingLogic() {
     }
 
     return {
-        state: { greeting, draft, busy, status, ready, disabled, labels, route: context?.route },
+        state: {
+            greeting,
+            draft,
+            busy,
+            status,
+            ready,
+            editable,
+            disabled,
+            labels,
+            route: context?.route,
+        },
         handler: {
             save,
             navigate: (route: 'overview' | 'details') => bridge.current?.navigate(route),
