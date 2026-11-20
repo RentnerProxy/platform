@@ -62,9 +62,22 @@ pub(super) async fn fence_database(uid: u32) -> io::Result<()> {
     if !(20000..=59999).contains(&uid) {
         return Err(bad("Invalid database identity"));
     }
-    let role = format!("rp_app_{uid}");
+    let roles = format!("'rp_app_{uid}', 'rp_migrate_{uid}'");
+    // psql commits NOLOGIN before the DO statement. Its statement_timeout bounds
+    // the entire signal-and-confirm phase regardless of the number of sessions.
     let sql = format!(
-        "SELECT format('ALTER ROLE %I NOLOGIN', rolname) FROM pg_roles WHERE rolname='{role}'\n\\gexec\nSELECT pg_terminate_backend(pid, 2000) FROM pg_stat_activity WHERE usename='{role}';\nSELECT 1 / (NOT EXISTS (SELECT FROM pg_stat_activity WHERE usename='{role}'))::int;"
+        r"SELECT format('ALTER ROLE %I NOLOGIN', rolname) FROM pg_roles WHERE rolname IN ({roles})
+\gexec
+DO $fence$
+BEGIN
+    PERFORM pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename IN ({roles});
+    LOOP
+        PERFORM pg_stat_clear_snapshot();
+        EXIT WHEN NOT EXISTS (SELECT FROM pg_stat_activity WHERE usename IN ({roles}));
+        PERFORM pg_sleep(0.05);
+    END LOOP;
+END;
+$fence$;"
     );
     control_sql(&sql).await.map(drop)
 }

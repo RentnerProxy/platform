@@ -12,7 +12,7 @@ import { distributionPayload } from './payload.ts'
 import { parseDistributionRelease, distributionPackageVersion } from './release.ts'
 import { distributionCommand } from './process.ts'
 import { verifyImmutableRepositoryManifest, writeImmutableRepositoryManifest } from './history.ts'
-import { maximumRepositoryFiles } from './limits.ts'
+import { maximumAssessedBundleFiles, maximumRepositoryFiles } from './limits.ts'
 import { prepareCompactReleaseAssets } from './compact-assets.ts'
 import {
     readRepositoryCatalog,
@@ -180,7 +180,12 @@ export async function signDistribution(options: {
     readonly baseUrl: string
     readonly publishedAt: string
 }) {
-    await verifyDistributionBundle(options.bundle, options.bundleHash, options.identity)
+    await verifyDistributionBundle(
+        options.bundle,
+        options.bundleHash,
+        options.identity,
+        maximumAssessedBundleFiles,
+    )
     await validateNativeDistributionProofs(options.bundle, options.reports, options.identity)
     const artifacts = (['amd64', 'arm64'] as const).map((architecture) => ({
         directory: join(options.bundle, 'packages', architecture),

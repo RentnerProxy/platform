@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { ociText } from '../lib/oci-layout.ts'
 import { verifyMultiarchImage } from '../release/multiarch-image.ts'
 import { bundleFiles, distributionFileHash, writeDistributionBundle } from './bundle.ts'
+import { maximumAssessedBundleFiles } from './limits.ts'
 import {
     verifyBoundDistribution,
     verifyCandidateDistribution,
@@ -77,7 +78,7 @@ export async function bindDistribution(options: {
         { flag: 'wx' },
     )
     await verifyBoundDistribution(options.output, options.identity)
-    return writeDistributionBundle(options.output, options.identity)
+    return writeDistributionBundle(options.output, options.identity, maximumAssessedBundleFiles)
 }
 
 export async function bindDistributionCommand(env: NodeJS.ProcessEnv = process.env) {

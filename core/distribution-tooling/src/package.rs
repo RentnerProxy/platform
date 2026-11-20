@@ -98,8 +98,11 @@ fn rpm_header(
         )?;
         String::from_utf8(result).map_err(|_| invalid("Invalid RPM query output"))
     };
-    if query("%{NAME}\n%{VERSION}\n%{RELEASE}\n%{ARCH}\n")?
-        != format!("rentnerproxy\n{version}\n{release}\n{architecture}\n")
+    let identity = query("%{NAME}\n%{VERSION}\n%{RELEASE}\n%{ARCH}\n%{EPOCH}")?;
+    let expected = format!("rentnerproxy\n{version}\n{release}\n{architecture}");
+    if !identity
+        .rsplit_once('\n')
+        .is_some_and(|(fields, epoch)| fields == expected && matches!(epoch, "(none)" | "0"))
     {
         return Err(invalid("RPM identity mismatch"));
     }
@@ -121,7 +124,9 @@ fn rpm_header(
         }
     }
     let dependencies = query("[%{REQUIRENAME}|%{REQUIREFLAGS:depflags}|%{REQUIREVERSION}\n]")?;
-    if dependencies.lines().collect::<BTreeSet<_>>() != BTreeSet::from(RPM_DEPENDENCIES) {
+    if dependencies.lines().collect::<BTreeSet<_>>() != BTreeSet::from(RPM_DEPENDENCIES)
+        || !query("[%{CONFLICTNAME}\n]")?.is_empty()
+    {
         return Err(invalid("Unexpected RPM dependencies"));
     }
     for (name, expected) in ["PREIN", "POSTIN", "PREUN", "POSTUN"].iter().zip(hooks) {

@@ -33,6 +33,26 @@ async fn privileged_postgres_uid_fencing() {
         assert!(output.status.success());
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
+    fn session(role: &str, database: &str) -> tokio::process::Child {
+        psql(role, database)
+            .env("PGAPPNAME", "fixture-uid-fence")
+            .args(["--command", "SELECT pg_sleep(20)"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+    // These are backend PIDs of our own sessions in the isolated fixture cluster.
+    struct PausedBackends(Vec<i32>);
+    impl Drop for PausedBackends {
+        fn drop(&mut self) {
+            for &pid in &self.0 {
+                unsafe {
+                    libc::kill(pid, libc::SIGCONT);
+                }
+            }
+        }
+    }
     assert_eq!(
         query("SHOW data_directory").await,
         "/tmp/app-provision-postgres"
@@ -61,30 +81,72 @@ async fn privileged_postgres_uid_fencing() {
     assert!(!runtime::database_uid_vacant(59183).await.unwrap());
     assert!(runtime::database_uid_vacant(59184).await.unwrap());
     assert!(runtime::database_uid_vacant(60000).await.is_err());
-    let mut session = psql("rp_app_59182", "rp_app_59182")
-        .env("PGAPPNAME", "fixture-uid-fence")
-        .args(["--command", "SELECT pg_sleep(20)"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    timeout(Duration::from_secs(5),async{
-        while query("SELECT count(*) FROM pg_stat_activity WHERE usename='rp_app_59182' AND application_name='fixture-uid-fence'").await!="1"{
+    // Simulate a migration login left open and exhaust the app's four connection slots.
+    query("ALTER ROLE rp_migrate_59182 LOGIN").await;
+    let mut sessions: Vec<_> = (0..4)
+        .map(|_| session("rp_app_59182", "rp_app_59182"))
+        .collect();
+    sessions.push(session("rp_migrate_59182", "postgres"));
+    let mut other = session("rp_app_59183", "rp_app_59183");
+    let pids = timeout(Duration::from_secs(5), async {
+        loop {
+            let pids: Vec<i32> = query("SELECT pid FROM pg_stat_activity WHERE usename IN ('rp_app_59182','rp_migrate_59182') AND application_name='fixture-uid-fence' AND wait_event='PgSleep'")
+                .await.lines().map(|pid| pid.parse().unwrap()).collect();
+            if pids.len() == sessions.len() && query("SELECT count(*) FROM pg_stat_activity WHERE usename='rp_app_59183' AND application_name='fixture-uid-fence' AND wait_event='PgSleep'").await == "1" {
+                return pids;
+            }
             sleep(Duration::from_millis(20)).await;
         }
     }).await.unwrap();
-    runtime::fence_database(59182).await.unwrap();
+    let mut paused = PausedBackends(Vec::new());
+    for pid in pids {
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+        paused.0.push(pid);
+    }
+    let mut fence = tokio::spawn(runtime::fence_database(59182));
+    // No target can exit yet. All five must receive SIGTERM before waiting for any one.
+    timeout(Duration::from_secs(3), async {
+        while !paused.0.iter().all(|pid| {
+            std::fs::read_to_string(format!("/proc/{pid}/status"))
+                .unwrap()
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix("SigPnd:")
+                        .or_else(|| line.strip_prefix("ShdPnd:"))
+                })
+                .any(|mask| {
+                    u64::from_str_radix(mask.trim(), 16).unwrap() & (1 << (libc::SIGTERM - 1)) != 0
+                })
+        }) {
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(query("SELECT count(*) FROM pg_roles WHERE rolname IN ('rp_app_59182','rp_migrate_59182') AND NOT rolcanlogin").await, "2");
     assert!(
-        !timeout(Duration::from_secs(3), session.wait())
+        timeout(Duration::from_millis(150), &mut fence)
             .await
-            .unwrap()
-            .unwrap()
-            .success()
+            .is_err()
     );
-    assert_eq!(
-        query("SELECT rolcanlogin FROM pg_roles WHERE rolname='rp_app_59182'").await,
-        "f"
-    );
+    drop(paused);
+    timeout(Duration::from_secs(3), &mut fence)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(query("SELECT count(*) FROM pg_stat_activity WHERE usename IN ('rp_app_59182','rp_migrate_59182')").await, "0");
+    for mut child in sessions {
+        assert!(
+            !timeout(Duration::from_secs(3), child.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success()
+        );
+    }
+    assert_eq!(query("SELECT count(*) FROM pg_stat_activity WHERE usename='rp_app_59183' AND application_name='fixture-uid-fence'").await, "1");
+    other.kill().await.unwrap();
     runtime::purge_database(59182).await.unwrap();
     assert!(runtime::database_uid_vacant(59182).await.unwrap());
     assert_eq!(

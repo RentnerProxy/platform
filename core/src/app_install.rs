@@ -152,7 +152,13 @@ impl Installer {
         self.contracts
             .check_manifest_compatibility(package.manifest(), &environment)
             .map_err(invalid_contract)?;
-        let directory = package::stage(&self.config.store_directory, &package, self.target, fetch)?;
+        let directory = package::stage(
+            &self.config.store_directory,
+            &package,
+            self.target,
+            expected_hash.is_none(),
+            fetch,
+        )?;
         Ok(StagedPackage {
             directory,
             manifest: package.manifest().clone(),

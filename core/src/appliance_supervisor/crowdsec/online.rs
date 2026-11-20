@@ -1,5 +1,5 @@
 use super::commands::{bounded, service};
-use super::{Mode, ONLINE_CONFIG, Supervisor, files};
+use super::{EngineState, Mode, ONLINE_CONFIG, Supervisor, files};
 use serde_json::{Value, json};
 use std::{fs, io};
 
@@ -98,7 +98,7 @@ impl Supervisor {
             .ok_or_else(|| io::Error::other("Invalid enrollment request"))?;
         let result = if self.running != Mode::Online
             || self.community != "connected"
-            || super::desired() != Mode::Online
+            || self.engine_state(Mode::Online, super::desired())? != EngineState::Running
         {
             "failed"
         } else if self

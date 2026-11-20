@@ -409,6 +409,25 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
             .recover(ID, VERSION, &staged.archive_sha256)
             .is_err()
     );
+    assert!(
+        installer
+            .prepare(&catalog, ID, VERSION, None, |_, path| fs::write(
+                path,
+                b"invalid retry"
+            ))
+            .is_err()
+    );
+    assert_eq!(fs::read(&cached_archive).unwrap(), b"changed");
+    assert_eq!(
+        installer
+            .prepare(&catalog, ID, VERSION, None, |_, path| fs::write(
+                path, &archive
+            ))
+            .unwrap()
+            .directory,
+        staged.directory
+    );
+    assert_eq!(fs::read(&cached_archive).unwrap(), archive);
     fs::remove_file(&cached_archive).unwrap();
     assert!(
         offline
@@ -483,15 +502,23 @@ fn verifies_dynamic_abi_against_installed_appliance_libraries() {
     linkage["versions"]["libc.so.6"] = json!(["GLIBC_TEST_UNAVAILABLE"]);
     assert!(super::package::verify_abi(&json!([linkage]), target).is_err());
     assert!(super::package::verify_abi(&json!([]), "linux-unsupported").is_err());
-    assert!(
+    assert_eq!(
         super::package::verify_abi(
-            &json!([{"needed": ["libfixture-unavailable.so"], "interpreter": null}]),
+            &json!([{"path": "bin/app", "needed": ["libfixture-unavailable.so"], "interpreter": null, "versions": {}}]),
             target,
         )
-        .is_err()
+        .unwrap_err()
+        .kind(),
+        io::ErrorKind::NotFound
     );
-    assert!(
-        super::package::verify_abi(&json!([{"needed": [], "interpreter": "/"}]), target,).is_err()
+    assert_eq!(
+        super::package::verify_abi(
+            &json!([{"path": "bin/app", "needed": [], "interpreter": "/", "versions": {}}]),
+            target,
+        )
+        .unwrap_err()
+        .to_string(),
+        "Invalid ELF interpreter"
     );
     for invalid_name in ["/lib/libc.so.6", "../libc.so.6", "lib\\libc.so.6", ".."] {
         assert_eq!(

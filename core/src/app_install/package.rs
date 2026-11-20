@@ -32,6 +32,7 @@ pub(super) fn stage(
     store: &Path,
     package: &Package<'_>,
     target: &str,
+    allow_cache_replacement: bool,
     fetch: impl FnOnce(&DownloadAsset<'_>, &Path) -> io::Result<()>,
 ) -> io::Result<PathBuf> {
     let asset = package.release_assets().archive;
@@ -49,19 +50,28 @@ pub(super) fn stage(
         sha256: asset.sha256.to_owned(),
         size_bytes: asset.size_bytes,
     };
-    match fs::symlink_metadata(&archive) {
-        Ok(_) => verify_archive(&archive, &identity)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let download = filesystem::private_workspace(&archives, DOWNLOAD_WORKSPACE)?;
-            let incomplete = download.path().join("archive");
-            fetch(&asset, &incomplete)?;
-            verify_archive(&incomplete, &identity)?;
-            filesystem::sync_file(&incomplete)?;
-            fs::rename(&incomplete, &archive)?;
-        }
+    let download_required = match fs::symlink_metadata(&archive) {
+        Ok(metadata) if metadata.is_file() => match verify_archive(&archive, &identity) {
+            Ok(()) => false,
+            Err(error) if allow_cache_replacement && error.kind() == io::ErrorKind::InvalidData => {
+                true
+            }
+            Err(error) => return Err(error),
+        },
+        Ok(_) => return Err(invalid("Invalid cached archive file")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
         Err(error) => return Err(error),
+    };
+    if download_required {
+        let download = filesystem::private_workspace(&archives, DOWNLOAD_WORKSPACE)?;
+        let incomplete = download.path().join("archive");
+        fetch(&asset, &incomplete)?;
+        verify_archive(&incomplete, &identity)?;
+        filesystem::sync_file(&incomplete)?;
+        fs::rename(&incomplete, &archive)?;
+    } else {
+        filesystem::sync_file(&archive)?;
     }
-    filesystem::sync_file(&archive)?;
     filesystem::sync_directory(&archives)?;
 
     let destination = packages.join(asset.sha256);

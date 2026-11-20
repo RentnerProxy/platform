@@ -56,7 +56,12 @@ case "$*" in
             while [ -e /tmp/rentnerproxy-native-crowdsec/hold-probe ]; do sleep 0.05; done
         fi
         echo '{"console":{"authenticated":true,"enrolled":true}}' ;;
-    'console enroll --disable all -- -DEMO_0123456789-ab') echo called >> /tmp/rentnerproxy-native-crowdsec/enrollments ;;
+    'console enroll --disable all -- -DEMO_0123456789-ab')
+        echo called >> /tmp/rentnerproxy-native-crowdsec/enrollments
+        if [ -e /tmp/rentnerproxy-native-crowdsec/hold-enrollment ]; then
+            echo ready > /tmp/rentnerproxy-native-crowdsec/enrolling
+            while [ -e /tmp/rentnerproxy-native-crowdsec/hold-enrollment ]; do sleep 0.05; done
+        fi ;;
     *) exit 11 ;;
 esac
 SH
@@ -83,6 +88,10 @@ if [ "$1" = -t ]; then
 fi
 echo "$$" > /tmp/rentnerproxy-native-crowdsec/engine.pid
 echo "$*" >> /tmp/rentnerproxy-native-crowdsec/launches
+if [ "$2" = /usr/share/rentnerproxy/crowdsec/config-online.yaml ] && [ -e /tmp/rentnerproxy-native-crowdsec/hold-health ]; then
+    echo waiting > /tmp/rentnerproxy-native-crowdsec/starting-engine
+    while [ -e /tmp/rentnerproxy-native-crowdsec/hold-health ]; do sleep 0.05; done
+fi
 exec /crowdsec-fixture
 SH
 chmod 0755 /usr/local/bin/{cscli,crowdsec,gosu}
@@ -188,10 +197,19 @@ rm "$fixture/hold-probe"
 until_match "$control/console-enrollment-result.json" '"state":"failed"'
 until_match "$control/status.json" '"community":"disabled".*"state":"ready"'
 [[ $(wc -l < "$fixture/enrollments") -eq 1 ]]
+rm "$fixture/probing"
+touch "$fixture/hold-probe"
 mode managed-online
-until_match "$control/status.json" '"community":"connected".*"console":"connected"'
-kill -TERM "$(<"$fixture/engine.pid")"
+until_match "$fixture/probing" '^ready$'
+id=fedcba9876543210fedcba9876543210
+queue_enrollment
+engine=$(<"$fixture/engine.pid")
+kill -TERM "$engine"
+until_match "/proc/$engine/status" '^State:[[:space:]]+Z'
+rm "$fixture/hold-probe"
+until_match "$control/console-enrollment-result.json" "\"id\":\"$id\".*\"state\":\"failed\""
 until_match "$control/status.json" '"community":"degraded".*"console":"degraded".*"state":"ready"'
+[[ $(wc -l < "$fixture/enrollments") -eq 1 ]]
 [[ $(<"$key") == "$first" ]]
 mode stopped
 until_match "$control/status.json" '"state":"stopped"'
@@ -203,6 +221,16 @@ mode managed
 rm "$fixture/hold-validation"
 until_match "$control/status.json" '"restarts":0.*"state":"ready"'
 [[ $(grep -c 'config-online.yaml$' "$fixture/launches") == "$online_launches" ]]
+mode stopped
+until_match "$control/status.json" '"state":"stopped"'
+touch "$fixture/hold-health"
+mode managed-online
+until_match "$fixture/starting-engine" '^waiting$'
+mode managed
+until_match "$control/status.json" '"community":"disabled".*"restarts":0.*"state":"ready"'
+rm "$fixture/hold-health"
+mode managed-online
+until_match "$control/status.json" '"community":"connected".*"restarts":0.*"state":"ready"'
 mode stopped
 until_match "$control/status.json" '"state":"stopped"'
 touch "$fixture/invalid-config"
@@ -217,10 +245,16 @@ until_match "$control/status.json" '"state":"ready"'
 [[ $(<"$fixture/machine-recovery") == $'delete\nadd' ]]
 kill -TERM "$(<"$fixture/engine.pid")"
 until_match "$control/status.json" '"restarts":1.*"state":"ready"'
+mode managed-online
+until_match "$control/status.json" '"community":"connected".*"console":"connected"'
+touch "$fixture/hold-enrollment"
+queue_enrollment
+until_match "$fixture/enrolling" '^ready$'
+rm "$control/status.json"
 engine=$(<"$fixture/engine.pid")
 trap - EXIT
 stop_supervisor
-[[ ! -d /proc/$engine ]]
+[[ ! -e $control/status.json && ! -d /proc/$engine ]]
 protected="$fixture/root-file"
 touch "$protected"
 chmod 0644 "$protected"

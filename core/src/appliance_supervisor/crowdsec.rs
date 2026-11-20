@@ -29,6 +29,13 @@ enum Mode {
     Online,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EngineState {
+    Running,
+    Reconcile,
+    Failed,
+}
+
 struct Supervisor {
     engine: Option<Child>,
     running: Mode,
@@ -134,13 +141,15 @@ impl Supervisor {
             if self.engine.is_none() {
                 continue;
             }
-            let ready = self.ready().await?;
+            let readiness = self.ready(requested).await?;
             let ready_since = Instant::now();
-            let switched = if ready {
-                self.publish("ready")?;
-                self.monitor().await?
-            } else {
-                desired() != requested
+            let switched = match readiness {
+                EngineState::Running => {
+                    self.publish("ready")?;
+                    self.monitor().await?
+                }
+                EngineState::Reconcile => true,
+                EngineState::Failed => false,
             };
             stop(&mut self.engine).await?;
             if self.helpers.shutdown.is_cancelled() || desired() == Mode::Stopped || switched {
@@ -154,7 +163,7 @@ impl Supervisor {
                 self.publish("restarting")?;
                 continue;
             }
-            if ready && ready_since.elapsed() >= RETRY {
+            if readiness == EngineState::Running && ready_since.elapsed() >= RETRY {
                 self.restarts = 0;
             }
             self.retry().await?;
@@ -291,17 +300,26 @@ impl Supervisor {
             .map(|status| status.is_none())
     }
 
-    fn engine_wanted(&mut self, wanted: Mode) -> io::Result<bool> {
-        Ok(!self.helpers.shutdown.is_cancelled()
-            && wanted != Mode::Stopped
-            && (self.running != Mode::Online || wanted == Mode::Online)
-            && self.alive()?)
+    fn engine_state(&mut self, requested: Mode, wanted: Mode) -> io::Result<EngineState> {
+        if self.helpers.shutdown.is_cancelled()
+            || wanted != requested
+            || wanted == Mode::Stopped
+            || (self.running == Mode::Online && wanted != Mode::Online)
+        {
+            return Ok(EngineState::Reconcile);
+        }
+        Ok(if self.alive()? {
+            EngineState::Running
+        } else {
+            EngineState::Failed
+        })
     }
 
-    async fn ready(&mut self) -> io::Result<bool> {
+    async fn ready(&mut self, requested: Mode) -> io::Result<EngineState> {
         for _ in 0..30 {
-            if !self.engine_wanted(desired())? {
-                break;
+            let state = self.engine_state(requested, desired())?;
+            if state != EngineState::Running {
+                return Ok(state);
             }
             let mut command = Command::new("/usr/bin/curl");
             command.args([
@@ -313,18 +331,31 @@ impl Supervisor {
                 "1",
                 "http://127.0.0.1:18080/health",
             ]);
-            if bounded(command, 1, false, &self.helpers).await.is_ok() {
-                return self.engine_wanted(desired());
+            let healthy = bounded(command, 1, false, &self.helpers).await.is_ok();
+            let state = self.engine_state(requested, desired())?;
+            if healthy || state != EngineState::Running {
+                return Ok(state);
             }
             pause(1, &self.helpers.shutdown).await;
         }
-        Ok(false)
+        Ok(match self.engine_state(requested, desired())? {
+            EngineState::Running => EngineState::Failed,
+            state => state,
+        })
+    }
+
+    fn publish_ready_if_current(&mut self, requested: Mode) -> io::Result<bool> {
+        if self.engine_state(requested, desired())? != EngineState::Running {
+            return Ok(false);
+        }
+        self.publish("ready")?;
+        Ok(true)
     }
 
     async fn monitor(&mut self) -> io::Result<bool> {
         while !self.helpers.shutdown.is_cancelled() && self.alive()? {
             let requested = desired();
-            match (self.running, requested) {
+            let publish = match (self.running, requested) {
                 (_, Mode::Stopped) => break,
                 (Mode::Online, Mode::Local) => {
                     self.attempt = Instant::now();
@@ -338,33 +369,38 @@ impl Supervisor {
                     self.console = "not_enrolled";
                     self.attempt = Instant::now();
                     self.suspended = self.attempt;
-                    self.publish("ready")?;
+                    true
                 }
                 (Mode::Local, Mode::Online) if Instant::now() >= self.attempt => {
                     self.attempt = Instant::now() + RETRY;
-                    if self.enable_online().await.is_ok() && desired() == Mode::Online {
+                    if self.enable_online().await.is_ok() {
+                        if self.engine_state(requested, desired())? != EngineState::Running {
+                            continue;
+                        }
                         self.community = "starting";
                         return Ok(true);
                     }
                     self.community = "degraded";
-                    self.publish("ready")?;
+                    true
                 }
                 (Mode::Online, Mode::Online) if Instant::now() >= self.probe => {
                     self.probe_online().await;
                     self.probe = Instant::now() + Duration::from_secs(120);
-                    self.publish("ready")?;
+                    true
                 }
-                _ => (),
+                _ => false,
+            };
+            if publish && !self.publish_ready_if_current(requested)? {
+                continue;
             }
-            if self.helpers.shutdown.is_cancelled() {
-                break;
-            }
-            if desired() != requested {
+            if self.engine_state(requested, desired())? != EngineState::Running {
                 continue;
             }
             if let Some(text) = files::take_enrollment()? {
                 self.enroll(&text).await?;
-                self.publish("ready")?;
+                if !self.publish_ready_if_current(requested)? {
+                    continue;
+                }
             }
             pause(1, &self.helpers.shutdown).await;
         }

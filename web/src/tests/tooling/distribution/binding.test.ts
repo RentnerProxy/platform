@@ -4,6 +4,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { bindDistribution } from '../../../../../.github/scripts/distribution/bind.ts'
+import {
+    maximumAssessedBundleFiles,
+    maximumCandidateBundleFiles,
+} from '../../../../../.github/scripts/distribution/limits.ts'
 import { verifyDistributionNative } from '../../../../../.github/scripts/distribution/native-verifier.ts'
 import {
     validateDistributionCandidate,
@@ -27,7 +31,7 @@ import { ensureNativeDistributionVerifier } from './fixtures/native-verifier.ts'
 
 beforeAll(ensureNativeDistributionVerifier, 120_000)
 
-async function fixture(root: string) {
+async function fixture(root: string, extraCandidateFiles = 0) {
     const amd = await platformFixture(join(root, 'amd64'), 'amd64'),
         arm = await platformFixture(join(root, 'arm64'), 'arm64')
     const layout = join(root, 'layout')
@@ -50,6 +54,8 @@ async function fixture(root: string) {
         join(candidate, 'image-candidate.json'),
         JSON.stringify({ schemaVersion: 1, ...expected, archiveSha256, status: 'unassessed' }),
     )
+    for (let index = 0; index < extraCandidateFiles; index++)
+        await writeFile(join(candidate, `fixture-${index}`), '')
     const candidateHash = await writeDistributionBundle(candidate, expected)
     for (const target of ['debian', 'fedora'])
         for (const architecture of ['amd64', 'arm64'])
@@ -88,6 +94,30 @@ async function fixture(root: string) {
         },
     }
 }
+
+test('binding reserves the three extra assessed files at the candidate limit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rp-binding-limit-'))
+    try {
+        // Two inputs and the candidate manifest already occupy three slots.
+        const options = await fixture(root, maximumCandidateBundleFiles - 3)
+        expect(await bundleFiles(options.candidate)).toHaveLength(maximumCandidateBundleFiles)
+        const hash = await bindDistribution(options)
+        await verifyDistributionBundle(
+            options.output,
+            hash,
+            options.identity,
+            maximumAssessedBundleFiles,
+        )
+        expect(await bundleFiles(options.output, '', maximumAssessedBundleFiles)).toHaveLength(
+            maximumAssessedBundleFiles,
+        )
+        await expect(
+            verifyDistributionBundle(options.output, hash, options.identity),
+        ).rejects.toThrow('too large')
+    } finally {
+        await rm(root, { recursive: true, force: true })
+    }
+}, 30_000)
 
 test('unassessed candidates validate exact workflow identity without making an approval claim', () => {
     const expected = { ...identity, ...workflow, digest: 'sha256:' + 'a'.repeat(64) },

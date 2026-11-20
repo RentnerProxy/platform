@@ -232,7 +232,7 @@ async fn engine_ignoring_term_is_killed_and_reaped_within_the_forced_window() {
 
 #[tokio::test]
 async fn probe_confirmation_requires_the_managed_engine_to_still_be_alive() {
-    use super::{Mode, Supervisor};
+    use super::{EngineState, Mode, Supervisor};
     let mut supervisor = Supervisor::new(CancellationToken::new());
     supervisor.running = Mode::Online;
     supervisor.engine = Some(
@@ -242,8 +242,37 @@ async fn probe_confirmation_requires_the_managed_engine_to_still_be_alive() {
             .spawn()
             .unwrap(),
     );
-    assert!(supervisor.engine_wanted(Mode::Online).unwrap());
-    assert!(!supervisor.engine_wanted(Mode::Local).unwrap());
+    assert_eq!(
+        supervisor.engine_state(Mode::Online, Mode::Online).unwrap(),
+        EngineState::Running
+    );
+    let abandoned = supervisor.engine_state(Mode::Online, Mode::Local).unwrap();
+    assert_eq!(
+        supervisor.engine_state(Mode::Online, Mode::Online).unwrap(),
+        EngineState::Running
+    );
+    assert_eq!(abandoned, EngineState::Reconcile);
+    assert_eq!(
+        supervisor.engine_state(Mode::Local, Mode::Local).unwrap(),
+        EngineState::Reconcile
+    );
+    supervisor.running = Mode::Local;
+    assert_eq!(
+        supervisor.engine_state(Mode::Online, Mode::Online).unwrap(),
+        EngineState::Running
+    );
+    assert_eq!(
+        supervisor.engine_state(Mode::Local, Mode::Online).unwrap(),
+        EngineState::Reconcile
+    );
     supervisor.engine.as_mut().unwrap().kill().await.unwrap();
-    assert!(!supervisor.engine_wanted(Mode::Online).unwrap());
+    assert_eq!(
+        supervisor.engine_state(Mode::Online, Mode::Online).unwrap(),
+        EngineState::Failed
+    );
+    supervisor.helpers.shutdown.cancel();
+    assert_eq!(
+        supervisor.engine_state(Mode::Online, Mode::Online).unwrap(),
+        EngineState::Reconcile
+    );
 }
