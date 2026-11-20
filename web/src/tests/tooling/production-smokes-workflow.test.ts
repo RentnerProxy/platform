@@ -63,7 +63,11 @@ describe('production smokes workflow triggers and gate', () => {
         expect(document.on).toEqual({
             pull_request: null,
             push: { branches: ['main'] },
-            workflow_dispatch: null,
+            workflow_dispatch: {
+                inputs: {
+                    large_backup: expect.objectContaining({ type: 'boolean', default: false }),
+                },
+            },
         })
         expect(source).not.toContain('pull_request_target:')
         expect(source).not.toContain('workflow_run:')
@@ -92,6 +96,12 @@ describe('production smokes workflow triggers and gate', () => {
         )
         expect(gate.steps[0]?.run).toContain('true) test "$IMAGE_BUILD_RESULT" = success')
         expect(gate.steps[0]?.run).toContain('test "$SELECTION_RESULT" = success')
+        const backups = gate.steps.find((step) =>
+            step.run?.endsWith('production-smoke-ci.ts backups'),
+        )
+        expect(backups?.env?.RENTNERPROXY_LARGE_BACKUP_INTEGRATION).toBe(
+            "${{ inputs.large_backup && '1' || '0' }}",
+        )
         expect(document.concurrency.group).toBe(
             'production-smokes-${{ github.event.pull_request.number || github.ref }}',
         )
