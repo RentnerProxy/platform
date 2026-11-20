@@ -13,7 +13,9 @@ let csrfFilter: ((context: { handlerType: string }) => boolean) | undefined
 const nonce = 'fixture-nonce'
 const headers = new Headers({ 'content-security-policy': `nonce-${nonce}` })
 const secured = new Response('secured')
-const securityHeaders = mock((_protocol: string, _nonce: string) => headers)
+const securityHeaders = mock(
+    (_protocol: string, _nonce: string, _appUiOrigin?: string | null) => headers,
+)
 const applyHeaders = mock((_response: Response, _headers: Headers) => secured)
 const responseHeaders = mock((_headers: Headers) => {})
 const protocol = mock((_options: unknown) => 'https')
@@ -57,6 +59,7 @@ await mock.module('@tanstack/react-start/server', () => ({
     setResponseHeaders: responseHeaders,
 }))
 await mock.module('@/server/env.server.ts', () => ({
+    getPublicOrigin: () => 'https://appliance.example.test',
     getTrustProxyHeaders: () => true,
     validateProductionEnvironment: validate,
 }))
@@ -109,7 +112,9 @@ await mock.module('@/server/Admin/NpmImport/npm-temp.ts', () => ({ pruneStaleNpm
 
 test('server bootstrap validates production, binds every worker and coalesces temporary-file pruning with stop cleanup', async () => {
     const previous = process.env.NODE_ENV
+    const previousAppRuntime = process.env.RENTNERPROXY_APP_RUNTIME
     process.env.NODE_ENV = 'production'
+    delete process.env.RENTNERPROXY_APP_RUNTIME
     const interval = spyOn(globalThis, 'setInterval')
     const clear = spyOn(globalThis, 'clearInterval')
     let cleanup: Worker | undefined
@@ -171,10 +176,17 @@ test('server bootstrap validates production, binds every worker and coalesces te
         const result = await handlers[0]!({ next })
         expect(next).toHaveBeenCalledWith({ context: { cspNonce: nonce } })
         expect(protocol).toHaveBeenCalledWith({ xForwardedProto: true })
-        expect(securityHeaders).toHaveBeenCalledWith('https', nonce)
+        expect(securityHeaders).toHaveBeenCalledWith('https', nonce, undefined)
         expect(responseHeaders).toHaveBeenCalledWith(expect.any(Headers))
         expect(applyHeaders).toHaveBeenCalledWith(original, headers)
         expect(result.response).toBe(secured)
+        process.env.RENTNERPROXY_APP_RUNTIME = '1'
+        await handlers[0]!({ next })
+        expect(securityHeaders).toHaveBeenCalledWith(
+            'https',
+            nonce,
+            'https://appliance.example.test',
+        )
     } finally {
         releasePrune?.()
         if (cleanup) await cleanup.stop()
@@ -182,5 +194,7 @@ test('server bootstrap validates production, binds every worker and coalesces te
         clear.mockRestore()
         if (previous === undefined) delete process.env.NODE_ENV
         else process.env.NODE_ENV = previous
+        if (previousAppRuntime === undefined) delete process.env.RENTNERPROXY_APP_RUNTIME
+        else process.env.RENTNERPROXY_APP_RUNTIME = previousAppRuntime
     }
 })

@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto'
 
 import { isCspNonce } from '@/lib/Security/cspNonce.ts'
+import { APP_UI_PREFIX } from '@/lib/AppUi/paths.ts'
 
-function getAdminUiContentSecurityPolicy(nonce?: string): string {
+function getAdminUiContentSecurityPolicy(nonce?: string, appUiOrigin?: string | null): string {
     const styleSource = isCspNonce(nonce) ? `'self' 'nonce-${nonce}'` : "'self'"
 
     return [
@@ -17,7 +18,7 @@ function getAdminUiContentSecurityPolicy(nonce?: string): string {
         "img-src 'self' data: blob:",
         "font-src 'self'",
         "connect-src 'self'",
-        "frame-src 'none'",
+        appUiOrigin ? 'frame-src ' + appUiOrigin + APP_UI_PREFIX : "frame-src 'none'",
         "manifest-src 'self'",
     ].join('; ')
 }
@@ -40,9 +41,10 @@ export function createCspNonce(): string {
 export function getAdminUiSecurityHeaders(
     protocol: string,
     nonce?: string,
+    appUiOrigin?: string | null,
 ): Record<string, string> {
     return {
-        'Content-Security-Policy': getAdminUiContentSecurityPolicy(nonce),
+        'Content-Security-Policy': getAdminUiContentSecurityPolicy(nonce, appUiOrigin),
         'X-Content-Type-Options': 'nosniff',
         'X-Frame-Options': 'DENY',
         'Referrer-Policy': 'no-referrer',

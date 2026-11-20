@@ -18,6 +18,13 @@ use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::{Config, Installer};
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[path = "app_install/greeting.rs"]
+mod greeting;
+
 const PIN: &[u8] = include_bytes!("../fixtures/app-install/1.root.json");
 const ID: &str = "example.probe";
 const VERSION: &str = "1.0.0";
@@ -127,18 +134,45 @@ fn package(directory: &Path) -> (Value, Vec<u8>) {
 }
 
 fn archive_fixture(directory: &Path, manifest: Value, backend: Vec<u8>) -> (Value, Vec<u8>) {
+    archive_with_documents(directory, manifest, backend, "3.1.0", [])
+}
+
+fn archive_with_documents<'a>(
+    directory: &Path,
+    manifest: Value,
+    backend: Vec<u8>,
+    openapi: &str,
+    additional: impl IntoIterator<Item = (&'a str, usize, Vec<u8>)>,
+) -> (Value, Vec<u8>) {
     let raw = serde_json::to_vec(&manifest).unwrap();
-    let mut tar = Vec::new();
-    for (path, mode, body) in [
+    let files = [
         ("app.json", 0o644, raw.clone()),
         ("bin/app", 0o755, backend),
         ("LICENSE", 0o644, b"MIT".to_vec()),
         (
             "api/openapi.json",
             0o644,
-            br#"{"openapi":"3.1.0","info":{"title":"Probe","version":"1"},"paths":{}}"#.to_vec(),
+            serde_json::to_vec(
+                &json!({"openapi":openapi,"info":{"title":"Probe","version":"1"},"paths":{}}),
+            )
+            .unwrap(),
         ),
-    ] {
+    ];
+    let archive = pack_fixture(directory, files.into_iter().chain(additional));
+    let sidecar = json!({"sizeBytes":1,"sha256":"a".repeat(64)});
+    let release = json!({"appId":ID,"version":manifest["version"],"source":manifest["source"],
+        "publisher":{"namespace":"example","name":"Fixture"},"packages":[{"manifest":manifest,
+        "archive":{"sha256":digest(&archive),"sizeBytes":archive.len()},"manifestSha256":digest(&raw),
+        "sbom":sidecar,"provenance":sidecar}]});
+    (release, archive)
+}
+
+fn pack_fixture<'a>(
+    directory: &Path,
+    files: impl IntoIterator<Item = (&'a str, usize, Vec<u8>)>,
+) -> Vec<u8> {
+    let mut tar = Vec::new();
+    for (path, mode, body) in files {
         let mut header = [0; 512];
         header[..path.len()].copy_from_slice(path.as_bytes());
         let octal = |field: &mut [u8], number| {
@@ -172,13 +206,7 @@ fn archive_fixture(directory: &Path, manifest: Value, backend: Vec<u8>) -> (Valu
         json!({"inputPath":input,"outputPath":output}),
     )
     .unwrap();
-    let archive = fs::read(output).unwrap();
-    let sidecar = json!({"sizeBytes":1,"sha256":"a".repeat(64)});
-    let release = json!({"appId":ID,"version":manifest["version"],"source":manifest["source"],
-        "publisher":{"namespace":"example","name":"Fixture"},"packages":[{"manifest":manifest,
-        "archive":{"sha256":digest(&archive),"sizeBytes":archive.len()},"manifestSha256":digest(&raw),
-        "sbom":sidecar,"provenance":sidecar}]});
-    (release, archive)
+    fs::read(output).unwrap()
 }
 
 #[cfg(all(
@@ -322,6 +350,92 @@ fn persisted_roles_protect_against_rollback_expiry_and_partial_metadata() {
     }
     fs::write(checkpoint, b"{").unwrap();
     assert!(refresh(&reopened, &initial, now()).is_err());
+}
+
+#[test]
+fn signed_package_preparation_enforces_ui_limits_for_fresh_and_cached_trees() {
+    let limit = super::package::UI_ASSET_LIMIT as usize;
+    for (ui, openapi, asset_size, expected_error) in [
+        (false, "3.0.3", 0, None),
+        (true, "3.1.0", limit, None),
+        (true, "3.0.3", 1, Some("UI packages require OpenAPI 3.1")),
+        (
+            true,
+            "3.1.0",
+            limit + 1,
+            Some("UI assets must be regular files no larger than 8 MiB"),
+        ),
+    ] {
+        let store = tempfile::tempdir().unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let installer = manager(store.path());
+        let mut files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
+        refresh(&installer, &files, now()).unwrap();
+        let mut manifest = manifest();
+        let mut assets = Vec::new();
+        if ui {
+            manifest["ui"] = json!({"entrypoint":"ui/index.html", "slots":["navigation"]});
+            manifest["requires"]["uiBridge"] = json!(">=1.0.0 <2.0.0");
+            assets.push(("ui/index.html", 0o644, b"<h1>Fixture</h1>".to_vec()));
+            assets.push(("ui/static/image.png", 0o644, vec![0; asset_size]));
+        }
+        let (release, archive) = archive_with_documents(
+            fixture.path(),
+            manifest.clone(),
+            fixture_elf(),
+            openapi,
+            assets,
+        );
+        let package = &release["packages"][0];
+        let archive_hash = package["archive"]["sha256"].as_str().unwrap();
+        files.extend(update(
+            &files,
+            json!({"formatVersion":1,"revision":2,"releases":[release],"revocations":[]}),
+            &Files::new(),
+        ));
+        let catalog = refresh(&installer, &files, now()).unwrap();
+        let fresh = installer.prepare(&catalog, ID, VERSION, None, |_| Ok(archive.as_slice()));
+        let Some(expected) = expected_error else {
+            let staged = fresh.unwrap();
+            assert_eq!(
+                installer
+                    .recover(ID, VERSION, archive_hash)
+                    .unwrap()
+                    .directory,
+                staged.directory
+            );
+            continue;
+        };
+        let error = fresh.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), expected);
+        let packages = store.path().join("packages");
+        let destination = packages.join(archive_hash);
+        assert!(!destination.exists());
+
+        // Recreate a receipt and tree produced under the previous admission rules.
+        let checked = execute(
+            "validate-package",
+            json!({
+                "archivePath": fixture.path().join("fixture.tar"), "outputDirectory": destination,
+                "target": TARGET, "source": manifest["source"],
+            }),
+        )
+        .unwrap();
+        super::filesystem::sync_tree(&destination).unwrap();
+        let receipt = tempfile::NamedTempFile::new_in(&packages).unwrap();
+        serde_json::to_writer(receipt.as_file(), &json!({
+            "archive": package["archive"], "manifestSha256": package["manifestSha256"],
+            "target": TARGET, "treeSha256": super::filesystem::tree_digest(&destination).unwrap(),
+            "linkage": checked["linkage"],
+        })).unwrap();
+        receipt
+            .persist(packages.join(format!(".verified-v1-{archive_hash}.json")))
+            .unwrap();
+        let error = installer.recover(ID, VERSION, archive_hash).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), expected);
+    }
 }
 
 #[test]

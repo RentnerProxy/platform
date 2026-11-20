@@ -158,6 +158,13 @@
         "ddns": "DDNS",
         "dockerDiscovery": "Docker Discovery"
     },
+    "appUi": {
+        "apps": "Aplikacje",
+        "loading": "Ładowanie aplikacji…",
+        "unavailable": "Ta aplikacja jest obecnie niedostępna.",
+        "confirmTitle": "Potwierdź działanie aplikacji",
+        "confirmDescription": "{{name}} prosi o potwierdzenie dla {{dialog}}."
+    },
     "quickSearch": {
         "title": "Szybkie wyszukiwanie",
         "open": "Otwórz wyszukiwanie",

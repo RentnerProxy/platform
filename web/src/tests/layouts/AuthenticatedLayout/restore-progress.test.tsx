@@ -1,7 +1,23 @@
 // oxlint-disable no-await-in-loop -- Bounded waits observe serial React and router transitions.
-import { afterEach, beforeEach, expect, jest, mock, spyOn, test } from 'bun:test'
+import {
+    afterAll,
+    afterEach,
+    beforeAll,
+    beforeEach,
+    expect,
+    jest,
+    mock,
+    spyOn,
+    test,
+} from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import {
+    defaultScheduler,
+    notifyManager,
+    QueryClient,
+    QueryClientProvider,
+    useQuery,
+} from '@tanstack/react-query'
 import { toast } from '@rentnerkev/toasts'
 import { act, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -232,6 +248,12 @@ async function deliver(value: unknown, topic?: string) {
 function progress() {
     return container.querySelector<HTMLProgressElement>('#restore-progress')
 }
+
+beforeAll(() => {
+    // Restore and reconnect timers use a simulated clock. Query updates must still reach React.
+    notifyManager.setScheduler(queueMicrotask)
+})
+afterAll(() => notifyManager.setScheduler(defaultScheduler))
 
 beforeEach(() => {
     const success = spyOn(toast, 'success').mockReturnValue('restore-feedback-fixture')

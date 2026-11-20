@@ -1,0 +1,71 @@
+{
+    "openapi": "3.1.0",
+    "info": { "title": "Greeting", "version": "1.0.0" },
+    "x-rentnerproxy-ui": {
+        "routes": ["overview", "details"],
+        "dialogs": ["confirm-save"],
+        "events": []
+    },
+    "paths": {
+        "/app/v1/api/get-greeting": {
+            "post": {
+                "operationId": "get-greeting",
+                "x-rentnerproxy-access": { "permissionKey": "greeting-read" },
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": { "type": "object", "additionalProperties": false }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The saved greeting.",
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/Greeting" }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/app/v1/api/save-greeting": {
+            "post": {
+                "operationId": "save-greeting",
+                "x-rentnerproxy-access": { "permissionKey": "greeting-write" },
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": { "$ref": "#/components/schemas/Greeting" }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The new greeting.",
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/Greeting" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Greeting": {
+                "type": "object",
+                "required": ["greeting"],
+                "properties": {
+                    "greeting": { "type": "string", "minLength": 1, "maxLength": 120 }
+                },
+                "additionalProperties": false
+            }
+        }
+    }
+}

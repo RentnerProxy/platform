@@ -2062,6 +2062,7 @@ dependencies = [
  "hyper-util",
  "instant-acme",
  "ipnet",
+ "jsonschema",
  "libc",
  "marketplace-app-catalog",
  "marketplace-app-pipeline",

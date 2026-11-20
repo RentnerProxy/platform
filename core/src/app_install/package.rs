@@ -7,7 +7,8 @@ use std::{
 
 use marketplace_app_pipeline::package::execute;
 use marketplace_artifacts::{
-    FileIdentity, StreamVerification, file_identity, invalid, read_file, verify_stream,
+    FileIdentity, StreamVerification, file_identity, invalid, parse_json, read_file,
+    validate_wire_json, verify_stream,
 };
 use rentnerproxy_app_contracts::{DownloadAsset, Package};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,8 @@ const COMPRESSED_LIMIT: u64 = 257 * 1024 * 1024;
 const RECEIPT_LIMIT: u64 = 64 * 1024 * 1024;
 const DOWNLOAD_WORKSPACE: &str = ".download-";
 const PACKAGE_WORKSPACE: &str = ".stage-";
+pub(crate) const UI_ASSET_LIMIT: u64 = 8 * 1024 * 1024;
+pub(crate) const UI_DOCUMENT_LIMIT: u64 = 4 * 1024 * 1024;
 
 // Bump the receipt filename version when the package verification rules change.
 #[derive(Deserialize, Serialize)]
@@ -92,6 +95,7 @@ pub(super) fn stage<R: Read>(
         {
             return Err(invalid("Staged package differs from its verified archive"));
         }
+        verify_ui_package(&destination, package.manifest())?;
         verify_abi(&receipt.linkage, target)?;
         filesystem::sync_directory(&packages)?;
         return Ok(destination);
@@ -115,6 +119,7 @@ pub(super) fn stage<R: Read>(
     {
         return Err(invalid("Packaged manifest differs from the signed catalog"));
     }
+    verify_ui_package(&tree, package.manifest())?;
     verify_abi(&checked["linkage"], target)?;
     filesystem::sync_tree(&tree)?;
     let tree_sha256 = filesystem::tree_digest(&tree)?;
@@ -145,6 +150,48 @@ pub(super) fn stage<R: Read>(
     }
     filesystem::sync_directory(&packages)?;
     Ok(destination)
+}
+
+fn verify_ui_package(directory: &Path, manifest: &Value) -> io::Result<()> {
+    if manifest.get("ui").is_none() {
+        return Ok(());
+    }
+    // The package validator has checked the relative paths and extracted entries.
+    // Cached trees are checked against the protected receipt before reaching here.
+    let api = manifest["api"]
+        .as_str()
+        .ok_or_else(|| invalid("UI package requires an OpenAPI document"))?;
+    parse_ui_api(&read_file(&directory.join(api), UI_DOCUMENT_LIMIT)?)?;
+    verify_ui_assets(&directory.join("ui"))
+}
+
+fn verify_ui_assets(directory: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            verify_ui_assets(&entry.path())?;
+        } else if !metadata.is_file() || metadata.len() > UI_ASSET_LIMIT {
+            return Err(invalid(
+                "UI assets must be regular files no larger than 8 MiB",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_ui_api(bytes: &[u8]) -> io::Result<Value> {
+    let api = parse_json(bytes)?;
+    validate_wire_json(&api)?;
+    let patch = api["openapi"]
+        .as_str()
+        .and_then(|version| version.strip_prefix("3.1."));
+    if !patch.is_some_and(|patch| {
+        (1..=3).contains(&patch.len()) && patch.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
+        return Err(invalid("UI packages require OpenAPI 3.1"));
+    }
+    Ok(api)
 }
 
 pub(super) fn write_download(

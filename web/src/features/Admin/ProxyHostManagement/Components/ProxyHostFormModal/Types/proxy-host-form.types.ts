@@ -1,4 +1,4 @@
-import type { FormEventHandler, KeyboardEvent, RefObject } from 'react'
+import type { FormEventHandler, RefObject } from 'react'
 import type { z } from 'zod'
 
 import type { AccessPolicySummary } from '@/lib/AccessPolicies/Types/access-policies.types.ts'
@@ -80,10 +80,6 @@ export interface ProxyHostFormModalState {
 
 export interface ProxyHostFormModalHandler {
     readonly setActiveTab: (tab: ProxyHostFormTab) => void
-    readonly handleTabKeyDown: (
-        event: KeyboardEvent<HTMLButtonElement>,
-        tab: ProxyHostFormTab,
-    ) => void
     readonly handleBrowserCacheChange: (
         settings: NonNullable<ProxyHostEditorFormValues['browserCache']>,
     ) => void

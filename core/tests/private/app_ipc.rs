@@ -19,6 +19,9 @@ use tokio::{
 
 use super::*;
 
+#[path = "app_ipc_ui.rs"]
+mod root_ui_dispatch;
+
 const TOKEN: &str = "Bearer manager-test-token";
 const CREDENTIAL: &str = "Bearer native-app-test-token";
 const CONTEXT: &str = "/platform/v1/context";
@@ -162,6 +165,124 @@ fn test_generation(uid: u32, backend: PathBuf, backend_uid: u32) -> Arc<gateway:
         )
         .unwrap(),
     )
+}
+
+#[tokio::test]
+async fn root_ui_dispatch_uses_only_generation_bound_app_credentials() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    if uid() != 0 {
+        return;
+    }
+    let scratch = Scratch::create(&env::temp_dir());
+    let authority_socket = scratch.path("authority.sock");
+    let authority = UnixListener::bind(&authority_socket).unwrap();
+    let revoked = Arc::new(AtomicBool::new(false));
+    let authority_revoked = Arc::clone(&revoked);
+    let authority_task = tokio::spawn(async move {
+        loop {
+            let (stream, _) = authority.accept().await.unwrap();
+            let revoked = Arc::clone(&authority_revoked);
+            let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                let revoked = Arc::clone(&revoked);
+                async move {
+                    assert_eq!(request.uri(), LEASE);
+                    assert_eq!(request.headers()["authorization"], TOKEN);
+                    let body = request.into_body().collect().await.unwrap().to_bytes();
+                    let body: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(body["identity"]["generation"], 9);
+                    assert_eq!(body["identity"]["installationId"], "installation");
+                    let response = if revoked.load(Ordering::Acquire) {
+                        Response::builder()
+                            .status(401)
+                            .body(Full::new(Bytes::new()))
+                            .unwrap()
+                    } else {
+                        Response::new(Full::new(Bytes::from(
+                            lease_expiry(Duration::from_secs(20)).to_string(),
+                        )))
+                    };
+                    Ok::<_, Infallible>(response)
+                }
+            });
+            let _ = server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await;
+        }
+    });
+    let app_socket = scratch.path("app.sock");
+    let app = UnixListener::bind(&app_socket).unwrap();
+    let app_task = tokio::spawn(async move {
+        let (stream, _) = app.accept().await.unwrap();
+        let service = service_fn(|request: Request<hyper::body::Incoming>| async move {
+            assert_eq!(request.uri(), "/app/v1/api/greeting");
+            assert_eq!(
+                request.headers()["authorization"],
+                "Bearer app-ui-direction"
+            );
+            assert_eq!(request.headers()["x-app-installation"], "installation");
+            assert_eq!(request.headers()["x-app-generation"], "9");
+            assert_eq!(request.headers()["idempotency-key"], "request-one");
+            assert!(!request.headers().contains_key("x-app-delegation"));
+            assert!(!request.headers().contains_key("cookie"));
+            let body = request.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, Bytes::from_static(br#"{"name":"demo"}"#));
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from_static(br#"{"greeting":"hello"}"#)))
+                    .unwrap(),
+            )
+        });
+        server::conn::http1::Builder::new()
+            .serve_connection(TokioIo::new(stream), service)
+            .await
+            .unwrap();
+    });
+    let mut generation = test_generation(uid(), authority_socket, uid());
+    Arc::get_mut(&mut generation)
+        .unwrap()
+        .set_app_target(app_socket, "app-ui-direction")
+        .unwrap();
+    let core = scratch.path("core.sock");
+    let core_task = tokio::spawn(gateway::serve(
+        UnixListener::bind(&core).unwrap(),
+        generation,
+    ));
+    let mut sender = open(&core).await;
+    let call = |generation| {
+        request(
+            Method::POST,
+            "/app/v1/api/greeting",
+            "Bearer ignored",
+            generation,
+            Bytes::from_static(br#"{"name":"demo"}"#),
+        )
+    };
+    assert_problem(
+        &mut sender,
+        call("8"),
+        StatusCode::FORBIDDEN,
+        "installationContextRejected",
+    )
+    .await;
+    let response = sender.send_request(call("9")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.collect().await.unwrap().to_bytes(),
+        br#"{"greeting":"hello"}"#.as_slice()
+    );
+    app_task.await.unwrap();
+    revoked.store(true, Ordering::Release);
+    assert_problem(
+        &mut sender,
+        call("9"),
+        StatusCode::FORBIDDEN,
+        "installationContextRejected",
+    )
+    .await;
+    core_task.abort();
+    authority_task.abort();
 }
 
 #[tokio::test]

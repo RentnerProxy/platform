@@ -47,6 +47,7 @@ import { Route as PublicLoginTwoFactorRouteImport } from './routes/_public/login
 import { Route as ApiMigrationExportRouteImport } from './routes/api/migration/export'
 import { Route as MediaAvatarsUserIdRouteImport } from './routes/media/avatars/$userId'
 import { Route as MediaMailLogoAccentRouteImport } from './routes/media/mail-logo/$accent'
+import { Route as AuthenticatedAppsInstallationIdChar123RouteIdChar125RouteImport } from './routes/_authenticated/apps.$installationId.{-$routeId}'
 import { Route as ApiAdminBackupsConfigRouteImport } from './routes/api/admin/backups/config'
 import { Route as ApiAdminBackupsDeleteRouteImport } from './routes/api/admin/backups/delete'
 import { Route as ApiAdminBackupsOffHostRouteImport } from './routes/api/admin/backups/off-host'
@@ -259,6 +260,12 @@ const MediaMailLogoAccentRoute = MediaMailLogoAccentRouteImport.update({
   path: '/media/mail-logo/$accent',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedAppsInstallationIdChar123RouteIdChar125Route =
+  AuthenticatedAppsInstallationIdChar123RouteIdChar125RouteImport.update({
+    id: '/apps/$installationId/{-$routeId}',
+    path: '/apps/$installationId/{-$routeId}',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const ApiAdminBackupsConfigRoute = ApiAdminBackupsConfigRouteImport.update({
   id: '/api/admin/backups/config',
   path: '/api/admin/backups/config',
@@ -383,6 +390,7 @@ export interface FileRoutesByFullPath {
   '/media/avatars/$userId': typeof MediaAvatarsUserIdRoute
   '/media/mail-logo/$accent': typeof MediaMailLogoAccentRoute
   '/login/': typeof PublicLoginIndexRoute
+  '/apps/$installationId/{-$routeId}': typeof AuthenticatedAppsInstallationIdChar123RouteIdChar125Route
   '/api/admin/backups/config': typeof ApiAdminBackupsConfigRoute
   '/api/admin/backups/delete': typeof ApiAdminBackupsDeleteRoute
   '/api/admin/backups/off-host': typeof ApiAdminBackupsOffHostRoute
@@ -436,6 +444,7 @@ export interface FileRoutesByTo {
   '/media/avatars/$userId': typeof MediaAvatarsUserIdRoute
   '/media/mail-logo/$accent': typeof MediaMailLogoAccentRoute
   '/login': typeof PublicLoginIndexRoute
+  '/apps/$installationId/{-$routeId}': typeof AuthenticatedAppsInstallationIdChar123RouteIdChar125Route
   '/api/admin/backups/config': typeof ApiAdminBackupsConfigRoute
   '/api/admin/backups/delete': typeof ApiAdminBackupsDeleteRoute
   '/api/admin/backups/off-host': typeof ApiAdminBackupsOffHostRoute
@@ -493,6 +502,7 @@ export interface FileRoutesById {
   '/media/avatars/$userId': typeof MediaAvatarsUserIdRoute
   '/media/mail-logo/$accent': typeof MediaMailLogoAccentRoute
   '/_public/login/': typeof PublicLoginIndexRoute
+  '/_authenticated/apps/$installationId/{-$routeId}': typeof AuthenticatedAppsInstallationIdChar123RouteIdChar125Route
   '/api/admin/backups/config': typeof ApiAdminBackupsConfigRoute
   '/api/admin/backups/delete': typeof ApiAdminBackupsDeleteRoute
   '/api/admin/backups/off-host': typeof ApiAdminBackupsOffHostRoute
@@ -549,6 +559,7 @@ export interface FileRouteTypes {
     | '/media/avatars/$userId'
     | '/media/mail-logo/$accent'
     | '/login/'
+    | '/apps/$installationId/{-$routeId}'
     | '/api/admin/backups/config'
     | '/api/admin/backups/delete'
     | '/api/admin/backups/off-host'
@@ -602,6 +613,7 @@ export interface FileRouteTypes {
     | '/media/avatars/$userId'
     | '/media/mail-logo/$accent'
     | '/login'
+    | '/apps/$installationId/{-$routeId}'
     | '/api/admin/backups/config'
     | '/api/admin/backups/delete'
     | '/api/admin/backups/off-host'
@@ -658,6 +670,7 @@ export interface FileRouteTypes {
     | '/media/avatars/$userId'
     | '/media/mail-logo/$accent'
     | '/_public/login/'
+    | '/_authenticated/apps/$installationId/{-$routeId}'
     | '/api/admin/backups/config'
     | '/api/admin/backups/delete'
     | '/api/admin/backups/off-host'
@@ -971,6 +984,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MediaMailLogoAccentRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/apps/$installationId/{-$routeId}': {
+      id: '/_authenticated/apps/$installationId/{-$routeId}'
+      path: '/apps/$installationId/{-$routeId}'
+      fullPath: '/apps/$installationId/{-$routeId}'
+      preLoaderRoute: typeof AuthenticatedAppsInstallationIdChar123RouteIdChar125RouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/api/admin/backups/config': {
       id: '/api/admin/backups/config'
       path: '/api/admin/backups/config'
@@ -1108,6 +1128,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedSecurityRoute: typeof AuthenticatedSecurityRoute
   AuthenticatedUsersRoute: typeof AuthenticatedUsersRoute
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
+  AuthenticatedAppsInstallationIdChar123RouteIdChar125Route: typeof AuthenticatedAppsInstallationIdChar123RouteIdChar125Route
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
@@ -1132,6 +1153,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSecurityRoute: AuthenticatedSecurityRoute,
   AuthenticatedUsersRoute: AuthenticatedUsersRoute,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
+  AuthenticatedAppsInstallationIdChar123RouteIdChar125Route:
+    AuthenticatedAppsInstallationIdChar123RouteIdChar125Route,
 }
 
 const AuthenticatedRouteRouteWithChildren =

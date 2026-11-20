@@ -273,6 +273,44 @@ async function readAppPermissions(
     return keys.map((key) => qualifyAppRuntimePermission(identity.appId, key)).toSorted()
 }
 
+export async function readAppUiActorInTransaction(transaction: AuthTransaction, sessionId: string) {
+    if (!uuidPattern.test(sessionId)) throw new AppRuntimeAuthorityError('unauthorized')
+    await lockAppRuntimeUserPolicy(transaction)
+    return resolveAppRuntimeSession(transaction, sessionId)
+}
+
+export async function readAppUiPrincipalInTransaction(
+    transaction: AuthTransaction,
+    identity: AppRuntimeIdentity,
+    { actor, roleIds, session }: Awaited<ReturnType<typeof readAppUiActorInTransaction>>,
+    includeGrants = false,
+) {
+    const generation = await readAppRuntimeGeneration(transaction, identity)
+    if (!generation.hasUi) throw new AppRuntimeAuthorityError('not_found')
+    const appPermissions = await readAppPermissions(
+        transaction,
+        identity,
+        generation.permissionKeys,
+        actor,
+        roleIds,
+    )
+    const expiresAt = new Date(
+        Math.min(session.expiresAt.getTime(), generation.leaseExpiresAt.getTime()),
+    )
+    if (expiresAt.getTime() <= Date.now()) throw new AppRuntimeAuthorityError('unauthorized')
+    if (generation.permissionKeys.length > 0 && appPermissions.length === 0)
+        throw new AppRuntimeAuthorityError('forbidden')
+    const grants = includeGrants ? await readGrants(transaction, generation) : []
+    return {
+        kind: 'user' as const,
+        identity,
+        expiresAt,
+        appPermissions,
+        permissions: actor.permissions,
+        grants,
+    }
+}
+
 async function readPrincipal(
     transaction: AuthTransaction,
     identity: AppRuntimeIdentity,

@@ -1,5 +1,5 @@
 import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
@@ -11,6 +11,7 @@ import {
 } from '@/config/quick-search.config.ts'
 import {
     getQuickSearchNavigation,
+    matchesQuickSearch,
     QUICK_SEARCH_CATEGORIES,
 } from '@/lib/QuickSearch/quickSearchNavigation.ts'
 import type { QuickSearchResult } from '@/lib/QuickSearch/Types/quick-search.types.ts'
@@ -19,6 +20,7 @@ import {
     getQuickSearchActions,
 } from '@/lib/QuickSearch/quickSearchActions.ts'
 import { useQuickActions } from '@/shared/QuickActions/Hooks/useQuickActions.ts'
+import { useAppUi } from '@/features/AppUi/AppUiProvider.tsx'
 import { searchProxyHostsHandler } from '@/features/Admin/ProxyHostManagement/middleware.ts'
 import { searchRedirectHostsHandler } from '@/features/Admin/RedirectHostManagement/middleware.ts'
 import { searchCertificatesHandler } from '@/features/Admin/CertificateManagement/middleware.ts'
@@ -44,6 +46,7 @@ export default function useQuickSearchLogic({
     const { t } = useTranslationStore()
     const navigate = useNavigate()
     const actions = useQuickActions()
+    const appUi = useAppUi()
     const handoff = useRef<{ result: QuickSearchResult; scope: string } | null>(null)
     const id = useId()
     const input = useRef<HTMLInputElement>(null)
@@ -54,9 +57,10 @@ export default function useQuickSearchLogic({
     const [openingScope, setOpeningScope] = useState<string | null>(null)
     const [unavailableScope, setUnavailableScope] = useState<string | null>(null)
     const attempt = useRef(0)
+    const sessionId = appUi?.sessionId
     const scope = useMemo(
-        () => JSON.stringify([userId, permissions.toSorted(), roles.toSorted()]),
-        [userId, permissions, roles],
+        () => JSON.stringify([userId, sessionId, permissions.toSorted(), roles.toSorted()]),
+        [userId, sessionId, permissions, roles],
     )
     const selectionScope = useRef<string | null>(null)
     const isOpening = openingScope === scope
@@ -70,7 +74,7 @@ export default function useQuickSearchLogic({
         const timer = window.setTimeout(() => setDebouncedQuery(term), QUICK_SEARCH_DEBOUNCE_MS)
         return () => window.clearTimeout(timer)
     }, [debouncedQuery, open, term])
-    useEffect(() => {
+    useLayoutEffect(() => {
         selectionScope.current = scope
         return () => {
             selectionScope.current = null
@@ -92,6 +96,19 @@ export default function useQuickSearchLogic({
         ...getQuickSearchActions(permissions, term, t),
         ...getQuickSearchNavigation(permissions, term, t, roles),
     ]
+    results.push(
+        ...(appUi?.apps ?? [])
+            .filter((app) => app.slots.includes('search') && matchesQuickSearch(term, app.name))
+            .slice(0, QUICK_SEARCH_LIMIT)
+            .map((app) => ({
+                id: `app:${app.installationId}`,
+                label: app.name,
+                detail: '',
+                category: 'apps' as const,
+                to: '/apps/$installationId/{-$routeId}' as const,
+                installationId: app.installationId,
+            })),
+    )
     let hasErrors = false
     let isLoading = canSearch && isDebouncing
     for (const [index, source] of QUICK_SEARCH_CATEGORIES.entries()) {
@@ -117,12 +134,13 @@ export default function useQuickSearchLogic({
             'actions',
             'navigation',
             'settings',
+            'apps',
             ...QUICK_SEARCH_CATEGORIES.map((item) => item.category),
         ] as const
     )
         .map((category) => ({
             category,
-            label: t(`quickSearch.categories.${category}`),
+            label: category === 'apps' ? t('appUi.apps') : t(`quickSearch.categories.${category}`),
             results: results
                 .filter((result) => result.category === category)
                 .map((result) => Object.assign({ optionId: `${id}-${result.id}` }, result)),
@@ -162,6 +180,20 @@ export default function useQuickSearchLogic({
             if (attempt.current !== selection || selectionScope.current !== scope) return
             if (result.to === '/account') {
                 await navigate({ to: '/account', search: { section: result.section } })
+            } else if (result.to === '/apps/$installationId/{-$routeId}') {
+                const apps = await appUi?.refresh()
+                const app = apps?.find(
+                    (candidate) =>
+                        candidate.installationId === result.installationId &&
+                        candidate.slots.includes('search'),
+                )
+                if (!app) throw new Error('unavailable')
+                if (attempt.current !== selection || selectionScope.current !== scope) return
+                await navigate({
+                    to: result.to,
+                    params: { installationId: app.installationId, routeId: undefined },
+                    search: { slot: 'search' },
+                })
             } else {
                 await navigate({ to: result.to })
             }

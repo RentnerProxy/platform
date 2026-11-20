@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import type { AppUiSummary } from '@/lib/AppUi/contract.ts'
 import type { ProxyHostFormFieldsLogicResult } from './form-fields-logic.types.ts'
 import type {
     ProxyHostFormFieldsProps,
@@ -70,4 +71,8 @@ export type ProxyHostFormTabsProps = Pick<
     ProxyHostFormModalState,
     'activeTab' | 'formId' | 'tabs' | 'isPending' | 'invalidTabs'
 > &
-    Pick<ProxyHostFormModalHandler, 'setActiveTab' | 'handleTabKeyDown'>
+    Pick<ProxyHostFormModalHandler, 'setActiveTab'> & {
+        readonly apps: readonly AppUiSummary[]
+        readonly activeApp: string | undefined
+        readonly selectApp: (installationId: string) => void
+    }

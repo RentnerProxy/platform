@@ -135,6 +135,13 @@
         "ddns": "DDNS",
         "dockerDiscovery": "Docker Discovery"
     },
+    "appUi": {
+        "apps": "Apps",
+        "loading": "App wordt geladen…",
+        "unavailable": "Deze app is momenteel niet beschikbaar.",
+        "confirmTitle": "App-actie bevestigen",
+        "confirmDescription": "{{name}} vraagt om bevestiging voor {{dialog}}."
+    },
     "quickSearch": {
         "title": "Snel zoeken",
         "open": "Zoeken openen",

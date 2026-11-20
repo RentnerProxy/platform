@@ -1,9 +1,9 @@
 pub(crate) mod filesystem;
-mod gateway;
+pub(crate) mod gateway;
 mod lease;
 mod process;
 mod provision;
-mod wire_json;
+pub(crate) mod wire_json;
 
 use std::{
     env, io,
@@ -22,9 +22,9 @@ use tokio::time::{timeout, timeout_at};
 pub use process::run_app_watchdog;
 pub use provision::run_app_provision;
 
-const APP_ROOT: &str = "/run/rentnerproxy/apps";
+pub(crate) const APP_ROOT: &str = "/run/rentnerproxy/apps";
 const GATEWAY_SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
-const WEB_UID: u32 = 10002;
+pub(crate) const WEB_UID: u32 = 10002;
 const PROFILE: &str = "rentnerproxy-linux-v1";
 const VERSION: &str = "1.0.0";
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -207,13 +207,13 @@ async fn run_generation(
     while core_credential == app_credential {
         app_credential = credential()?;
     }
-    let state = Arc::new(gateway::Generation::new(
+    let mut state = gateway::Generation::new(
         &config,
         digest::digest(&digest::SHA256, core_credential.as_bytes()),
         paths.gateway_socket.to_owned(),
         paths.gateway_uid,
         token,
-    )?);
+    )?;
     tokio::pin!(stop);
     let deadline = tokio::select! {
         biased;
@@ -222,6 +222,10 @@ async fn run_generation(
     };
     let launch_deadline = deadline.min(tokio::time::Instant::now() + LAUNCH_TIMEOUT);
     let (sockets, listener) = filesystem::GenerationSockets::bind(paths.app_root, &config)?;
+    if config.ui_bridge.is_some() {
+        state.set_app_target(sockets.app_socket.clone(), &app_credential)?;
+    }
+    let state = Arc::new(state);
     let handoff_deadline = process::LaunchDeadline::from_instant(launch_deadline)?;
     let bootstrap = Bootstrap {
         format_version: 1,

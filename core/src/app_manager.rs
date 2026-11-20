@@ -8,6 +8,7 @@ mod storage;
 #[cfg(test)]
 #[path = "../tests/private/app_manager.rs"]
 mod tests;
+mod ui;
 
 use crate::app_install::{Installer, StagedPackage};
 use crate::appliance_process::{SCAN_BUDGET, uid_in_use, verify_uid_stopped};
@@ -58,6 +59,7 @@ struct Manager {
     config: PathBuf,
     journal: Journal,
     gateway: Gateway,
+    ui: ui::Registry,
     running: BTreeMap<String, Running>,
     fence_cursor: String,
     drains: JoinSet<io::Result<()>>,
@@ -328,6 +330,25 @@ impl Manager {
             .checked_add(1)
             .filter(|n| *n <= MAX_GENERATION)
             .ok_or_else(|| bad("Generation limit reached"))?;
+        let ui_id = id.to_owned();
+        let uid = slot.uid;
+        let (package, ui_package) = self
+            .during(Operation::Launch(id), async move {
+                tokio::task::spawn_blocking(move || {
+                    let ui = ui::Package::load(&package, ui_id, generation, uid);
+                    (package, ui)
+                })
+                .await
+                .map_err(io::Error::other)
+            })
+            .await?;
+        let ui_package = match ui_package {
+            Ok(package) => package,
+            Err(_) => {
+                eprintln!("Application {id} UI package unavailable");
+                None
+            }
+        };
         let writer = self.fence(id).await?;
         // The old UID can change its own data directory's mode until its fence completes.
         admit_storage()?;
@@ -404,6 +425,7 @@ impl Manager {
         slot.recovery_required = false;
         slot.grants_uncertain = None;
         self.journal.save(id, slot)?;
+        live.ui = ui_package.and_then(|package| self.ui.publish(package));
         self.running.insert(id.to_owned(), live);
         Ok(())
     }
@@ -1059,11 +1081,13 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
     }
     let check = config.clone();
     tokio::task::spawn_blocking(move || Installer::open(&check).map(drop)).await??;
+    let ui = ui::Registry::default();
     let mut manager = Manager {
         listener: None,
         config,
         journal: Journal::open(Path::new("/var/lib/rentnerproxy/app-manager"))?,
         gateway: Gateway::open()?,
+        ui: ui.clone(),
         running: BTreeMap::new(),
         fence_cursor: String::new(),
         drains: JoinSet::new(),
@@ -1073,6 +1097,16 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
         biased;
         _ = crate::shutdown::wait_for_shutdown() => Ok(()),
         result = manager.serve() => result,
+        () = async move {
+            let result = match ui::bind() {
+                Ok(listener) => ui::serve(listener, ui).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                eprintln!("Application UI service unavailable: {error}");
+            }
+            std::future::pending::<()>().await;
+        } => Ok(()),
     };
     manager.shutdown().await?;
     result

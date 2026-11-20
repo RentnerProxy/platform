@@ -22,6 +22,8 @@ import {
     isAppRuntimeAuthorized,
     issueAppRuntimeDelegationInTransaction,
     putAppRuntimeSecretInTransaction,
+    readAppUiActorInTransaction,
+    readAppUiPrincipalInTransaction,
     readAppRuntimeContextInTransaction,
     readAppRuntimeSecretInTransaction,
     resolveAppRuntimePrincipalInTransaction,
@@ -131,6 +133,7 @@ integrationTest(
                         leaseExpiresAt,
                         capabilities: [read],
                         permissionKeys: ['use-secret'],
+                        hasUi: true,
                     }
                     const retired = {
                         ...identity,
@@ -221,6 +224,10 @@ integrationTest(
                         expiresAt: leaseExpiresAt,
                         tokenHash: await hashOpaqueToken(createOpaqueToken()),
                     })
+                    const uiActor = await readAppUiActorInTransaction(transaction, sessionId)
+                    await expect(
+                        readAppUiPrincipalInTransaction(transaction, identity, uiActor),
+                    ).rejects.toMatchObject({ code: 'forbidden' })
                     await setAppRuntimeRolePermissionInTransaction(
                         transaction,
                         identity,
@@ -228,6 +235,22 @@ integrationTest(
                         'use-secret',
                         true,
                     )
+                    const uiPrincipal = await readAppUiPrincipalInTransaction(
+                        transaction,
+                        identity,
+                        uiActor,
+                        true,
+                    )
+                    expect(uiPrincipal.appPermissions).toEqual(['app:test.integration:use-secret'])
+                    expect(isAppRuntimeAuthorized(uiPrincipal, read, 'managed-host-a')).toBe(true)
+                    expect(isAppRuntimeAuthorized(uiPrincipal, read, 'other-host')).toBe(false)
+                    await expect(
+                        readAppUiPrincipalInTransaction(
+                            transaction,
+                            { ...identity, generation: 2 },
+                            uiActor,
+                        ),
+                    ).rejects.toMatchObject({ code: 'unauthorized' })
                     const delegation = await issueAppRuntimeDelegationInTransaction(
                         transaction,
                         identity,

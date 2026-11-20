@@ -7,7 +7,11 @@ import {
 } from '@tanstack/react-start'
 import { getRequestProtocol, setResponseHeaders } from '@tanstack/react-start/server'
 
-import { getTrustProxyHeaders, validateProductionEnvironment } from '@/server/env.server.ts'
+import {
+    getPublicOrigin,
+    getTrustProxyHeaders,
+    validateProductionEnvironment,
+} from '@/server/env.server.ts'
 import { startRealtimeValkey } from '@/server/WebSockets/realtimeValkey.service.ts'
 import { startWorkerLifecycle } from '@/server/Foundation/worker-lifecycle.server.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
@@ -209,6 +213,7 @@ const securityHeadersMiddleware = createMiddleware().server(async ({ next }) => 
     const securityHeaders = getAdminUiSecurityHeaders(
         getRequestProtocol({ xForwardedProto: getTrustProxyHeaders() }),
         nonce,
+        process.env.RENTNERPROXY_APP_RUNTIME === '1' ? getPublicOrigin() : undefined,
     )
     setResponseHeaders(new Headers(securityHeaders))
 

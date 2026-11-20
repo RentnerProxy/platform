@@ -59,6 +59,7 @@ async fn privileged_postgres_uid_fencing() {
     );
     let temp = tempfile::tempdir_in("/var/lib/rentnerproxy").unwrap();
     let manager = Manager {
+        ui: ui::Registry::default(),
         listener: None,
         config: temp.path().join("offline"),
         journal: Journal::open(&temp.path().join("manager")).unwrap(),
@@ -324,6 +325,7 @@ async fn dependency_block_and_separate_purge_keep_the_uid_reserved() {
     let temp = tempfile::tempdir_in("/root").unwrap();
     let journal = Journal::open(&temp.path().join("manager")).unwrap();
     let mut manager = Manager {
+        ui: ui::Registry::default(),
         listener: None,
         config: temp.path().join("offline"),
         journal,
