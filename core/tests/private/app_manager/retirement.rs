@@ -6,7 +6,7 @@ use hyper_util::rt::TokioIo;
 use std::{
     convert::Infallible,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -116,13 +116,18 @@ async fn start_detects_an_exited_broker_before_the_retirement_tick() {
 }
 
 async fn command(socket: &Path, body: Value) -> Value {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
     stream
         .write_all(&serde_json::to_vec(&body).unwrap())
         .await
         .unwrap();
     stream.shutdown().await.unwrap();
+    response(stream).await
+}
+
+async fn response(mut stream: tokio::net::UnixStream) -> Value {
+    use tokio::io::AsyncReadExt;
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
@@ -261,7 +266,8 @@ async fn staging_services_status_and_publishes_candidate_while_retirement_is_bus
 }
 
 #[tokio::test]
-async fn pending_launch_services_status_unrelated_stop_and_exit_retirement() {
+async fn stage_services_status_and_broker_exit_during_an_unrelated_stop() {
+    use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
     if unsafe { libc::geteuid() } != 0 {
@@ -269,19 +275,48 @@ async fn pending_launch_services_status_unrelated_stop_and_exit_retirement() {
     }
     let dir = tempfile::tempdir_in("/root").unwrap();
     let socket = dir.path().join("control.sock");
-    let done = Arc::new(tokio::sync::Notify::new());
-    let third = done.clone();
+    let listener = Arc::new(UnixListener::bind(&socket).unwrap());
+    let mut child = tokio::process::Command::new("/bin/cat")
+        .stdin(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let pipe = child.stdin.take().unwrap();
+    let workers_busy = Arc::new(tokio::sync::Notify::new());
+    let exited_retired = Arc::new(tokio::sync::Notify::new());
+    let allow_stop = Arc::new(AtomicBool::new(false));
+    let mut stopped_child = tokio::process::Command::new("/bin/cat")
+        .stdin(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let stopped_pipe = stopped_child.stdin.take().unwrap();
     let mut manager = Manager {
-        listener: Some(Arc::new(UnixListener::bind(&socket).unwrap())),
+        listener: Some(Arc::clone(&listener)),
         config: dir.path().join("offline"),
         journal: Journal::open(&dir.path().join("manager")).unwrap(),
-        gateway: authority(&dir.path().join("web.sock"), move |action, body| {
-            if action == "workers-stopped" && body["identity"]["installationId"] == "exited" {
-                third.notify_one();
+        gateway: authority(&dir.path().join("web.sock"), {
+            let workers_busy = Arc::clone(&workers_busy);
+            let exited_retired = Arc::clone(&exited_retired);
+            let allow_stop = Arc::clone(&allow_stop);
+            move |action, body| {
+                if action == "workers-stopped" {
+                    match body["identity"]["installationId"].as_str().unwrap() {
+                        "stop" if !allow_stop.load(Ordering::SeqCst) => {
+                            workers_busy.notify_one();
+                            return StatusCode::CONFLICT;
+                        }
+                        "exited" => exited_retired.notify_one(),
+                        _ => (),
+                    }
+                }
+                StatusCode::NO_CONTENT
             }
-            StatusCode::NO_CONTENT
         }),
-        running: BTreeMap::new(),
+        running: BTreeMap::from([
+            ("exited".into(), Running::fixture_child(child)),
+            ("stop".into(), Running::fixture_child(stopped_child)),
+        ]),
         fence_cursor: String::new(),
         drains: JoinSet::new(),
         draining: HashMap::new(),
@@ -295,14 +330,33 @@ async fn pending_launch_services_status_unrelated_stop_and_exit_retirement() {
                     uid,
                     app_id: format!("fixture.{id}"),
                     generation: 1,
-                    pending_fence: true,
+                    pending_fence: id != "busy",
                     desired_running: true,
                     ..Default::default()
                 },
             )
             .unwrap();
     }
-    let (send, finish) = tokio::sync::oneshot::channel();
+    let (release_stage, finish_stage) = tokio::sync::oneshot::channel();
+    let (downloaded, download_finished) = tokio::sync::oneshot::channel();
+    let (stage_finished, mut during_finished) = tokio::sync::oneshot::channel();
+    let (stop_serving, serving) = tokio::sync::oneshot::channel();
+    let drive_manager = async {
+        manager
+            .during(Operation::Stage("busy"), async {
+                finish_stage.await.map_err(io::Error::other)?;
+                downloaded.send(()).unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        stage_finished.send(()).unwrap();
+        tokio::select! {
+            result = manager.serve_control(&listener) => panic!("Control stopped: {result:?}"),
+            result = serving => result.unwrap(),
+        }
+        manager.wait_for_drain("exited").await.unwrap();
+    };
     let requests = async {
         let mut disconnected = UnixStream::connect(&socket).await.unwrap();
         disconnected
@@ -318,25 +372,79 @@ async fn pending_launch_services_status_unrelated_stop_and_exit_retirement() {
             command(&socket, json!({"action":"stop","installationId":"busy"})).await["ok"],
             false
         );
+        let stop = command(&socket, json!({"action":"stop","installationId":"stop"}));
+        tokio::pin!(stop);
+        tokio::select! {
+            _ = workers_busy.notified() => (),
+            response = &mut stop => panic!("Stop acknowledged before workers stopped: {response}"),
+        }
+        drop(stopped_pipe);
+        drop(pipe);
+        timeout(Duration::from_secs(4), async {
+            let state = command(&socket, json!({"action":"status"})).await;
+            assert_eq!(state["result"]["stop"]["desiredRunning"], false);
+            exited_retired.notified().await;
+            let state = command(&socket, json!({"action":"status"})).await;
+            assert_eq!(state["result"]["exited"]["running"], false);
+            assert_eq!(state["result"]["exited"]["recoveryRequired"], true);
+        })
+        .await
+        .unwrap();
+        let mut late_stop = UnixStream::connect(&socket).await.unwrap();
+        late_stop
+            .write_all(br#"{"action":"stop","installationId":"exited"}"#)
+            .await
+            .unwrap();
+        release_stage.send(()).unwrap();
+        timeout(Duration::from_secs(2), async {
+            download_finished.await.unwrap();
+            late_stop.shutdown().await.unwrap();
+            let late_response = response(late_stop).await;
+            assert_eq!(late_response["ok"], false);
+            assert!(
+                late_response["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("in progress")
+            );
+            assert_eq!(
+                command(&socket, json!({"action":"status"})).await["ok"],
+                true
+            );
+            let conflicts = [
+                json!({"action":"stop","installationId":"stop"}),
+                json!({"action":"start","installationId":"stop"}),
+            ];
+            for request in conflicts {
+                let response = command(&socket, request).await;
+                assert_eq!(response["ok"], false);
+                assert!(response["error"].as_str().unwrap().contains("in progress"));
+            }
+            assert_eq!(
+                during_finished.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+            );
+        })
+        .await
+        .unwrap();
+        allow_stop.store(true, Ordering::SeqCst);
         assert_eq!(
-            command(&socket, json!({"action":"stop","installationId":"stop"})).await["ok"],
+            timeout(Duration::from_secs(2), &mut stop).await.unwrap()["ok"],
             true
         );
-        done.notified().await;
-        send.send(()).unwrap();
+        timeout(Duration::from_secs(2), during_finished)
+            .await
+            .unwrap()
+            .unwrap();
+        stop_serving.send(()).unwrap();
     };
-    let phase = manager.during(Operation::Launch("busy"), async {
-        finish.await.map_err(io::Error::other)
-    });
-    let ((), result) = timeout(Duration::from_secs(8), async {
-        tokio::join!(requests, phase)
+    timeout(Duration::from_secs(10), async {
+        tokio::join!(requests, drive_manager)
     })
     .await
     .unwrap();
-    result.unwrap();
-    manager.wait_for_drain("exited").await.unwrap();
-    assert!(manager.journal.slot("busy").unwrap().pending_fence);
-    assert!(!manager.journal.slot("stop").unwrap().desired_running);
+    let stopped = manager.journal.slot("stop").unwrap();
+    assert!(!stopped.desired_running && !stopped.pending_fence);
     assert!(!manager.journal.slot("exited").unwrap().pending_fence);
 }
 
@@ -572,4 +680,107 @@ async fn failed_retirement_keeps_other_slots_progressing_and_retries_on_tick() {
     manager.wait_for_drain("a").await.unwrap();
     assert!(!manager.journal.slot("a").unwrap().pending_fence);
     assert!(manager.running.is_empty());
+}
+
+#[tokio::test]
+async fn shutdown_retries_failed_inherited_drains_once() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let dir = tempfile::tempdir_in("/root").unwrap();
+    let attempts = Arc::new(Mutex::new(BTreeMap::new()));
+    let attempted = Arc::new(tokio::sync::Notify::new());
+    let gateway = authority(&dir.path().join("web.sock"), {
+        let attempts = Arc::clone(&attempts);
+        let attempted = Arc::clone(&attempted);
+        move |action, body| {
+            if action != "retire" {
+                return StatusCode::NO_CONTENT;
+            }
+            let id = body["identity"]["installationId"].as_str().unwrap();
+            let mut attempts = attempts.lock().unwrap();
+            let count = attempts.entry(id.to_owned()).or_insert(0);
+            *count += 1;
+            if id == "retry" && *count == 2 {
+                StatusCode::NO_CONTENT
+            } else {
+                if id == "retry" {
+                    attempted.notify_one();
+                }
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        }
+    });
+    let mut manager = Manager {
+        listener: None,
+        config: dir.path().join("offline"),
+        journal: Journal::open(&dir.path().join("journal")).unwrap(),
+        gateway,
+        running: BTreeMap::new(),
+        fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
+    };
+    let save = |journal: &mut Journal, id, uid| {
+        journal
+            .save(
+                id,
+                Slot {
+                    app_id: format!("fixture.{id}"),
+                    uid,
+                    generation: 1,
+                    pending_fence: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    };
+    save(&mut manager.journal, "retry", 53357);
+    save(&mut manager.journal, "inherited-failure", 53358);
+    let writer = manager.journal.writer(53357).unwrap();
+    manager.check_exits(None).unwrap();
+    save(&mut manager.journal, "new-failure", 53359);
+
+    let (result, ()) = timeout(Duration::from_secs(4), async {
+        tokio::join!(manager.shutdown(), async {
+            attempted.notified().await;
+            assert_eq!(attempts.lock().unwrap()["retry"], 1);
+            drop(writer);
+        })
+    })
+    .await
+    .unwrap();
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("inherited-failure") && error.contains("new-failure"));
+    assert!(!manager.journal.slot("retry").unwrap().pending_fence);
+    assert!(
+        manager
+            .journal
+            .slot("inherited-failure")
+            .unwrap()
+            .pending_fence
+    );
+    assert!(manager.journal.slot("new-failure").unwrap().pending_fence);
+    assert_eq!(
+        *attempts.lock().unwrap(),
+        BTreeMap::from([
+            ("inherited-failure".to_owned(), 2),
+            ("new-failure".to_owned(), 1),
+            ("retry".to_owned(), 2),
+        ]),
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn drain_budget_allows_a_slow_writer_and_postgres_fence() {
+    let start = Instant::now();
+    timeout_at(start + DRAIN_IO_BUDGET, async {
+        sleep(Duration::from_millis(10_500)).await;
+        sleep(Duration::from_millis(6_500)).await;
+    })
+    .await
+    .unwrap();
+    assert!(Instant::now() < start + DRAIN_IO_BUDGET);
+    assert!(start + DRAIN_IO_BUDGET < start + SHUTDOWN_BUDGET);
+    assert!(start + SHUTDOWN_BUDGET < start + Duration::from_secs(18));
 }
