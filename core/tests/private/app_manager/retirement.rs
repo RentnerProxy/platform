@@ -113,9 +113,113 @@ async fn start_detects_an_exited_broker_before_the_retirement_tick() {
     assert!(!manager.running.contains_key("exited"));
 }
 
+async fn command(socket: &Path, body: Value) -> Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+    stream
+        .write_all(&serde_json::to_vec(&body).unwrap())
+        .await
+        .unwrap();
+    stream.shutdown().await.unwrap();
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn staging_retires_its_exited_broker_before_the_download_finishes() {
+    use std::process::Stdio;
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let dir = tempfile::tempdir_in("/root").unwrap();
+    let socket = dir.path().join("control.sock");
+    let mut child = tokio::process::Command::new("/bin/cat")
+        .stdin(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let pipe = child.stdin.take().unwrap();
+    let fenced = Arc::new(tokio::sync::Notify::new());
+    let observed = fenced.clone();
+    let mut manager = Manager {
+        listener: Some(Arc::new(UnixListener::bind(&socket).unwrap())),
+        config: dir.path().join("offline"),
+        journal: Journal::open(&dir.path().join("journal")).unwrap(),
+        gateway: authority(&dir.path().join("web.sock"), move |action, body| {
+            assert_eq!(body["identity"]["installationId"], "staged");
+            if action == "workers-stopped" {
+                observed.notify_one();
+            }
+            StatusCode::NO_CONTENT
+        }),
+        running: BTreeMap::from([("staged".into(), Running::fixture_child(child))]),
+        fence_cursor: String::new(),
+    };
+    let active = Release {
+        version: "1.0.0".into(),
+        archive_sha256: "a".repeat(64),
+        manifest_sha256: "b".repeat(64),
+        catalog_revision: 1,
+    };
+    manager
+        .journal
+        .save(
+            "staged",
+            Slot {
+                uid: 53355,
+                app_id: "fixture.staged".into(),
+                active: Some(active.clone()),
+                generation: 1,
+                pending_fence: true,
+                desired_running: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let (release, downloaded) = tokio::sync::oneshot::channel();
+    let stage = manager.stage("staged", "fixture.staged".into(), "2.0.0".into(), async {
+        downloaded.await.map_err(io::Error::other)?;
+        Ok(StagedPackage {
+            directory: dir.path().into(),
+            manifest: json!({}),
+            archive_sha256: "c".repeat(64),
+            manifest_sha256: "d".repeat(64),
+            catalog_revision: 2,
+        })
+    });
+    let requests = async {
+        assert_eq!(
+            command(&socket, json!({"action":"status"})).await["result"]["staged"]["running"],
+            true
+        );
+        drop(pipe);
+        assert_eq!(
+            command(&socket, json!({"action":"stop","installationId":"staged"})).await["ok"],
+            false
+        );
+        fenced.notified().await;
+        let state = command(&socket, json!({"action":"status"})).await;
+        assert_eq!(state["result"]["staged"]["running"], false);
+        assert_eq!(state["result"]["staged"]["recoveryRequired"], true);
+        release.send(()).unwrap();
+    };
+    let (result, ()) = timeout(Duration::from_secs(8), async {
+        tokio::join!(stage, requests)
+    })
+    .await
+    .unwrap();
+    result.unwrap();
+    let slot = manager.journal.slot("staged").unwrap();
+    assert!(slot.recovery_required && slot.desired_running && !slot.pending_fence);
+    assert_eq!(slot.authority_recorded, Some(true));
+    assert_eq!(slot.active, Some(active));
+    assert_eq!(slot.candidate.as_ref().unwrap().version, "2.0.0");
+}
+
 #[tokio::test]
 async fn pending_launch_services_status_unrelated_stop_and_exit_retirement() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
     if unsafe { libc::geteuid() } != 0 {
         return;
@@ -153,17 +257,6 @@ async fn pending_launch_services_status_unrelated_stop_and_exit_retirement() {
             )
             .unwrap();
     }
-    async fn command(socket: &Path, body: Value) -> Value {
-        let mut stream = UnixStream::connect(socket).await.unwrap();
-        stream
-            .write_all(&serde_json::to_vec(&body).unwrap())
-            .await
-            .unwrap();
-        stream.shutdown().await.unwrap();
-        let mut bytes = Vec::new();
-        stream.read_to_end(&mut bytes).await.unwrap();
-        serde_json::from_slice(&bytes).unwrap()
-    }
     let (send, finish) = tokio::sync::oneshot::channel();
     let requests = async {
         let mut disconnected = UnixStream::connect(&socket).await.unwrap();
@@ -187,7 +280,9 @@ async fn pending_launch_services_status_unrelated_stop_and_exit_retirement() {
         done.notified().await;
         send.send(()).unwrap();
     };
-    let phase = manager.during("busy", async { finish.await.map_err(io::Error::other) });
+    let phase = manager.during(Operation::Launch("busy"), async {
+        finish.await.map_err(io::Error::other)
+    });
     let ((), result) = timeout(Duration::from_secs(8), async {
         tokio::join!(requests, phase)
     })

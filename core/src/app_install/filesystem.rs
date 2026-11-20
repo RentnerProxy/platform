@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use aws_lc_rs::digest::{Context, SHA256};
 use marketplace_artifacts::{file_identity, invalid};
 
 pub(super) fn check_root_path(path: &Path, directory: bool) -> io::Result<()> {
@@ -125,6 +126,49 @@ pub(super) fn sync_file(path: &Path) -> io::Result<()> {
     OpenOptions::new().write(true).open(path)?.sync_all()
 }
 
+pub(super) fn private_workspace(parent: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(prefix);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir_in(parent)
+}
+
+/// The caller holds the store lock, and only the installer can create these workspaces.
+pub(super) fn clean_workspaces(parent: &Path, prefix: &str) -> io::Result<()> {
+    let mut removed = false;
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(prefix))
+        {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        if !metadata.is_dir() {
+            return Err(invalid("Invalid abandoned package workspace"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o7077 != 0 {
+                return Err(invalid("Invalid abandoned package workspace"));
+            }
+        }
+        fs::remove_dir_all(entry.path())?;
+        removed = true;
+    }
+    if removed {
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
 fn permissions(path: &Path, mode: u32) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -162,40 +206,67 @@ pub(super) fn sync_tree(path: &Path) -> io::Result<()> {
     sync_directory(path)
 }
 
-pub(super) fn compare_tree(reference: &Path, staged: &Path) -> io::Result<()> {
-    let original = fs::symlink_metadata(reference)?;
-    let actual = fs::symlink_metadata(staged)?;
-    let mismatch = || invalid("Staged package differs from its verified archive");
-    if original.file_type() != actual.file_type() {
-        return Err(mismatch());
+pub(super) fn tree_digest(path: &Path) -> io::Result<[u8; 32]> {
+    let mut digest = Context::new(&SHA256);
+    // Each allowed USTAR entry can create implicit parents within its 240-byte path.
+    let mut budget = (4096 * 121 + 1, 256 * 1024 * 1024);
+    hash_tree(path, path, &mut digest, &mut budget)?;
+    digest
+        .finish()
+        .as_ref()
+        .try_into()
+        .map_err(|_| invalid("Unexpected SHA-256 length"))
+}
+
+fn hash_tree(
+    root: &Path,
+    path: &Path,
+    digest: &mut Context,
+    budget: &mut (usize, u64),
+) -> io::Result<()> {
+    const MAX_SIBLINGS: usize = 4096;
+    let invalid_tree = || invalid("Staged package differs from its verified archive");
+    let relative = path.strip_prefix(root).map_err(|_| invalid_tree())?;
+    let name = relative.as_os_str().as_encoded_bytes();
+    if name.len() > 240 || budget.0 == 0 {
+        return Err(invalid_tree());
     }
+    budget.0 -= 1;
+    let metadata = fs::symlink_metadata(path)?;
     #[cfg(unix)]
-    {
+    let mode = {
         use std::os::unix::fs::MetadataExt;
-        if original.mode() != actual.mode() || original.uid() != actual.uid() {
-            return Err(mismatch());
+        if metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(invalid_tree());
         }
-    }
-    if original.is_dir() {
-        let mut count = 0;
-        for entry in fs::read_dir(reference)? {
-            let entry = entry?;
-            compare_tree(&entry.path(), &staged.join(entry.file_name()))?;
-            count += 1;
+        metadata.mode() & 0o7777
+    };
+    #[cfg(not(unix))]
+    let mode: u32 = if metadata.is_dir() { 0o755 } else { 0o644 };
+    digest.update(&(name.len() as u16).to_le_bytes());
+    digest.update(name);
+    digest.update(&mode.to_le_bytes());
+    if metadata.is_dir() && mode == 0o755 {
+        digest.update(b"d");
+        let mut children = fs::read_dir(path)?
+            .take(MAX_SIBLINGS + 1)
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<io::Result<Vec<_>>>()?;
+        if children.len() > MAX_SIBLINGS {
+            return Err(invalid_tree());
         }
-        if fs::read_dir(staged)?
-            .take(count + 1)
-            .collect::<Result<Vec<_>, _>>()?
-            .len()
-            != count
-        {
-            return Err(mismatch());
+        children.sort_unstable();
+        for child in children {
+            hash_tree(root, &path.join(child), digest, budget)?;
         }
-    } else if !original.is_file()
-        || original.len() != actual.len()
-        || file_identity(reference, original.len())? != file_identity(staged, original.len())?
-    {
-        return Err(mismatch());
+    } else if metadata.is_file() && !name.is_empty() && matches!(mode, 0o644 | 0o755) {
+        let identity = file_identity(path, budget.1)?;
+        budget.1 -= identity.size_bytes;
+        digest.update(b"f");
+        digest.update(&identity.size_bytes.to_le_bytes());
+        digest.update(identity.sha256.as_bytes());
+    } else {
+        return Err(invalid_tree());
     }
     Ok(())
 }

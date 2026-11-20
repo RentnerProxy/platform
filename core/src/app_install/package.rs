@@ -5,14 +5,28 @@ use std::{
 };
 
 use marketplace_app_pipeline::package::execute;
-use marketplace_artifacts::{FileIdentity, file_identity, invalid};
+use marketplace_artifacts::{FileIdentity, file_identity, invalid, read_file};
 use rentnerproxy_app_contracts::{DownloadAsset, Package};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::filesystem;
 
 const COMPRESSED_LIMIT: u64 = 257 * 1024 * 1024;
+const RECEIPT_LIMIT: u64 = 64 * 1024 * 1024;
+const DOWNLOAD_WORKSPACE: &str = ".download-";
+const PACKAGE_WORKSPACE: &str = ".stage-";
+
+// Bump the receipt filename version when the package verification rules change.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Receipt {
+    archive: FileIdentity,
+    manifest_sha256: String,
+    target: String,
+    tree_sha256: [u8; 32],
+    linkage: Value,
+}
 
 pub(super) fn stage(
     store: &Path,
@@ -28,46 +42,50 @@ pub(super) fn stage(
     let packages = store.join("packages");
     filesystem::directory(&archives, 0o700)?;
     filesystem::directory(&packages, 0o711)?;
+    filesystem::clean_workspaces(&archives, DOWNLOAD_WORKSPACE)?;
+    filesystem::clean_workspaces(&packages, PACKAGE_WORKSPACE)?;
     let archive = archives.join(asset.sha256);
-    match fs::symlink_metadata(&archive) {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fetch(&asset, &archive)?;
-        }
-        Err(error) => return Err(error),
-    }
     let identity = FileIdentity {
         sha256: asset.sha256.to_owned(),
         size_bytes: asset.size_bytes,
     };
-    if file_identity(&archive, asset.size_bytes)? != identity {
-        return Err(invalid("Cached archive differs from the signed release"));
+    match fs::symlink_metadata(&archive) {
+        Ok(_) => verify_archive(&archive, &identity)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let download = filesystem::private_workspace(&archives, DOWNLOAD_WORKSPACE)?;
+            let incomplete = download.path().join("archive");
+            fetch(&asset, &incomplete)?;
+            verify_archive(&incomplete, &identity)?;
+            filesystem::sync_file(&incomplete)?;
+            fs::rename(&incomplete, &archive)?;
+        }
+        Err(error) => return Err(error),
     }
     filesystem::sync_file(&archive)?;
     filesystem::sync_directory(&archives)?;
 
-    // The installer lock is held for staging and offline recovery.
-    for entry in fs::read_dir(&packages)? {
-        let entry = entry?;
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with(".stage-"))
+    let destination = packages.join(asset.sha256);
+    let receipt_path = packages.join(format!(".verified-v1-{}.json", asset.sha256));
+    let published = match fs::symlink_metadata(&destination) {
+        Ok(metadata) if metadata.is_dir() => true,
+        Ok(_) => return Err(invalid("Invalid staged package directory")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error),
+    };
+    // A protected receipt was written by the installer after verifying this signed archive.
+    if published && let Some(receipt) = read_receipt(&receipt_path)? {
+        if receipt.archive != identity
+            || receipt.manifest_sha256 != package.manifest_sha256()
+            || receipt.target != target
+            || filesystem::tree_digest(&destination)? != receipt.tree_sha256
         {
-            if !entry.file_type()?.is_dir() {
-                return Err(invalid("Invalid abandoned package workspace"));
-            }
-            fs::remove_dir_all(entry.path())?;
+            return Err(invalid("Staged package differs from its verified archive"));
         }
+        verify_abi(&receipt.linkage, target)?;
+        filesystem::sync_directory(&packages)?;
+        return Ok(destination);
     }
-    let mut builder = tempfile::Builder::new();
-    builder.prefix(".stage-");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        builder.permissions(fs::Permissions::from_mode(0o700));
-    }
-    let work = builder.tempdir_in(&packages)?;
+    let work = filesystem::private_workspace(&packages, PACKAGE_WORKSPACE)?;
     let tar = work.path().join("package.tar");
     let tree = work.path().join("tree");
     execute(
@@ -88,19 +106,63 @@ pub(super) fn stage(
     }
     verify_abi(&checked["linkage"], target)?;
     filesystem::sync_tree(&tree)?;
-    let destination = packages.join(asset.sha256);
-    match fs::symlink_metadata(&destination) {
-        Ok(_) => filesystem::compare_tree(&tree, &destination)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            execute(
-                "promote-package",
-                json!({"stagingPath": tree, "outputDirectory": destination}),
-            )?;
+    let tree_sha256 = filesystem::tree_digest(&tree)?;
+    if published {
+        if filesystem::tree_digest(&destination)? != tree_sha256 {
+            return Err(invalid("Staged package differs from its verified archive"));
         }
-        Err(error) => return Err(error),
+    } else {
+        execute(
+            "promote-package",
+            json!({"stagingPath": tree, "outputDirectory": destination}),
+        )?;
+    }
+    let receipt = Receipt {
+        archive: identity,
+        manifest_sha256: package.manifest_sha256().to_owned(),
+        target: target.to_owned(),
+        tree_sha256,
+        linkage: checked["linkage"].clone(),
+    };
+    let mut receipt_file = tempfile::NamedTempFile::new_in(work.path())?;
+    serde_json::to_writer(receipt_file.as_file_mut(), &receipt)?;
+    if receipt_file.as_file().metadata()?.len() <= RECEIPT_LIMIT {
+        receipt_file.as_file().sync_all()?;
+        receipt_file
+            .persist(receipt_path)
+            .map_err(|error| error.error)?;
     }
     filesystem::sync_directory(&packages)?;
     Ok(destination)
+}
+
+fn verify_archive(path: &Path, identity: &FileIdentity) -> io::Result<()> {
+    if &file_identity(path, identity.size_bytes)? != identity {
+        return Err(invalid("Cached archive differs from the signed release"));
+    }
+    Ok(())
+}
+
+fn read_receipt(path: &Path) -> io::Result<Option<Receipt>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_file() {
+        return Err(invalid("Invalid package verification receipt"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o7777 != 0o600 {
+            return Err(invalid("Invalid package verification receipt"));
+        }
+    }
+    Ok(Some(serde_json::from_slice(&read_file(
+        path,
+        RECEIPT_LIMIT,
+    )?)?))
 }
 
 fn same_manifest(left: &Value, right: &Value) -> bool {

@@ -30,6 +30,7 @@ import {
     verifyPublishedBackup,
 } from '../../../../../../../scripts/backup/publication.ts'
 import { parseBackupMetadata } from '../../../../../../../scripts/backup/format.ts'
+import { maximumBackupMetadataBytes } from '../../../../../../../scripts/backup/validation.ts'
 
 const root = resolve(import.meta.dir, '../../../../../../..')
 const names = [
@@ -41,7 +42,6 @@ const names = [
 ]
 const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
 const applicationKey = Buffer.alloc(32, 11).toString('base64')
-const maximumMetadataBytes = 512 * 1024
 const maximumKeyBytes = 64 * 1024
 const testController = '/usr/local/libexec/rentnerproxy-test-controller'
 
@@ -276,7 +276,7 @@ test('rejects unsupported headers and oversized or zero lengths before plaintext
         await encryptBackup(source, encrypted, key)
         const original = await readFile(encrypted)
         for (const [index, maximum] of [
-            BigInt(maximumMetadataBytes),
+            BigInt(maximumBackupMetadataBytes),
             BigInt(maximumKeyBytes),
             8n * 1024n ** 3n,
             8n * 1024n ** 3n,
@@ -400,7 +400,7 @@ test('authenticated archives with traversal paths are rejected before publishing
 test('encryption enforces metadata and application-key limits before processing backup contents', () =>
     fixture(async (directory, source) => {
         for (const [name, limit] of [
-            ['metadata.json', maximumMetadataBytes],
+            ['metadata.json', maximumBackupMetadataBytes],
             ['app-encryption-key', maximumKeyBytes],
         ] as const) {
             const original = await readFile(join(source, name))

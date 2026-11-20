@@ -17,6 +17,7 @@ use gateway::{Gateway, identity, lease};
 use journal::{Data, Grant, Journal, Release, Removal, Slot};
 use runtime::Running;
 use serde_json::{Value, json};
+use service::Operation;
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -112,7 +113,13 @@ impl Manager {
         Err(bad("No unused installation UID"))
     }
 
-    async fn stage(&mut self, id: &str, app: String, version: String) -> io::Result<()> {
+    async fn stage(
+        &mut self,
+        id: &str,
+        app: String,
+        version: String,
+        download: impl Future<Output = io::Result<StagedPackage>>,
+    ) -> io::Result<()> {
         if app.len() > 98 || version.len() > 128 {
             return Err(bad("Invalid package selector"));
         }
@@ -124,12 +131,7 @@ impl Manager {
         {
             return Err(bad("Installation belongs to another app"));
         }
-        let package = self
-            .during(
-                id,
-                Self::package(self.config.clone(), app.clone(), version.clone(), None),
-            )
-            .await?;
+        let package = self.during(Operation::Stage(id), download).await?;
         let mut slot = match self.journal.slots().get(id) {
             Some(s) => s.clone(),
             None => self.allocate(app).await?,
@@ -230,7 +232,7 @@ impl Manager {
         let slot = self.journal.slot(id)?.clone();
         let config = self.config.clone();
         let package = self
-            .during(id, async {
+            .during(Operation::Launch(id), async {
                 loop {
                     let result = Self::package(
                         config.clone(),
@@ -301,15 +303,21 @@ impl Manager {
         }
         slot.database_provisioned |= data.is_some();
         self.journal.save(id, slot.clone())?;
-        self.during(id, runtime::provision(slot.uid, data.is_some(), &writer))
-            .await?;
+        self.during(
+            Operation::Launch(id),
+            runtime::provision(slot.uid, data.is_some(), &writer),
+        )
+        .await?;
         slot.written = data;
         slot.provider_dependencies_unknown |= package.manifest["providers"]
             .as_array()
             .is_none_or(|providers| !providers.is_empty());
         self.journal.save(id, slot.clone())?;
         let mut live = self
-            .during(id, Running::launch(id, &slot, &package, &writer, renewal))
+            .during(
+                Operation::Launch(id),
+                Running::launch(id, &slot, &package, &writer, renewal),
+            )
             .await?;
         if live.exited()? {
             return Err(bad("App or lease expired before activation"));
@@ -404,7 +412,12 @@ impl Manager {
                 installation_id,
                 app_id,
                 version,
-            } => self.stage(&installation_id, app_id, version).await?,
+            } => {
+                let download =
+                    Self::package(self.config.clone(), app_id.clone(), version.clone(), None);
+                self.stage(&installation_id, app_id, version, download)
+                    .await?;
+            }
             Command::Remove { installation_id } => self.remove(&installation_id).await?,
             Command::Discard {
                 installation_id,

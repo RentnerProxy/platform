@@ -56,6 +56,17 @@ fn numeric(bytes: &[u8], radix: u32) -> io::Result<u32> {
         .map_err(|_| invalid("Invalid package archive numeric field"))
 }
 
+fn tar_digits(field: &[u8]) -> io::Result<&[u8]> {
+    let digits = value(field)?
+        .trim_start_matches(' ')
+        .trim_end_matches(['\0', ' '])
+        .as_bytes();
+    if digits.is_empty() || !digits.iter().all(|byte| matches!(byte, b'0'..=b'7')) {
+        return Err(invalid("Invalid package tar numeric field"));
+    }
+    Ok(digits)
+}
+
 fn add_entry<'a>(
     files: &mut Inventory<'a>,
     path: &str,
@@ -94,7 +105,7 @@ fn tar(mut bytes: &[u8]) -> io::Result<Inventory<'_>> {
             let field: &[u8] = &header[start..end];
             value(field.split(|byte| *byte == 0).next().unwrap_or_default())
         };
-        let octal = |start, end| numeric(text(start, end)?.trim().as_bytes(), 8);
+        let octal = |start, end| numeric(tar_digits(&header[start..end])?, 8);
         let checksum: u32 = header
             .iter()
             .enumerate()
@@ -115,6 +126,7 @@ fn tar(mut bytes: &[u8]) -> io::Result<Inventory<'_>> {
         {
             return Err(invalid("Invalid package tar ownership or links"));
         }
+        tar_digits(&header[136..148])?;
         let size = octal(124, 136)? as usize;
         if size as u64 > ARCHIVE_BYTES {
             return Err(invalid("Unsupported package tar entry size"));

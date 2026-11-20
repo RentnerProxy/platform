@@ -304,6 +304,21 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
         .config
         .engine_capabilities
         .push("caddy.load-balancing.v1".into());
+    let archives = store.path().join("archives");
+    let packages = store.path().join("packages");
+    let archive_hash = digest(&archive);
+    assert!(
+        installer
+            .prepare(&catalog, ID, VERSION, None, |_, path| fs::write(
+                path, b"partial"
+            ))
+            .is_err()
+    );
+    assert!(!archives.join(&archive_hash).exists());
+    let partial = super::filesystem::private_workspace(&archives, ".download-")
+        .unwrap()
+        .keep();
+    fs::write(partial.join("archive"), b"interrupted transfer").unwrap();
     let staged = installer
         .prepare(&catalog, ID, VERSION, None, |asset, path| {
             assert!(
@@ -311,16 +326,30 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
                     .url
                     .starts_with("https://github.com/RentnerProxy/app-catalog/releases/download/")
             );
+            assert!(path.parent().unwrap().starts_with(&archives));
+            assert_ne!(path.parent().unwrap(), archives);
             fs::write(path, &archive)
         })
         .unwrap();
-    assert_eq!(staged.archive_sha256, digest(&archive));
+    assert!(!partial.exists());
+    assert_eq!(staged.archive_sha256, archive_hash);
     assert_eq!(staged.catalog_revision, 2);
     assert_eq!(staged.manifest["resources"]["memoryMiB"], json!(128.0));
     let file = staged.directory.join("bin/app");
     assert_eq!(fs::read(&file).unwrap(), fixture_elf());
     assert!(installer.recover(ID, VERSION, "incorrect").is_err());
     let offline = manager(store.path());
+    let receipt = packages.join(format!(".verified-v1-{archive_hash}.json"));
+    assert!(receipt.is_file());
+    #[cfg(unix)]
+    let package_mtime = {
+        let previous = std::time::UNIX_EPOCH + std::time::Duration::from_secs(123);
+        fs::File::open(&packages)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(previous))
+            .unwrap();
+        previous
+    };
     assert_eq!(
         offline
             .recover(ID, VERSION, &staged.archive_sha256)
@@ -328,6 +357,29 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
             .directory,
         staged.directory
     );
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(&packages).unwrap().modified().unwrap(),
+        package_mtime
+    );
+    fs::remove_file(&receipt).unwrap();
+    offline
+        .recover(ID, VERSION, &staged.archive_sha256)
+        .unwrap();
+    assert!(receipt.is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&receipt, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            offline
+                .recover(ID, VERSION, &staged.archive_sha256)
+                .unwrap_err()
+                .to_string(),
+            "Invalid package verification receipt"
+        );
+        fs::set_permissions(&receipt, fs::Permissions::from_mode(0o600)).unwrap();
+    }
     let unexpected = staged.directory.join("bin/unrecorded");
     fs::write(&unexpected, b"not in the signed archive").unwrap();
     assert!(
@@ -364,9 +416,7 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
             .is_err()
     );
     fs::write(&cached_archive, &archive).unwrap();
-    let abandoned = tempfile::Builder::new()
-        .prefix(".stage-interrupted")
-        .tempdir_in(store.path().join("packages"))
+    let abandoned = super::filesystem::private_workspace(&packages, ".stage-interrupted")
         .unwrap()
         .keep();
     fs::write(abandoned.join("package.tar"), b"interrupted").unwrap();

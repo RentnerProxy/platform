@@ -1,4 +1,4 @@
-use super::{Snapshot, app_roots, process, validate_snapshot};
+use super::{Snapshot, app_roots, compatible_inventory, process, validate_snapshot};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -103,6 +103,44 @@ fn removed_installation_without_a_storage_claim_accepts_only_absent_data() {
 }
 
 #[test]
+fn same_release_accepts_a_local_stop_but_requires_the_same_identity_and_storage() {
+    let installations = json!({"kiri":{
+        "appId":"app.kiri", "uid":25001, "generation":7, "desiredRunning":true,
+        "active":{"version":"1.0.0", "archiveSha256":"a".repeat(64),
+                  "manifestSha256":"b".repeat(64), "catalogRevision":1},
+        "removal":"installed", "storageClaimed":true,
+        "databaseProvisioned":false, "written":null
+    }});
+    let matches = |live: &Value| {
+        let mut snapshot: Snapshot = serde_json::from_value(json!({
+            "formatVersion":1, "installations":installations, "data":{"25001":[]}
+        }))
+        .unwrap();
+        validate_snapshot(&snapshot).unwrap();
+        compatible_inventory(&mut snapshot, live).unwrap()
+    };
+    let mut stopped = installations.clone();
+    stopped["kiri"]["generation"] = 8.into();
+    stopped["kiri"]["desiredRunning"] = false.into();
+    assert!(matches(&stopped));
+    assert_eq!(stopped["kiri"]["desiredRunning"], false);
+
+    let mut other_release = stopped["kiri"]["active"].clone();
+    other_release["archiveSha256"] = "c".repeat(64).into();
+    for (field, changed) in [
+        ("appId", json!("app.other")),
+        ("uid", json!(25002)),
+        ("active", other_release),
+        ("storageClaimed", json!(false)),
+        ("generation", json!(6)),
+    ] {
+        let mut other = stopped.clone();
+        other["kiri"][field] = changed;
+        assert!(!matches(&other), "{field}");
+    }
+}
+
+#[test]
 fn inventory_requires_unique_owned_data_and_durable_retirement() {
     let live = json!({
         "uid": 25180,
@@ -143,6 +181,7 @@ fn inventory_requires_unique_owned_data_and_durable_retirement() {
         ("uid", json!(25181)),
         ("generation", Value::Null),
         ("authorityRecorded", json!("true")),
+        ("desiredRunning", json!("false")),
         ("storageClaimed", json!("false")),
         ("removal", json!("removing")),
         ("databaseProvisioned", json!(true)),

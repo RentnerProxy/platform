@@ -2,7 +2,6 @@
 import assert from 'node:assert/strict'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { isCrowdSecBouncerKey } from '../../../../scripts/backup/validation.ts'
 import { assertBackupState } from '../fixtures/backup-state.ts'
 import {
     assertPersistenceFixture,
@@ -169,8 +168,11 @@ export async function verifyApplianceRestore(context: ApplianceRestoreContext) {
         'cat',
         context.crowdSecStateDirectory + '/bouncer/caddy-bouncer-key',
     ])
+    const bouncerBytes = Buffer.from(restoredBouncerKey, 'base64')
     assert.ok(
-        isCrowdSecBouncerKey(restoredBouncerKey),
+        /^[a-f0-9]{64}$/u.test(restoredBouncerKey) ||
+            (bouncerBytes.length === 32 &&
+                bouncerBytes.toString('base64').slice(0, -1) === restoredBouncerKey),
         'Invalid restored CrowdSec bouncer credential encoding',
     )
     await context.assertRealTraffic(

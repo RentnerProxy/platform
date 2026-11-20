@@ -162,6 +162,7 @@ fn validate_snapshot(snapshot: &Snapshot) -> io::Result<()> {
             || slot
                 .get("authorityRecorded")
                 .is_some_and(|v| !v.is_boolean())
+            || slot.get("desiredRunning").is_some_and(|v| !v.is_boolean())
             || slot["databaseProvisioned"] != false
             || !slot["written"].is_null()
             || claimed.is_some_and(|was_claimed| was_claimed != snapshot.data.contains_key(&uid))
@@ -177,6 +178,40 @@ fn validate_snapshot(snapshot: &Snapshot) -> io::Result<()> {
         files::validate(entries, &mut budget)?;
     }
     Ok(())
+}
+
+fn compatible_inventory(snapshot: &mut Snapshot, inventory: &Value) -> io::Result<bool> {
+    for (id, slot) in snapshot
+        .installations
+        .as_object_mut()
+        .ok_or_else(|| invalid("Missing snapshot inventory"))?
+    {
+        if slot.get("authorityRecorded").is_none()
+            && inventory[id].get("authorityRecorded").is_some()
+        {
+            slot["authorityRecorded"] =
+                Value::Bool(slot["generation"].as_u64().is_some_and(|n| n > 0));
+        }
+        if slot.get("storageClaimed").is_none() && inventory[id].get("storageClaimed").is_some() {
+            let uid = slot["uid"]
+                .as_u64()
+                .ok_or_else(|| invalid("Missing snapshot UID"))? as u32;
+            slot["storageClaimed"] = Value::Bool(snapshot.data.contains_key(&uid));
+        }
+        // An operator may have started or stopped the same release since capture.
+        if slot["desiredRunning"].is_boolean() && inventory[id]["desiredRunning"].is_boolean() {
+            slot["desiredRunning"] = inventory[id]["desiredRunning"].clone();
+        }
+        let current = &inventory[id]["generation"];
+        if slot["generation"]
+            .as_u64()
+            .zip(current.as_u64())
+            .is_some_and(|(old, new)| new >= old && (old == 0) == (new == 0))
+        {
+            slot["generation"] = current.clone();
+        }
+    }
+    Ok(snapshot.installations == *inventory)
 }
 
 fn process(args: &[String]) -> io::Result<()> {
@@ -238,38 +273,9 @@ fn process(args: &[String]) -> io::Result<()> {
         [action, _] if matches!(action.as_str(), "verify" | "restore") => {
             let (stage, mut snapshot) =
                 snapshot_input.ok_or_else(|| invalid("Missing app snapshot"))?;
-            for (id, slot) in snapshot
-                .installations
-                .as_object_mut()
-                .ok_or_else(|| invalid("Missing snapshot inventory"))?
-            {
-                if slot.get("authorityRecorded").is_none()
-                    && inventory[id].get("authorityRecorded").is_some()
-                {
-                    slot["authorityRecorded"] =
-                        Value::Bool(slot["generation"].as_u64().is_some_and(|n| n > 0));
-                }
-                if slot.get("storageClaimed").is_none()
-                    && inventory[id].get("storageClaimed").is_some()
-                {
-                    let uid = slot["uid"]
-                        .as_u64()
-                        .ok_or_else(|| invalid("Missing snapshot UID"))?
-                        as u32;
-                    slot["storageClaimed"] = Value::Bool(snapshot.data.contains_key(&uid));
-                }
-                let current = &inventory[id]["generation"];
-                if slot["generation"]
-                    .as_u64()
-                    .zip(current.as_u64())
-                    .is_some_and(|(old, new)| new >= old && (old == 0) == (new == 0))
-                {
-                    slot["generation"] = current.clone();
-                }
-            }
             if empty
                 || snapshot.format_version != 1
-                || snapshot.installations != inventory
+                || !compatible_inventory(&mut snapshot, &inventory)?
                 || snapshot.data.keys().collect::<BTreeSet<_>>() != roots.keys().collect()
             {
                 return Err(invalid(

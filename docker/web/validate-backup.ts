@@ -4,7 +4,6 @@ import { Database } from 'bun:sqlite'
 import { createDecipheriv, createHash } from 'node:crypto'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { isCrowdSecBouncerKey } from '../../scripts/backup/validation.ts'
 import {
     isSupportedBackupVersion,
     supportedBackupFormatLabel,
@@ -367,7 +366,9 @@ export async function validateDatabase(
             const bouncerKey = (
                 await readFile(join(crowdSecDirectory, 'bouncer/caddy-bouncer-key'), 'utf8')
             ).trim()
-            if (!isCrowdSecBouncerKey(bouncerKey)) throw new Error('invalid CrowdSec bouncer key')
+            const legacyKey = /^[a-f0-9]{64}$/u.test(bouncerKey)
+            const rawKey = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]$/u.test(bouncerKey)
+            if (!legacyKey && !rawKey) throw new Error('invalid CrowdSec bouncer key')
         }
         console.log('Backup database version and encrypted secrets verified.')
     } finally {

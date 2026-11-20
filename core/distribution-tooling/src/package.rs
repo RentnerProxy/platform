@@ -62,6 +62,25 @@ fn package_tool(tool: &str, args: &[&OsStr], path: &Path, limit: u64) -> io::Res
     output
 }
 
+fn verify_transaction_tags(tags: &str) -> io::Result<()> {
+    let mut has_name = false;
+    for line in tags.lines() {
+        let tag: u32 = line
+            .parse()
+            .map_err(|_| invalid("Invalid RPM header tag list"))?;
+        match tag {
+            1000 => has_name = true, // RPMTAG_NAME
+            // PREUNTRANS, POSTUNTRANS and their interpreter and flags tags.
+            5103..=5108 => return Err(invalid("Unexpected RPM execution hook")),
+            _ => (),
+        }
+    }
+    if !has_name {
+        return Err(invalid("Incomplete RPM header tag list"));
+    }
+    Ok(())
+}
+
 fn rpm_header(
     path: &Path,
     payload: &[File],
@@ -112,6 +131,7 @@ fn rpm_header(
             return Err(invalid("Unexpected RPM scriptlet"));
         }
     }
+    verify_transaction_tags(&query("[%{*:tagnum}\n]")?)?;
     for tag in [
         "PRETRANS",
         "POSTTRANS",
@@ -157,5 +177,21 @@ pub fn verify(path: &Path, package: Package) -> io::Result<()> {
             rpm_header(path, &payload, &version, &release, &architecture, &hooks)
         }
         Package::Quadlet { .. } => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_transaction_tags;
+
+    #[test]
+    fn rejects_removal_transaction_tags_on_any_rpm_reader() {
+        verify_transaction_tags("1000\n1001\n5102\n5109\n").unwrap();
+        for tag in 5103..=5108 {
+            assert!(verify_transaction_tags(&format!("1000\n{tag}\n")).is_err());
+        }
+        for incomplete in ["", "1001\n", "1000\nunknown\n"] {
+            assert!(verify_transaction_tags(incomplete).is_err());
+        }
     }
 }

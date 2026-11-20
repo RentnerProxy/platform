@@ -2,6 +2,11 @@ use super::{Command, Manager, Value, bad, control, io, json};
 use std::{future::Future, time::Duration};
 use tokio::net::UnixStream;
 
+pub(super) enum Operation<'a> {
+    Stage(&'a str),
+    Launch(&'a str),
+}
+
 impl Manager {
     pub(super) fn status(&self) -> Value {
         let mut status = serde_json::Map::new();
@@ -47,11 +52,17 @@ impl Manager {
     // manager retains sole ownership of journal writes and the in-flight installation.
     pub(super) async fn during<T>(
         &mut self,
-        busy: &str,
+        operation: Operation<'_>,
         phase: impl Future<Output = io::Result<T>>,
     ) -> io::Result<T> {
         let Some(listener) = self.listener.clone() else {
             return phase.await;
+        };
+        // Both commands reserve the installation. Staging only downloads a candidate,
+        // so its existing generation can still be retired while the download runs.
+        let (busy, exclude_from_retirement) = match operation {
+            Operation::Stage(id) => (id, None),
+            Operation::Launch(id) => (id, Some(id)),
         };
         let mut tick = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_secs(2),
@@ -77,7 +88,7 @@ impl Manager {
             let servicing = async {
                 let side = match connection {
                     Some(stream) => self.handle_during(busy, stream).await,
-                    None => self.check_other_exits(Some(busy)).await,
+                    None => self.check_other_exits(exclude_from_retirement).await,
                 };
                 if let Err(error) = side {
                     eprintln!("Unrelated application control or retirement failed: {error}");

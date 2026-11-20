@@ -24,6 +24,7 @@ fn tar_entry(path: &str, mode: u32, owner: u32, kind: u8, link: &str) -> Vec<u8>
     header[108..116].copy_from_slice(format!("{owner:07o}\0").as_bytes());
     header[116..124].copy_from_slice(b"0000000\0");
     header[124..136].copy_from_slice(format!("{:011o}\0", CONTENT.len()).as_bytes());
+    header[136..148].copy_from_slice(b"00000000000\0");
     header[156] = kind;
     header[157..157 + link.len()].copy_from_slice(link.as_bytes());
     tar_checksum(&mut header);
@@ -89,6 +90,43 @@ fn tar_authenticates_types_paths_modes_and_exact_inventory() {
     let mut invalid_header = valid;
     invalid_header[0] = b'x';
     assert!(verify_tar(&invalid_header, &expected()).is_err());
+}
+
+#[test]
+fn tar_numbers_accept_only_octal_digits_and_field_padding() {
+    for field in [&b"0000755\0"[..], b" 755\0 \0 ", b"755     ", b"00000755"] {
+        assert_eq!(numeric(tar_digits(field).unwrap(), 8).unwrap(), 0o755);
+    }
+    for field in [
+        &b"755\0x"[..],
+        b"7 55",
+        b"\t755",
+        b"755\n",
+        b"78",
+        b"",
+        b"\0 ",
+    ] {
+        assert!(tar_digits(field).is_err());
+    }
+    for (start, field) in [
+        (100, &b"755\0x   "[..]),
+        (108, b"0\0x     "),
+        (116, b"0\0x     "),
+        (124, b"11\0x        "),
+        (136, b"00000000008\0"),
+        (136, b"1\0x         "),
+    ] {
+        let mut tar = tar_entry(PATH, 0o755, 0, b'0', "");
+        tar[start..start + field.len()].copy_from_slice(field);
+        tar_checksum(&mut tar);
+        assert!(verify_tar(&tar, &expected()).is_err());
+    }
+    let mut tar = tar_entry(PATH, 0o755, 0, b'0', "");
+    tar[136..148].copy_from_slice(b"77777777777\0");
+    tar_checksum(&mut tar);
+    verify_tar(&tar, &expected()).unwrap();
+    tar[155] = b'x';
+    assert!(verify_tar(&tar, &expected()).is_err());
 }
 
 #[test]
