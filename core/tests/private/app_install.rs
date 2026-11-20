@@ -171,6 +171,13 @@ fn pack_fixture<'a>(
     directory: &Path,
     files: impl IntoIterator<Item = (&'a str, usize, Vec<u8>)>,
 ) -> Vec<u8> {
+    fs::read(pack_fixture_archive(directory, files)).unwrap()
+}
+
+fn pack_fixture_archive<'a>(
+    directory: &Path,
+    files: impl IntoIterator<Item = (&'a str, usize, Vec<u8>)>,
+) -> PathBuf {
     let mut tar = Vec::new();
     for (path, mode, body) in files {
         let mut header = [0; 512];
@@ -206,7 +213,7 @@ fn pack_fixture<'a>(
         json!({"inputPath":input,"outputPath":output}),
     )
     .unwrap();
-    fs::read(output).unwrap()
+    output
 }
 
 #[cfg(all(

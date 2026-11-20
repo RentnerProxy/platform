@@ -116,7 +116,7 @@ jobs:
                       ~/.cargo/git/db
                   key: ${{ runner.os }}-cargo-1.99.1-${{ hashFiles('core/Cargo.lock') }}
 
-            - name: Verify the signed Greeting package in Linux and Chromium
+            - name: Verify two approved Greeting versions through the signed catalog
               shell: bash
               env:
                   REPOSITORY_ID: ${{ github.repository_id }}

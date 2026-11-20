@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{Read, Write},
     os::unix::{
-        fs::{MetadataExt, PermissionsExt, chown},
+        fs::{FileExt, MetadataExt, PermissionsExt, chown},
         net::UnixStream,
         process::CommandExt,
     },
@@ -13,47 +13,33 @@ use std::{
 };
 
 use marketplace_app_catalog::bootstrap_catalog;
-use marketplace_artifacts::digest;
+use marketplace_artifacts::{digest, file_identity};
 use serde_json::{Value, json};
 
-use super::{Files, Installer, PIN, keys, now, pack_fixture, refresh, update};
+use super::{Installer, PIN, keys, now, refresh};
+
+#[path = "greeting/publication.rs"]
+mod publication;
+use publication::{Candidate, download};
 
 const ID: &str = "rentnerproxy.greeting";
-const VERSION: &str = "1.0.0";
+const FIRST_VERSION: &str = "1.0.0";
+const SECOND_VERSION: &str = "1.1.0";
 const INSTALLATION: &str = "greeting-fixture";
 const UID: u32 = 20_123;
 const APP_CREDENTIAL: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CORE_CREDENTIAL: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const PACKAGE_FILES: [&str; 7] = [
-    "app.json",
-    "bin/app",
-    "LICENSE",
-    "api/openapi.json",
-    "ui/index.html",
-    "ui/app.js",
-    "ui/app.css",
-];
 
-fn package(package_directory: &Path, work: &Path) -> (Value, Vec<u8>) {
-    fs::create_dir(work).unwrap();
-    let archive = pack_fixture(
-        work,
-        PACKAGE_FILES.into_iter().map(|path| {
-            let mode = if path == "bin/app" { 0o755 } else { 0o644 };
-            (path, mode, fs::read(package_directory.join(path)).unwrap())
-        }),
-    );
-    let raw = fs::read(package_directory.join("app.json")).unwrap();
-    let manifest: Value = serde_json::from_slice(&raw).unwrap();
-    let fixture_sidecar = json!({"sizeBytes":1,"sha256":"a".repeat(64)});
-    let package = json!({
-        "manifest": manifest,
-        "archive": {"sha256": digest(&archive), "sizeBytes": archive.len()},
-        "manifestSha256": digest(&raw),
-        "sbom": fixture_sidecar,
-        "provenance": fixture_sidecar,
-    });
-    (package, archive)
+fn flip_archive_byte(path: &Path) {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let mut byte = [0];
+    file.read_exact_at(&mut byte, 0).unwrap();
+    byte[0] ^= 0x80;
+    file.write_all_at(&byte, 0).unwrap();
 }
 
 struct AppProcess(Child);
@@ -159,42 +145,103 @@ fn privileged_signed_greeting_package() {
     } else {
         "linux-arm64"
     };
-    let mut packages = Vec::new();
-    let mut native_bytes = None;
-    for target in ["linux-amd64", "linux-arm64"] {
-        let (package, archive) = package(&fixture.join(target), &root.join(target));
-        assert_eq!(package["manifest"]["target"], target);
-        packages.push(package);
-        if target == native {
-            native_bytes = Some(archive);
-        }
-        fs::remove_dir_all(root.join(target)).unwrap();
-    }
+    let first = Candidate::seal(
+        &fixture.join(FIRST_VERSION),
+        &root.join("v1"),
+        FIRST_VERSION,
+        "101",
+    );
+    let second = Candidate::seal(
+        &fixture.join(SECOND_VERSION),
+        &root.join("v2"),
+        SECOND_VERSION,
+        "102",
+    );
+    let releases = root.join("releases");
+    fs::create_dir(&releases).unwrap();
     let mut files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
     refresh(&installer, &files, now()).unwrap();
-    let release = json!({
-        "appId": ID, "version": VERSION, "publisher": {"namespace":"rentnerproxy","name":"Fixture"},
-        "source": packages[0]["manifest"]["source"], "packages": packages,
-    });
-    let next = update(
-        &files,
-        json!({
-            "formatVersion": 1, "revision": 2, "releases": [release], "revocations": [],
-        }),
-        &Files::new(),
+    first.publish(&mut files, &releases);
+    let first_snapshot = files.clone();
+    let trusted = refresh(&installer, &first_snapshot, now()).unwrap();
+    let first_stage = installer
+        .prepare(&trusted, ID, FIRST_VERSION, None, |asset| {
+            download(&releases, asset)
+        })
+        .unwrap();
+    assert_eq!(first_stage.catalog_revision, 2);
+    let first_archive = first.archive(native);
+    let first_size = fs::metadata(&first_archive).unwrap().len();
+    assert_eq!(
+        first_stage.archive_sha256,
+        file_identity(&first_archive, first_size).unwrap().sha256
     );
-    files.extend(next);
+    let unavailable = installer
+        .prepare::<std::io::Empty>(&trusted, ID, SECOND_VERSION, None, |_| {
+            panic!("Unapproved version reached the download boundary")
+        })
+        .unwrap_err();
+    assert!(
+        unavailable
+            .to_string()
+            .contains("revoked, missing, or unavailable")
+    );
+    assert!(second.verify(&first.approval).is_err());
+
+    let second_archive = second.archive(native);
+    flip_archive_byte(&second_archive);
+    assert!(second.verify(&second.approval).is_err());
+    flip_archive_byte(&second_archive);
+    second.publish(&mut files, &releases);
     let trusted = refresh(&installer, &files, now()).unwrap();
-    let archive = native_bytes.unwrap();
-    let staged = installer
-        .prepare(&trusted, ID, VERSION, None, |_| Ok(archive.as_slice()))
+    let distributed = releases
+        .join(format!("{ID}-v{SECOND_VERSION}"))
+        .join(second_archive.file_name().unwrap());
+    let size = fs::metadata(&second_archive).unwrap().len();
+    let approved = file_identity(&second_archive, size).unwrap();
+    assert_ne!(approved.sha256, first_stage.archive_sha256);
+    flip_archive_byte(&distributed);
+    let corrupt = installer
+        .prepare(&trusted, ID, SECOND_VERSION, None, |asset| {
+            download(&releases, asset)
+        })
+        .unwrap_err();
+    assert_eq!(
+        corrupt.to_string(),
+        "Compressed package differs from its signed identity"
+    );
+    for kind in ["archives", "packages"] {
+        assert!(!store.join(kind).join(&approved.sha256).exists());
+    }
+    flip_archive_byte(&distributed);
+    let second_stage = installer
+        .prepare(&trusted, ID, SECOND_VERSION, None, |asset| {
+            download(&releases, asset)
+        })
         .unwrap();
-    assert_eq!(staged.archive_sha256, digest(&archive));
-    assert_eq!(staged.catalog_revision, 2);
-    let installed = installer
-        .recover(ID, VERSION, &staged.archive_sha256)
-        .unwrap();
-    assert_eq!(staged.directory, installed.directory);
+    assert_eq!(second_stage.archive_sha256, approved.sha256);
+    assert_eq!(second_stage.catalog_revision, 3);
+    assert_eq!(
+        file_identity(
+            &store.join("archives").join(&second_stage.archive_sha256),
+            size
+        )
+        .unwrap(),
+        approved
+    );
+
+    let reopened = Installer::open(&config).unwrap();
+    assert!(refresh(&reopened, &first_snapshot, now()).is_err());
+    for staged in [&first_stage, &second_stage] {
+        let recovered = reopened
+            .recover(
+                ID,
+                staged.manifest["version"].as_str().unwrap(),
+                &staged.archive_sha256,
+            )
+            .unwrap();
+        assert_eq!(recovered.directory, staged.directory);
+    }
     for path in [
         "ui/index.html",
         "ui/app.js",
@@ -202,12 +249,11 @@ fn privileged_signed_greeting_package() {
         "api/openapi.json",
     ] {
         assert_eq!(
-            fs::read(installed.directory.join(path)).unwrap(),
-            fs::read(fixture.join(native).join(path)).unwrap()
+            fs::read(second_stage.directory.join(path)).unwrap(),
+            fs::read(fixture.join(SECOND_VERSION).join(native).join(path)).unwrap()
         );
     }
 
-    let executable = installed.directory.join("bin/app");
     let data = root.join("data");
     fs::create_dir(&data).unwrap();
     fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).unwrap();
@@ -217,7 +263,12 @@ fn privileged_signed_greeting_package() {
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o700)).unwrap();
     chown(&socket, Some(UID), Some(UID)).unwrap();
     let first_socket = socket.join("first.sock");
-    let app = start(&executable, &data, &first_socket, 1);
+    let app = start(
+        &first_stage.directory.join("bin/app"),
+        &data,
+        &first_socket,
+        1,
+    );
     assert_eq!(
         operation(&first_socket, 1, "get-greeting", "read", json!({})),
         (200, json!({"greeting":"Hello from RentnerProxy!"}))
@@ -236,7 +287,12 @@ fn privileged_signed_greeting_package() {
     assert_eq!(metadata.uid(), UID);
     drop(app);
     let second_socket = socket.join("second.sock");
-    let _app = start(&executable, &data, &second_socket, 2);
+    let _app = start(
+        &second_stage.directory.join("bin/app"),
+        &data,
+        &second_socket,
+        2,
+    );
     assert_eq!(
         operation(
             &second_socket,
@@ -247,14 +303,21 @@ fn privileged_signed_greeting_package() {
         ),
         (200, greeting)
     );
+    let release_evidence = [&first_stage, &second_stage].map(|staged| {
+        json!({
+            "version": staged.manifest["version"], "catalogRevision": staged.catalog_revision,
+            "archiveSha256": staged.archive_sha256, "manifestSha256": staged.manifest_sha256,
+        })
+    });
     println!(
         "GREETING_EVIDENCE {}",
         json!({
-            "target": native, "catalogRevision": staged.catalog_revision,
-            "revision": staged.manifest["source"]["commit"],
-            "archiveSha256": staged.archive_sha256, "manifestSha256": staged.manifest_sha256,
-            "uiBundleSha256": digest(&fs::read(installed.directory.join("ui/app.js")).unwrap()),
-            "checks": ["signed-stage", "offline-recover", "packaged-ui", "generation-rejection", "file-persists-after-restart"],
+            "target": native, "revision": second_stage.manifest["source"]["commit"],
+            "releases": release_evidence,
+            "uiBundleSha256": digest(&fs::read(second_stage.directory.join("ui/app.js")).unwrap()),
+            "checks": ["approval-binding", "corrupt-handoff-rejection", "corrupt-download-rejection",
+                "unapproved-version-rejection", "catalog-rollback-rejection", "offline-recover",
+                "packaged-ui", "generation-rejection", "file-persists-through-update"],
         })
     );
 }
