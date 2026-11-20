@@ -25,6 +25,7 @@ async function buildPackage(
     repositoryId: string,
     commit: string,
     requestedTarget?: string,
+    requestedVersion?: string,
 ) {
     if (process.platform !== 'linux' || (process.arch !== 'x64' && process.arch !== 'arm64')) {
         throw new Error('Package compilation requires native AMD64 or ARM64 Linux')
@@ -35,6 +36,8 @@ async function buildPackage(
     const target = requestedTarget ?? (process.arch === 'x64' ? 'linux-amd64' : 'linux-arm64')
     if (target !== 'linux-amd64' && target !== 'linux-arm64')
         throw new Error('Unsupported package target')
+    if (requestedVersion && !/^\d+\.\d+\.\d+$/u.test(requestedVersion))
+        throw new Error('Expected a numeric fixture version')
     await mkdir(directory)
     const bin = join(directory, 'bin')
     const api = join(directory, 'api')
@@ -58,6 +61,7 @@ async function buildPackage(
     const declaration: object = await Bun.file(join(source, 'manifest.json')).json()
     const manifest = {
         ...declaration,
+        ...(requestedVersion ? { version: requestedVersion } : {}),
         source: { repositoryId, commit },
         target,
     }
@@ -68,15 +72,15 @@ async function buildPackage(
     ])
 }
 
-const [mode, directory, repositoryId, commit, target] = Bun.argv.slice(2)
+const [mode, directory, repositoryId, commit, target, version] = Bun.argv.slice(2)
 if (!directory || !isAbsolute(directory))
     throw new Error('An absolute output directory is required')
 if (mode === 'ui' && !repositoryId && !commit) {
     await buildUi(directory)
 } else if (mode === 'package' && repositoryId && commit) {
-    await buildPackage(directory, repositoryId, commit, target)
+    await buildPackage(directory, repositoryId, commit, target, version)
 } else {
     throw new Error(
-        'Usage: build.ts ui <directory> | package <directory> <repository-id> <commit> [linux-amd64|linux-arm64]',
+        'Usage: build.ts ui <directory> | package <directory> <repository-id> <commit> [linux-amd64|linux-arm64] [version]',
     )
 }

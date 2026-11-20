@@ -10,8 +10,11 @@ mkdir -p "$output" "$work/packages"
 rm -f -- "$output/greeting.json" "$output/greeting-browser.json"
 
 template=web/src/tests/fixtures/app-template
-for target in linux-amd64 linux-arm64; do
-    bun --no-env-file "$template/build.ts" package "$work/packages/$target" "$repository_id" "$revision" "$target"
+for version in 1.0.0 1.1.0; do
+    mkdir "$work/packages/$version"
+    for target in linux-amd64 linux-arm64; do
+        bun --no-env-file "$template/build.ts" package "$work/packages/$version/$target" "$repository_id" "$revision" "$target" "$version"
+    done
 done
 
 case "$(uname -m)" in
@@ -20,7 +23,7 @@ case "$(uname -m)" in
     *) exit 1 ;;
 esac
 bun --no-env-file web/src/tests/fixtures/app-runtime-reference/greeting-browser.mts \
-    "$work/packages/$native/ui" "$output/greeting-browser.json"
+    "$work/packages/1.1.0/$native/ui" "$output/greeting-browser.json"
 
 artifacts=$(cargo test --locked --manifest-path core/Cargo.toml --lib --no-run --message-format=json)
 app_tests=$(jq -er 'select(.reason == "compiler-artifact" and .target.kind == ["lib"] and .profile.test) | .executable // empty' <<< "$artifacts")
@@ -41,5 +44,9 @@ docker run --rm --network none --read-only --user 0:0 \
 
 sed -n 's/^GREETING_EVIDENCE //p' "$work/result.log" > "$output/greeting.json"
 test -s "$output/greeting.json"
-jq -e --arg revision "$revision" '.revision == $revision and (.checks | length == 5)' "$output/greeting.json" >/dev/null
+jq -e --arg revision "$revision" '
+    .revision == $revision and
+    ([.releases[] | [.version, .catalogRevision]] == [["1.0.0", 2], ["1.1.0", 3]]) and
+    ([.releases[].archiveSha256] | (unique | length == 2))
+' "$output/greeting.json" >/dev/null
 jq -se '.[0].uiBundleSha256 == .[1].uiBundleSha256' "$output/greeting.json" "$output/greeting-browser.json" >/dev/null
