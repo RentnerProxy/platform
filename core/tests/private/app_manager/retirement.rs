@@ -774,13 +774,199 @@ async fn shutdown_retries_failed_inherited_drains_once() {
 #[tokio::test(start_paused = true)]
 async fn drain_budget_allows_a_slow_writer_and_postgres_fence() {
     let start = Instant::now();
-    timeout_at(start + DRAIN_IO_BUDGET, async {
+    let (_cutoff, deadline) = watch::channel(start + DRAIN_IO_BUDGET);
+    Manager::drain_until(deadline, async {
         sleep(Duration::from_millis(10_500)).await;
         sleep(Duration::from_millis(6_500)).await;
+        Ok(())
     })
     .await
     .unwrap();
     assert!(Instant::now() < start + DRAIN_IO_BUDGET);
     assert!(start + DRAIN_IO_BUDGET < start + SHUTDOWN_BUDGET);
     assert!(start + SHUTDOWN_BUDGET < start + Duration::from_secs(18));
+}
+
+#[tokio::test(start_paused = true)]
+async fn drain_reuses_in_flight_work_after_deadline_changes() {
+    let start = Instant::now();
+    let original = start + Duration::from_secs(4);
+    let extended = start + Duration::from_secs(7);
+    let (cutoff, deadline) = watch::channel(original);
+    let (started, running) = tokio::sync::oneshot::channel();
+    let work = Manager::drain_until(deadline, async {
+        started.send(()).unwrap();
+        sleep(Duration::from_secs(6)).await;
+        Ok(Instant::now())
+    });
+    let update = async {
+        running.await.unwrap();
+        sleep(Duration::from_secs(3)).await;
+        cutoff.send_replace(extended);
+    };
+    let (completed, ()) = tokio::join!(work, update);
+    let completed = completed.unwrap();
+    assert!(original < completed && completed < extended);
+}
+
+#[tokio::test(start_paused = true)]
+async fn writer_contention_can_exhaust_the_uid_scan_window() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let dir = tempfile::tempdir_in("/root").unwrap();
+    let path = dir.path().join("writer.lock");
+    let guard = journal::lock(&path).unwrap();
+    let start = Instant::now();
+    let (_cutoff, deadline) = watch::channel(start + SCAN_BUDGET + Duration::from_secs(1));
+    let called = Arc::new(AtomicBool::new(false));
+    let checked = Arc::clone(&called);
+    let wait = Manager::wait_writer(path, Some(deadline), move || {
+        checked.store(true, Ordering::SeqCst);
+        Ok(())
+    });
+    let (result, ()) = tokio::join!(wait, async {
+        sleep(Duration::from_secs(2)).await;
+        drop(guard);
+    });
+    let error = result.unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(error.to_string().contains("UID scan"));
+    assert!(!called.load(Ordering::SeqCst));
+}
+
+#[test]
+fn writer_timeout_cancels_a_queued_uid_scan() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .start_paused(true)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let dir = tempfile::tempdir_in("/root").unwrap();
+        let path = dir.path().join("writer.lock");
+        let (started, running) = tokio::sync::oneshot::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            started.send(()).unwrap();
+            let _ = held.recv();
+        });
+        running.await.unwrap();
+
+        let called = Arc::new(AtomicBool::new(false));
+        let checked = Arc::clone(&called);
+        let wait = Manager::wait_writer(path.clone(), None, move || {
+            checked.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        tokio::pin!(wait);
+        tokio::select! {
+            biased;
+            _ = &mut wait => panic!("the scan cannot finish while the worker is occupied"),
+            () = std::future::ready(()) => (),
+        }
+        assert_eq!(
+            journal::lock(&path).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        tokio::time::advance(Duration::from_secs(12)).await;
+        assert_eq!(wait.await.unwrap_err().kind(), io::ErrorKind::TimedOut);
+
+        release.send(()).unwrap();
+        blocker.await.unwrap();
+        tokio::task::spawn_blocking(|| ()).await.unwrap();
+        assert!(!called.load(Ordering::SeqCst));
+        journal::lock(&path).unwrap();
+    });
+}
+
+#[tokio::test]
+async fn shutdown_publishes_successful_fences_in_one_batch() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let dir = tempfile::tempdir_in("/root").unwrap();
+    let directory = dir.path().join("journal");
+    let mut manager = Manager {
+        listener: None,
+        config: dir.path().join("offline"),
+        journal: Journal::open(&directory).unwrap(),
+        gateway: authority(&dir.path().join("web.sock"), |_, _| StatusCode::NO_CONTENT),
+        running: BTreeMap::new(),
+        fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
+    };
+    for (id, uid) in [("first", 53360), ("second", 53361)] {
+        manager
+            .journal
+            .save(
+                id,
+                Slot {
+                    app_id: format!("fixture.{id}"),
+                    uid,
+                    generation: 1,
+                    pending_fence: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let second_writer = manager.journal.writer(53361).unwrap();
+    let original_cutoff = Instant::now() + Duration::from_secs(5);
+    let first = manager
+        .begin_drain("first".into(), original_cutoff)
+        .unwrap();
+    let mut first_deadline = manager.draining[&first].cutoff.subscribe();
+    timeout(Duration::from_secs(4), async {
+        let (result, ()) = tokio::join!(manager.shutdown(), async {
+            first_deadline.changed().await.unwrap();
+            assert!(*first_deadline.borrow_and_update() > original_cutoff);
+            // The first task was collected, while the other still holds up the batch.
+            while first_deadline.changed().await.is_ok() {}
+            let state = std::fs::read(directory.join("journal.json")).unwrap();
+            let state: Value = serde_json::from_slice(&state).unwrap();
+            assert_eq!(state["installations"]["first"]["pendingFence"], true);
+            assert_eq!(state["installations"]["second"]["pendingFence"], true);
+            drop(second_writer);
+        });
+        result.unwrap();
+    })
+    .await
+    .unwrap();
+    drop(manager);
+    let journal = Journal::open(&directory).unwrap();
+    assert!(!journal.slot("first").unwrap().pending_fence);
+    assert!(!journal.slot("second").unwrap().pending_fence);
+}
+
+#[tokio::test]
+async fn expired_shutdown_write_preserves_fence_intent() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let dir = tempfile::tempdir_in("/root").unwrap();
+    let directory = dir.path().join("journal");
+    let mut journal = Journal::open(&directory).unwrap();
+    let slot = Slot {
+        app_id: "fixture.expired".into(),
+        uid: 53362,
+        generation: 1,
+        pending_fence: true,
+        ..Default::default()
+    };
+    journal.save("expired", slot).unwrap();
+    let error = journal
+        .save_shutdown(BTreeSet::from(["expired".into()]), Instant::now())
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(journal.slot("expired").unwrap().pending_fence);
+    drop(journal);
+    let journal = Journal::open(&directory).unwrap();
+    assert!(journal.slot("expired").unwrap().pending_fence);
 }

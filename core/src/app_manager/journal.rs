@@ -7,6 +7,13 @@ use std::{
     io::{self, Read},
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
+    sync::Arc,
+    thread,
+};
+use tokio::{
+    runtime::Handle,
+    sync::oneshot,
+    time::{Instant, timeout_at},
 };
 
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
@@ -107,6 +114,11 @@ impl Slot {
         self.recovery_required = true;
     }
 
+    pub fn acknowledge_fence(&mut self) {
+        self.pending_fence = false;
+        self.authority_recorded = Some(true);
+    }
+
     pub fn accepts(&self, release: &Release, data: Option<&Data>) -> bool {
         compatible(self.written.as_ref(), data)
             && (self
@@ -155,8 +167,8 @@ struct State {
 
 pub(super) struct Journal {
     directory: PathBuf,
-    _lock: File,
-    state: State,
+    lock: File,
+    state: Arc<State>,
     poisoned: bool,
 }
 
@@ -240,8 +252,8 @@ impl Journal {
         }
         Ok(Self {
             directory: directory.to_owned(),
-            _lock: guard,
-            state,
+            lock: guard,
+            state: Arc::new(state),
             poisoned: false,
         })
     }
@@ -268,22 +280,103 @@ impl Journal {
     }
     pub fn save(&mut self, id: &str, slot: Slot) -> io::Result<()> {
         self.writable()?;
-        let mut next = self.state.clone();
+        let mut next = self.state.as_ref().clone();
         next.installations.insert(id.to_owned(), slot);
-        let bytes = serde_json::to_vec(&next)?;
-        if bytes.len() as u64 > MAX_BYTES {
-            return Err(bad("Manager journal capacity exceeded"));
-        }
+        let bytes = encode_state(&next)?;
         self.poisoned = true;
-        let mut pending = tempfile::NamedTempFile::new_in(&self.directory)?;
-        std::io::Write::write_all(&mut pending, &bytes)?;
-        pending.as_file().sync_all()?;
-        pending
-            .persist(self.directory.join("journal.json"))
-            .map_err(|e| e.error)?;
-        File::open(&self.directory)?.sync_all()?;
-        self.state = next;
+        persist_state(&self.directory, &bytes, || Ok(()))?;
+        self.state = Arc::new(next);
         self.poisoned = false;
         Ok(())
     }
+
+    pub(super) async fn save_shutdown(
+        &mut self,
+        fenced: BTreeSet<String>,
+        deadline: Instant,
+    ) -> io::Result<()> {
+        self.writable()?;
+        if fenced.is_empty() {
+            return Ok(());
+        }
+        check_write_deadline(deadline)?;
+        let base = Arc::clone(&self.state);
+        let directory = self.directory.clone();
+        let lock = self.lock.try_clone()?;
+        let runtime = Handle::current();
+        let (send, receive) = oneshot::channel();
+        // A stalled fsync must not hold Tokio's runtime open during shutdown.
+        // Hold the journal lock and use the manager's clock until this writer exits.
+        let worker = thread::Builder::new()
+            .name("app-manager-journal".into())
+            .spawn(move || {
+                let _runtime = runtime.enter();
+                let result = (|| {
+                    let may_publish = || {
+                        if send.is_closed() {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "Manager journal shutdown commit cancelled",
+                            ));
+                        }
+                        check_write_deadline(deadline)
+                    };
+                    may_publish()?;
+                    let mut next = base.as_ref().clone();
+                    for id in fenced {
+                        next.installations
+                            .get_mut(&id)
+                            .ok_or_else(|| bad("Unknown installation"))?
+                            .acknowledge_fence();
+                    }
+                    let bytes = encode_state(&next)?;
+                    persist_state(&directory, &bytes, may_publish)?;
+                    Ok::<_, io::Error>(Arc::new(next))
+                })();
+                drop(lock);
+                let _ = send.send(result);
+            })?;
+        drop(worker);
+        self.poisoned = true;
+        self.state = timeout_at(deadline, receive)
+            .await?
+            .map_err(io::Error::other)??;
+        self.poisoned = false;
+        Ok(())
+    }
+}
+
+fn encode_state(state: &State) -> io::Result<Vec<u8>> {
+    let bytes = serde_json::to_vec(state)?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(bad("Manager journal capacity exceeded"));
+    }
+    Ok(bytes)
+}
+
+fn persist_state(
+    directory: &Path,
+    bytes: &[u8],
+    may_publish: impl Fn() -> io::Result<()>,
+) -> io::Result<()> {
+    may_publish()?;
+    let mut pending = tempfile::NamedTempFile::new_in(directory)?;
+    std::io::Write::write_all(&mut pending, bytes)?;
+    pending.as_file().sync_all()?;
+    may_publish()?;
+    pending
+        .persist(directory.join("journal.json"))
+        .map_err(|e| e.error)?;
+    File::open(directory)?.sync_all()?;
+    may_publish()
+}
+
+fn check_write_deadline(deadline: Instant) -> io::Result<()> {
+    if Instant::now() >= deadline {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Manager journal shutdown deadline elapsed",
+        ));
+    }
+    Ok(())
 }

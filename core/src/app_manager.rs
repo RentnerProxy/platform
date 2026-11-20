@@ -10,7 +10,7 @@ mod storage;
 mod tests;
 
 use crate::app_install::{Installer, StagedPackage};
-use crate::appliance_process::{uid_in_use, verify_uid_stopped};
+use crate::appliance_process::{SCAN_BUDGET, uid_in_use, verify_uid_stopped};
 use control::Command;
 pub use control::run_app_control;
 use gateway::{Gateway, identity, lease};
@@ -19,7 +19,7 @@ use runtime::Running;
 use serde_json::{Value, json};
 use service::Operation;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::File,
     io,
     path::{Path, PathBuf},
@@ -30,6 +30,7 @@ use std::{
 use tokio::{
     io::AsyncWriteExt,
     net::UnixStream,
+    sync::watch,
     task::{Id, JoinError, JoinSet},
     time::{Instant, sleep, timeout, timeout_at},
 };
@@ -38,6 +39,7 @@ const MAX_GENERATION: u64 = 9_007_199_254_740_991;
 // The supervisor permits 18 s. Leave 500 ms for the journal and 250 ms for exit.
 const DRAIN_IO_BUDGET: Duration = Duration::from_millis(17_250);
 const SHUTDOWN_BUDGET: Duration = Duration::from_millis(17_750);
+const SCAN_ADMISSION_MARGIN: Duration = Duration::from_millis(50);
 fn bad(message: &'static str) -> io::Error {
     io::Error::other(message)
 }
@@ -68,6 +70,13 @@ struct Drain {
     generation: u64,
     fencing_authority: bool,
     stop_reply: Option<UnixStream>,
+    cutoff: watch::Sender<Instant>,
+}
+
+impl Drain {
+    fn matches_pending(&self, slot: &Slot) -> bool {
+        slot.uid == self.uid && slot.generation == self.generation && slot.pending_fence
+    }
 }
 
 impl Manager {
@@ -157,24 +166,59 @@ impl Manager {
     }
 
     async fn writer(&self, uid: u32) -> io::Result<File> {
-        Self::wait_writer(self.journal.writer_path(uid), uid).await
+        Self::wait_writer(self.journal.writer_path(uid), None, move || {
+            verify_uid_stopped(uid)
+        })
+        .await
     }
 
-    async fn wait_writer(path: PathBuf, uid: u32) -> io::Result<File> {
+    fn scan_fits(cutoff: Instant) -> bool {
+        cutoff.saturating_duration_since(Instant::now()) >= SCAN_BUDGET + SCAN_ADMISSION_MARGIN
+    }
+
+    fn require_scan_budget(deadline: Option<&watch::Receiver<Instant>>) -> io::Result<()> {
+        if deadline.is_some_and(|deadline| !Self::scan_fits(*deadline.borrow())) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Insufficient drain time for a UID scan",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn wait_writer(
+        path: PathBuf,
+        deadline: Option<watch::Receiver<Instant>>,
+        verify: impl Fn() -> io::Result<()> + Clone + Send + 'static,
+    ) -> io::Result<File> {
         timeout(Duration::from_secs(11), async {
             loop {
                 match journal::lock(&path) {
-                    Ok(file) => loop {
-                        match tokio::task::spawn_blocking(move || verify_uid_stopped(uid)).await? {
-                            Ok(()) => return Ok(file),
-                            // Concurrent thread creation can invalidate a /proc snapshot.
-                            // Hold the writer and require a fresh, conclusive scan.
-                            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                                sleep(Duration::from_millis(100)).await
+                    Ok(mut file) => {
+                        let mut scans = JoinSet::new();
+                        loop {
+                            Self::require_scan_budget(deadline.as_ref())?;
+                            let queued_deadline = deadline.clone();
+                            let verify = verify.clone();
+                            scans.spawn_blocking(move || {
+                                // Dropping the task set cancels a queued scan. A scan
+                                // already running retains the writer until it exits.
+                                let result = Self::require_scan_budget(queued_deadline.as_ref())
+                                    .and_then(|()| verify());
+                                (file, result)
+                            });
+                            let (locked, result) = scans.join_next().await.expect("queued scan")?;
+                            file = locked;
+                            match result {
+                                Ok(()) => return Ok(file),
+                                // A changing thread list needs a fresh, conclusive scan.
+                                Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                                    sleep(Duration::from_millis(100)).await
+                                }
+                                Err(e) => return Err(e),
                             }
-                            Err(e) => return Err(e),
                         }
-                    },
+                    }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                         sleep(Duration::from_millis(100)).await
                     }
@@ -194,8 +238,7 @@ impl Manager {
         let writer = self.writer(slot.uid).await?;
         if slot.pending_fence {
             Self::retire(&self.gateway, id, &slot).await?;
-            slot.pending_fence = false;
-            slot.authority_recorded = Some(true);
+            slot.acknowledge_fence();
             self.journal.save(id, slot)?;
         }
         Ok(writer)
@@ -203,22 +246,21 @@ impl Manager {
 
     async fn retire(gateway: &Gateway, id: &str, slot: &Slot) -> io::Result<()> {
         let (authority, database) = tokio::join!(
-            Self::retire_authority(gateway, id, slot),
-            Self::retire_database(slot)
+            Self::retire_authority(gateway, json!({"identity":identity(id,slot)})),
+            Self::retire_database(slot.uid, slot.database_provisioned)
         );
         database?;
         authority
     }
 
-    async fn retire_database(slot: &Slot) -> io::Result<()> {
-        if slot.database_provisioned {
-            runtime::fence_database(slot.uid).await?;
+    async fn retire_database(uid: u32, provisioned: bool) -> io::Result<()> {
+        if provisioned {
+            runtime::fence_database(uid).await?;
         }
         Ok(())
     }
 
-    async fn retire_authority(gateway: &Gateway, id: &str, slot: &Slot) -> io::Result<()> {
-        let body = json!({"identity":identity(id,slot)});
+    async fn retire_authority(gateway: &Gateway, body: Value) -> io::Result<()> {
         gateway.post("retire", body.clone()).await?;
         timeout(Duration::from_secs(6), async {
             loop {
@@ -654,14 +696,19 @@ impl Manager {
 
     async fn shutdown(&mut self) -> io::Result<()> {
         let start = Instant::now();
+        let journal_deadline = start + SHUTDOWN_BUDGET;
         timeout_at(
-            start + SHUTDOWN_BUDGET,
-            self.shutdown_drains(start + DRAIN_IO_BUDGET),
+            journal_deadline,
+            self.shutdown_drains(start + DRAIN_IO_BUDGET, journal_deadline),
         )
         .await?
     }
 
-    async fn shutdown_drains(&mut self, cutoff: Instant) -> io::Result<()> {
+    async fn shutdown_drains(
+        &mut self,
+        cutoff: Instant,
+        journal_deadline: Instant,
+    ) -> io::Result<()> {
         // A shutdown closes any in-flight control connection. The accepted stop
         // intent is already durable, and the drain still needs to settle.
         let mut inherited: HashSet<_> = self
@@ -669,6 +716,7 @@ impl Manager {
             .iter_mut()
             .map(|(task, drain)| {
                 drain.stop_reply = None;
+                drain.cutoff.send_replace(cutoff);
                 *task
             })
             .collect();
@@ -685,24 +733,38 @@ impl Manager {
             self.begin_drain(id, cutoff)?;
         }
         let mut failures = Vec::new();
+        let mut acknowledgments = BTreeSet::new();
         while let Some(job) = self.drains.join_next_with_id().await {
-            let (task, drain, result) = self.finish_drain(job);
-            if let Err(error) = result {
-                let id = drain.installation_id;
-                if inherited.remove(&task)
-                    && Instant::now() < cutoff
-                    && self.journal.writable().is_ok()
-                    && self.journal.slot(&id).is_ok_and(|slot| {
-                        slot.uid == drain.uid
-                            && slot.generation == drain.generation
-                            && slot.pending_fence
-                    })
-                {
-                    self.begin_drain(id, cutoff)?;
-                } else {
-                    failures.push(format!("{id} fence: {error}"));
+            let (task, drain, result) = self.take_drain_result(job);
+            let was_inherited = inherited.remove(&task);
+            let id = &drain.installation_id;
+            let result = result.and_then(|()| self.fenced_slot(&drain));
+            match result {
+                Ok(Some(_)) => {
+                    acknowledgments.insert(drain.installation_id);
                 }
+                Ok(None) => (),
+                Err(_)
+                    if was_inherited
+                        && Self::scan_fits(cutoff)
+                        && self.journal.writable().is_ok()
+                        && self
+                            .journal
+                            .slot(id)
+                            .is_ok_and(|slot| drain.matches_pending(slot)) =>
+                {
+                    self.begin_drain(drain.installation_id, cutoff)?;
+                }
+                Err(error) => failures.push(format!("{id} fence: {error}")),
             }
+        }
+        if !acknowledgments.is_empty()
+            && let Err(error) = self
+                .journal
+                .save_shutdown(acknowledgments, journal_deadline)
+                .await
+        {
+            failures.push(format!("Shutdown journal: {error}"));
         }
         if failures.is_empty() {
             Ok(())
@@ -722,57 +784,82 @@ impl Manager {
     }
 
     fn begin_drain(&mut self, id: String, cutoff: Instant) -> io::Result<Id> {
-        let slot = self.journal.slot(&id)?.clone();
-        let path = self.journal.writer_path(slot.uid);
+        let slot = self.journal.slot(&id)?;
+        let uid = slot.uid;
+        let path = self.journal.writer_path(uid);
+        let fencing_authority = slot.pending_fence;
+        let fence_database = fencing_authority && slot.database_provisioned;
+        let authority_request = fencing_authority.then(|| json!({"identity":identity(&id,slot)}));
         let gateway = self.gateway.clone();
         let mut live = self.running.remove(&id);
         if let Some(live) = &mut live {
             live.close();
         }
+        let (cutoff, deadline) = watch::channel(cutoff);
+        let writer_deadline = deadline.clone();
         let drain = Drain {
-            installation_id: id.clone(),
-            uid: slot.uid,
+            installation_id: id,
+            uid,
             generation: slot.generation,
-            fencing_authority: slot.pending_fence,
+            fencing_authority,
             stop_reply: None,
+            cutoff,
         };
-        let task = self.drains.spawn(async move {
-            timeout_at(cutoff, async {
-                // Authority can be withdrawn as the broker exits. A provisioning writer
-                // could re-enable its DB role, so confirm writer and UID retirement first.
-                let (broker, database, authority) = tokio::join!(
-                    async {
-                        if let Some(live) = live {
-                            live.stop().await?;
-                        }
-                        Ok::<_, io::Error>(())
-                    },
-                    async {
-                        let _guard = Self::wait_writer(path, slot.uid).await?;
-                        // PostgreSQL uses the time remaining before the shared cutoff.
-                        if slot.pending_fence {
-                            Self::retire_database(&slot).await?;
-                        }
-                        Ok::<_, io::Error>(())
-                    },
-                    async {
-                        if slot.pending_fence {
-                            Self::retire_authority(&gateway, &id, &slot).await?;
-                        }
-                        Ok::<_, io::Error>(())
+        let task = self.drains.spawn(Self::drain_until(deadline, async move {
+            // Authority can be withdrawn as the broker exits. A provisioning writer
+            // could re-enable its DB role, so confirm writer and UID retirement first.
+            let (broker, database, authority) = tokio::join!(
+                async {
+                    if let Some(live) = live {
+                        live.stop().await?;
                     }
-                );
-                broker?;
-                database?;
-                authority
-            })
-            .await?
-        });
+                    Ok::<_, io::Error>(())
+                },
+                async {
+                    let _guard = Self::wait_writer(path, Some(writer_deadline), move || {
+                        verify_uid_stopped(uid)
+                    })
+                    .await?;
+                    // PostgreSQL uses the time remaining before the shared cutoff.
+                    Self::retire_database(uid, fence_database).await
+                },
+                async {
+                    if let Some(body) = authority_request {
+                        Self::retire_authority(&gateway, body).await?;
+                    }
+                    Ok::<_, io::Error>(())
+                }
+            );
+            broker?;
+            database?;
+            authority
+        }));
         self.draining.insert(task.id(), drain);
         Ok(task.id())
     }
 
-    fn finish_drain(
+    async fn drain_until<T>(
+        mut deadline: watch::Receiver<Instant>,
+        work: impl Future<Output = io::Result<T>>,
+    ) -> io::Result<T> {
+        // Updating an inherited deadline must neither restart nor cancel its work.
+        tokio::pin!(work);
+        loop {
+            let cutoff = *deadline.borrow_and_update();
+            tokio::select! {
+                biased;
+                change = deadline.changed() => change.map_err(io::Error::other)?,
+                result = timeout_at(cutoff, &mut work) => match result {
+                    Ok(result) => return result,
+                    Err(error) if *deadline.borrow() <= cutoff => return Err(error.into()),
+                    // The new deadline may arrive after the change branch was polled.
+                    Err(_) => continue,
+                },
+            }
+        }
+    }
+
+    fn take_drain_result(
         &mut self,
         job: Result<(Id, io::Result<()>), JoinError>,
     ) -> (Id, Drain, io::Result<()>) {
@@ -781,30 +868,29 @@ impl Manager {
             Err(error) => (error.id(), Err(error.into())),
         };
         let drain = self.draining.remove(&task).expect("tracked drain task");
-        let id = &drain.installation_id;
-        let result = result.and_then(|()| {
-            let slot = self.journal.slot(id)?;
-            // Staging can publish a candidate while the existing generation drains.
-            if drain.fencing_authority
-                && slot.uid == drain.uid
-                && slot.generation == drain.generation
-                && slot.pending_fence
-            {
-                let mut slot = slot.clone();
-                slot.pending_fence = false;
-                slot.authority_recorded = Some(true);
-                self.journal.save(id, slot)?;
-            }
-            Ok(())
-        });
         (task, drain, result)
+    }
+
+    fn fenced_slot(&self, drain: &Drain) -> io::Result<Option<&Slot>> {
+        let id = &drain.installation_id;
+        let slot = self.journal.slot(id)?;
+        // Staging can publish a candidate while the existing generation drains.
+        Ok((drain.fencing_authority && drain.matches_pending(slot)).then_some(slot))
     }
 
     async fn finish_control_drain(
         &mut self,
         job: Result<(Id, io::Result<()>), JoinError>,
     ) -> (String, io::Result<()>) {
-        let (_, drain, result) = self.finish_drain(job);
+        let (_, drain, result) = self.take_drain_result(job);
+        let result = result.and_then(|()| {
+            if let Some(slot) = self.fenced_slot(&drain)? {
+                let mut slot = slot.clone();
+                slot.acknowledge_fence();
+                self.journal.save(&drain.installation_id, slot)?;
+            }
+            Ok(())
+        });
         if let Some(mut stream) = drain.stop_reply
             && let Err(error) =
                 Self::respond(&mut stream, result.as_ref().map(|()| Value::Null)).await

@@ -8,7 +8,7 @@ use std::{
 };
 
 const MAXIMUM_STATUS: u64 = 1_048_576;
-const SCAN_BUDGET: Duration = Duration::from_secs(3);
+pub(crate) const SCAN_BUDGET: Duration = Duration::from_secs(3);
 
 fn is_app(uid: u32) -> bool {
     (20_000..=59_999).contains(&uid)
