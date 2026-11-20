@@ -2,11 +2,22 @@
 
 # Sourced by the root supervisor. Only a completely stopped web identity can
 # recover independently; controller/Caddy ownership stays with the appliance.
+appliance_supervision() {
+    /usr/local/bin/rentnerproxy-controller --appliance-supervisor "$@"
+}
+
+appliance_drain() {
+    /usr/local/bin/rentnerproxy-controller --appliance-supervisor drain "$@" &
+    local drain_pid=$!
+    wait "$drain_pid"
+}
+
 supervisor_phase=starting
 web_process_start=''
 web_health_failures=0
 controller_health_failures=0
 web_recovery_active=false
+web_restart_backoff=''
 next_health_check=0
 declare -a web_restart_times=()
 declare -A dependency_health_failures=()
@@ -62,7 +73,7 @@ supervisor_process_live() {
 assert_critical_children_running() {
     local index
     for index in "${!child_pids[@]}"; do
-        [[ ${child_names[$index]} != web ]] || continue
+        case ${child_names[$index]} in web|app-manager) continue ;; esac
         supervisor_process_live "${child_pids[$index]}" \
             || fatal "${child_names[$index]} stopped unexpectedly"
     done
@@ -83,61 +94,25 @@ assert_web_restart_allowed() {
         || fatal 'web recovery cannot prove the persisted maintenance fence safe'
 }
 
-# Prove that a surviving process has no web UID in any credential field.
-# Missing status is safe only after the process directory disappears; unreadable live identities fail closed.
-assert_web_process_stopped() {
-    local status_file=$1 field real effective saved filesystem remainder attempt
-    local inspected=false writer=false
-    # An opened proc file can lose its task while the numeric path still exists.
-    # Reopen briefly for fresh evidence; elapsed time never substitutes for proof.
-    for ((attempt=1; attempt<=3; attempt++)); do
-        while read -r field real effective saved filesystem remainder; do
-            if [[ $field == State: && ( $real == Z || $real == X ) ]]; then
-                inspected=true
-                break
-            fi
-            [[ $field == Uid: ]] || continue
-            [[ $real =~ ^[0-9]+$ && $effective =~ ^[0-9]+$ && $saved =~ ^[0-9]+$ \
-                && $filesystem =~ ^[0-9]+$ && -z $remainder ]] || break
-            inspected=true
-            case " $real $effective $saved $filesystem " in
-                *' 10002 '*) writer=true ;;
-            esac
-            break
-        done 2>/dev/null < "$status_file" || :
-        $writer && fatal 'a web writer survived isolated recovery'
-        $inspected && return 0
-        [[ ! -d ${status_file%/*} ]] && return 0
-        if ((attempt < 3)); then sleep 0.1; fi
-    done
-    fatal 'web recovery cannot inspect a surviving process identity'
-}
-
-# Inspect every visible process, including untracked descendants, before a second web writer starts.
 assert_web_writers_stopped() {
-    local status_file
-    [[ -r /proc/self/status ]] || fatal 'web recovery requires process identity visibility'
-    for status_file in /proc/[0-9]*/status; do
-        assert_web_process_stopped "$status_file"
-    done
+    appliance_supervision verify-web || fatal 'web recovery cannot prove all web writers stopped'
 }
 
 # Spend one of three restart attempts in a rolling 300-second window.
 # Successful recoveries retain their attempts so repeated crashes cannot evade the circuit breaker.
 reserve_web_restart() {
-    local started
-    local -a recent=()
-    for started in "${web_restart_times[@]}"; do
-        if ((SECONDS - started < 300)); then recent+=("$started"); fi
-    done
-    ((${#recent[@]} < 3)) || fatal 'web recovery circuit open: three restarts within 300 seconds'
-    web_restart_times=("${recent[@]}" "$SECONDS")
+    local decision timestamps
+    decision=$(appliance_supervision reserve-web-restart "$SECONDS" "${web_restart_times[@]}") \
+        || fatal 'web recovery circuit open: could not reserve a bounded restart'
+    read -r web_restart_backoff timestamps <<< "$decision"
+    read -ra web_restart_times <<< "$timestamps"
 }
 
 # Stop and reap the exact owned web process with an 18-second TERM and two-second KILL budget.
 # Recheck writer and maintenance fences around bounded backoff before readiness admits the replacement.
 recover_web() {
-    local index=$1 reason=$2 pid=${child_pids[$1]} deadline current_start backoff status=0
+    local index=$1 reason=$2 pid=${child_pids[$1]} current_start status=0 role
+    local -a critical=()
     assert_web_restart_allowed
     reserve_web_restart
     web_recovery_active=true
@@ -146,19 +121,12 @@ recover_web() {
     if supervisor_process_live "$pid"; then
         [[ -n $web_process_start && $current_start == "$web_process_start" ]] \
             || fatal 'web process identity changed before recovery'
-        kill -TERM "$pid" 2>/dev/null || true
-        deadline=$((SECONDS + 18))
-        while supervisor_process_live "$pid" && ((SECONDS < deadline)); do
-            assert_critical_children_running
-            sleep 0.1
+        for role in "${!child_pids[@]}"; do
+            case ${child_names[$role]} in web|app-manager) continue ;; esac
+            critical+=("${child_pids[$role]}")
         done
-        if supervisor_process_live "$pid"; then
-            [[ $(supervisor_process_start "$pid") == "$web_process_start" ]] \
-                || fatal 'web process identity changed before forced stop'
-            kill -KILL "$pid" 2>/dev/null || true
-            deadline=$((SECONDS + 2))
-            while supervisor_process_live "$pid" && ((SECONDS < deadline)); do sleep 0.1; done
-        fi
+        appliance_drain web-recovery "$pid:$web_process_start" -- "${critical[@]}" \
+            || fatal 'web termination or critical child ownership could not be confirmed'
     elif [[ -n $current_start && -n $web_process_start && $current_start != "$web_process_start" ]]; then
         fatal 'web process identity changed after exit'
     fi
@@ -171,8 +139,7 @@ recover_web() {
     assert_web_restart_allowed
     # Bounded 1/2/4-second backoff plus up to 249ms jitter; budget survives
     # successful starts so a repeatedly crashing process cannot reset it.
-    printf -v backoff '%d.%03d' "$((1 << (${#web_restart_times[@]} - 1)))" "$((RANDOM % 250))"
-    sleep "$backoff"
+    sleep "$web_restart_backoff"
     assert_web_restart_allowed
     start_web
     wait_for_web_readiness

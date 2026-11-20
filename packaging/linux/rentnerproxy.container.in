@@ -22,13 +22,13 @@ HealthStartPeriod=60s
 HealthRetries=12
 HealthOnFailure=kill
 LogDriver=journald
-StopTimeout=30
+StopTimeout=50
 
 [Service]
 ExecStartPre=/usr/bin/rentnerproxy preflight
-ExecStop=/usr/bin/podman stop --ignore --time 30 --cidfile=%t/%N.cid
+ExecStop=/usr/bin/podman stop --ignore --time 50 --cidfile=%t/%N.cid
 TimeoutStartSec=900
-TimeoutStopSec=45
+TimeoutStopSec=65
 Restart=always
 RestartSec=5
 

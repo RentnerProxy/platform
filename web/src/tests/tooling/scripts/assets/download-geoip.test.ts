@@ -6,6 +6,9 @@ const database = new TextEncoder().encode('verified country database')
 const repositoryApi = 'https://api.github.com/repos/sapics/ip-location-db'
 const metadataUrl = repositoryApi + '/releases/tags/latest'
 const databaseUrl = repositoryApi + '/releases/assets/123'
+const releasePage = 'https://github.com/sapics/ip-location-db/releases/expanded_assets/latest'
+const databasePath = '/sapics/ip-location-db/releases/download/latest/user-country.mmdb'
+const publishedDatabase = 'https://github.com' + databasePath
 function metadata(bytes = database, id = 123) {
     return {
         id: 456,
@@ -29,6 +32,17 @@ function metadata(bytes = database, id = 123) {
 }
 function validResponse(url: string): Response {
     return url === metadataUrl ? Response.json(metadata()) : new Response(database)
+}
+
+function releaseRow(digest = metadata().assets[0]!.digest): string {
+    return (
+        '<li class="Box-row"><a href="' +
+        databasePath +
+        '">user-country.mmdb</a>' +
+        '<clipboard-copy aria-label="Copy to clipboard digest for user-country.mmdb" value="' +
+        digest +
+        '"></clipboard-copy></li>'
+    )
 }
 
 describe('GeoIP release asset download', () => {
@@ -296,7 +310,7 @@ describe('GeoIP release asset download', () => {
             expect(requests).toBe(missing === metadataUrl ? 2 : 4)
         },
     )
-    test.each([403, 429, 500])(
+    test.each([401, 500])(
         'does not retry other HTTP failures or expose response contents: %i',
         async (status) => {
             await Promise.all(
@@ -315,4 +329,74 @@ describe('GeoIP release asset download', () => {
             )
         },
     )
+
+    test.each([
+        [403, metadataUrl],
+        [429, databaseUrl],
+    ] as const)(
+        'verifies the public release asset when the API replies %i',
+        async (status, failed) => {
+            const requests: string[] = []
+            const result = await downloadGeoip(async (url, options) => {
+                requests.push(url)
+                if (url === failed) return new Response('private error body', { status })
+                if (url === releasePage) {
+                    expect(options.redirect).toBe('error')
+                    return new Response('<ul>' + releaseRow() + '</ul>')
+                }
+                return validResponse(url)
+            })
+            expect(new Uint8Array(result)).toEqual(database)
+            expect(requests.slice(-3)).toEqual([releasePage, publishedDatabase, releasePage])
+        },
+    )
+
+    test.each([
+        releaseRow().replace(databasePath, '/other/file'),
+        releaseRow('not a digest'),
+        releaseRow() + releaseRow(),
+        releaseRow().replace(/<clipboard-copy[^>]*><\/clipboard-copy>/u, ''),
+    ])('denies ambiguous or missing public release proof before downloading', async (body) => {
+        const requests: string[] = []
+        await expect(
+            downloadGeoip(async (url) => {
+                requests.push(url)
+                return url === metadataUrl
+                    ? new Response(null, { status: 403 })
+                    : new Response('<ul>' + body + '</ul>')
+            }),
+        ).rejects.toThrow('release page asset digest is invalid')
+        expect(requests).toEqual([metadataUrl, releasePage])
+    })
+
+    test('rejects substituted bytes under the public release digest', async () => {
+        await expect(
+            downloadGeoip(async (url) => {
+                if (url === metadataUrl) return new Response(null, { status: 403 })
+                return new Response(
+                    url === releasePage ? '<ul>' + releaseRow() + '</ul>' : 'different',
+                )
+            }),
+        ).rejects.toThrow('GeoIP asset checksum mismatch')
+    })
+
+    test('retries a public asset that is replaced before the browser download', async () => {
+        const replacement = new TextEncoder().encode('updated country database')
+        let metadataReads = 0
+        let downloads = 0
+        const result = await downloadGeoip(async (url) => {
+            if (url === metadataUrl) return new Response(null, { status: 403 })
+            if (url === releasePage) {
+                const digest = metadata(metadataReads++ === 0 ? database : replacement).assets[0]!
+                    .digest
+                return new Response('<ul>' + releaseRow(digest) + '</ul>')
+            }
+            expect(url).toBe(publishedDatabase)
+            downloads += 1
+            return new Response(replacement)
+        })
+        expect(new Uint8Array(result)).toEqual(replacement)
+        expect(metadataReads).toBe(4)
+        expect(downloads).toBe(2)
+    })
 })

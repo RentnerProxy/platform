@@ -6,8 +6,10 @@ export const RELIABILITY_FIXTURE_SOURCE_PATHS = [
     'scripts/lib/request-context.ts',
 ] as const
 
+export const RELIABILITY_FIXTURE_ARCHIVE_DIRECTORIES = ['web/src', 'core/src'] as const
+
 export const RELIABILITY_FIXTURE_ARCHIVE_PATHS = [
-    'web/src',
+    ...RELIABILITY_FIXTURE_ARCHIVE_DIRECTORIES,
     'tsconfig.json',
     'package.json',
     'bun.lock',

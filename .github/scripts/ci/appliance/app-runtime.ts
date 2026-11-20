@@ -28,7 +28,7 @@ export async function verifyApplianceAppRuntime(context: ApplianceProxyTrafficCo
         if (/^failed at (?:preparation|activation|database|notification)$/u.test(appStage))
             console.error('Native app fixture ' + appStage)
         else if (
-            /^(?:bridge readiness|registration|provisioning|launch|activation|app checks|revocation)$/u.test(
+            /^(?:bridge readiness|registration|provisioning|launch|activation|app checks|revocation|cleanup)$/u.test(
                 managerStage,
             )
         )

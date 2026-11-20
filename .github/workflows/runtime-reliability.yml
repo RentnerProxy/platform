@@ -188,6 +188,7 @@ jobs:
               with:
                   context: .
                   file: docker/tooling/coverage/Dockerfile
+                  target: tooling
                   load: true
                   push: false
                   tags: rentnerproxy-worker-evidence:tooling

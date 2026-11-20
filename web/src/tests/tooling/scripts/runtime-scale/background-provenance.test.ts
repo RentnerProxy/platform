@@ -41,6 +41,7 @@ test('expected fixture manifest matches both source staging owners and archive i
             ...BACKGROUND_FIXTURE_SOURCE_PATHS,
             ...RELIABILITY_FIXTURE_SOURCE_PATHS,
             'web/src/fixture.ts',
+            'core/src/npm-import-contract.json',
             'package.json',
             'bun.lock',
             'tsconfig.json',
@@ -54,6 +55,12 @@ test('expected fixture manifest matches both source staging owners and archive i
         const staged = await backgroundSourceManifest(root)
         await writeFile(join(root, 'unrelated.txt'), 'not a fixture input')
         expect(await backgroundFixtureSourceManifest(root)).toEqual(staged)
+        await writeFile(join(root, 'core/src/npm-import-contract.json'), '{}')
+        expect((await backgroundFixtureSourceManifest(root)).sha256).not.toBe(staged.sha256)
+        await writeFile(
+            join(root, 'core/src/npm-import-contract.json'),
+            'core/src/npm-import-contract.json',
+        )
         await writeFile(join(root, 'scripts/lib/request-context.ts'), 'changed staging input')
         expect((await backgroundFixtureSourceManifest(root)).sha256).not.toBe(staged.sha256)
     } finally {

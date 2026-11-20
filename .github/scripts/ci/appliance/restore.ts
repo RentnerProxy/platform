@@ -168,7 +168,13 @@ export async function verifyApplianceRestore(context: ApplianceRestoreContext) {
         'cat',
         context.crowdSecStateDirectory + '/bouncer/caddy-bouncer-key',
     ])
-    assert.match(restoredBouncerKey, /^[a-f0-9]{64}$/u)
+    const bouncerBytes = Buffer.from(restoredBouncerKey, 'base64')
+    assert.ok(
+        /^[a-f0-9]{64}$/u.test(restoredBouncerKey) ||
+            (bouncerBytes.length === 32 &&
+                bouncerBytes.toString('base64').slice(0, -1) === restoredBouncerKey),
+        'Invalid restored CrowdSec bouncer credential encoding',
+    )
     await context.assertRealTraffic(
         restoredId,
         'managed CrowdSec decision, bouncer authorization and proxy traffic survive restore',

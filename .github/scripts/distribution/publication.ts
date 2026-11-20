@@ -6,13 +6,13 @@ import { createHash } from 'node:crypto'
 import { ociRecord, ociText } from '../lib/oci-layout.ts'
 import { parseNativeImageEvidence, parsePortabilityEvidence } from '../release/multiarch-image.ts'
 import { verifyDistributionBundle, bundleFiles, distributionFileHash } from './bundle.ts'
-import { verifyBoundDistribution, validateDistributionReports } from './candidate.ts'
+import { readBoundDistribution, validateDistributionReports } from './candidate.ts'
 import { distributionWorkflowIdentity } from './prepare.ts'
 import { distributionPayload } from './payload.ts'
 import { parseDistributionRelease, distributionPackageVersion } from './release.ts'
 import { distributionCommand } from './process.ts'
 import { verifyImmutableRepositoryManifest, writeImmutableRepositoryManifest } from './history.ts'
-import { maximumRepositoryFiles } from './limits.ts'
+import { maximumAssessedBundleFiles, maximumRepositoryFiles } from './limits.ts'
 import { prepareCompactReleaseAssets } from './compact-assets.ts'
 import {
     readRepositoryCatalog,
@@ -42,18 +42,9 @@ export async function validateNativeDistributionProofs(
     reports: string,
     identity: ReturnType<typeof distributionWorkflowIdentity>,
 ): Promise<void> {
-    const candidateHash = await verifyBoundDistribution(bundle, identity)
+    const { candidateHash, imageEvidence: raw } = await readBoundDistribution(bundle, identity)
     await validateDistributionReports(reports, identity, candidateHash)
-    const raw = ociRecord(JSON.parse(await readFile(join(bundle, 'image-evidence.json'), 'utf8')))
-    if (
-        raw.schemaVersion !== 1 ||
-        raw.digest !== identity.digest ||
-        raw.revision !== identity.revision ||
-        raw.version !== identity.version ||
-        raw.runId !== identity.runId ||
-        !Array.isArray(raw.native) ||
-        raw.native.length !== 2
-    )
+    if (!Array.isArray(raw.native) || raw.native.length !== 2)
         throw new Error('Invalid assessed image evidence')
     const nativeEntries = raw.native
     const native = (['amd64', 'arm64'] as const).map((architecture, index) =>
@@ -189,7 +180,12 @@ export async function signDistribution(options: {
     readonly baseUrl: string
     readonly publishedAt: string
 }) {
-    await verifyDistributionBundle(options.bundle, options.bundleHash, options.identity)
+    await verifyDistributionBundle(
+        options.bundle,
+        options.bundleHash,
+        options.identity,
+        maximumAssessedBundleFiles,
+    )
     await validateNativeDistributionProofs(options.bundle, options.reports, options.identity)
     const artifacts = (['amd64', 'arm64'] as const).map((architecture) => ({
         directory: join(options.bundle, 'packages', architecture),

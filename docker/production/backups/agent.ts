@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Poll one supervisor result and inspect fixed owned files sequentially.
 import { randomUUID } from 'node:crypto'
+import { maximumBackupMetadataBytes } from '../../../scripts/backup/validation.ts'
 import { chmod, chown, lstat, opendir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -78,10 +79,11 @@ async function inspectOwnedArtifactDirectory(directory: string, partial: boolean
     const info = await lstat(directory)
     if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o077) !== 0)
         throw new UnsafeBackupArtifact('invalid backup directory')
-    const entries = await boundedDirectoryEntries(directory, artifactNames.length)
+    const allowedNames = partial ? [...artifactNames, '.rentnerproxy-app-state-v1'] : artifactNames
+    const entries = await boundedDirectoryEntries(directory, allowedNames.length)
     if (
         (!partial && entries.length !== artifactNames.length) ||
-        entries.some((name) => !artifactNames.includes(name))
+        entries.some((name) => !allowedNames.includes(name))
     )
         throw new UnsafeBackupArtifact('invalid backup entries')
     for (const name of entries) {
@@ -184,7 +186,10 @@ export async function reconcileBackupArtifacts(
         if (!job) {
             try {
                 const metadata = parseBackupMetadata(
-                    await readPrivateJson(join(directory, 'metadata.json'), 65_536),
+                    await readPrivateJson(
+                        join(directory, 'metadata.json'),
+                        maximumBackupMetadataBytes,
+                    ),
                 )
                 managedBackupSourceSchema.parse(metadata.source)
             } catch (error) {

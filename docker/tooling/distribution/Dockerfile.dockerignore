@@ -1,0 +1,9 @@
+**
+!core/
+!core/distribution-tooling/
+!core/distribution-tooling/Cargo.toml
+!core/distribution-tooling/Cargo.lock
+!core/distribution-tooling/src/
+!core/distribution-tooling/src/**
+core/distribution-tooling/target
+core/distribution-tooling/target/**

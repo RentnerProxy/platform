@@ -3,6 +3,7 @@ import { readFile, readdir, realpath } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { BACKGROUND_FIXTURE_SOURCE_PATHS } from './background-source.config.ts'
 import {
+    RELIABILITY_FIXTURE_ARCHIVE_DIRECTORIES,
     RELIABILITY_FIXTURE_ARCHIVE_PATHS,
     RELIABILITY_FIXTURE_SOURCE_PATHS,
 } from '../runtime-reliability/fixture-source.config.ts'
@@ -28,7 +29,9 @@ export async function backgroundSourceManifest(root: string) {
 export async function backgroundFixtureSourceManifest(root: string) {
     const paths = await Promise.all(
         RELIABILITY_FIXTURE_ARCHIVE_PATHS.map(async (path) =>
-            path === 'web/src' ? collect(join(root, path)) : [join(root, path)],
+            RELIABILITY_FIXTURE_ARCHIVE_DIRECTORIES.some((directory) => directory === path)
+                ? collect(join(root, path))
+                : [join(root, path)],
         ),
     )
     return manifestForPaths(root, [

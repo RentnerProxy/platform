@@ -14,6 +14,7 @@ const healthcheckScript = '/opt/rentnerproxy/web/docker/web/healthcheck.ts'
 import {
     postgresCommand,
     controllerRestoreCommand,
+    controllerMetadataValidationCommand,
     crowdSecRestoreCommand,
 } from './backup/volume-commands.ts'
 export { postgresCommand, postgresRestoreCommand } from './backup/volume-commands.ts'
@@ -22,6 +23,7 @@ import { createMaintenanceCommands } from './backup/maintenance-commands.ts'
 import { commandOption, composeArguments, readComposeProject } from './backup/compose.ts'
 import { assertDeploymentCompatible } from './backup/format.ts'
 import { snapshotProductionRestore } from './backup/restore-snapshot.ts'
+import { appBackupCommand, appStateName } from './backup/app-state.ts'
 import { deploymentSchema } from './backup/validation.ts'
 import { smokeDockerArguments } from './smoke/resources.ts'
 
@@ -61,7 +63,17 @@ async function restore(): Promise<void> {
     const snapshot = await mkdtemp(join(tmpdir(), 'rentnerproxy-restore-'))
     await chmod(snapshot, 0o700)
     try {
-        const { metadata, backupId } = await snapshotProductionRestore(inputPath, snapshot)
+        // Only the bounded DNS registry and certificate index are retained for the pinned target image.
+        const controllerDocuments: { kind: string; bytes: Uint8Array }[] = []
+        const { metadata, backupId } = await snapshotProductionRestore(
+            inputPath,
+            snapshot,
+            undefined,
+            (kind, bytes) => {
+                controllerDocuments.push({ kind, bytes })
+                return Promise.resolve()
+            },
+        )
 
         const project = composeProject(argumentsList)
         const composeFile = resolve(process.env.RENTNERPROXY_COMPOSE_FILE ?? defaultComposeFile)
@@ -93,6 +105,28 @@ async function restore(): Promise<void> {
             'inspect restore image',
         )
         if (!/^sha256:[a-f0-9]{64}$/u.test(imageId)) throw new Error('invalid restore target image')
+        for (const { kind, bytes } of controllerDocuments) {
+            // oxlint-disable-next-line no-await-in-loop -- One owned validation container at a time.
+            await commands.input(
+                [
+                    'docker',
+                    'run',
+                    '--rm',
+                    '--network=none',
+                    '--interactive',
+                    '--entrypoint=bash',
+                    imageId,
+                    '-ceu',
+                    controllerMetadataValidationCommand,
+                    'metadata',
+                    kind,
+                    String(metadata.version),
+                ],
+                bytes,
+                'validate controller backup metadata',
+                30_000,
+            )
+        }
         await runCommand(
             [
                 'docker',
@@ -104,7 +138,7 @@ async function restore(): Promise<void> {
                 snapshot + ':/backup:ro',
                 imageId,
                 '-c',
-                postgresCommand(true),
+                postgresCommand(true, '/backup', metadata.version === 5),
             ],
             'restore PostgreSQL',
             BACKUP_RUNTIME_POLICY.databaseTimeoutMs,
@@ -139,11 +173,66 @@ async function restore(): Promise<void> {
             throw new Error('interrupted restore requires --resume with the same backup')
         if (!pending && argumentsList.includes('--resume'))
             throw new Error('no interrupted restore is pending')
+        const previouslyRunning =
+            !pending &&
+            (await runCommand(
+                [...compose, 'ps', '--status', 'running', '--quiet', applianceService],
+                'inspect restore target',
+            )) !== ''
         await runCommand(
-            [...compose, 'stop', '--timeout', '30', applianceService],
+            [
+                ...compose,
+                'stop',
+                '--timeout',
+                String(BACKUP_RUNTIME_POLICY.applianceStopGraceSeconds),
+                applianceService,
+            ],
             'quiesce restore target',
             180_000,
         )
+        // A completed inventory rejection is a normal container exit. This lets the
+        // maintenance runner verify --rm cleanup separately from the inventory verdict.
+        try {
+            const inventory = await runCommand(
+                [
+                    ...compose,
+                    'run',
+                    '--no-TTY',
+                    '--rm',
+                    '--no-deps',
+                    '--entrypoint=bash',
+                    '--volume',
+                    archiveVolume,
+                    applianceService,
+                    '-c',
+                    'if bash -c "$1" >&2; then echo accepted; else echo rejected; fi',
+                    'inventory',
+                    postgresCommand('inventory', '/backup', metadata.version === 5, backupId),
+                ],
+                'check target application inventory',
+                metadata.version === 5 ? BACKUP_RUNTIME_POLICY.databaseTimeoutMs : 180_000,
+            )
+            if (inventory !== 'accepted')
+                throw new Error('Could not check target application inventory')
+        } catch (error) {
+            if (previouslyRunning) {
+                commands.assertRestartSafe()
+                try {
+                    await runCommand(
+                        [...compose, 'start', applianceService],
+                        'restart restore target after preflight failure',
+                        180_000,
+                    )
+                    await waitForAppliance(compose)
+                } catch (cause) {
+                    throw new Error(
+                        'Preflight failed before the restore journal was created. Start the appliance with docker compose start rentnerproxy in the same Compose project and check readiness before retrying.',
+                        { cause },
+                    )
+                }
+            }
+            throw error
+        }
         // Preparing a fresh database must never boot the old controller/web workers.
         // A resumed restore already has its initialized cluster and must retain its journal/key state.
         if (!pending)
@@ -217,7 +306,7 @@ async function restore(): Promise<void> {
                     archiveVolume,
                     applianceService,
                     '-c',
-                    controllerRestoreCommand(),
+                    controllerRestoreCommand(metadata.version === 5),
                 ],
                 'restore controller state',
                 BACKUP_RUNTIME_POLICY.captureTimeoutMs,
@@ -239,6 +328,25 @@ async function restore(): Promise<void> {
                 'restore managed CrowdSec state',
                 BACKUP_RUNTIME_POLICY.captureTimeoutMs,
             )
+            if (metadata.version === 5)
+                await runCommand(
+                    [
+                        ...compose,
+                        'run',
+                        '--no-TTY',
+                        '--rm',
+                        '--no-deps',
+                        '--entrypoint=' + appBackupCommand,
+                        '--volume',
+                        archiveVolume,
+                        applianceService,
+                        '--app-backup',
+                        'restore',
+                        '/backup/' + appStateName,
+                    ],
+                    'restore verified application files',
+                    BACKUP_RUNTIME_POLICY.captureTimeoutMs,
+                )
             await runCommand(
                 [
                     ...compose,

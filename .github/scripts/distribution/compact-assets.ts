@@ -2,9 +2,9 @@
 import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
 import { createHash } from 'node:crypto'
-import { gzipSync, gunzipSync } from 'node:zlib'
+import { gzipSync } from 'node:zlib'
 import { bundleFiles, distributionFileHash } from './bundle.ts'
-import { packageTar } from './archive.ts'
+import { verifyDistributionNative } from './native-verifier.ts'
 import { distributionPackageVersion, parseDistributionRelease } from './release.ts'
 import { ociRecord } from '../lib/oci-layout.ts'
 
@@ -135,23 +135,13 @@ function archive(files: ReadonlyMap<string, Buffer>): Buffer {
     return compressed
 }
 
-export function readVerificationArchive(bytes: Uint8Array): Map<string, Buffer> {
+export async function readVerificationArchive(bytes: Uint8Array): Promise<Map<string, Buffer>> {
     if (bytes.length > maximumArchiveBytes) throw new Error('Verification archive is too large')
-    const entries = packageTar(gunzipSync(bytes, { maxOutputLength: maximumArchiveBytes }))
-    const files = new Map<string, Buffer>()
-    if (entries.length > 128) throw new Error('Too many verification archive files')
-    for (const entry of entries) {
-        flatName(entry.path)
-        if (
-            entry.directory ||
-            entry.mode !== 0o644 ||
-            files.has(entry.path) ||
-            /\.(?:deb|rpm|tar\.gz)$/u.test(entry.path)
-        )
-            throw new Error('Invalid verification archive entry')
-        files.set(entry.path, entry.content)
-    }
-    return files
+    const files = JSON.parse(await verifyDistributionNative('compact', null, bytes)) as [
+        string,
+        string,
+    ][]
+    return new Map(files.map(([name, content]) => [name, Buffer.from(content, 'base64')]))
 }
 
 function friendlyInstructions(original: Buffer, tag: string, packageRevision: number): Buffer {
@@ -241,7 +231,7 @@ export async function prepareCompactReleaseAssets(
 
 export async function verifyCompactReleaseAssets(directory: string, tag: string) {
     await distributionFileHash(join(directory, verificationArchiveName(tag)))
-    const archived = readVerificationArchive(
+    const archived = await readVerificationArchive(
         await readFile(join(directory, verificationArchiveName(tag))),
     )
     const original = new Map(archived)

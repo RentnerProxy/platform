@@ -62,6 +62,9 @@ jobs:
               run: |
                   docker run --rm --env RENTNERPROXY_PACKAGE_TEST=1 --mount "type=bind,source=$GITHUB_WORKSPACE/source,target=/work" rp-distribution:tools test ./web/src/tests/tooling/distribution/packages.native.test.ts
                   docker run --rm --mount "type=bind,source=$GITHUB_WORKSPACE/source,target=/work,readonly" --entrypoint shellcheck rp-distribution:tools packaging/linux/rentnerproxy
+            - name: Verify the native repository fixture server
+              working-directory: automation
+              run: bun --no-env-file test ./web/src/tests/tooling/distribution/fixture-server.test.ts
             - name: Build package artifacts from the exact immutable OCI root
               id: packages
               env:

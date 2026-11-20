@@ -37,6 +37,7 @@ export async function copyCoverageFixtureModules(
     directory: string,
     filenames: string[],
     replacements: Readonly<Record<string, string>>,
+    fileReplacements: Readonly<Record<string, Readonly<Record<string, string>>>> = {},
 ): Promise<void> {
     await mkdir(directory, { recursive: true })
     await symlink(
@@ -47,7 +48,10 @@ export async function copyCoverageFixtureModules(
     await Promise.all(
         filenames.map(async (filename) => {
             let source = await coverageFixtureSource(filename)
-            for (const [original, target] of Object.entries(replacements))
+            for (const [original, target] of Object.entries({
+                ...replacements,
+                ...fileReplacements[filename],
+            }))
                 source = source.replaceAll(original, target)
             source = source.replace(
                 /((?:from|import)\s*['"])(\.[^'"]+)(['"])/gu,

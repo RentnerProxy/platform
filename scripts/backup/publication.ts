@@ -1,5 +1,6 @@
 // oxlint-disable no-await-in-loop -- Verify and sync each bounded artifact before atomic publication.
 import { createHash } from 'node:crypto'
+import { controllerAllocation, readAppStateMember } from './app-state.ts'
 import { constants } from 'node:fs'
 import { open, rename, writeFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -8,6 +9,7 @@ import { parseApplicationEncryptionKeyFile, readFileRange } from './artifact-fil
 import type { BackupMetadata } from './Types/format.types.ts'
 import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
 import { stateArchiveAllocationEvidence } from './capacity.ts'
+import { maximumBackupMetadataBytes } from './validation.ts'
 import type { StateArchiveAllocationEvidence } from './Types/capacity.types.ts'
 
 async function regularFile(path: string, maximum: number, sync = false): Promise<FileHandle> {
@@ -43,7 +45,10 @@ export async function verifyPublishedBackup(
     progress?: () => void,
 ) {
     signal?.throwIfAborted()
-    const metadataFile = await regularFile(join(directory, 'metadata.json'), 65_536)
+    const metadataFile = await regularFile(
+        join(directory, 'metadata.json'),
+        maximumBackupMetadataBytes,
+    )
     let bytes: Buffer
     try {
         bytes = await metadataFile.readFile()
@@ -79,10 +84,11 @@ export async function verifyPublishedBackup(
                 throw new Error('backup artifact checksum mismatch')
             if (name === 'app-encryption-key')
                 await parseApplicationEncryptionKeyFile(file, signal, progress)
-            if (name === 'controller-state.tar')
-                controllerState = stateArchiveAllocationEvidence(
-                    await validateStateArchiveFile(file, 'controller', signal, progress),
-                )
+            if (name === 'controller-state.tar') {
+                const entries = await validateStateArchiveFile(file, 'controller', signal, progress)
+                await readAppStateMember(file, entries, metadata)
+                controllerState = controllerAllocation(entries, metadata)
+            }
             if (name === 'crowdsec-state.tar')
                 crowdSecState = stateArchiveAllocationEvidence(
                     await validateStateArchiveFile(file, 'crowdsec', signal, progress),
@@ -109,7 +115,10 @@ export async function publishProductionBackup(
 ): Promise<void> {
     signal?.throwIfAborted()
     parseBackupMetadata(metadata)
-    await writeFile(join(stagingPath, 'metadata.json'), JSON.stringify(metadata, null, 2) + '\n', {
+    const serialized = Buffer.from(JSON.stringify(metadata, null, 2) + '\n')
+    if (serialized.length > maximumBackupMetadataBytes)
+        throw new Error('Backup metadata exceeds size limit')
+    await writeFile(join(stagingPath, 'metadata.json'), serialized, {
         flag: 'wx',
         mode: 0o600,
     })

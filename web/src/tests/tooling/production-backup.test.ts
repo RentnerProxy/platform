@@ -62,7 +62,7 @@ if (command.includes('config --format=json')) {
     console.log(imageId)
 } else if (command.includes('ps --status running --quiet')) {
     if (scenario !== 'stopped') console.log('fixture-container')
-} else if (command.includes('stop --timeout 30')) {
+} else if (command.includes('stop --timeout 50')) {
     // No real container is contacted.
 } else if (command.includes('start rentnerproxy')) {
     if (scenario === 'restart-failure' || scenario === 'early-failure') process.exit(1)

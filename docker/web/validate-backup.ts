@@ -81,6 +81,36 @@ export function assertSupportedBackupVersion(metadata: unknown): void {
     }
 }
 
+export function assertBackupAppRows(installations: unknown, rows: readonly unknown[]): void {
+    if (!Array.isArray(installations) || installations.length > 256 || rows.length > 256)
+        throw new Error('Invalid application backup inventory')
+    const active = installations.filter((slot: unknown) => {
+        if (
+            !isRecord(slot) ||
+            typeof slot.generation !== 'number' ||
+            (slot.authorityRecorded !== undefined && typeof slot.authorityRecorded !== 'boolean')
+        )
+            throw new Error('Invalid application backup inventory')
+        return slot.authorityRecorded ?? slot.generation > 0
+    })
+    if (
+        active.length !== rows.length ||
+        new Set(rows.map((row) => (isRecord(row) ? row.id : null))).size !== rows.length ||
+        rows.some(
+            (row) =>
+                !isRecord(row) ||
+                !active.some(
+                    (slot: unknown) =>
+                        isRecord(slot) &&
+                        slot.id === row.id &&
+                        slot.appId === row.appId &&
+                        slot.uid === row.uid,
+                ),
+        )
+    )
+        throw new Error('App database identities differ from the native installation journal')
+}
+
 export function validateNotificationBackupSecrets(key: Buffer, input: unknown): void {
     try {
         if (typeof input === 'string' && input.length > 2 * 1_024 * 1_024) throw new Error()
@@ -151,6 +181,18 @@ export async function validateDatabase(
         await readFile(join(backupDirectory, 'metadata.json'), 'utf8'),
     )
     assertSupportedBackupVersion(metadata)
+    if (isRecord(metadata) && metadata.version === 5) {
+        const child = Bun.spawn(
+            [
+                '/usr/local/bin/rentnerproxy-controller',
+                '--app-backup',
+                'inspect',
+                join(backupDirectory, '.rentnerproxy-app-state-v1'),
+            ],
+            { stdout: 'ignore', stderr: 'ignore' },
+        )
+        if ((await child.exited) !== 0) throw new Error('Invalid application file snapshot')
+    }
     const key = Buffer.from(
         (await readFile(join(backupDirectory, 'app-encryption-key'), 'utf8')).trim(),
         'base64',
@@ -180,6 +222,52 @@ export async function validateDatabase(
         await assertCompatibleBackupHistory(rows, journal, (tag) =>
             readFile(join(migrationsPath, tag + '.sql')),
         )
+        const [inventoryTable] = await sql<
+            { present: boolean }[]
+        >`SELECT to_regclass('rentnerproxy.app_runtime_installations') IS NOT NULL AS present`
+        if (typeof inventoryTable?.present !== 'boolean')
+            throw new Error('Invalid application schema evidence')
+        const appRows = inventoryTable.present
+            ? await sql`SELECT id, app_id AS "appId", uid::integer AS uid FROM rentnerproxy.app_runtime_installations LIMIT 257`
+            : []
+        const apps =
+            isRecord(metadata) && metadata.version === 5 && isRecord(metadata.applications)
+                ? metadata.applications.installations
+                : []
+        assertBackupAppRows(apps, appRows)
+        if (appRows.length) {
+            const [generation] = await sql<{ quiet: boolean }[]>`SELECT
+                NOT EXISTS (SELECT FROM rentnerproxy.app_runtime_generations WHERE state <> 'revoked')
+                AND NOT EXISTS (SELECT FROM rentnerproxy.app_runtime_pending_secrets) AS quiet`
+            if (generation?.quiet !== true) throw new Error('App generation has not retired')
+            let installation = ''
+            let secret = ''
+            while (true) {
+                const secrets = await sql<
+                    {
+                        installation_id: string
+                        id: string
+                        ciphertext: Uint8Array | null
+                        iv: Uint8Array
+                    }[]
+                >`SELECT installation_id, id, CASE WHEN octet_length(ciphertext) <= 65552 THEN ciphertext END AS ciphertext, iv
+                     FROM rentnerproxy.app_runtime_secrets
+                     WHERE (installation_id, id) > (${installation}, ${secret})
+                     ORDER BY installation_id, id LIMIT 64`
+                for (const row of secrets) {
+                    if (!row.ciphertext) throw new Error('Invalid application backup secret')
+                    decryptBackupSecret(
+                        key,
+                        Buffer.from(row.ciphertext),
+                        Buffer.from(row.iv),
+                        `app-runtime-secret:v1:${row.installation_id}:${row.id}`,
+                    )
+                    installation = row.installation_id
+                    secret = row.id
+                }
+                if (secrets.length < 64) break
+            }
+        }
         const factors = await sql<
             BackupTotpSecretRow[]
         >`select user_id, secret_ciphertext, secret_iv from rentnerproxy.user_totp_factors`
@@ -278,7 +366,9 @@ export async function validateDatabase(
             const bouncerKey = (
                 await readFile(join(crowdSecDirectory, 'bouncer/caddy-bouncer-key'), 'utf8')
             ).trim()
-            if (!/^[a-f0-9]{64}$/u.test(bouncerKey)) throw new Error('invalid CrowdSec bouncer key')
+            const legacyKey = /^[a-f0-9]{64}$/u.test(bouncerKey)
+            const rawKey = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]$/u.test(bouncerKey)
+            if (!legacyKey && !rawKey) throw new Error('invalid CrowdSec bouncer key')
         }
         console.log('Backup database version and encrypted secrets verified.')
     } finally {

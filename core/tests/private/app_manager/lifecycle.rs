@@ -1,0 +1,663 @@
+use super::super::*;
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
+use hyper_util::rt::TokioIo;
+use std::{
+    convert::Infallible,
+    fs,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt, chown},
+    process::Stdio,
+    sync::{Arc, Mutex},
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{UnixListener, UnixStream},
+    process::{Child, Command as Process},
+};
+
+const ID: &str = "fixture-install";
+const UNCLAIMED: &str = "never-provisioned";
+const INTERRUPTED: &str = "interrupted-claim";
+const UID: u32 = 59553;
+const ROOT: &str = "/var/lib/rentnerproxy/app-manager";
+const SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
+
+async fn authority(
+    request: Request<Incoming>,
+    generations: Arc<Mutex<BTreeMap<u64, bool>>>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let path = request.uri().path().to_owned();
+    assert_eq!(
+        request.headers()["authorization"],
+        "Bearer local-lifecycle-fixture"
+    );
+    let body = request.into_body().collect().await.unwrap().to_bytes();
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    if let Some(uid) = match value["identity"]["installationId"].as_str() {
+        Some(UNCLAIMED) => Some(UID + 1),
+        Some(INTERRUPTED) => Some(UID + 2),
+        _ => None,
+    } {
+        assert_eq!(value["identity"]["uid"], uid);
+        let status = match path.rsplit('/').next().unwrap() {
+            "register" => StatusCode::SERVICE_UNAVAILABLE,
+            "retire" | "workers-stopped" | "removable" => StatusCode::NO_CONTENT,
+            action => panic!("unexpected unclaimed fixture action {action}"),
+        };
+        return Ok(Response::builder()
+            .status(status)
+            .body(Full::new(Bytes::new()))
+            .unwrap());
+    }
+    assert_eq!(value["identity"]["installationId"], ID);
+    assert_eq!(value["identity"]["uid"], UID);
+    let generation = value["identity"]["generation"].as_u64().unwrap();
+    let mut states = generations.lock().unwrap();
+    let action = path.strip_prefix("/internal/v1/app-generations/").unwrap();
+    if action == "lease" {
+        if !states.contains_key(&generation) {
+            return Ok(Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Full::new(Bytes::new()))
+                .unwrap());
+        }
+        let expires = (time::OffsetDateTime::now_utc().unix_timestamp() + 30) * 1000;
+        return Ok(Response::new(Full::new(Bytes::from(
+            json!({"expiresAt":expires}).to_string(),
+        ))));
+    }
+    match action {
+        "register" => {
+            assert!(states.is_empty());
+            states.insert(generation, false);
+        }
+        "grants" => {
+            assert_eq!(states.get(&generation), Some(&false));
+            assert_eq!(value["grants"], json!([]));
+            fs::write(
+                Path::new(SOCKET).with_file_name("last-grants-generation"),
+                generation.to_string(),
+            )
+            .unwrap();
+        }
+        "activate" => {
+            assert_eq!(states.insert(generation, true), Some(false));
+        }
+        "renew" => assert!(states.contains_key(&generation)),
+        "retire" => {
+            states.remove(&generation);
+        }
+        "workers-stopped" | "purge-data" => assert!(states.is_empty()),
+        "removable" => (),
+        _ => panic!("unexpected private action {action}"),
+    }
+    Ok(Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Full::new(Bytes::new()))
+        .unwrap())
+}
+
+#[tokio::test]
+#[ignore = "private subprocess of the isolated lifecycle fixture"]
+async fn authority_fixture() {
+    assert_eq!(unsafe { libc::geteuid() }, 10002);
+    let listener = UnixListener::bind(SOCKET).unwrap();
+    let states = Arc::new(Mutex::new(BTreeMap::new()));
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        let states = states.clone();
+        tokio::spawn(async move {
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(
+                    TokioIo::new(stream),
+                    service_fn(move |req| authority(req, states.clone())),
+                )
+                .await
+                .unwrap();
+        });
+    }
+}
+
+async fn invoke(controller: &Path, args: &[&str]) -> io::Result<Value> {
+    let output = timeout(
+        Duration::from_secs(20),
+        Process::new(controller)
+            .arg("--app-control")
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await??;
+    if !output.status.success() {
+        return Err(io::Error::other(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+enum BootState {
+    Running,
+    Recovery,
+    MissingData,
+}
+
+async fn mount_manager(
+    controller: &Path,
+    config: &Path,
+    token: &Path,
+    expected: BootState,
+) -> Child {
+    let mut command = Process::new(controller);
+    // Only the fixture's manager subprocess inherits this restrictive umask.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0o077);
+            Ok(())
+        });
+    }
+    let mut child = command
+        .arg("--app-manager")
+        .arg(config)
+        .env(crate::config::CONTROLLER_TOKEN_FILE_ENV, token)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    timeout(Duration::from_secs(20), async {
+        loop {
+            assert!(child.try_wait().unwrap().is_none());
+            // Poll over the private socket without spawning short-lived process trees
+            // while startup is verifying the appliance's process identities.
+            let status = async {
+                let mut stream =
+                    UnixStream::connect("/run/rentnerproxy/app-manager/control.sock").await?;
+                stream.write_all(br#"{"action":"status"}"#).await?;
+                stream.shutdown().await?;
+                let mut bytes = Vec::new();
+                stream.read_to_end(&mut bytes).await?;
+                let reply: Value = serde_json::from_slice(&bytes)?;
+                Ok::<_, io::Error>(reply["result"].clone())
+            }
+            .await;
+            if status.is_ok_and(|state| {
+                state[ID]["running"] == matches!(expected, BootState::Running)
+                    && state[ID]["recoveryRequired"] == matches!(expected, BootState::Recovery)
+            }) {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    child
+}
+
+async fn halt(child: &mut Child) {
+    let pid = i32::try_from(child.id().unwrap()).unwrap();
+    // The test still owns this live, unreaped child.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    assert!(
+        timeout(Duration::from_secs(18), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+}
+
+async fn backup_files(controller: &Path, config: &Path, token: &Path, temporary: &Path) {
+    let command = |action: &str| {
+        let mut command = Process::new(controller);
+        command
+            .args(["--app-backup", action])
+            .env("RENTNERPROXY_APP_INSTALLER_CONFIG", config);
+        command
+    };
+    let data = super::super::storage::directory(UID).join("data");
+    let note = data.join("synthetic-note");
+    fs::write(&note, b"offline fixture").unwrap();
+    chown(&note, Some(UID), Some(UID)).unwrap();
+    let output = command("capture").output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut manifest: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(manifest["installations"][ID]["active"]["version"], "1.0.0");
+    assert_eq!(manifest["installations"][ID]["storageClaimed"], true);
+    assert_eq!(
+        manifest["installations"][UNCLAIMED]["storageClaimed"],
+        false
+    );
+    assert_eq!(manifest["installations"][UNCLAIMED]["generation"], 1);
+    assert_eq!(manifest["installations"][UNCLAIMED]["removal"], "removed");
+    assert!(manifest["data"].get((UID + 1).to_string()).is_none());
+    assert_eq!(
+        manifest["installations"][INTERRUPTED]["storageClaimed"],
+        false
+    );
+    assert!(manifest["data"].get((UID + 2).to_string()).is_none());
+    let snapshot = temporary.join("app-snapshot");
+    fs::write(&snapshot, output.stdout).unwrap();
+    fs::write(&note, b"changed fixture").unwrap();
+    for action in ["inspect", "verify", "restore"] {
+        assert!(
+            command(action)
+                .arg(&snapshot)
+                .status()
+                .await
+                .unwrap()
+                .success(),
+            "{action}"
+        );
+    }
+    assert_eq!(fs::read(&note).unwrap(), b"offline fixture");
+    assert!(!command("empty").output().await.unwrap().status.success());
+    for legacy in [false, true] {
+        let mut journal = Journal::open(Path::new(ROOT)).unwrap();
+        let mut slot = journal.slot(ID).unwrap().clone();
+        if legacy {
+            slot.storage_claimed = None;
+            journal.save(ID, slot.clone()).unwrap();
+        }
+        drop(journal);
+        let output = command("capture").output().await.unwrap();
+        assert!(output.status.success());
+        manifest = serde_json::from_slice(&output.stdout).unwrap();
+        fs::write(&snapshot, output.stdout).unwrap();
+        fs::remove_dir_all(&data).unwrap();
+        let mut child = mount_manager(controller, config, token, BootState::MissingData).await;
+        let err = invoke(controller, &["start", ID]).await.unwrap_err();
+        assert!(
+            err.to_string().contains("unavailable committed data"),
+            "{err}"
+        );
+        if legacy {
+            let reservation = storage::directory(UID);
+            let saved = reservation.with_file_name("fixture-saved-reservation");
+            fs::rename(&reservation, &saved).unwrap();
+            let err = invoke(controller, &["start", ID]).await.unwrap_err();
+            assert!(
+                err.to_string().contains("unavailable committed data"),
+                "{err}"
+            );
+            assert!(!reservation.exists());
+            fs::rename(saved, reservation).unwrap();
+        }
+        halt(&mut child).await;
+        assert!(!data.exists());
+        let journal = Journal::open(Path::new(ROOT)).unwrap();
+        assert_eq!(
+            serde_json::to_value(journal.slot(ID).unwrap()).unwrap(),
+            serde_json::to_value(&slot).unwrap()
+        );
+        drop(journal);
+        assert!(!command("capture").output().await.unwrap().status.success());
+        for action in ["verify", "restore"] {
+            assert!(
+                command(action)
+                    .arg(&snapshot)
+                    .status()
+                    .await
+                    .unwrap()
+                    .success(),
+                "{action}"
+            );
+        }
+        assert_eq!(fs::read(&note).unwrap(), b"offline fixture");
+    }
+    let alias = data.join("fixture-hardlink");
+    fs::hard_link(&note, &alias).unwrap();
+    assert!(!command("capture").output().await.unwrap().status.success());
+    fs::remove_file(alias).unwrap();
+    manifest["installations"][ID]["active"]["archiveSha256"] = "0".repeat(64).into();
+    fs::write(&snapshot, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert!(
+        !command("restore")
+            .arg(&snapshot)
+            .output()
+            .await
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(fs::read(&note).unwrap(), b"offline fixture");
+}
+
+async fn check_control_boundary(controller: &Path, temporary: &Path) {
+    for arguments in [
+        &["unknown"][..],
+        &["stop", "../invalid"],
+        &["stop", "missing-app"],
+        &["stage", ID, "example.other", "1.0.0"],
+        &["rollback", ID],
+    ] {
+        assert!(
+            invoke(controller, arguments).await.is_err(),
+            "{arguments:?}"
+        );
+    }
+    let long_version = "1".repeat(129);
+    assert!(
+        invoke(controller, &["stage", ID, "example.probe", &long_version])
+            .await
+            .is_err()
+    );
+    let socket = "/run/rentnerproxy/app-manager/control.sock";
+    for malformed in [b"null".to_vec(), vec![b' '; 96 * 1024 + 1]] {
+        let mut stream = UnixStream::connect(socket).await.unwrap();
+        stream.write_all(&malformed).await.unwrap();
+        stream.shutdown().await.unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).await.unwrap();
+        let reply: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(reply["ok"], false);
+    }
+    let grants = temporary.join("grants.json");
+    fs::write(&grants, "[]").unwrap();
+    let path = grants.to_str().unwrap();
+    fs::set_permissions(&grants, fs::Permissions::from_mode(0o666)).unwrap();
+    assert!(invoke(controller, &["activate", ID, path]).await.is_err());
+    fs::set_permissions(&grants, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&grants, "{").unwrap();
+    assert!(invoke(controller, &["activate", ID, path]).await.is_err());
+    fs::write(&grants, "[]").unwrap();
+    invoke(controller, &["activate", ID, path]).await.unwrap();
+}
+
+async fn check_process_recovery(controller: &Path) {
+    let data = super::super::storage::directory(UID).join("data");
+    fs::write(data.join("fixture-exit"), []).unwrap();
+    timeout(Duration::from_secs(8), async {
+        loop {
+            let state = invoke(controller, &["status"]).await.unwrap();
+            if state[ID]["running"] == false {
+                assert_eq!(state[ID]["recoveryRequired"], true);
+                assert_eq!(state[ID]["desiredRunning"], true);
+                break;
+            }
+            sleep(Duration::from_millis(75)).await;
+        }
+    })
+    .await
+    .unwrap();
+    invoke(controller, &["start", ID]).await.unwrap();
+    invoke(controller, &["stop", ID]).await.unwrap();
+    let stopped = invoke(controller, &["status"]).await.unwrap();
+    assert_eq!(stopped[ID]["running"], false);
+    assert_eq!(stopped[ID]["desiredRunning"], false);
+    invoke(controller, &["start", ID]).await.unwrap();
+    let started = invoke(controller, &["status"]).await.unwrap();
+    invoke(controller, &["start", ID]).await.unwrap();
+    assert_eq!(invoke(controller, &["status"]).await.unwrap(), started);
+}
+
+pub(super) async fn exercise() {
+    assert_eq!(unsafe { libc::geteuid() }, 0);
+    let controller = PathBuf::from(std::env::var_os("RENTNERPROXY_TEST_CONTROLLER").unwrap());
+    let executable = PathBuf::from(std::env::var_os("RENTNERPROXY_TEST_APP").unwrap());
+    let fixed_directory = |parent: &Path, name: &str| {
+        tempfile::Builder::new()
+            .prefix(name)
+            .rand_bytes(0)
+            .tempdir_in(parent)
+            .unwrap()
+    };
+    let run_guard = fixed_directory(Path::new("/run"), "rentnerproxy");
+    let run = run_guard.path();
+    fs::set_permissions(run, fs::Permissions::from_mode(0o755)).unwrap();
+    let state = Path::new(ROOT).parent().unwrap();
+    let journal_guard = fixed_directory(state, "app-manager");
+    fs::set_permissions(journal_guard.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let storage = state.join("apps");
+    assert_eq!(
+        fs::symlink_metadata(&storage).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    struct AppStorage(PathBuf);
+    impl Drop for AppStorage {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    // Only this isolated fixture can create the previously absent storage tree.
+    let _storage_guard = AppStorage(storage);
+    assert!(
+        Process::new(&controller)
+            .args(["--app-backup", "empty"])
+            .env(
+                "RENTNERPROXY_APP_INSTALLER_CONFIG",
+                state.join("missing-installer.json")
+            )
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
+    let api = run.join("app-api");
+    fs::create_dir(&api).unwrap();
+    chown(&api, Some(10002), Some(10002)).unwrap();
+    fs::set_permissions(&api, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut gateway = Process::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "app_manager::tests::lifecycle::authority_fixture",
+            "--nocapture",
+        ])
+        .uid(10002)
+        .gid(10002)
+        .stdout(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    timeout(Duration::from_secs(5), async {
+        while !Path::new(SOCKET).exists() {
+            assert!(gateway.try_wait().unwrap().is_none());
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let temp = tempfile::tempdir_in("/run").unwrap();
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o711)).unwrap();
+    let token = temp.path().join("token");
+    fs::write(&token, b"local-lifecycle-fixture").unwrap();
+    fs::set_permissions(&token, fs::Permissions::from_mode(0o400)).unwrap();
+    let (config, packages) =
+        crate::app_install::tests::lifecycle_packages(temp.path(), &executable);
+    let release = |p: &StagedPackage| Release {
+        version: p.manifest["version"].as_str().unwrap().into(),
+        archive_sha256: p.archive_sha256.clone(),
+        manifest_sha256: p.manifest_sha256.clone(),
+        catalog_revision: p.catalog_revision,
+    };
+    let mut journal = Journal::open(Path::new(ROOT)).unwrap();
+    let interrupted = Slot {
+        app_id: "example.probe".into(),
+        uid: UID + 2,
+        generation: 1,
+        authority_recorded: Some(true),
+        candidate: Some(release(&packages[0])),
+        pending_fence: true,
+        ..Default::default()
+    };
+    journal.save(INTERRUPTED, interrupted.clone()).unwrap();
+    assert!(!storage::reconcile_first_claim(INTERRUPTED, &interrupted).unwrap());
+    let acknowledged = Slot {
+        storage_claimed: Some(true),
+        ..interrupted.clone()
+    };
+    assert!(storage::reconcile_first_claim(INTERRUPTED, &acknowledged).is_err());
+    storage::claim(INTERRUPTED, &interrupted).unwrap();
+    let reservation = storage::directory(interrupted.uid);
+    let first_data = reservation.join("data");
+    fs::create_dir(&first_data).unwrap();
+    chown(&first_data, Some(interrupted.uid), Some(interrupted.uid)).unwrap();
+    fs::set_permissions(&first_data, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(storage::reconcile_first_claim(INTERRUPTED, &interrupted).unwrap());
+    fs::remove_dir(first_data).unwrap();
+    let lock = reservation.join(".provision.lock");
+    fs::write(&lock, []).unwrap();
+    fs::set_permissions(&lock, fs::Permissions::from_mode(0o600)).unwrap();
+    let unexpected = reservation.join("unexpected");
+    fs::write(&unexpected, "retain").unwrap();
+    journal
+        .save(
+            UNCLAIMED,
+            Slot {
+                app_id: "example.probe".into(),
+                uid: UID + 1,
+                candidate: Some(release(&packages[0])),
+                storage_claimed: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    journal
+        .save(
+            ID,
+            Slot {
+                app_id: "example.probe".into(),
+                uid: UID,
+                candidate: Some(release(&packages[1])),
+                active: Some(release(&packages[0])),
+                desired_running: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    drop(journal);
+    let installer_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(temp.path().join("store/.install.lock"))
+        .unwrap();
+    installer_lock.lock().unwrap();
+    let release_lock = async {
+        while UnixStream::connect("/run/rentnerproxy/app-manager/control.sock")
+            .await
+            .is_err()
+        {
+            sleep(Duration::from_millis(20)).await;
+        }
+        // Outlast the installer's own 500 ms lock wait during boot.
+        sleep(Duration::from_millis(1300)).await;
+        drop(installer_lock);
+    };
+    let (mut manager, ()) = tokio::join!(
+        mount_manager(&controller, &config, &token, BootState::Running),
+        release_lock
+    );
+    assert!(invoke(&controller, &["activate", UNCLAIMED]).await.is_err());
+    invoke(&controller, &["remove", UNCLAIMED]).await.unwrap();
+    assert!(!super::super::storage::directory(UID + 1).exists());
+    assert!(invoke(&controller, &["remove", INTERRUPTED]).await.is_err());
+    assert_eq!(fs::read(&unexpected).unwrap(), b"retain");
+    fs::remove_file(unexpected).unwrap();
+    invoke(&controller, &["remove", INTERRUPTED]).await.unwrap();
+    assert!(!reservation.exists());
+    let states = invoke(&controller, &["status"]).await.unwrap();
+    assert_eq!(states[ID]["active"], "1.0.0");
+    assert_eq!(states[ID]["candidate"], "1.1.0");
+    assert_eq!(states[ID]["running"], true);
+    check_control_boundary(&controller, temp.path()).await;
+    let states = invoke(&controller, &["status"]).await.unwrap();
+    assert_eq!(states[ID]["active"], "1.1.0");
+    assert_eq!(states[ID]["previous"], "1.0.0");
+    invoke(&controller, &["rollback", ID]).await.unwrap();
+    check_process_recovery(&controller).await;
+    halt(&mut manager).await;
+    verify_uid_stopped(UID).unwrap();
+    backup_files(&controller, &config, &token, temp.path()).await;
+    let archive = temp
+        .path()
+        .join("store/archives")
+        .join(&packages[0].archive_sha256);
+    let saved = temp.path().join("offline-archive");
+    fs::rename(&archive, &saved).unwrap();
+    let last_grants = Path::new(SOCKET).with_file_name("last-grants-generation");
+    let before_grants = fs::read(&last_grants).unwrap();
+    let mut manager = mount_manager(&controller, &config, &token, BootState::Recovery).await;
+    fs::rename(saved, archive).unwrap();
+    invoke(&controller, &["start", ID]).await.unwrap();
+    assert_eq!(fs::read(&last_grants).unwrap(), before_grants);
+    halt(&mut manager).await;
+    let mut journal = Journal::open(Path::new(ROOT)).unwrap();
+    let mut slot = journal.slot(ID).unwrap().clone();
+    assert!(!slot.pending_fence && slot.desired_running);
+    slot.candidate = Some(release(&packages[2]));
+    journal.save(ID, slot).unwrap();
+    drop(journal);
+    let mut manager = mount_manager(&controller, &config, &token, BootState::Running).await;
+    let before = invoke(&controller, &["status"]).await.unwrap()[ID]["generation"]
+        .as_u64()
+        .unwrap();
+    let error = invoke(&controller, &["activate", ID]).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Previous release restarted with previously approved grants"),
+        "{error}"
+    );
+    let states = invoke(&controller, &["status"]).await.unwrap();
+    assert_eq!(states[ID]["active"], "1.0.0");
+    assert_eq!(states[ID]["candidate"], "1.2.0");
+    assert_eq!(states[ID]["running"], true);
+    assert_eq!(states[ID]["generation"], before + 2);
+    halt(&mut manager).await;
+    let capture = || {
+        let mut command = Process::new(&controller);
+        command
+            .args(["--app-backup", "capture"])
+            .env("RENTNERPROXY_APP_INSTALLER_CONFIG", &config);
+        command
+    };
+    crate::app_install::tests::revoke_lifecycle_release(&config, "1.1.0");
+    assert!(!capture().output().await.unwrap().status.success());
+    let mut manager = mount_manager(&controller, &config, &token, BootState::Running).await;
+    let before = invoke(&controller, &["status"]).await.unwrap()[ID].clone();
+    assert_eq!(before["previous"], "1.1.0");
+    assert!(
+        invoke(&controller, &["discard", ID, "active"])
+            .await
+            .is_err()
+    );
+    invoke(&controller, &["discard", ID, "previous"])
+        .await
+        .unwrap();
+    invoke(&controller, &["discard", ID, "candidate"])
+        .await
+        .unwrap();
+    let status = invoke(&controller, &["status"]).await.unwrap();
+    assert_eq!(status[ID]["generation"], before["generation"]);
+    assert_eq!(status[ID]["active"], before["active"]);
+    assert_eq!(status[ID]["running"], true);
+    halt(&mut manager).await;
+    let backup = capture().output().await.unwrap();
+    assert!(
+        backup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&backup.stderr)
+    );
+    let snapshot: Value = serde_json::from_slice(&backup.stdout).unwrap();
+    assert!(snapshot["installations"][ID]["previous"].is_null());
+    assert!(snapshot["installations"][ID]["candidate"].is_null());
+    crate::app_install::tests::revoke_lifecycle_release(&config, "1.0.0");
+    assert!(!capture().output().await.unwrap().status.success());
+    let mut manager = mount_manager(&controller, &config, &token, BootState::Recovery).await;
+    invoke(&controller, &["remove", ID]).await.unwrap();
+    let data = super::super::storage::directory(UID);
+    assert!(data.join("data/app-pid").is_file());
+    invoke(&controller, &["purge", ID]).await.unwrap();
+    assert!(!data.exists());
+    halt(&mut manager).await;
+    verify_uid_stopped(UID).unwrap();
+    gateway.kill().await.unwrap();
+}

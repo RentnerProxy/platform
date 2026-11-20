@@ -1,8 +1,8 @@
 use std::{collections::HashSet, fmt};
 
+use rentnerproxy_app_contracts::MAX_JSON_DEPTH;
 use serde::de::{DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Visitor};
 
-const MAX_DEPTH: u8 = 64;
 const MAX_MAGNITUDE: u64 = 9_007_199_254_740_991;
 
 pub(super) fn valid(body: &[u8]) -> bool {
@@ -11,7 +11,7 @@ pub(super) fn valid(body: &[u8]) -> bool {
 }
 
 #[derive(Clone, Copy)]
-struct Check(u8);
+struct Check(usize);
 
 impl<'de> DeserializeSeed<'de> for Check {
     type Value = ();
@@ -79,7 +79,7 @@ impl<'de> Visitor<'de> for Check {
 
 impl Check {
     fn child<E: Error>(self) -> Result<Self, E> {
-        if self.0 >= MAX_DEPTH {
+        if self.0 >= MAX_JSON_DEPTH {
             return Err(E::custom("JSON depth limit exceeded"));
         }
         Ok(Self(self.0 + 1))

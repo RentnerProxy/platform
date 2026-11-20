@@ -461,3 +461,6 @@ fn select(zones: &[Zone], ids: &[String]) -> Result<Vec<Zone>, Error> {
         })
         .collect()
 }
+pub(crate) fn valid_backup_registry(bytes: &[u8]) -> bool {
+    Store::parse_registry(bytes).is_ok()
+}

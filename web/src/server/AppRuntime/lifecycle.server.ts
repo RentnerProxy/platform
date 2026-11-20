@@ -8,6 +8,8 @@ import {
     appRuntimeGenerations,
     appRuntimeGrants,
     appRuntimeInstallations,
+    appRuntimeOperations,
+    appRuntimeOwnedProxyHosts,
     appRuntimePendingSecrets,
     appRuntimeRolePermissions,
     appRuntimeSecrets,
@@ -63,6 +65,15 @@ async function loadLockedGeneration(transaction: AuthTransaction, identity: AppR
     return generation
 }
 
+async function reserveInstallation(transaction: AuthTransaction, identity: AppRuntimeIdentity) {
+    const { installationId, appId, uid } = identity
+    await transaction
+        .insert(appRuntimeInstallations)
+        .values({ id: installationId, appId, uid })
+        .onConflictDoNothing()
+    await lockAppRuntimeInstallation(transaction, identity, true)
+}
+
 export async function registerAppRuntimeGenerationInTransaction(
     transaction: AuthTransaction,
     registration: AppRuntimeRegistration,
@@ -85,12 +96,8 @@ export async function registerAppRuntimeGenerationInTransaction(
     )
         throw new AppRuntimeAuthorityError('invalid_input')
 
-    const { installationId, appId, uid, generation } = identity
-    await transaction
-        .insert(appRuntimeInstallations)
-        .values({ id: installationId, appId, uid })
-        .onConflictDoNothing()
-    await lockAppRuntimeInstallation(transaction, identity, true)
+    const { installationId, generation } = identity
+    await reserveInstallation(transaction, identity)
     const [previous] = await transaction
         .select()
         .from(appRuntimeGenerations)
@@ -249,11 +256,96 @@ export async function renewAppRuntimeGenerationLeaseInTransaction(
         )
 }
 
+async function lockExistingInstallation(
+    transaction: AuthTransaction,
+    identity: AppRuntimeIdentity,
+) {
+    const [installation] = await transaction
+        .select({ appId: appRuntimeInstallations.appId, uid: appRuntimeInstallations.uid })
+        .from(appRuntimeInstallations)
+        .where(eq(appRuntimeInstallations.id, identity.installationId))
+        .for('update')
+    if (!installation) return false
+    if (installation.appId !== identity.appId || installation.uid !== identity.uid)
+        throw new AppRuntimeAuthorityError('unauthorized')
+    return true
+}
+
+export async function checkAppRuntimeDependenciesInTransaction(
+    transaction: AuthTransaction,
+    identity: AppRuntimeIdentity,
+    action: 'workers-stopped' | 'removable' | 'purge-data',
+): Promise<void> {
+    if (!(await lockExistingInstallation(transaction, identity))) return
+    const installationId = identity.installationId
+    const [pending] = await transaction
+        .select({ id: appRuntimeOperations.id })
+        .from(appRuntimeOperations)
+        .where(
+            and(
+                eq(appRuntimeOperations.installationId, installationId),
+                inArray(appRuntimeOperations.status, ['accepted', 'running']),
+            ),
+        )
+        .limit(1)
+    if (pending) throw new AppRuntimeAuthorityError('conflict')
+    if (action === 'workers-stopped') return
+    const [host] = await transaction
+        .select({ id: appRuntimeOwnedProxyHosts.hostId })
+        .from(appRuntimeOwnedProxyHosts)
+        .where(eq(appRuntimeOwnedProxyHosts.installationId, installationId))
+        .limit(1)
+    if (host) throw new AppRuntimeAuthorityError('conflict')
+    if (action === 'purge-data') {
+        const [live] = await transaction
+            .select({ generation: appRuntimeGenerations.generation })
+            .from(appRuntimeGenerations)
+            .where(
+                and(
+                    eq(appRuntimeGenerations.installationId, installationId),
+                    ne(appRuntimeGenerations.state, 'revoked'),
+                ),
+            )
+            .limit(1)
+        if (live) throw new AppRuntimeAuthorityError('conflict')
+        await transaction
+            .delete(appRuntimeSecrets)
+            .where(eq(appRuntimeSecrets.installationId, installationId))
+        await transaction
+            .delete(appRuntimePendingSecrets)
+            .where(eq(appRuntimePendingSecrets.installationId, installationId))
+        await transaction
+            .delete(appRuntimeRolePermissions)
+            .where(eq(appRuntimeRolePermissions.installationId, installationId))
+        await transaction
+            .delete(appRuntimeGrants)
+            .where(eq(appRuntimeGrants.installationId, installationId))
+        await bumpAuthorizationEpoch(transaction, installationId)
+    }
+}
+
 export async function revokeAppRuntimeGenerationInTransaction(
     transaction: AuthTransaction,
     identity: AppRuntimeIdentity,
+    allowMissing = false,
 ): Promise<void> {
-    await loadLockedGeneration(transaction, identity)
+    if (allowMissing) {
+        await reserveInstallation(transaction, identity)
+        await transaction
+            .insert(appRuntimeGenerations)
+            .values({
+                installationId: identity.installationId,
+                generation: identity.generation,
+                state: 'revoked',
+                leaseExpiresAt: new Date(0),
+                capabilities: sql`'[]'::jsonb`,
+                permissionKeys: sql`'[]'::jsonb`,
+                hasUi: false,
+            })
+            .onConflictDoNothing()
+    } else {
+        await loadLockedGeneration(transaction, identity)
+    }
     const { installationId, generation } = identity
     await transaction
         .update(appRuntimeGenerations)

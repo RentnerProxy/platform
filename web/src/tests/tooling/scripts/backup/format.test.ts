@@ -218,7 +218,7 @@ describe('production backup metadata', () => {
                         deployment,
                         allowChange,
                     ),
-                /unsupported or invalid backup metadata \(supported: v4\)/u,
+                /unsupported or invalid backup metadata \(supported: v4, v5\)/u,
             )
         }
     })

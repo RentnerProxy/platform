@@ -2,6 +2,7 @@
 import '@tanstack/react-start/server-only'
 
 import { z } from 'zod'
+import snapshotLayout from '../../../../core/src/proxy/snapshot-layout.json'
 import {
     proxyUpstreamPoolSchema,
     upstreamTlsRequiresServerName,
@@ -391,11 +392,11 @@ export function createProxyRuntimeSnapshot(
     })
     const normalizedDefaultSite = defaultSiteSettingsSchema.parse(defaultSite)
     const snapshot = {
-        version: proxyHosts.some((host) => host.upstreamPool?.failover !== undefined)
-            ? 9
+        version: (proxyHosts.some((host) => host.upstreamPool?.failover !== undefined)
+            ? snapshotLayout.versions.failover
             : proxyHosts.some((host) => host.upstreamPool !== undefined)
-              ? 8
-              : 7,
+              ? snapshotLayout.versions.upstreamPool
+              : snapshotLayout.versions.base) as ProxyRuntimeSnapshot['version'],
         proxyHosts,
         redirectHosts,
         httpSettings: normalizedSettings,
@@ -404,7 +405,14 @@ export function createProxyRuntimeSnapshot(
             ? {}
             : { defaultSite: normalizedDefaultSite }),
     } as const
-    const canonical = JSON.stringify(snapshot)
+    const canonical = JSON.stringify(
+        Object.fromEntries(
+            (snapshotLayout.fields as (keyof typeof snapshot)[]).map((field) => [
+                field,
+                snapshot[field],
+            ]),
+        ),
+    )
 
     if (Buffer.byteLength(canonical) + 100 > MAX_RUNTIME_PAYLOAD_BYTES) {
         throw new ProxyRuntimeSnapshotError('Proxy runtime snapshot is too large.')

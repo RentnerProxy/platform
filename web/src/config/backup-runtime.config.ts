@@ -1,4 +1,7 @@
 export const BACKUP_RUNTIME_POLICY = {
+    // Allow 18 seconds for app retirement and 25 seconds for consumers and state services.
+    applianceStopGraceSeconds: 50,
+    maximumAppStateBytes: 64 * 1024 ** 2,
     maximumArtifactBytes: 8 * 1024 ** 3,
     diskReserveBytes: 2 * 1024 ** 3,
     capacityCheckBytes: 16 * 1024 ** 2,

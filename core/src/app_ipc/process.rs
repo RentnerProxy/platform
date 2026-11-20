@@ -322,11 +322,12 @@ fn start_child(config: &LaunchConfig, deadline: LaunchDeadline) -> io::Result<Ch
         command.env("RENTNERPROXY_APP_DATABASE_URL_FILE", path);
     }
     let (gid, uid, parent) = (config.gid, config.uid, std::process::id());
+    let process_limit = libc::rlim_t::from(config.process_limit.unwrap_or(64));
     // SAFETY: Only async-signal-safe direct syscalls and stack-only setup run
     // between fork and exec. The child is single-threaded and owns its FD table.
     unsafe {
         command.as_std_mut().pre_exec(move || {
-            restrict_child(uid, gid, parent)?;
+            restrict_child(uid, gid, parent, process_limit)?;
             deadline.require_live()
         });
     }
@@ -390,7 +391,7 @@ pub(super) fn app_exit(status: ExitStatus) -> io::Result<()> {
     }
 }
 
-fn restrict_child(uid: u32, gid: u32, parent: u32) -> io::Result<()> {
+fn restrict_child(uid: u32, gid: u32, parent: u32, process_limit: libc::rlim_t) -> io::Result<()> {
     // SAFETY: close_range only marks inherited descriptors for closure on exec.
     // Standard input/output/error are deliberately assigned by the command.
     if unsafe {
@@ -425,8 +426,8 @@ fn restrict_child(uid: u32, gid: u32, parent: u32) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(libc::ECHILD));
     }
     let processes = libc::rlimit {
-        rlim_cur: 64,
-        rlim_max: 64,
+        rlim_cur: process_limit,
+        rlim_max: process_limit,
     };
     // SAFETY: setrlimit reads an initialized rlimit while it is live.
     if unsafe { libc::setrlimit(libc::RLIMIT_NPROC, &processes) } != 0 {

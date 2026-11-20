@@ -3,6 +3,7 @@ mod acme;
 mod apply;
 pub(crate) mod background;
 mod background_jobs;
+mod backup_state;
 mod certificate_management;
 mod certificates;
 pub(crate) mod clock;
@@ -33,6 +34,7 @@ mod trusted_cas;
 pub(crate) mod upstream_health;
 
 use crate::models::ValidatedProxyConfig;
+pub use backup_state::run_check_backup_state;
 use certificates::StagedCertificate;
 pub(crate) use certificates::{
     CertificateCancelRequest, CertificateError, CertificateEventPage, CertificateImportRequest,

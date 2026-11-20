@@ -193,6 +193,22 @@ struct CertificateIndex {
     events: Vec<CertificateEvent>,
 }
 
+pub(crate) fn valid_backup_index(bytes: &[u8]) -> bool {
+    if bytes.len() > MAX_CERTIFICATE_INDEX_BYTES {
+        return false;
+    }
+    let Ok(mut index) = serde_json::from_slice::<CertificateIndex>(bytes) else {
+        return false;
+    };
+    if index.store_id.is_empty() {
+        index.store_id = "01800000-0000-7000-8000-000000000000".to_owned();
+    }
+    if index.event_journal_version == 0 {
+        index.event_journal_version = default_event_journal_version();
+    }
+    validation::index_is_valid(&index)
+}
+
 fn default_event_journal_version() -> u8 {
     1
 }

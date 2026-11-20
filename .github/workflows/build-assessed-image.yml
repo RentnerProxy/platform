@@ -432,6 +432,8 @@ jobs:
                   pattern: distribution-native-*-${{ github.run_id }}
                   merge-multiple: true
                   path: ${{ runner.temp }}/distribution-proofs
+            - name: Build trusted native distribution verifier
+              run: bash automation/.github/scripts/distribution/install-verifier.sh
             - name: Create a new assessed bundle from the exact tested package bytes
               id: bind
               env:

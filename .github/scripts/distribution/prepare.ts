@@ -2,13 +2,14 @@
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { hashOciFile, inspectOciLayout, ociText, readOciJson } from '../lib/oci-layout.ts'
+import { inspectOciLayout, ociText, readOciJson } from '../lib/oci-layout.ts'
 import { buildDistributionPackages } from './packages.ts'
 import { parseDistributionRelease } from './release.ts'
 import { distributionBytes, distributionCommand } from './process.ts'
 import { updatePackageRepository, withSigningKey } from './repository.ts'
 import { writeDistributionBundle } from './bundle.ts'
 import { validateDistributionCandidate, verifyCandidateDistribution } from './candidate.ts'
+import { verifyDistributionNative } from './native-verifier.ts'
 import type { DistributionRelease } from './Types/distribution.types.ts'
 
 export function distributionWorkflowIdentity(env: NodeJS.ProcessEnv = process.env) {
@@ -39,8 +40,8 @@ export async function prepareDistribution(env: NodeJS.ProcessEnv = process.env) 
     const source = resolve(ociText(env.SOURCE_DIRECTORY)),
         output = resolve(ociText(env.DISTRIBUTION_DIRECTORY)),
         candidate = resolve(ociText(env.CANDIDATE_DIRECTORY))
-    if ((await hashOciFile(join(candidate, 'candidate-image.tar'))).slice(7) !== env.ARCHIVE_SHA256)
-        throw new Error('Candidate image artifact checksum mismatch')
+    const archiveSha256 = ociText(env.ARCHIVE_SHA256)
+    await verifyDistributionNative('oci-input', candidate, { archiveSha256 })
     const temporary = await mkdtemp(join(tmpdir(), 'rentnerproxy-distribution-'))
     try {
         const layout = join(temporary, 'layout')
@@ -60,7 +61,7 @@ export async function prepareDistribution(env: NodeJS.ProcessEnv = process.env) 
         const candidateMetadata = validateDistributionCandidate(
             await readOciJson(join(candidate, 'candidate.json'), 4096),
             identity,
-            ociText(env.ARCHIVE_SHA256),
+            archiveSha256,
         )
         await mkdir(output, { recursive: true })
         const artifacts: { directory: string; release: DistributionRelease }[] = []

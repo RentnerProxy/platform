@@ -1,0 +1,15 @@
+{
+    "versions": {
+        "base": 7,
+        "upstreamPool": 8,
+        "failover": 9
+    },
+    "fields": [
+        "version",
+        "proxyHosts",
+        "redirectHosts",
+        "httpSettings",
+        "trustedCas",
+        "defaultSite"
+    ]
+}

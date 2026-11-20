@@ -31,6 +31,7 @@ import { verifyPublishedBackup } from '../../../../scripts/backup/publication.ts
 import { copyCoverageFixtureModules } from './coverageFixture.ts'
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url))
+const testController = '/usr/local/libexec/rentnerproxy-test-controller'
 const actorId = '00000000-0000-4000-8000-000000000001'
 const oldSession = '00000000-0000-4000-8000-000000000002'
 const liveSession = '00000000-0000-4000-8000-000000000003'
@@ -135,6 +136,8 @@ export async function runBackupOrchestrationFixture(scenario: string) {
             [
                 'docker/production/backups/export.ts',
                 'docker/production/backups/restore.ts',
+                'docker/production/backups/app-database.ts',
+                'scripts/backup/app-state.ts',
                 'docker/production/backups/storage.ts',
                 'docker/production/backups/agent.ts',
                 'docker/production/backups/download.ts',
@@ -156,6 +159,22 @@ export async function runBackupOrchestrationFixture(scenario: string) {
                 '/opt/rentnerproxy/web/web/drizzle': join(root, 'web/drizzle'),
                 '/tmp/rentnerproxy-validate-': join(directory, 'validation-'),
                 '/tmp/rentnerproxy-restore.': join(directory, 'rendered-restore.'),
+            },
+            {
+                // Bootstrap writes in this fixture use the remapped scratch state directory.
+                'docker/web/bootstrap-secrets.ts': {
+                    '/usr/local/bin/rentnerproxy-controller': join(
+                        directory,
+                        'native-bootstrap-unavailable',
+                    ),
+                },
+                ...((await Bun.file(testController).exists())
+                    ? {
+                          'scripts/backup/app-state.ts': {
+                              '/usr/local/bin/rentnerproxy-controller': testController,
+                          },
+                      }
+                    : {}),
             },
         )
         const storage = (await import(
@@ -283,9 +302,24 @@ export async function runBackupOrchestrationFixture(scenario: string) {
         await writeFile(
             join(app, 'proxy/certificates/certificate-metadata.json'),
             JSON.stringify({
-                id: certificateId,
-                acme: {
-                    dnsProvider: { version: 1, nonce: [...nonce], ciphertext: [...ciphertext] },
+                certificates: {
+                    [certificateId]: {
+                        id: certificateId,
+                        source: 'acme',
+                        environment: 'staging',
+                        domains: ['fixture.example.test'],
+                        status: 'pending',
+                        operation: 'idle',
+                        updatedAt: '2026-01-01T00:00:00Z',
+                        acme: {
+                            challengeType: 'dns-01',
+                            dnsProvider: {
+                                version: 1,
+                                nonce: [...nonce],
+                                ciphertext: [...ciphertext],
+                            },
+                        },
+                    },
                 },
             }),
             { mode: 0o600 },

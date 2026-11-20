@@ -178,7 +178,7 @@ jobs:
     web-tests:
         name: Web Tests
         runs-on: ubuntu-latest
-        timeout-minutes: 15
+        timeout-minutes: 20
         services:
             postgres:
                 image: ${{ needs.changes.outputs.web == 'true' && 'mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d8f867cd4d520021545a9a50c120eae3b' || '' }}
@@ -254,12 +254,17 @@ jobs:
               run: docker build -f docker/tooling/coverage/Dockerfile -t rentnerproxy-ts-coverage:test .
               if: "${{ needs.changes.outputs.web == 'true' }}"
 
+            - name: Build native distribution verifier for web tests
+              run: bash .github/scripts/distribution/install-verifier.sh
+              if: "${{ needs.changes.outputs.web == 'true' }}"
+
             - name: Run web, database and property tests with complete coverage
               run: |
                   mkdir -p coverage/typescript
                   docker run --rm --network host --workdir /workspace \
                     --init \
                     --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" \
+                    --mount "type=bind,source=$RUNNER_TEMP/distribution-verifier-bin/rentnerproxy-distribution-verify,target=/usr/local/bin/rentnerproxy-distribution-verify,readonly" \
                     --env DATABASE_URL --env VALKEY_URL \
                     --env RENTNERPROXY_DATABASE_INTEGRATION --env RENTNERPROXY_VALKEY_INTEGRATION \
                     rentnerproxy-ts-coverage:test run coverage:ts --database
@@ -506,6 +511,11 @@ jobs:
             - name: 'Build affected controller artifacts'
               if: "${{ needs.changes.outputs.build_core == 'true' }}"
               run: 'bun --no-env-file run build:core'
+            - name: Verify recovered application state with the built controller
+              if: "${{ needs.changes.outputs.build_web == 'true' && needs.changes.outputs.build_core == 'true' }}"
+              env:
+                  RENTNERPROXY_TEST_CONTROLLER: '${{ github.workspace }}/core/target/release/rentnerproxy-controller'
+              run: bun --no-env-file test web/src/tests/tooling/scripts/backup/app-state.test.ts
 
             - name: Save Rust release build outputs
               if: "${{ needs.changes.outputs.build_core == 'true' && (github.event_name != 'pull_request' && steps.rust-release-cache.outputs.cache-hit != 'true') }}"

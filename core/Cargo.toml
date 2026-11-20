@@ -6,6 +6,10 @@ rust-version = "1.99.1"
 license = "MIT"
 
 [dependencies]
+marketplace-app-catalog = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "daba7aefe77bba52b1367513706b64fb088e68f2" }
+marketplace-app-pipeline = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "daba7aefe77bba52b1367513706b64fb088e68f2" }
+marketplace-artifacts = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "daba7aefe77bba52b1367513706b64fb088e68f2" }
+rentnerproxy-app-contracts = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "daba7aefe77bba52b1367513706b64fb088e68f2" }
 aws-lc-rs = "1.19.0"
 axum = { version = "0.8.9", default-features = false, features = [
     "json",
@@ -29,10 +33,12 @@ libc = "0.2.191"
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 reqwest = { version = "0.13.5", default-features = false, features = [
     "rustls-no-provider",
+    "blocking",
     "json",
 ] }
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 time = { version = "0.3.55", default-features = false, features = ["formatting", "parsing", "std"] }
+tempfile = "3.27.0"
 x509-parser = "0.18.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -53,6 +59,18 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
     "fmt",
     "json",
 ] }
+rusqlite = { version = "0.43.0", default-features = false, features = [
+    "bundled",
+    "limits",
+    "hooks",
+] }
 
 [dev-dependencies]
+tokio = { version = "1.54.1", features = ["test-util"] }
+ed25519-dalek = { version = "3.0.0", features = ["pem"] }
 tower = { version = "0.5.3", features = ["util"] }
+
+[target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+aead-gcm-stream = "0.4.1"
+aes = "0.8.4"
+zeroize = "1"

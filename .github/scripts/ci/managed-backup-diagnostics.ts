@@ -3,6 +3,8 @@ import type { ManagedBackupSmokeStage } from './Types/managed-backup-diagnostics
 
 export const MANAGED_BACKUP_SMOKE_STAGES = [
     'setup',
+    'large-backup-create',
+    'large-backup-roundtrip',
     'online-restore',
     'online-restore-health',
     'interrupt-probe',

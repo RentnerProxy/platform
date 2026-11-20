@@ -26,7 +26,7 @@ import { createProxyHostInTransaction } from '@/server/Admin/ProxyHostManagement
 import { createRedirectHostInTransaction } from '@/server/Admin/RedirectHostManagement/redirect-hosts.service.ts'
 import { buildNpmImportPlan, publicNpmPreview } from './npm-plan.ts'
 import type { NpmImportPlan } from './Types/npm-plan.types.ts'
-import { readNpmSqliteSource } from './npm-source.ts'
+import { readNpmSqliteUpload } from './npm-source.ts'
 import { buildPortablePlan, readPortableSource } from '@/server/Admin/Migration/portable.ts'
 import { buildZoraxyPlan, readZoraxySource } from '@/server/Admin/Migration/zoraxy.ts'
 
@@ -62,7 +62,7 @@ async function planInTransaction(
 ): Promise<NpmImportPlan> {
     const domains = await existingDomainMap(transaction)
     if (source === 'npm') {
-        return buildNpmImportPlan(readNpmSqliteSource(path), fingerprint, domains)
+        return buildNpmImportPlan(await readNpmSqliteUpload(path), fingerprint, domains)
     }
     if (source === 'rentnerproxy') {
         return buildPortablePlan(await readPortableSource(path), fingerprint, domains)

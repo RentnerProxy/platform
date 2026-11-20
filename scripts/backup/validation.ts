@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
-import { CURRENT_COMPATIBILITY_PROFILE } from '../../web/src/config/compatibility.config.ts'
+import { APP_AWARE_BACKUP_VERSION } from '../../web/src/config/compatibility.config.ts'
+
+// Covers 256 installation summaries plus escaped deployment strings in formatted JSON.
+export const maximumBackupMetadataBytes = 512 * 1024
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u)
 
@@ -33,9 +36,9 @@ export const deploymentSchema = z.strictObject({
     trustedProxyCidrs: z.string().max(8192),
 })
 
-export const metadataSchema = z.strictObject({
+const metadata = z.strictObject({
     ...base,
-    version: z.literal(CURRENT_COMPATIBILITY_PROFILE.backup.acceptedVersions),
+
     crowdSecState: artifact.extend({ archive: z.literal('crowdsec-state.tar') }),
     deployment: deploymentSchema,
     source: z.union([
@@ -55,3 +58,27 @@ export const metadataSchema = z.strictObject({
         }),
     ]),
 })
+
+export const appBackupInstallations = z
+    .array(
+        z.strictObject({
+            id: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/u),
+            appId: z.string().min(1).max(98),
+            uid: z.number().int().min(20000).max(59999),
+            generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+            authorityRecorded: z.boolean().optional(),
+        }),
+    )
+    .min(1)
+    .max(256)
+
+export const metadataSchema = z.discriminatedUnion('version', [
+    metadata.extend({ version: z.literal(4) }),
+    metadata.extend({
+        version: z.literal(APP_AWARE_BACKUP_VERSION),
+        applications: artifact.extend({
+            bytes: z.number().int().positive().max(BACKUP_RUNTIME_POLICY.maximumAppStateBytes),
+            installations: appBackupInstallations,
+        }),
+    }),
+])

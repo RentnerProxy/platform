@@ -3,12 +3,12 @@ import { lstat, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { ociRecord } from '../lib/oci-layout.ts'
-import { maximumRepositoryFiles } from './limits.ts'
+import { maximumCandidateBundleFiles, maximumRepositoryFiles } from './limits.ts'
 
 export async function bundleFiles(
     directory: string,
     prefix = '',
-    maximumFiles = 4096,
+    maximumFiles = maximumCandidateBundleFiles,
 ): Promise<string[]> {
     if (
         !Number.isSafeInteger(maximumFiles) ||
@@ -51,7 +51,7 @@ export async function writeDistributionBundle(
         runId: string
         runAttempt: number
     },
-    maximumFiles = 4096,
+    maximumFiles = maximumCandidateBundleFiles,
 ): Promise<string> {
     const files = await bundleFiles(root, '', maximumFiles)
     if (files.length >= maximumFiles) throw new Error('Artifact bundle is too large')
@@ -79,7 +79,7 @@ export async function verifyDistributionBundle(
         runId: string
         runAttempt: number
     },
-    maximumFiles = 4096,
+    maximumFiles = maximumCandidateBundleFiles,
 ): Promise<void> {
     if (
         !/^[a-f0-9]{64}$/u.test(expectedHash) ||

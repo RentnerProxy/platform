@@ -199,6 +199,13 @@ test('overlapping health and version clients are excluded while duplicate servin
                 { pid: 26, uid: 10001, args: [caddy, 'version'] },
                 { pid: 27, uid: 10001, args: [caddy, 'run', '--config', '/tmp/duplicate.json'] },
                 { pid: 28, uid: 10002, args: [controller, '--healthcheck', 'ready'] },
+                { pid: 29, uid: 0, args: [controller, '--appliance-supervisor', 'crowdsec'] },
+                { pid: 30, uid: 0, args: [controller, '--app-manager', '/fixture/config.json'] },
+                {
+                    pid: 31,
+                    uid: 10003,
+                    args: [controller, '--appliance-supervisor', 'protect-capi'],
+                },
             ].map(async ({ pid, uid, args }) => {
                 const root = join(directory, String(pid))
                 await mkdir(root)

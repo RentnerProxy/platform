@@ -1,1 +1,7 @@
 **
+
+!core/
+!core/Cargo.toml
+!core/Cargo.lock
+!core/src/
+!core/src/**

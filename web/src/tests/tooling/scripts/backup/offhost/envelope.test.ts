@@ -16,7 +16,9 @@ import {
     type FileHandle,
 } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { spyOn, test } from 'bun:test'
+import { copyCoverageFixtureModules } from '@/tests/Helpers/coverageFixture.ts'
 import {
     createRecoveryKey,
     decryptBackup,
@@ -28,6 +30,7 @@ import {
     verifyPublishedBackup,
 } from '../../../../../../../scripts/backup/publication.ts'
 import { parseBackupMetadata } from '../../../../../../../scripts/backup/format.ts'
+import { maximumBackupMetadataBytes } from '../../../../../../../scripts/backup/validation.ts'
 
 const root = resolve(import.meta.dir, '../../../../../../..')
 const names = [
@@ -39,6 +42,8 @@ const names = [
 ]
 const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
 const applicationKey = Buffer.alloc(32, 11).toString('base64')
+const maximumKeyBytes = 64 * 1024
+const testController = '/usr/local/libexec/rentnerproxy-test-controller'
 
 function directoryArchive(name = './') {
     const header = Buffer.alloc(512)
@@ -215,6 +220,55 @@ test('tampering, truncation, appended bytes and a wrong key expose no plaintext 
         assert.deepEqual(await readFile(encrypted), original)
     }))
 
+test.skipIf(process.platform !== 'linux' || !(await Bun.file(testController).exists()))(
+    'native and fallback implementations exchange verified envelopes and reject altered ciphertext',
+    () =>
+        fixture(async (directory, source) => {
+            const code = join(directory, 'code')
+            const moduleName = 'scripts/backup/offhost/envelope.ts'
+            await copyCoverageFixtureModules(code, [moduleName], {
+                '/usr/local/bin/rentnerproxy-controller': testController,
+            })
+            const nativeEnvelope = (await import(
+                pathToFileURL(join(code, moduleName)).href
+            )) as typeof import('../../../../../../../scripts/backup/offhost/envelope.ts')
+            const key = createRecoveryKey()
+            const nativeFile = join(directory, 'native.encrypted')
+            const fallbackFile = join(directory, 'fallback.encrypted')
+            const nativeRestore = join(directory, 'native-restore')
+            const fallbackRestore = join(directory, 'fallback-restore')
+            const receipt = await nativeEnvelope.encryptBackup(source, nativeFile, key)
+            const encrypted = await readFile(nativeFile)
+            assert.deepEqual(receipt, {
+                bytes: encrypted.length,
+                sha256: digest(encrypted),
+                keyId: recoveryKeyId(key),
+            })
+            await decryptBackup(nativeFile, fallbackRestore, key)
+            await encryptBackup(source, fallbackFile, key)
+            await nativeEnvelope.decryptBackup(fallbackFile, nativeRestore, key)
+            for (const destination of [fallbackRestore, nativeRestore]) {
+                await verifyPublishedBackup(destination)
+                for (const name of names) {
+                    assert.deepEqual(
+                        await readFile(join(destination, name)),
+                        await readFile(join(source, name)),
+                    )
+                }
+            }
+
+            encrypted[encrypted.length - 1] = encrypted[encrypted.length - 1]! ^ 1
+            await writeFile(nativeFile, encrypted)
+            const rejected = join(directory, 'rejected')
+            await assert.rejects(
+                nativeEnvelope.decryptBackup(nativeFile, rejected, key),
+                /invalid or incomplete encrypted backup transfer/,
+            )
+            await assert.rejects(stat(rejected), /ENOENT/)
+            await assertNoStaging(directory)
+        }),
+)
+
 test('rejects unsupported headers and oversized or zero lengths before plaintext staging', () =>
     fixture(async (directory, source) => {
         const key = createRecoveryKey()
@@ -222,8 +276,8 @@ test('rejects unsupported headers and oversized or zero lengths before plaintext
         await encryptBackup(source, encrypted, key)
         const original = await readFile(encrypted)
         for (const [index, maximum] of [
-            65_536n,
-            65_536n,
+            BigInt(maximumBackupMetadataBytes),
+            BigInt(maximumKeyBytes),
             8n * 1024n ** 3n,
             8n * 1024n ** 3n,
             8n * 1024n ** 3n,
@@ -345,9 +399,12 @@ test('authenticated archives with traversal paths are rejected before publishing
 
 test('encryption enforces metadata and application-key limits before processing backup contents', () =>
     fixture(async (directory, source) => {
-        for (const name of ['metadata.json', 'app-encryption-key']) {
+        for (const [name, limit] of [
+            ['metadata.json', maximumBackupMetadataBytes],
+            ['app-encryption-key', maximumKeyBytes],
+        ] as const) {
             const original = await readFile(join(source, name))
-            await writeFile(join(source, name), Buffer.alloc(65_537, 32))
+            await writeFile(join(source, name), Buffer.alloc(limit + 1, 32))
             await assert.rejects(
                 encryptBackup(source, join(directory, 'backup.encrypted'), createRecoveryKey()),
                 /invalid encrypted backup input size/,

@@ -108,6 +108,7 @@ async function fixture(database = true) {
     rows.set('drizzle.__drizzle_migrations', [
         { hash: createHash('sha256').update(migration).digest('hex'), created_at: 1 },
     ])
+    rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [{ present: false }])
     rows.set('rentnerproxy.user_totp_factors', [
         { user_id: id, secret_ciphertext: totp.ciphertext, secret_iv: totp.iv },
     ])
@@ -186,11 +187,37 @@ describe('backup database validation with isolated storage and injected SQL rows
         ).toBe('a'.repeat(64))
     })
 
+    test('rejects a legacy snapshot whose database contains a native installation', async () => {
+        const context = await fixture(false)
+        rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [{ present: true }])
+        rows.set('FROM rentnerproxy.app_runtime_installations', [
+            { id: 'kiri', appId: 'dev.kiri', uid: 20000 },
+        ])
+        await expect(context.validate()).rejects.toThrow('App database identities differ')
+        expect(closed).toBe(1)
+    })
+
     test('accepts an external-only backup without a managed CrowdSec database', async () => {
         const context = await fixture(false)
         await context.validate()
         expect(closed).toBe(1)
     })
+
+    test.each([true, false])(
+        'validates canonical raw CrowdSec credentials (canonical: %s)',
+        async (canonical) => {
+            const context = await fixture()
+            const rawCredential = Buffer.alloc(32, 255).toString('base64').slice(0, -1)
+            await writeFile(
+                join(context.archive, 'bouncer/caddy-bouncer-key'),
+                canonical ? rawCredential : rawCredential.slice(0, -1) + 'B',
+            )
+            await context.pack()
+            if (canonical) await context.validate()
+            else await expect(context.validate()).rejects.toThrow('invalid CrowdSec bouncer key')
+            expect(closed).toBe(1)
+        },
+    )
 
     test.each([
         'journal',

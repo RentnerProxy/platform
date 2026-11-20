@@ -1,5 +1,5 @@
 // oxlint-disable no-await-in-loop -- Deliberately mutate and verify the same proof between scenarios.
-import { expect, test } from 'bun:test'
+import { beforeAll, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -16,7 +16,10 @@ import {
     writeDistributionBundle,
 } from '../../../../../.github/scripts/distribution/bundle.ts'
 import { distributionAssetsFixture } from './fixtures/compact-assets.ts'
+import { ensureNativeDistributionVerifier } from './fixtures/native-verifier.ts'
 import { identity, platformFixture, workflow } from '../github/fixtures/oci.ts'
+
+beforeAll(ensureNativeDistributionVerifier, 120_000)
 
 test('bounded bundles reserve space for their own manifest and retain separate producer limits', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rp-bundle-bound-')),

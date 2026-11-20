@@ -268,6 +268,10 @@ export async function validateControllerEncryptionFile(
     file: FileHandle,
     entries: StateArchiveFileEntry[],
     decrypt: (ciphertext: Uint8Array, iv: Uint8Array, context: string) => void,
+    validateNative?: (
+        kind: 'dns-registry' | 'certificate-index',
+        bytes: Uint8Array,
+    ) => Promise<void>,
 ): Promise<void> {
     const files = new Map(
         entries.filter((entry) => !entry.directory).map((entry) => [entry.name, entry.size]),
@@ -281,6 +285,8 @@ export async function validateControllerEncryptionFile(
                   : /(?:^|\/)candidate\.json$/u.test(entry.name)
                     ? 256 * 1024
                     : null
+        if (entry.directory && entry.name === 'certificates/certificate-metadata.json')
+            throw new Error('invalid certificate state metadata')
         if (limit === null || (entry.directory && entry.name !== 'dns-connections.json')) continue
         if (entry.size > limit) throw new Error('controller state metadata is too large')
         // Validate each bounded document immediately rather than retaining all metadata bodies.
@@ -291,6 +297,16 @@ export async function validateControllerEncryptionFile(
             files,
             decrypt,
         )
+        const kind =
+            entry.name === 'dns-connections.json'
+                ? 'dns-registry'
+                : entry.name === 'certificates/certificate-metadata.json'
+                  ? 'certificate-index'
+                  : null
+        if (validateNative && kind) {
+            // oxlint-disable-next-line no-await-in-loop -- Only keep one metadata body and child active.
+            await validateNative(kind, bytes)
+        }
     }
 }
 
@@ -316,6 +332,11 @@ function validateControllerEncryptionEntries(
         } catch {
             throw new Error('invalid certificate state metadata')
         }
+        if (
+            entry.name === 'certificates/certificate-metadata.json' &&
+            (document === null || typeof document !== 'object' || Array.isArray(document))
+        )
+            throw new Error('invalid certificate state metadata')
         const visit = (value: unknown): void => {
             if (!value || typeof value !== 'object') return
             const object = value as Record<string, unknown>

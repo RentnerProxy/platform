@@ -49,8 +49,15 @@ impl Store {
             }
             Err(_) => return Err(Error::StoreUnavailable),
         };
+        Self::parse_registry(&bytes)
+    }
+
+    pub(super) fn parse_registry(bytes: &[u8]) -> Result<Registry, Error> {
+        if bytes.len() > MAX_BYTES {
+            return Err(Error::StoreUnavailable);
+        }
         let registry: Registry =
-            serde_json::from_slice(&bytes).map_err(|_| Error::StoreUnavailable)?;
+            serde_json::from_slice(bytes).map_err(|_| Error::StoreUnavailable)?;
         if registry.version != 1 || registry.connections.len() > 100 {
             return Err(Error::StoreUnavailable);
         }

@@ -18,6 +18,24 @@ setup() {
     cleanup_pids=()
     trap cleanup EXIT
     source "$supervisor"
+    if [[ ! -x /usr/local/bin/rentnerproxy-controller ]]; then
+        appliance_drain() { fixture_drain "$@"; }
+        appliance_supervision() {
+            case $1 in
+                verify-web) return 0 ;;
+                reserve-web-restart)
+                    # Supply only the next fixture timestamp for shell orchestration.
+                    shift
+                    local now=$1
+                    shift
+                    (($# < 3)) || return 1
+                    printf '%d.000' "$((1 << $#))"
+                    printf ' %s' "$@" "$now"
+                    printf '\n' ;;
+                *) fail 'unexpected supervisor command' ;;
+            esac
+        }
+    fi
     # source executes inside this setup function; make its declared arrays
     # available to the functions exercised after setup returns.
     declare -ga web_restart_times=()
@@ -107,9 +125,27 @@ curl() {
     return "$fixture_live"
 }
 
+# Exercise shell admission order on runners without the production controller.
+# Rust tests exercise the native deadlines with short synthetic durations.
+fixture_drain() {
+    [[ $1 == web-recovery && $3 == -- ]] || fail 'invalid native recovery invocation'
+    local target=${2%:*} critical count
+    shift 3
+    for critical in "$@"; do supervisor_process_live "$critical" || return 1; done
+    kill -TERM "$target" 2>/dev/null || :
+    command sleep 0.01
+    if supervisor_process_live "$target"; then kill -KILL "$target"; fi
+    for ((count=0; count<100; count++)); do
+        supervisor_process_live "$target" || return 0
+        command sleep 0.01
+    done
+    return 1
+}
+
 # Launch a real child with normal, ignored-TERM or stopped signal behavior and retain its exact start time.
 spawn_web() {
     local mode=${1:-term} pid attempts
+    if [[ $mode == ignore || $mode == stopped ]]; then appliance_drain() { fixture_drain "$@"; }; fi
     case $mode in
         term|stopped) command sleep 120 & ;;
         ignore)
@@ -347,7 +383,7 @@ test_monitor_lifecycle() (
 # Verify the full process scan blocks admission for a real untracked UID 10002 writer without signaling it.
 test_orphan_writer() (
     setup
-    if [[ $(id -u) != 0 ]] || ! command -v setpriv >/dev/null; then
+    if [[ ! -x /usr/local/bin/rentnerproxy-controller || $(id -u) != 0 ]] || ! command -v setpriv >/dev/null; then
         printf 'SKIP: real UID 10002 orphan fixture requires disposable Linux root and setpriv\n'
         return
     fi
@@ -367,100 +403,15 @@ test_orphan_writer() (
     printf 'PASS: full process scan blocks admission for an unowned UID 10002 writer\n'
 )
 
-# Reproduce vanished status entries and surviving unreadable identities deterministically.
-# Check fail-closed UID parsing in every credential field while retaining zombie exclusion.
-test_process_status_visibility() (
-    setup
-    local field variant
-    # Deterministic equivalent of a /proc glob entry whose process exits before
-    # its status file opens. The exact production helper must survive errexit.
-    assert_web_process_stopped "$scratch/vanished/status"
-    mkdir "$scratch/present"
-    expect_rejected assert_web_process_stopped "$scratch/present/status"
-    [[ $(cat "$scratch/rejection") == 'web recovery cannot inspect a surviving process identity' ]] \
-        || fail 'missing status leaked a raw open error or bypassed the identity fence'
-    # Opening a directory succeeds, but reading it fails: exercise the read
-    # failure independently of the missing-file/open failure above.
-    mkdir "$scratch/present/status"
-    expect_rejected assert_web_process_stopped "$scratch/present/status"
-    rmdir "$scratch/present/status"
-    for variant in missing truncated malformed extra; do
-        case $variant in
-            missing) printf 'Name:\tfixture\nState:\tS (sleeping)\n' ;;
-            truncated) printf 'Uid:\t0\t0\t0\n' ;;
-            malformed) printf 'Uid:\t0\tunknown\t0\t0\n' ;;
-            extra) printf 'Uid:\t0\t0\t0\t0\t10002\n' ;;
-        esac > "$scratch/present/status"
-        expect_rejected assert_web_process_stopped "$scratch/present/status"
-    done
-    printf 'State:\tS (sleeping)\nUid:\t10001\t10001\t10001\t10001\n' > "$scratch/present/status"
-    assert_web_process_stopped "$scratch/present/status"
-    for field in 0 1 2 3; do
-        local -a identities=(0 0 0 0)
-        identities[$field]=10002
-        printf 'State:\tS (sleeping)\nUid:\t%s\t%s\t%s\t%s\n' "${identities[@]}" > "$scratch/present/status"
-        expect_rejected assert_web_process_stopped "$scratch/present/status"
-        [[ $(cat "$scratch/rejection") == 'a web writer survived isolated recovery' ]] \
-            || fail "web UID field $field was not inspected"
-    done
-    for variant in Z X; do
-        printf 'State:\t%s (exited)\nUid:\t10002\t10002\t10002\t10002\n' "$variant" > "$scratch/present/status"
-        assert_web_process_stopped "$scratch/present/status"
-    done
-    printf 'PASS: vanished processes are tolerated; surviving unreadable or uninspectable identities fail closed in every UID field\n'
-)
-
-# Model a status read racing with process exit or PID reuse without relying on scheduler timing.
-# A retry must obtain new identity evidence; waiting alone never admits a surviving writer.
-test_process_status_retry() (
-    setup
-    local variant
-    for variant in safe writer vanished unreadable; do
-        mkdir "$scratch/transient"
-        : > "$scratch/transient/status"
-        : > "$scratch/retries"
-        sleep() {
-            [[ $1 == 0.1 ]] || fail 'unexpected identity retry delay'
-            printf 'retry\n' >> "$scratch/retries"
-            case $variant in
-                safe) printf 'State:\tS (sleeping)\nUid:\t10001\t10001\t10001\t10001\n' > "$scratch/transient/status" ;;
-                writer) printf 'State:\tS (sleeping)\nUid:\t10002\t10002\t10002\t10002\n' > "$scratch/transient/status" ;;
-                vanished) rm "$scratch/transient/status"; rmdir "$scratch/transient" ;;
-                unreadable) : ;;
-            esac
-        }
-        case $variant in
-            safe|vanished) assert_web_process_stopped "$scratch/transient/status" ;;
-            writer)
-                expect_rejected assert_web_process_stopped "$scratch/transient/status"
-                [[ $(cat "$scratch/rejection") == 'a web writer survived isolated recovery' ]] \
-                    || fail 'retried web identity bypassed the writer fence'
-                ;;
-            unreadable)
-                expect_rejected assert_web_process_stopped "$scratch/transient/status"
-                [[ $(cat "$scratch/rejection") == 'web recovery cannot inspect a surviving process identity' ]] \
-                    || fail 'persistent unreadable identity bypassed the visibility fence'
-                ;;
-        esac
-        if [[ $variant == unreadable ]]; then
-            [[ $(wc -l < "$scratch/retries") == 2 ]] || fail 'identity retries are not bounded'
-        else
-            [[ $(wc -l < "$scratch/retries") == 1 ]] || fail 'identity retry did not inspect fresh evidence'
-        fi
-        [[ ! -d $scratch/transient ]] || { rm "$scratch/transient/status"; rmdir "$scratch/transient"; }
-    done
-    printf 'PASS: transient status races require fresh proof; writers and persistently hidden identities still fail closed\n'
-)
-
 [[ $(uname -s) == Linux ]] || { printf 'SKIP: fault supervisor fixtures require Linux /proc\n'; exit 77; }
 test_real_termination
 test_recovery_fences
-test_restart_budget
-test_budget_boundary
+if [[ -x /usr/local/bin/rentnerproxy-controller ]]; then
+    test_restart_budget
+    test_budget_boundary
+fi
 test_critical_child_failure
 test_health
 test_dependency_health
 test_monitor_lifecycle
 test_orphan_writer
-test_process_status_retry
-test_process_status_visibility

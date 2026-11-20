@@ -1,5 +1,13 @@
 // oxlint-disable no-await-in-loop -- Recovery phases and bounded artifact validation are ordered.
 import { createDecipheriv } from 'node:crypto'
+import { maximumBackupMetadataBytes } from '../../../scripts/backup/validation.ts'
+import {
+    appBackupCommand,
+    hasNativeAppStorage,
+    appStateName,
+    readAppStateMember,
+} from '../../../scripts/backup/app-state.ts'
+import { checkLiveAppDatabase } from './app-database.ts'
 import { constants } from 'node:fs'
 import {
     chmod,
@@ -234,7 +242,12 @@ export async function assertRestoreCapacity(
     ])
 }
 
-async function replaceState(snapshot: string, name: 'proxy' | 'crowdsec', signal?: AbortSignal) {
+async function replaceState(
+    snapshot: string,
+    name: 'proxy' | 'crowdsec',
+    signal?: AbortSignal,
+    appAware = false,
+) {
     const root = '/var/lib/rentnerproxy'
     const target = join(root, name)
     const next = join(root, '.restore-' + name)
@@ -257,7 +270,10 @@ async function replaceState(snapshot: string, name: 'proxy' | 'crowdsec', signal
             '--no-same-owner',
             '--no-same-permissions',
             ...(name === 'proxy'
-                ? stateArchiveExclusions.map((entry) => '--exclude=' + entry)
+                ? (appAware
+                      ? [...stateArchiveExclusions, appStateName]
+                      : stateArchiveExclusions
+                  ).map((entry) => '--exclude=' + entry)
                 : []),
             '--file=' + join(snapshot, archive),
             '--directory=' + next,
@@ -347,7 +363,11 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
     const metadata = verified.metadata
     const stateBytes = metadata.controllerState.bytes + metadata.crowdSecState.bytes
     const snapshotBytes =
-        stateBytes + metadata.postgres.bytes + metadata.applicationEncryptionKey.bytes + 65_536
+        stateBytes +
+        metadata.postgres.bytes +
+        metadata.applicationEncryptionKey.bytes +
+        (metadata.version === 5 ? metadata.applications.bytes : 0) +
+        maximumBackupMetadataBytes
     // Existing live data is already reflected in free space. Extracted state also
     // needs target filesystem allocation for file tails, directories and metadata.
     await assertBackupCapacity([
@@ -394,15 +414,35 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
         }
         const controller = await open(join(snapshot, 'controller-state.tar'), 'r')
         try {
+            const entries = await validateStateArchiveFile(controller, 'controller', signal)
+            const appState = await readAppStateMember(controller, entries, metadata)
+            if (appState)
+                await writeFile(join(snapshot, appStateName), appState, { flag: 'wx', mode: 0o600 })
+            if (appState || (await hasNativeAppStorage()))
+                await command(
+                    [
+                        appBackupCommand,
+                        '--app-backup',
+                        ...(appState ? ['verify', join(snapshot, appStateName)] : ['empty']),
+                    ],
+                    signal,
+                )
+            await checkLiveAppDatabase(
+                metadata.version === 5 ? metadata.applications.installations : [],
+                signal,
+            )
             await validateControllerEncryptionFile(
                 controller,
-                await validateStateArchiveFile(controller, 'controller', signal),
+                entries,
                 (ciphertext, nonce, context) => {
                     const decipher = createDecipheriv('aes-256-gcm', key, nonce)
                     decipher.setAAD(Buffer.from(context))
                     decipher.setAuthTag(ciphertext.subarray(-16))
                     decipher.update(ciphertext.subarray(0, -16))
                     decipher.final()
+                },
+                async (kind, bytes) => {
+                    await command([appBackupCommand, '--check-backup-state', kind], signal, bytes)
                 },
             )
         } finally {
@@ -452,9 +492,14 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
         )
         await command(psql, signal, Buffer.from(merge), 1024)
         await phase('controller', 60)
-        await replaceState(snapshot, 'proxy', signal)
+        await replaceState(snapshot, 'proxy', signal, metadata.version === 5)
         await phase('crowdsec', 75)
         await replaceState(snapshot, 'crowdsec', signal)
+        if (metadata.version === 5)
+            await command(
+                [appBackupCommand, '--app-backup', 'restore', join(snapshot, appStateName)],
+                signal,
+            )
         await phase('secrets', 85)
         await completeAppEncryptionKeyRestore()
         await completeProductionRestore(operation.metadataSha256!)

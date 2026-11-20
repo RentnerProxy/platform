@@ -80,6 +80,42 @@ describe('restore target maintenance entrypoint', () => {
         'utf8',
     )
 
+    test('reserves the full web and CrowdSec drain after apps while state services stay up', async () => {
+        const shutdown = /^shutdown_children\(\) \{[\s\S]*?^\}/mu.exec(await entrypoint)?.[0]
+        expect(shutdown).toBeDefined()
+        const result = Bun.spawnSync([
+            bash,
+            '-c',
+            [
+                'set -eu',
+                'child_names=(web postgres app-manager crowdsec-supervisor); child_pids=(101 102 103 104)',
+                'unset SECONDS; SECONDS=0',
+                'web_exit=100; crowdsec_exit=100',
+                'backup_stop_consumer_phase() { echo "drain-$1"; SECONDS=18; unset "child_names[2]" "child_pids[2]"; }',
+                'backup_stop_retained_caddy() { :; }',
+                'kill() {',
+                '  if [[ $1 == -0 ]]; then',
+                '    [[ $2 == 101 && $SECONDS -lt $web_exit || $2 == 104 && $SECONDS -lt $crowdsec_exit ]]; return',
+                '  fi',
+                '  echo "$1-$2-$SECONDS"',
+                '  if [[ $1 == -TERM && $2 == 101 ]]; then web_exit=$((SECONDS + 23)); fi',
+                '  if [[ $1 == -TERM && $2 == 104 ]]; then crowdsec_exit=$((SECONDS + 16)); fi',
+                '}',
+                'sleep() { SECONDS=$((SECONDS + 1)); }',
+                'wait() { :; }',
+                shutdown!,
+                'shutdown_children',
+            ].join('\n'),
+        ])
+        expect(result.exitCode, result.stderr.toString()).toBe(0)
+        const signals = result.stdout.toString().trim().split(/\r?\n/u)
+        expect(signals[0]).toBe('drain-apps')
+        expect(signals).toContain('-TERM-101-18')
+        expect(signals).toContain('-TERM-104-18')
+        expect(signals).toContain('-TERM-102-41')
+        expect(signals.some((line) => line.startsWith('-KILL-104-'))).toBe(false)
+    })
+
     test.each([false, true])(
         'database preparation (failure: %s) never starts application consumers',
         async (failure) => {
