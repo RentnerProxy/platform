@@ -172,6 +172,21 @@ pub(super) struct Journal {
     poisoned: bool,
 }
 
+pub(super) struct ShutdownCommit(Arc<State>);
+
+pub(super) struct ShutdownWrite {
+    deadline: Instant,
+    receive: oneshot::Receiver<io::Result<ShutdownCommit>>,
+}
+
+impl ShutdownWrite {
+    pub(super) async fn wait(&mut self) -> io::Result<ShutdownCommit> {
+        timeout_at(self.deadline, &mut self.receive)
+            .await?
+            .map_err(io::Error::other)?
+    }
+}
+
 pub(super) fn private_directory(path: &Path) -> io::Result<()> {
     require_safe_parents(path, 0)?;
     match DirBuilder::new().mode(0o700).create(path) {
@@ -290,14 +305,14 @@ impl Journal {
         Ok(())
     }
 
-    pub(super) async fn save_shutdown(
+    pub(super) fn begin_shutdown_save(
         &mut self,
         fenced: BTreeSet<String>,
         deadline: Instant,
-    ) -> io::Result<()> {
+    ) -> io::Result<ShutdownWrite> {
         self.writable()?;
         if fenced.is_empty() {
-            return Ok(());
+            return Err(bad("No shutdown fences to commit"));
         }
         check_write_deadline(deadline)?;
         let base = Arc::clone(&self.state);
@@ -331,18 +346,19 @@ impl Journal {
                     }
                     let bytes = encode_state(&next)?;
                     persist_state(&directory, &bytes, may_publish)?;
-                    Ok::<_, io::Error>(Arc::new(next))
+                    Ok::<_, io::Error>(ShutdownCommit(Arc::new(next)))
                 })();
                 drop(lock);
                 let _ = send.send(result);
             })?;
         drop(worker);
         self.poisoned = true;
-        self.state = timeout_at(deadline, receive)
-            .await?
-            .map_err(io::Error::other)??;
+        Ok(ShutdownWrite { deadline, receive })
+    }
+
+    pub(super) fn complete_shutdown_save(&mut self, commit: ShutdownCommit) {
+        self.state = commit.0;
         self.poisoned = false;
-        Ok(())
     }
 }
 

@@ -734,37 +734,67 @@ impl Manager {
         }
         let mut failures = Vec::new();
         let mut acknowledgments = BTreeSet::new();
-        while let Some(job) = self.drains.join_next_with_id().await {
-            let (task, drain, result) = self.take_drain_result(job);
-            let was_inherited = inherited.remove(&task);
-            let id = &drain.installation_id;
-            let result = result.and_then(|()| self.fenced_slot(&drain));
-            match result {
-                Ok(Some(_)) => {
-                    acknowledgments.insert(drain.installation_id);
+        let mut journal_write = None;
+        let mut journal_failed = false;
+        let mut ready = None;
+        loop {
+            if let Some(job) = ready.take().or_else(|| self.drains.try_join_next_with_id()) {
+                let (task, drain, result) = self.take_drain_result(job);
+                let was_inherited = inherited.remove(&task);
+                let id = &drain.installation_id;
+                let result = result.and_then(|()| self.fenced_slot(&drain));
+                match result {
+                    Ok(Some(_)) => {
+                        acknowledgments.insert(drain.installation_id);
+                    }
+                    Ok(None) => (),
+                    Err(_)
+                        if was_inherited
+                            && Self::scan_fits(cutoff)
+                            // An in-flight write has only acknowledged other slots.
+                            && (journal_write.is_some() || self.journal.writable().is_ok())
+                            && self
+                                .journal
+                                .slot(id)
+                                .is_ok_and(|slot| drain.matches_pending(slot)) =>
+                    {
+                        self.begin_drain(drain.installation_id, cutoff)?;
+                    }
+                    Err(error) => failures.push(format!("{id} fence: {error}")),
                 }
-                Ok(None) => (),
-                Err(_)
-                    if was_inherited
-                        && Self::scan_fits(cutoff)
-                        && self.journal.writable().is_ok()
-                        && self
-                            .journal
-                            .slot(id)
-                            .is_ok_and(|slot| drain.matches_pending(slot)) =>
-                {
-                    self.begin_drain(drain.installation_id, cutoff)?;
-                }
-                Err(error) => failures.push(format!("{id} fence: {error}")),
+                continue;
             }
-        }
-        if !acknowledgments.is_empty()
-            && let Err(error) = self
-                .journal
-                .save_shutdown(acknowledgments, journal_deadline)
-                .await
-        {
-            failures.push(format!("Shutdown journal: {error}"));
+            // Save ready acknowledgments together without waiting for slower fences.
+            if journal_write.is_none() && !journal_failed && !acknowledgments.is_empty() {
+                match self
+                    .journal
+                    .begin_shutdown_save(std::mem::take(&mut acknowledgments), journal_deadline)
+                {
+                    Ok(write) => journal_write = Some(write),
+                    Err(error) => {
+                        journal_failed = true;
+                        failures.push(format!("Shutdown journal: {error}"));
+                    }
+                }
+            }
+            if self.drains.is_empty() && journal_write.is_none() {
+                break;
+            }
+            tokio::select! {
+                result = async {
+                    journal_write.as_mut().expect("pending shutdown write").wait().await
+                }, if journal_write.is_some() => {
+                    journal_write = None;
+                    match result {
+                        Ok(commit) => self.journal.complete_shutdown_save(commit),
+                        Err(error) => {
+                            journal_failed = true;
+                            failures.push(format!("Shutdown journal: {error}"));
+                        }
+                    }
+                }
+                job = self.drains.join_next_with_id(), if !self.drains.is_empty() => ready = job,
+            }
         }
         if failures.is_empty() {
             Ok(())

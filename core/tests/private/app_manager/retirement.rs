@@ -835,11 +835,34 @@ async fn writer_contention_can_exhaust_the_uid_scan_window() {
     assert!(!called.load(Ordering::SeqCst));
 }
 
-#[test]
-fn writer_timeout_cancels_a_queued_uid_scan() {
+async fn run_isolated_lock_fixture(fixture: &str) {
     if unsafe { libc::geteuid() } != 0 {
         return;
     }
+    // Other tests can fork while a lock file is open. Open and reacquire the
+    // fixture's locks in a process that does not run those tests.
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact"])
+        .arg(format!("app_manager::tests::retirement::{fixture}"))
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let status = timeout(Duration::from_secs(10), child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(status.success(), "{fixture} failed: {status}");
+}
+
+#[tokio::test]
+async fn writer_timeout_cancels_a_queued_uid_scan() {
+    run_isolated_lock_fixture("queued_scan_fixture").await;
+}
+
+#[test]
+#[ignore = "private subprocess for the queued scan lock fixture"]
+fn queued_scan_fixture() {
+    assert_eq!(unsafe { libc::geteuid() }, 0);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(1)
@@ -885,10 +908,14 @@ fn writer_timeout_cancels_a_queued_uid_scan() {
 }
 
 #[tokio::test]
-async fn shutdown_publishes_successful_fences_in_one_batch() {
-    if unsafe { libc::geteuid() } != 0 {
-        return;
-    }
+async fn shutdown_publishes_ready_fences_while_another_drain_is_pending() {
+    run_isolated_lock_fixture("shutdown_batch_fixture").await;
+}
+
+#[tokio::test]
+#[ignore = "private subprocess for the shutdown journal batch fixture"]
+async fn shutdown_batch_fixture() {
+    assert_eq!(unsafe { libc::geteuid() }, 0);
     let dir = tempfile::tempdir_in("/root").unwrap();
     let directory = dir.path().join("journal");
     let mut manager = Manager {
@@ -926,12 +953,17 @@ async fn shutdown_publishes_successful_fences_in_one_batch() {
         let (result, ()) = tokio::join!(manager.shutdown(), async {
             first_deadline.changed().await.unwrap();
             assert!(*first_deadline.borrow_and_update() > original_cutoff);
-            // The first task was collected, while the other still holds up the batch.
-            while first_deadline.changed().await.is_ok() {}
-            let state = std::fs::read(directory.join("journal.json")).unwrap();
-            let state: Value = serde_json::from_slice(&state).unwrap();
-            assert_eq!(state["installations"]["first"]["pendingFence"], true);
-            assert_eq!(state["installations"]["second"]["pendingFence"], true);
+            // Wait for the first acknowledgment to reach disk with the second
+            // writer still held. An atomic rename makes each snapshot readable.
+            loop {
+                let state = std::fs::read(directory.join("journal.json")).unwrap();
+                let state: Value = serde_json::from_slice(&state).unwrap();
+                assert_eq!(state["installations"]["second"]["pendingFence"], true);
+                if state["installations"]["first"]["pendingFence"] == false {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
             drop(second_writer);
         });
         result.unwrap();
@@ -946,9 +978,13 @@ async fn shutdown_publishes_successful_fences_in_one_batch() {
 
 #[tokio::test]
 async fn expired_shutdown_write_preserves_fence_intent() {
-    if unsafe { libc::geteuid() } != 0 {
-        return;
-    }
+    run_isolated_lock_fixture("expired_shutdown_write_fixture").await;
+}
+
+#[tokio::test]
+#[ignore = "private subprocess for the expired journal write fixture"]
+async fn expired_shutdown_write_fixture() {
+    assert_eq!(unsafe { libc::geteuid() }, 0);
     let dir = tempfile::tempdir_in("/root").unwrap();
     let directory = dir.path().join("journal");
     let mut journal = Journal::open(&directory).unwrap();
@@ -960,10 +996,11 @@ async fn expired_shutdown_write_preserves_fence_intent() {
         ..Default::default()
     };
     journal.save("expired", slot).unwrap();
-    let error = journal
-        .save_shutdown(BTreeSet::from(["expired".into()]), Instant::now())
-        .await
-        .unwrap_err();
+    let Err(error) =
+        journal.begin_shutdown_save(BTreeSet::from(["expired".into()]), Instant::now())
+    else {
+        panic!("expired shutdown write must fail before starting");
+    };
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(journal.slot("expired").unwrap().pending_fence);
     drop(journal);
