@@ -154,7 +154,12 @@ impl HttpReply {
     fn assert(&self, status: u16) {
         assert_eq!(self.status, status, "{}", self.headers);
         assert!(
-            self.headers.contains("cache-control: no-store"),
+            self.headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .filter(|(name, _)| name.eq_ignore_ascii_case("cache-control"))
+                .flat_map(|(_, value)| value.split(','))
+                .any(|directive| directive.trim().eq_ignore_ascii_case("no-store")),
             "{}",
             self.headers
         );

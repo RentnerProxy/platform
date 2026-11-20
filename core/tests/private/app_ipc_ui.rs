@@ -125,6 +125,8 @@ async fn rejects_invalid_ui_envelopes_before_contacting_peers() {
         return;
     }
     let scratch = Scratch::create(&env::temp_dir());
+    let authority = UnixListener::bind(scratch.path("authority.sock")).unwrap();
+    let app = UnixListener::bind(scratch.path("app.sock")).unwrap();
     let (core, broker) = start_broker(&scratch);
     let mut unsupported_version = ui_request();
     *unsupported_version.version_mut() = Version::HTTP_10;
@@ -199,6 +201,14 @@ async fn rejects_invalid_ui_envelopes_before_contacting_peers() {
         "payloadTooLarge",
     )
     .await;
+    for peer in [authority, app] {
+        assert!(
+            timeout(Duration::from_millis(10), peer.accept())
+                .await
+                .is_err(),
+            "invalid UI request reached a peer"
+        );
+    }
     broker.abort();
     assert!(broker.await.unwrap_err().is_cancelled());
 }
@@ -416,22 +426,30 @@ async fn closes_a_waiting_app_connection_at_the_ui_deadline() {
             .await;
     });
     let manager = tokio::spawn(async move {
+        let mut sender = open(&core).await;
         assert_problem(
-            &mut open(&core).await,
+            &mut sender,
             ui_request(),
             StatusCode::GATEWAY_TIMEOUT,
             "deadlineExceeded",
         )
         .await;
+        sender
     });
 
     timeout(TEST_WAIT, app_waiting).await.unwrap().unwrap();
     time::pause();
     time::advance(gateway::RPC_TIMEOUT).await;
     time::resume();
-    for task in [manager, app, authority] {
+    let manager = timeout(TEST_WAIT, manager).await.unwrap().unwrap();
+    for task in [app, authority] {
         timeout(TEST_WAIT, task).await.unwrap().unwrap();
     }
+    assert!(
+        !manager.is_closed(),
+        "manager connection closed before the app"
+    );
+    drop(manager);
     broker.abort();
     assert!(broker.await.unwrap_err().is_cancelled());
 }
