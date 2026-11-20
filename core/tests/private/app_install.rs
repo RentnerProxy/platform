@@ -4,9 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
 use marketplace_app_catalog::{
-    SigningKeys, TrustedCatalog, UpdateOptions, bootstrap_catalog, update_catalog,
+    ReadOptions, SigningKeys, TrustedPackageCatalog, UpdateOptions, bootstrap_catalog,
+    read_catalog, update_catalog,
 };
 use marketplace_app_pipeline::package::execute;
 use marketplace_artifacts::digest;
@@ -49,19 +51,40 @@ fn manager(directory: &Path) -> Installer {
     }
 }
 
-fn refresh(manager: &Installer, files: &Files, at: OffsetDateTime) -> io::Result<TrustedCatalog> {
-    manager.refresh(|name, _| Ok(files.get(name).cloned()), at)
+fn refresh(
+    manager: &Installer,
+    files: &Files,
+    at: OffsetDateTime,
+) -> io::Result<TrustedPackageCatalog> {
+    manager.refresh(
+        |name, _| {
+            assert!(!name.starts_with("targets/assets/"));
+            Ok(files.get(name).cloned())
+        },
+        at,
+    )
 }
 
-fn update(current: &TrustedCatalog, document: Value) -> Files {
+fn update(files: &Files, document: Value, icons: &Files) -> Files {
+    let current = read_catalog(
+        |name, _| Ok(files.get(name).cloned()),
+        PIN,
+        ReadOptions {
+            now: now(),
+            allow_expired_roles: false,
+            next_root: None,
+            previous: None,
+        },
+    )
+    .unwrap();
     update_catalog(
-        current,
+        &current,
         &serde_json::to_vec(&document).unwrap(),
         &keys(),
         UpdateOptions {
             now: now(),
             next_root: None,
-            icons: &BTreeMap::new(),
+            icons,
         },
     )
     .unwrap()
@@ -184,7 +207,7 @@ pub(crate) fn lifecycle_packages(
     })).unwrap()).unwrap();
     let installer = Installer::open(&config).unwrap();
     let mut files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
-    let first = refresh(&installer, &files, now()).unwrap();
+    refresh(&installer, &files, now()).unwrap();
     let mut releases = Vec::new();
     let mut archives = Vec::new();
     let versions = ["1.0.0", "1.1.0", "1.2.0"];
@@ -204,10 +227,12 @@ pub(crate) fn lifecycle_packages(
         releases.push(release);
         archives.push(archive);
     }
-    files.extend(update(
-        &first,
+    let next = update(
+        &files,
         json!({"formatVersion":1,"revision":2,"releases":releases,"revocations":[]}),
-    ));
+        &Files::new(),
+    );
+    files.extend(next);
     let catalog = refresh(&installer, &files, now()).unwrap();
     let packages = versions
         .into_iter()
@@ -235,8 +260,29 @@ pub(crate) fn revoke_lifecycle_release(config: &Path, version: &str) {
     next["revocations"].as_array_mut().unwrap().push(json!({
         "appId": ID, "version": version, "revokedAt": "2026-11-01T12:00:00.000Z", "reason": "withdrawn"
     }));
-    let mut files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
-    files.extend(update(&current, next));
+    let checkpoint: Value = serde_json::from_slice(
+        &fs::read(
+            installer
+                .config
+                .store_directory
+                .join("catalog-checkpoint.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut files: Files = checkpoint["files"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, encoded)| {
+            (
+                name.clone(),
+                STANDARD.decode(encoded.as_str().unwrap()).unwrap(),
+            )
+        })
+        .collect();
+    let next = update(&files, next, &Files::new());
+    files.extend(next);
     refresh(&installer, &files, now()).unwrap();
 }
 
@@ -245,11 +291,11 @@ fn persisted_roles_protect_against_rollback_expiry_and_partial_metadata() {
     let temp = tempfile::tempdir().unwrap();
     let installer = manager(temp.path());
     let initial = bootstrap_catalog(PIN, &keys(), now()).unwrap();
-    let first = refresh(&installer, &initial, now()).unwrap();
+    refresh(&installer, &initial, now()).unwrap();
     let mut fresh = initial.clone();
-    fresh.extend(update(&first,json!({"formatVersion":1,"revision":2,"releases":[],"revocations":[
+    fresh.extend(update(&initial,json!({"formatVersion":1,"revision":2,"releases":[],"revocations":[
         {"appId":ID,"version":VERSION,"revokedAt":"2026-11-01T12:00:00.000Z","reason":"withdrawn"}
-    ]})));
+    ]}), &Files::new()));
     refresh(&installer, &fresh, now()).unwrap();
     let reopened = manager(temp.path());
     assert!(refresh(&reopened, &initial, now()).is_err());
@@ -284,14 +330,29 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
     let fixture = tempfile::tempdir().unwrap();
     let mut installer = manager(store.path());
     let mut files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
-    let first = refresh(&installer, &files, now()).unwrap();
+    refresh(&installer, &files, now()).unwrap();
     let (mut release, archive) = package(fixture.path());
     release["packages"][0]["manifest"]["resources"]["memoryMiB"] = json!(128.0);
-    files.extend(update(
-        &first,
+    let icon = b"signed fixture icon";
+    let icon_hash = digest(icon);
+    release["icon"] = json!({"format":"png","sha256":icon_hash,"sizeBytes":icon.len()});
+    let next = update(
+        &files,
         json!({"formatVersion":1,"revision":2,"releases":[release],"revocations":[]}),
-    ));
+        &Files::from([(format!("assets/{icon_hash}.png"), icon.to_vec())]),
+    );
+    files.extend(next);
     let catalog = refresh(&installer, &files, now()).unwrap();
+    let checkpoint: Value =
+        serde_json::from_slice(&fs::read(store.path().join("catalog-checkpoint.json")).unwrap())
+            .unwrap();
+    assert!(
+        checkpoint["files"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|path| !path.starts_with("targets/assets/"))
+    );
     installer.config.engine_capabilities.clear();
     assert!(
         installer
@@ -450,11 +511,16 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
         fs::remove_file(unexpected).unwrap();
     }
 
-    files.extend(update(&catalog, json!({
-        "formatVersion":1,"revision":3,"releases":[],"revocations":[
-            {"appId":ID,"version":VERSION,"revokedAt":"2026-11-01T12:00:00.000Z","reason":"withdrawn"}
-        ]
-    })));
+    let next = update(
+        &files,
+        json!({
+            "formatVersion":1,"revision":3,"releases":[],"revocations":[
+                {"appId":ID,"version":VERSION,"revokedAt":"2026-11-01T12:00:00.000Z","reason":"withdrawn"}
+            ]
+        }),
+        &Files::new(),
+    );
+    files.extend(next);
     refresh(&installer, &files, now()).unwrap();
     assert!(
         offline

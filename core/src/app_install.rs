@@ -114,7 +114,7 @@ impl Installer {
 
     fn prepare<R: Read>(
         &self,
-        trusted: &marketplace_app_catalog::TrustedCatalog,
+        trusted: &marketplace_app_catalog::TrustedPackageCatalog,
         app_id: &str,
         version: &str,
         expected_hash: Option<&str>,

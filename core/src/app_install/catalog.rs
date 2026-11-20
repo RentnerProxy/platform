@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, io, path::Path};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use marketplace_app_catalog::{CatalogError, ReadOptions, TrustedCatalog, read_catalog};
+use marketplace_app_catalog::{CatalogError, TrustedPackageCatalog, read_package_catalog};
 use marketplace_artifacts::{digest, invalid, read_file};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -24,11 +24,11 @@ fn read(
     mut fetch: impl FnMut(&str, usize) -> io::Result<Option<Vec<u8>>>,
     pin: &[u8],
     now: OffsetDateTime,
-    previous: Option<&TrustedCatalog>,
-) -> io::Result<TrustedCatalog> {
+    previous: Option<&TrustedPackageCatalog>,
+) -> io::Result<TrustedPackageCatalog> {
     let mut remaining = METADATA_BUDGET;
     let mut requests = 0;
-    read_catalog(
+    read_package_catalog(
         |name, limit| {
             requests += 1;
             if requests > MAX_FILES {
@@ -45,18 +45,14 @@ fn read(
             Ok(bytes)
         },
         pin,
-        ReadOptions {
-            now,
-            previous,
-            allow_expired_roles: false,
-            next_root: None,
-        },
+        now,
+        previous,
     )
     .map_err(|error| invalid(error.to_string()))
 }
 
 impl Installer {
-    pub(super) fn checkpoint(&self) -> io::Result<Option<(i64, TrustedCatalog)>> {
+    pub(super) fn checkpoint(&self) -> io::Result<Option<(i64, TrustedPackageCatalog)>> {
         let bytes = match read_file(
             &self.config.store_directory.join(CHECKPOINT),
             96 * 1024 * 1024,
@@ -99,7 +95,7 @@ impl Installer {
         &self,
         mut fetch: impl FnMut(&str, usize) -> io::Result<Option<Vec<u8>>>,
         now: OffsetDateTime,
-    ) -> io::Result<TrustedCatalog> {
+    ) -> io::Result<TrustedPackageCatalog> {
         let previous = self.checkpoint()?;
         if previous
             .as_ref()
