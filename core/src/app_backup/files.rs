@@ -317,6 +317,8 @@ pub(super) fn restore(
 }
 
 fn discard_exchanged_stage(parent: &File, stage: &Path) -> io::Result<()> {
+    // The exchange changes one directory entry in each of these directories.
+    File::open(stage)?.sync_all()?;
     parent.sync_all()?;
     fs::remove_dir_all(stage)?;
     parent.sync_all()
@@ -503,8 +505,20 @@ mod tests {
     }
 
     #[test]
-    fn retains_the_outgoing_copy_until_the_parent_sync_succeeds() {
+    fn retains_staging_until_both_exchange_directories_are_synced() {
         let fixture = tempfile::tempdir().unwrap();
+        let parent = File::open(fixture.path()).unwrap();
+        // Use a disposable link to inject a directory whose fsync returns EINVAL.
+        let unsyncable_stage = fixture.path().join("unsyncable-stage");
+        std::os::unix::fs::symlink("/proc/self/fd", &unsyncable_stage).unwrap();
+        assert_eq!(
+            discard_exchanged_stage(&parent, &unsyncable_stage)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EINVAL)
+        );
+        assert!(unsyncable_stage.is_symlink());
+
         let stage = fixture.path().join(".app-restore-kiri");
         fs::create_dir(&stage).unwrap();
         let outgoing = stage.join("data");
@@ -512,7 +526,7 @@ mod tests {
         let unsyncable = File::open("/dev/null").unwrap();
         assert!(discard_exchanged_stage(&unsyncable, &stage).is_err());
         assert_eq!(fs::read(&outgoing).unwrap(), b"last copy");
-        discard_exchanged_stage(&File::open(fixture.path()).unwrap(), &stage).unwrap();
+        discard_exchanged_stage(&parent, &stage).unwrap();
         assert!(!stage.exists());
     }
 

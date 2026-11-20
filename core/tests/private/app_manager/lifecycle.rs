@@ -18,6 +18,7 @@ use tokio::{
 
 const ID: &str = "fixture-install";
 const UNCLAIMED: &str = "never-provisioned";
+const INTERRUPTED: &str = "interrupted-claim";
 const UID: u32 = 59553;
 const ROOT: &str = "/var/lib/rentnerproxy/app-manager";
 const SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
@@ -33,8 +34,12 @@ async fn authority(
     );
     let body = request.into_body().collect().await.unwrap().to_bytes();
     let value: Value = serde_json::from_slice(&body).unwrap();
-    if value["identity"]["installationId"] == UNCLAIMED {
-        assert_eq!(value["identity"]["uid"], UID + 1);
+    if let Some(uid) = match value["identity"]["installationId"].as_str() {
+        Some(UNCLAIMED) => Some(UID + 1),
+        Some(INTERRUPTED) => Some(UID + 2),
+        _ => None,
+    } {
+        assert_eq!(value["identity"]["uid"], uid);
         let status = match path.rsplit('/').next().unwrap() {
             "register" => StatusCode::SERVICE_UNAVAILABLE,
             "retire" | "workers-stopped" | "removable" => StatusCode::NO_CONTENT,
@@ -132,11 +137,17 @@ async fn invoke(controller: &Path, args: &[&str]) -> io::Result<Value> {
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
+enum BootState {
+    Running,
+    Recovery,
+    MissingData,
+}
+
 async fn mount_manager(
     controller: &Path,
     config: &Path,
     token: &Path,
-    expect_running: bool,
+    expected: BootState,
 ) -> Child {
     let mut command = Process::new(controller);
     // Only the fixture's manager subprocess inherits this restrictive umask.
@@ -170,8 +181,8 @@ async fn mount_manager(
             }
             .await;
             if status.is_ok_and(|state| {
-                state[ID]["running"] == expect_running
-                    && (expect_running || state[ID]["recoveryRequired"] == true)
+                state[ID]["running"] == matches!(expected, BootState::Running)
+                    && state[ID]["recoveryRequired"] == matches!(expected, BootState::Recovery)
             }) {
                 break;
             }
@@ -196,7 +207,7 @@ async fn halt(child: &mut Child) {
     );
 }
 
-async fn backup_files(controller: &Path, config: &Path, temporary: &Path) {
+async fn backup_files(controller: &Path, config: &Path, token: &Path, temporary: &Path) {
     let command = |action: &str| {
         let mut command = Process::new(controller);
         command
@@ -224,6 +235,11 @@ async fn backup_files(controller: &Path, config: &Path, temporary: &Path) {
     assert_eq!(manifest["installations"][UNCLAIMED]["generation"], 1);
     assert_eq!(manifest["installations"][UNCLAIMED]["removal"], "removed");
     assert!(manifest["data"].get((UID + 1).to_string()).is_none());
+    assert_eq!(
+        manifest["installations"][INTERRUPTED]["storageClaimed"],
+        false
+    );
+    assert!(manifest["data"].get((UID + 2).to_string()).is_none());
     let snapshot = temporary.join("app-snapshot");
     fs::write(&snapshot, output.stdout).unwrap();
     fs::write(&note, b"changed fixture").unwrap();
@@ -240,16 +256,59 @@ async fn backup_files(controller: &Path, config: &Path, temporary: &Path) {
     }
     assert_eq!(fs::read(&note).unwrap(), b"offline fixture");
     assert!(!command("empty").output().await.unwrap().status.success());
-    fs::remove_dir_all(&data).unwrap();
-    assert!(
-        command("restore")
-            .arg(&snapshot)
-            .status()
-            .await
-            .unwrap()
-            .success()
-    );
-    assert_eq!(fs::read(&note).unwrap(), b"offline fixture");
+    for legacy in [false, true] {
+        let mut journal = Journal::open(Path::new(ROOT)).unwrap();
+        let mut slot = journal.slot(ID).unwrap().clone();
+        if legacy {
+            slot.storage_claimed = None;
+            journal.save(ID, slot.clone()).unwrap();
+        }
+        drop(journal);
+        let output = command("capture").output().await.unwrap();
+        assert!(output.status.success());
+        manifest = serde_json::from_slice(&output.stdout).unwrap();
+        fs::write(&snapshot, output.stdout).unwrap();
+        fs::remove_dir_all(&data).unwrap();
+        let mut child = mount_manager(controller, config, token, BootState::MissingData).await;
+        let err = invoke(controller, &["start", ID]).await.unwrap_err();
+        assert!(
+            err.to_string().contains("unavailable committed data"),
+            "{err}"
+        );
+        if legacy {
+            let reservation = storage::directory(UID);
+            let saved = reservation.with_file_name("fixture-saved-reservation");
+            fs::rename(&reservation, &saved).unwrap();
+            let err = invoke(controller, &["start", ID]).await.unwrap_err();
+            assert!(
+                err.to_string().contains("unavailable committed data"),
+                "{err}"
+            );
+            assert!(!reservation.exists());
+            fs::rename(saved, reservation).unwrap();
+        }
+        halt(&mut child).await;
+        assert!(!data.exists());
+        let journal = Journal::open(Path::new(ROOT)).unwrap();
+        assert_eq!(
+            serde_json::to_value(journal.slot(ID).unwrap()).unwrap(),
+            serde_json::to_value(&slot).unwrap()
+        );
+        drop(journal);
+        assert!(!command("capture").output().await.unwrap().status.success());
+        for action in ["verify", "restore"] {
+            assert!(
+                command(action)
+                    .arg(&snapshot)
+                    .status()
+                    .await
+                    .unwrap()
+                    .success(),
+                "{action}"
+            );
+        }
+        assert_eq!(fs::read(&note).unwrap(), b"offline fixture");
+    }
     let alias = data.join("fixture-hardlink");
     fs::hard_link(&note, &alias).unwrap();
     assert!(!command("capture").output().await.unwrap().status.success());
@@ -417,6 +476,35 @@ pub(super) async fn exercise() {
         catalog_revision: p.catalog_revision,
     };
     let mut journal = Journal::open(Path::new(ROOT)).unwrap();
+    let interrupted = Slot {
+        app_id: "example.probe".into(),
+        uid: UID + 2,
+        generation: 1,
+        authority_recorded: Some(true),
+        candidate: Some(release(&packages[0])),
+        pending_fence: true,
+        ..Default::default()
+    };
+    journal.save(INTERRUPTED, interrupted.clone()).unwrap();
+    assert!(!storage::reconcile_first_claim(INTERRUPTED, &interrupted).unwrap());
+    let acknowledged = Slot {
+        storage_claimed: Some(true),
+        ..interrupted.clone()
+    };
+    assert!(storage::reconcile_first_claim(INTERRUPTED, &acknowledged).is_err());
+    storage::claim(INTERRUPTED, &interrupted).unwrap();
+    let reservation = storage::directory(interrupted.uid);
+    let first_data = reservation.join("data");
+    fs::create_dir(&first_data).unwrap();
+    chown(&first_data, Some(interrupted.uid), Some(interrupted.uid)).unwrap();
+    fs::set_permissions(&first_data, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(storage::reconcile_first_claim(INTERRUPTED, &interrupted).unwrap());
+    fs::remove_dir(first_data).unwrap();
+    let lock = reservation.join(".provision.lock");
+    fs::write(&lock, []).unwrap();
+    fs::set_permissions(&lock, fs::Permissions::from_mode(0o600)).unwrap();
+    let unexpected = reservation.join("unexpected");
+    fs::write(&unexpected, "retain").unwrap();
     journal
         .save(
             UNCLAIMED,
@@ -464,12 +552,17 @@ pub(super) async fn exercise() {
         drop(installer_lock);
     };
     let (mut manager, ()) = tokio::join!(
-        mount_manager(&controller, &config, &token, true),
+        mount_manager(&controller, &config, &token, BootState::Running),
         release_lock
     );
     assert!(invoke(&controller, &["activate", UNCLAIMED]).await.is_err());
     invoke(&controller, &["remove", UNCLAIMED]).await.unwrap();
     assert!(!super::super::storage::directory(UID + 1).exists());
+    assert!(invoke(&controller, &["remove", INTERRUPTED]).await.is_err());
+    assert_eq!(fs::read(&unexpected).unwrap(), b"retain");
+    fs::remove_file(unexpected).unwrap();
+    invoke(&controller, &["remove", INTERRUPTED]).await.unwrap();
+    assert!(!reservation.exists());
     let states = invoke(&controller, &["status"]).await.unwrap();
     assert_eq!(states[ID]["active"], "1.0.0");
     assert_eq!(states[ID]["candidate"], "1.1.0");
@@ -482,7 +575,7 @@ pub(super) async fn exercise() {
     check_process_recovery(&controller).await;
     halt(&mut manager).await;
     verify_uid_stopped(UID).unwrap();
-    backup_files(&controller, &config, temp.path()).await;
+    backup_files(&controller, &config, &token, temp.path()).await;
     let archive = temp
         .path()
         .join("store/archives")
@@ -491,7 +584,7 @@ pub(super) async fn exercise() {
     fs::rename(&archive, &saved).unwrap();
     let last_grants = Path::new(SOCKET).with_file_name("last-grants-generation");
     let before_grants = fs::read(&last_grants).unwrap();
-    let mut manager = mount_manager(&controller, &config, &token, false).await;
+    let mut manager = mount_manager(&controller, &config, &token, BootState::Recovery).await;
     fs::rename(saved, archive).unwrap();
     invoke(&controller, &["start", ID]).await.unwrap();
     assert_eq!(fs::read(&last_grants).unwrap(), before_grants);
@@ -502,7 +595,7 @@ pub(super) async fn exercise() {
     slot.candidate = Some(release(&packages[2]));
     journal.save(ID, slot).unwrap();
     drop(journal);
-    let mut manager = mount_manager(&controller, &config, &token, true).await;
+    let mut manager = mount_manager(&controller, &config, &token, BootState::Running).await;
     let before = invoke(&controller, &["status"]).await.unwrap()[ID]["generation"]
         .as_u64()
         .unwrap();
@@ -528,7 +621,7 @@ pub(super) async fn exercise() {
     };
     crate::app_install::tests::revoke_lifecycle_release(&config, "1.1.0");
     assert!(!capture().output().await.unwrap().status.success());
-    let mut manager = mount_manager(&controller, &config, &token, true).await;
+    let mut manager = mount_manager(&controller, &config, &token, BootState::Running).await;
     let before = invoke(&controller, &["status"]).await.unwrap()[ID].clone();
     assert_eq!(before["previous"], "1.1.0");
     assert!(
@@ -558,7 +651,7 @@ pub(super) async fn exercise() {
     assert!(snapshot["installations"][ID]["candidate"].is_null());
     crate::app_install::tests::revoke_lifecycle_release(&config, "1.0.0");
     assert!(!capture().output().await.unwrap().status.success());
-    let mut manager = mount_manager(&controller, &config, &token, false).await;
+    let mut manager = mount_manager(&controller, &config, &token, BootState::Recovery).await;
     invoke(&controller, &["remove", ID]).await.unwrap();
     let data = super::super::storage::directory(UID);
     assert!(data.join("data/app-pid").is_file());

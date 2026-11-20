@@ -18,18 +18,22 @@ pub(super) fn directory(uid: u32) -> PathBuf {
     Path::new(ROOT).join(uid.to_string())
 }
 
-pub(super) fn owned(root: &Path, id: &str, slot: &Slot) -> io::Result<bool> {
-    let dir = root.join(slot.uid.to_string());
-    match fs::symlink_metadata(&dir) {
+fn slot_directory(dir: &Path, uid: u32) -> io::Result<bool> {
+    match fs::symlink_metadata(dir) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Ok(m)
-            if m.is_dir() && m.uid() == 0 && m.gid() == slot.uid && m.mode() & 0o7777 == 0o710 => {}
+        Ok(m) if m.is_dir() && m.uid() == 0 && m.gid() == uid && m.mode() & 0o7777 == 0o710 => {}
         _ => return Err(bad("Invalid persistent installation slot")),
     }
-    require_safe_parents(&dir, 0)?;
+    require_safe_parents(dir, 0)?;
+    Ok(true)
+}
+
+fn owner_marker(dir: &Path, id: &str, slot: &Slot) -> io::Result<()> {
     let marker = dir.join(OWNER);
     let meta = fs::symlink_metadata(&marker)?;
-    if meta.uid() != 0
+    if !meta.is_file()
+        || meta.nlink() != 1
+        || meta.uid() != 0
         || meta.gid() != 0
         || meta.mode() & 0o7777 != 0o400
         || marketplace_artifacts::read_file(&marker, 256)?
@@ -37,7 +41,60 @@ pub(super) fn owned(root: &Path, id: &str, slot: &Slot) -> io::Result<bool> {
     {
         return Err(bad("Persistent UID belongs to another installation"));
     }
+    Ok(())
+}
+
+pub(super) fn owned(root: &Path, id: &str, slot: &Slot) -> io::Result<bool> {
+    let dir = root.join(slot.uid.to_string());
+    if !slot_directory(&dir, slot.uid)? {
+        return Ok(false);
+    }
+    owner_marker(&dir, id, slot)?;
     Ok(true)
+}
+
+fn data_exists(dir: &Path, uid: u32) -> io::Result<bool> {
+    match fs::symlink_metadata(dir.join("data")) {
+        Ok(m) if m.is_dir() && m.uid() == uid && m.gid() == uid && m.mode() & 0o7777 == 0o700 => {
+            Ok(true)
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+        _ => Err(bad("Invalid previously provisioned app data")),
+    }
+}
+
+pub(super) fn require_data(id: &str, slot: &Slot) -> io::Result<()> {
+    let root = Path::new(ROOT);
+    validate_root(root)?;
+    if !owned(root, id, slot)? || !data_exists(&directory(slot.uid), slot.uid)? {
+        return Err(bad("Previously provisioned app data is missing"));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub(super) struct CommittedDataUnavailable(pub io::Error);
+
+impl std::fmt::Display for CommittedDataUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Cannot start with unavailable committed data: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for CommittedDataUnavailable {}
+
+fn validate_root(root: &Path) -> io::Result<()> {
+    require_safe_parents(root, 0)?;
+    let stat = fs::symlink_metadata(root)?;
+    if !stat.is_dir() || stat.uid() != 0 || stat.gid() != 0 || stat.mode() & 0o7777 != 0o711 {
+        return Err(bad("Unsafe application storage root"));
+    }
+    Ok(())
 }
 
 pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
@@ -61,24 +118,10 @@ pub(super) fn claim(id: &str, slot: &Slot) -> io::Result<()> {
         }
         Err(e) => return Err(e),
     }
-    let stat = fs::symlink_metadata(root)?;
-    if !stat.is_dir() || stat.uid() != 0 || stat.gid() != 0 || stat.mode() & 0o7777 != 0o711 {
-        return Err(bad("Unsafe application storage root"));
-    }
+    validate_root(root)?;
     File::open(parent)?.sync_all()?;
     let root_directory = File::open(root)?;
     if owned(root, id, slot)? {
-        if slot.active.is_some() && slot.storage_claimed == Some(true) {
-            // A committed release already used this data tree. Do not recreate it empty.
-            let data = fs::symlink_metadata(directory(slot.uid).join("data"))?;
-            if !data.is_dir()
-                || data.uid() != slot.uid
-                || data.gid() != slot.uid
-                || data.mode() & 0o7777 != 0o700
-            {
-                return Err(bad("Invalid previously provisioned app data"));
-            }
-        }
         return root_directory.sync_all();
     }
     if slot.storage_claimed == Some(true) {
@@ -123,6 +166,89 @@ fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+const PROVISION_LOCK: &str = ".provision.lock";
+
+// The writer fence excludes the provisioner. Never recurse into a first-claim reservation.
+fn check_empty_reservation(dir: &Path, id: &str, slot: &Slot) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() == OWNER {
+            owner_marker(dir, id, slot)?;
+        } else if entry.file_name() == PROVISION_LOCK {
+            let m = fs::symlink_metadata(entry.path())?;
+            if !m.is_file()
+                || m.nlink() != 1
+                || m.uid() != 0
+                || m.gid() != 0
+                || m.mode() & 0o7777 != 0o600
+                || m.len() != 0
+            {
+                return Err(bad("Invalid application provision lock"));
+            }
+        } else {
+            return Err(bad("Unexpected file in interrupted storage reservation"));
+        }
+    }
+    Ok(())
+}
+
+fn unclaim_path(uid: u32) -> PathBuf {
+    Path::new(ROOT).join(format!(".unclaim-{uid}"))
+}
+
+pub(super) fn reconcile_first_claim(id: &str, slot: &Slot) -> io::Result<bool> {
+    let root = Path::new(ROOT);
+    require_safe_parents(root, 0)?;
+    if slot.storage_claimed != Some(true)
+        && fs::symlink_metadata(root).is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
+    {
+        return Ok(false);
+    }
+    validate_root(root)?;
+    let dir = directory(slot.uid);
+    let retired = unclaim_path(slot.uid);
+    if owned(root, id, slot)? {
+        if slot.storage_claimed == Some(false) || slot_directory(&retired, slot.uid)? {
+            return Err(bad("Conflicting first storage claim"));
+        }
+        if data_exists(&dir, slot.uid)? {
+            return Ok(true);
+        }
+        check_empty_reservation(&dir, id, slot)?;
+        rename_new(&dir, &retired)?;
+    } else if slot_directory(&retired, slot.uid)? {
+        // Until the journal acknowledges the rename, cleanup cannot have removed the marker.
+        if slot.storage_claimed != Some(false) {
+            owner_marker(&retired, id, slot)?;
+        }
+        check_empty_reservation(&retired, id, slot)?;
+    } else if slot.storage_claimed == Some(true) {
+        return Err(bad("Previously claimed installation storage is missing"));
+    }
+    // The rename is durable before the journal records that no user data exists.
+    File::open(root)?.sync_all()?;
+    Ok(false)
+}
+
+pub(super) fn finish_unclaim(id: &str, slot: &Slot) -> io::Result<()> {
+    let retired = unclaim_path(slot.uid);
+    if slot_directory(&retired, slot.uid)? {
+        check_empty_reservation(&retired, id, slot)?;
+        for name in [PROVISION_LOCK, OWNER] {
+            match fs::remove_file(retired.join(name)) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+                result => result?,
+            }
+        }
+        fs::remove_dir(&retired)?;
+    }
+    // A previous attempt may have removed the directory and failed its final sync.
+    match File::open(ROOT) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result?.sync_all(),
+    }
 }
 
 pub(super) fn purge(id: &str, slot: &Slot) -> io::Result<()> {

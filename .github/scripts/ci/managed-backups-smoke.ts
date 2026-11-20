@@ -514,60 +514,64 @@ export async function runManagedBackupsSmoke(): Promise<number> {
             )
             imageBuilt = true
         }
-        // Execute the opt-in regression in a fresh root container, before any
-        // appliance state is created. Only /tmp and the disposable layer receive
-        // synthetic writes; the Linux checkout and its dependencies stay read-only.
-        const fixtureImageId = await command(
-            ['docker', 'image', 'inspect', '--format', '{{.Id}}', image],
-            'resolve multi-GiB fixture image',
-        )
-        assert.match(fixtureImageId, /^sha256:[a-f0-9]{64}$/u)
-        largeFixturePending = true
-        await command(
-            [
-                'docker',
-                'create',
-                '--name',
-                largeFixture,
-                '--label',
-                SMOKE_RUN_LABEL + '=' + scope,
-                '--network',
-                'none',
-                '--user',
-                '0:0',
-                '--no-healthcheck',
-                '--mount',
-                'type=bind,source=' + repositoryRoot + ',target=/fixture,readonly',
-                '--workdir',
-                '/fixture',
-                '--env',
-                'RENTNERPROXY_LARGE_BACKUP_INTEGRATION=1',
-                '--env',
-                'TMPDIR=/tmp',
-                '--entrypoint',
-                '/usr/local/bin/bun',
-                fixtureImageId,
-                '--no-env-file',
-                'test',
-                './web/src/tests/tooling/docker/production/backup-multi-gib.integration.test.ts',
-            ],
-            'create multi-GiB backup fixture',
-        )
-        // The outer owner bounds Bun's 600-second test and force-removes the
-        // labelled container in finally even if the Docker attach client times out.
-        const largeOutput = await command(
-            ['docker', 'start', '--attach', largeFixture],
-            'multi-GiB encrypted backup roundtrip',
-            660_000,
-        )
-        const largeResult =
-            /^Multi-GiB backup payloadBytes=(\d{1,12}) peakRssBytes=(\d{1,12})$/mu.exec(largeOutput)
-        assert.ok(largeResult, 'Opt-in multi-GiB test did not report completion')
-        assert.equal(Number(largeResult[1]), 3 * 1024 ** 3 + 65_537)
-        assert.ok(Number(largeResult[2]) > 0 && Number(largeResult[2]) < 512 * 1024 ** 2)
-        passed(
-            'real multi-GiB export, encryption, streamed download and managed restore preserve bytes with bounded memory',
-        )
+        if (environment.RENTNERPROXY_LARGE_BACKUP_INTEGRATION === '1') {
+            // The checkout stays read-only and all synthetic writes stay in the disposable container.
+            setStage('large-backup-create')
+            const fixtureImageId = await command(
+                ['docker', 'image', 'inspect', '--format', '{{.Id}}', image],
+                'resolve multi-GiB fixture image',
+            )
+            assert.match(fixtureImageId, /^sha256:[a-f0-9]{64}$/u)
+            largeFixturePending = true
+            await command(
+                [
+                    'docker',
+                    'create',
+                    '--name',
+                    largeFixture,
+                    '--label',
+                    SMOKE_RUN_LABEL + '=' + scope,
+                    '--network',
+                    'none',
+                    '--user',
+                    '0:0',
+                    '--no-healthcheck',
+                    '--mount',
+                    'type=bind,source=' + repositoryRoot + ',target=/fixture,readonly',
+                    '--workdir',
+                    '/fixture',
+                    '--env',
+                    'RENTNERPROXY_LARGE_BACKUP_INTEGRATION=1',
+                    '--env',
+                    'TMPDIR=/tmp',
+                    '--entrypoint',
+                    '/usr/local/bin/bun',
+                    fixtureImageId,
+                    '--no-env-file',
+                    'test',
+                    './web/src/tests/tooling/docker/production/backup-multi-gib.integration.test.ts',
+                ],
+                'create multi-GiB backup fixture',
+            )
+            // Cleanup owns the labelled container even when the Docker attach client times out.
+            setStage('large-backup-roundtrip')
+            const largeOutput = await command(
+                ['docker', 'start', '--attach', largeFixture],
+                'multi-GiB encrypted backup roundtrip',
+                660_000,
+            )
+            const largeResult =
+                /^Multi-GiB backup payloadBytes=(\d{1,12}) peakRssBytes=(\d{1,12})$/mu.exec(
+                    largeOutput,
+                )
+            assert.ok(largeResult, 'Opt-in multi-GiB test did not report completion')
+            assert.equal(Number(largeResult[1]), 3 * 1024 ** 3 + 65_537)
+            assert.ok(Number(largeResult[2]) > 0 && Number(largeResult[2]) < 512 * 1024 ** 2)
+            passed(
+                'real multi-GiB export, encryption, streamed download and managed restore preserve bytes with bounded memory',
+            )
+            setStage('setup')
+        }
         // Random project identities are checked before creating anything; no pre-existing state is admitted.
         assert.equal(
             await command(

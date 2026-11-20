@@ -31,6 +31,7 @@ import { verifyPublishedBackup } from '../../../../scripts/backup/publication.ts
 import { copyCoverageFixtureModules } from './coverageFixture.ts'
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url))
+const testController = '/usr/local/libexec/rentnerproxy-test-controller'
 const actorId = '00000000-0000-4000-8000-000000000001'
 const oldSession = '00000000-0000-4000-8000-000000000002'
 const liveSession = '00000000-0000-4000-8000-000000000003'
@@ -160,10 +161,20 @@ export async function runBackupOrchestrationFixture(scenario: string) {
                 '/tmp/rentnerproxy-restore.': join(directory, 'rendered-restore.'),
             },
             {
-                'scripts/backup/app-state.ts': {
-                    '/usr/local/bin/rentnerproxy-controller':
-                        '/usr/local/libexec/rentnerproxy-test-controller',
+                // Bootstrap writes in this fixture use the remapped scratch state directory.
+                'docker/web/bootstrap-secrets.ts': {
+                    '/usr/local/bin/rentnerproxy-controller': join(
+                        directory,
+                        'native-bootstrap-unavailable',
+                    ),
                 },
+                ...((await Bun.file(testController).exists())
+                    ? {
+                          'scripts/backup/app-state.ts': {
+                              '/usr/local/bin/rentnerproxy-controller': testController,
+                          },
+                      }
+                    : {}),
             },
         )
         const storage = (await import(

@@ -15,24 +15,25 @@ fn is_app(uid: u32) -> bool {
 }
 
 pub(crate) fn uid_in_use(uid: u32) -> io::Result<bool> {
-    retry_uid_scan(|deadline| {
-        writers_present(Path::new("/proc"), &[], deadline, |current| current == uid)
-    })
+    writers_present(Path::new("/proc"), &[], |current| current == uid)
 }
 
 pub(crate) fn verify_uid_stopped(uid: u32) -> io::Result<()> {
     require_stopped(uid_in_use(uid)?)
 }
 
-fn retry_uid_scan(mut scan: impl FnMut(Instant) -> io::Result<bool>) -> io::Result<bool> {
-    let deadline = Instant::now() + SCAN_BUDGET;
+fn retry_scan(
+    mut now: impl FnMut() -> Instant,
+    mut scan: impl FnMut(Instant) -> io::Result<bool>,
+) -> io::Result<bool> {
+    let deadline = now() + SCAN_BUDGET;
     let mut retries = 2;
     loop {
         match scan(deadline) {
             Err(error)
                 if error.kind() == io::ErrorKind::InvalidData
                     && retries > 0
-                    && Instant::now() < deadline =>
+                    && now() < deadline =>
             {
                 retries -= 1;
                 thread::yield_now();
@@ -75,12 +76,7 @@ fn verify_writers_stopped(
     exclusions: &[u32],
     is_writer: impl Fn(u32) -> bool,
 ) -> io::Result<()> {
-    require_stopped(writers_present(
-        proc,
-        exclusions,
-        Instant::now() + SCAN_BUDGET,
-        is_writer,
-    )?)
+    require_stopped(writers_present(proc, exclusions, is_writer)?)
 }
 
 fn require_stopped(present: bool) -> io::Result<()> {
@@ -93,13 +89,14 @@ fn require_stopped(present: bool) -> io::Result<()> {
 fn writers_present(
     proc: &Path,
     exclusions: &[u32],
-    deadline: Instant,
     is_writer: impl Fn(u32) -> bool,
 ) -> io::Result<bool> {
-    if inspect(&proc.join("self/status"))?.uids.is_none() {
-        return Err(invalid_status());
-    }
-    scan_tasks(proc, exclusions, deadline, &is_writer, None)
+    retry_scan(Instant::now, |deadline| {
+        if inspect(&proc.join("self/status"))?.uids.is_none() {
+            return Err(invalid_status());
+        }
+        scan_tasks(proc, exclusions, deadline, &is_writer, None)
+    })
 }
 
 fn scan_tasks(

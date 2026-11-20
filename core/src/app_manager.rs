@@ -230,6 +230,17 @@ impl Manager {
         mut boot_lock_retries: Option<&mut usize>,
     ) -> io::Result<()> {
         let slot = self.journal.slot(id)?.clone();
+        // Historical committed generations predate the explicit storage acknowledgement.
+        let committed_data =
+            slot.active.is_some() && (slot.generation > 0 || slot.storage_claimed == Some(true));
+        let admit_storage = || {
+            if committed_data {
+                storage::require_data(id, &slot)
+                    .map_err(|e| io::Error::new(e.kind(), storage::CommittedDataUnavailable(e)))?;
+            }
+            Ok::<_, io::Error>(())
+        };
+        admit_storage()?;
         let config = self.config.clone();
         let package = self
             .during(Operation::Launch(id), async {
@@ -265,6 +276,8 @@ impl Manager {
             .filter(|n| *n <= MAX_GENERATION)
             .ok_or_else(|| bad("Generation limit reached"))?;
         let writer = self.fence(id).await?;
+        // The old UID can change its own data directory's mode until its fence completes.
+        admit_storage()?;
         let mut slot = self.journal.slot(id)?.clone();
         slot.generation = generation;
         slot.require_recovery();
@@ -286,11 +299,13 @@ impl Manager {
         }
         // A crash between filesystem publication and its acknowledgement is ambiguous.
         // Legacy/unknown evidence keeps backup's conservative positive-generation checks.
-        if slot.storage_claimed == Some(false) {
-            slot.storage_claimed = None;
-            self.journal.save(id, slot.clone())?;
+        if !committed_data {
+            if slot.storage_claimed == Some(false) {
+                slot.storage_claimed = None;
+                self.journal.save(id, slot.clone())?;
+            }
+            storage::claim(id, &slot)?;
         }
-        storage::claim(id, &slot)?;
         if slot.storage_claimed != Some(true) {
             slot.storage_claimed = Some(true);
             self.journal.save(id, slot.clone())?;
@@ -513,6 +528,13 @@ impl Manager {
             }
             .await;
             if let Err(e) = result {
+                if e.get_ref()
+                    .is_some_and(|cause| cause.is::<storage::CommittedDataUnavailable>())
+                {
+                    // Boot already fenced this slot. Its release and grants still match an offline repair.
+                    eprintln!("Installation {id} remains stopped: {e}");
+                    continue;
+                }
                 let mut slot = self.journal.slot(&id)?.clone();
                 slot.require_recovery();
                 self.journal.save(&id, slot)?;

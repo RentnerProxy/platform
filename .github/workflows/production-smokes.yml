@@ -5,7 +5,12 @@ name: Production Smokes
     push:
         branches:
             - main
-    workflow_dispatch: null
+    workflow_dispatch:
+        inputs:
+            large_backup:
+                description: 'Run the optional 3 GiB backup and restore stress test'
+                type: boolean
+                default: false
 permissions:
     contents: read
 concurrency:
@@ -118,6 +123,8 @@ jobs:
               if: needs.changes.outputs.runtime == 'true'
               run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts production
             - name: 'Managed backups, secure downloads and recovery'
+              env:
+                  RENTNERPROXY_LARGE_BACKUP_INTEGRATION: ${{ inputs.large_backup && '1' || '0' }}
               if: needs.changes.outputs.runtime == 'true'
               run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts backups
             - name: Production appliance request draining

@@ -3,12 +3,7 @@ use std::{fs, path::Path};
 use super::{Consumers, inspect_live_entry, is_app, parse_status, verify_writers_stopped};
 
 fn app_writers_present(root: &Path) -> std::io::Result<bool> {
-    super::writers_present(
-        root,
-        &[],
-        std::time::Instant::now() + super::SCAN_BUDGET,
-        is_app,
-    )
+    super::writers_present(root, &[], is_app)
 }
 
 #[test]
@@ -37,7 +32,11 @@ fn fails_closed_for_truncated_or_unreadable_identity() {
     write_status(root, "self", "S", [0, 0, 0, 0]);
     fs::create_dir(root.join("42")).unwrap();
     assert!(verify_writers_stopped(root, &[], is_app).is_err());
-    fs::write(root.join("42/status"), "State:\tS\nUid:\t0 0 0\n").unwrap();
+    fs::write(
+        root.join("42/status"),
+        "State:\tS\nThreads:\t1\nUid:\t0 0 0\n",
+    )
+    .unwrap();
     assert!(verify_writers_stopped(root, &[], is_app).is_err());
     assert!(app_writers_present(root).is_err());
     assert!(parse_status(b"State:\tS\nUid:\t0 0 0 0 0\n").is_err());
@@ -119,7 +118,10 @@ fn live_leaders_require_every_worker_identity() {
     assert!(census().is_err());
     let tasks = root.join("80/task");
     write_status(&tasks, "80", "S", [0; 4]);
-    assert!(census().is_err());
+    assert_eq!(
+        census().unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
     write_status(&tasks, "81", "S", [0, 0, 20_000, 0]);
     assert!(census().unwrap());
     write_status(&tasks, "81", "S", [0; 4]);
@@ -135,51 +137,72 @@ fn live_leaders_require_every_worker_identity() {
 }
 
 #[test]
-fn uid_census_retries_churn_with_one_shared_deadline() {
-    let fixture = tempfile::tempdir().unwrap();
-    let root = fixture.path();
-    write_status(root, "self", "S", [0; 4]);
-    write_status(root, "80", "S", [0; 4]);
-    fs::write(
-        root.join("80/status"),
-        "State: S\nUid: 0 0 0 0\nThreads: 2\n",
+fn census_retries_only_inconclusive_results_with_one_shared_deadline() {
+    use std::{io::ErrorKind, time::Instant};
+
+    let start = Instant::now();
+    let mut deadlines = Vec::new();
+    let present = super::retry_scan(
+        || start,
+        |deadline| {
+            deadlines.push(deadline);
+            if deadlines.len() == 1 {
+                return Err(ErrorKind::InvalidData.into());
+            }
+            Ok(false)
+        },
     )
     .unwrap();
-    let tasks = root.join("80/task");
-    write_status(&tasks, "80", "S", [0; 4]);
+    assert!(!present);
+    assert_eq!(deadlines, [start + super::SCAN_BUDGET; 2]);
 
-    let mut deadlines = Vec::new();
-    let present = super::retry_uid_scan(|deadline| {
-        deadlines.push(deadline);
-        let result = super::writers_present(root, &[], deadline, is_app);
-        if deadlines.len() == 1 {
-            assert_eq!(
-                result.as_ref().unwrap_err().kind(),
-                std::io::ErrorKind::InvalidData
-            );
-            write_status(&tasks, "81", "S", [20_000; 4]);
-        }
-        result
-    })
-    .unwrap();
-    assert!(present);
-    assert_eq!(deadlines, [deadlines[0]; 2]);
-    fs::remove_dir_all(tasks.join("81")).unwrap();
+    for (kind, expected_attempts) in [
+        (ErrorKind::InvalidData, 3),
+        (ErrorKind::PermissionDenied, 1),
+        (ErrorKind::TimedOut, 1),
+    ] {
+        let mut attempts = 0;
+        let error = super::retry_scan(
+            || start,
+            |_| {
+                attempts += 1;
+                Err(kind.into())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert_eq!(attempts, expected_attempts);
+    }
     let mut attempts = 0;
-    let error = super::retry_uid_scan(|deadline| {
-        attempts += 1;
-        super::writers_present(root, &[], deadline, is_app)
-    })
+    assert!(
+        super::retry_scan(
+            || start,
+            |_| {
+                attempts += 1;
+                Ok(true)
+            }
+        )
+        .unwrap()
+    );
+    assert_eq!(attempts, 1);
+}
+
+#[test]
+fn inconclusive_census_stops_at_the_deadline() {
+    let start = std::time::Instant::now();
+    let deadline = start + super::SCAN_BUDGET;
+    let mut times = [start, deadline].into_iter();
+    let mut attempts = 0;
+    let error = super::retry_scan(
+        || times.next().unwrap(),
+        |limit| {
+            assert_eq!(limit, deadline);
+            attempts += 1;
+            Err(std::io::ErrorKind::InvalidData.into())
+        },
+    )
     .unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-    assert_eq!(attempts, 3);
-    let mut attempts = 0;
-    let error = super::retry_uid_scan(|_| {
-        attempts += 1;
-        Err(std::io::ErrorKind::PermissionDenied.into())
-    })
-    .unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     assert_eq!(attempts, 1);
 }
 

@@ -30,6 +30,21 @@ impl Manager {
                 .post("removable", json!({"identity":identity(id,&slot)}))
                 .await?;
         }
+        if slot.generation > 0
+            && slot.active.is_none()
+            && slot.previous.is_none()
+            && slot.written.is_none()
+            && !slot.database_provisioned
+        {
+            let claimed = storage::reconcile_first_claim(id, &slot)?;
+            if slot.storage_claimed != Some(claimed) {
+                slot.storage_claimed = Some(claimed);
+                self.journal.save(id, slot.clone())?;
+            }
+            if !claimed {
+                storage::finish_unclaim(id, &slot)?;
+            }
+        }
         slot.active = None;
         slot.candidate = None;
         slot.previous = None;
