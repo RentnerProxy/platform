@@ -1,11 +1,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
 use marketplace_app_pipeline::package::execute;
-use marketplace_artifacts::{FileIdentity, file_identity, invalid, read_file};
+use marketplace_artifacts::{
+    FileIdentity, StreamVerification, file_identity, invalid, read_file, verify_stream,
+};
 use rentnerproxy_app_contracts::{DownloadAsset, Package};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -28,12 +31,12 @@ struct Receipt {
     linkage: Value,
 }
 
-pub(super) fn stage(
+pub(super) fn stage<R: Read>(
     store: &Path,
     package: &Package<'_>,
     target: &str,
     allow_cache_replacement: bool,
-    fetch: impl FnOnce(&DownloadAsset<'_>, &Path) -> io::Result<()>,
+    fetch: impl FnOnce(&DownloadAsset<'_>) -> io::Result<R>,
 ) -> io::Result<PathBuf> {
     let asset = package.release_assets().archive;
     if !(1..=COMPRESSED_LIMIT).contains(&asset.size_bytes) {
@@ -65,9 +68,7 @@ pub(super) fn stage(
     if download_required {
         let download = filesystem::private_workspace(&archives, DOWNLOAD_WORKSPACE)?;
         let incomplete = download.path().join("archive");
-        fetch(&asset, &incomplete)?;
-        verify_archive(&incomplete, &identity)?;
-        filesystem::sync_file(&incomplete)?;
+        write_download(fetch(&asset)?, &incomplete, &identity)?;
         fs::rename(&incomplete, &archive)?;
     } else {
         filesystem::sync_file(&archive)?;
@@ -144,6 +145,19 @@ pub(super) fn stage(
     }
     filesystem::sync_directory(&packages)?;
     Ok(destination)
+}
+
+pub(super) fn write_download(
+    source: impl Read,
+    destination: &Path,
+    identity: &FileIdentity,
+) -> io::Result<()> {
+    if verify_stream(source, identity, Some(destination))? != StreamVerification::Verified {
+        return Err(invalid(
+            "Compressed package differs from its signed identity",
+        ));
+    }
+    filesystem::sync_file(destination)
 }
 
 fn verify_archive(path: &Path, identity: &FileIdentity) -> io::Result<()> {

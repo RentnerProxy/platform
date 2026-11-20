@@ -4,7 +4,9 @@ use std::{
     thread,
 };
 
-use marketplace_artifacts::digest;
+use marketplace_artifacts::{FileIdentity, digest};
+
+use crate::app_install::package::write_download;
 
 use super::{Client, DownloadAsset, Duration, Http, Instant, Url, release_redirect_allowed};
 
@@ -100,9 +102,13 @@ fn metadata_limits_headers_and_streamed_bytes() {
 fn archive_keeps_only_the_exact_signed_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let destination = temp.path().join("archive");
-    let hash = digest(b"yes");
+    let expected = FileIdentity {
+        sha256: digest(b"yes"),
+        size_bytes: 3,
+    };
     for (head, content, accepted) in [
         ("200 OK", &b"no!"[..], false),
+        ("200 OK", b"ye", false),
         ("200 OK", b"longer", false),
         ("200 OK\r\nContent-Length: 6", b"longer", false),
         ("503 Unavailable", b"", false),
@@ -111,10 +117,13 @@ fn archive_keeps_only_the_exact_signed_bytes() {
         let (http, server) = response(head, content);
         let asset = DownloadAsset {
             url: http.root.to_string(),
-            sha256: &hash,
-            size_bytes: 3,
+            sha256: &expected.sha256,
+            size_bytes: expected.size_bytes,
         };
-        assert_eq!(http.archive(&asset, &destination).is_ok(), accepted);
+        let result = http
+            .archive(&asset)
+            .and_then(|body| write_download(body, &destination, &expected));
+        assert_eq!(result.is_ok(), accepted);
         assert_eq!(destination.exists(), accepted);
         server.join().unwrap();
     }

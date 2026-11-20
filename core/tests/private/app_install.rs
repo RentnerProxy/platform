@@ -214,7 +214,7 @@ pub(crate) fn lifecycle_packages(
         .zip(archives)
         .map(|(v, bytes)| {
             installer
-                .prepare(&catalog, ID, v, None, |_, p| fs::write(p, bytes))
+                .prepare(&catalog, ID, v, None, |_| Ok(io::Cursor::new(bytes)))
                 .unwrap()
         })
         .collect();
@@ -295,7 +295,7 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
     installer.config.engine_capabilities.clear();
     assert!(
         installer
-            .prepare(&catalog, ID, VERSION, None, |_, _| panic!(
+            .prepare::<io::Empty>(&catalog, ID, VERSION, None, |_| panic!(
                 "incompatible package downloaded"
             ))
             .is_err()
@@ -309,26 +309,23 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
     let archive_hash = digest(&archive);
     assert!(
         installer
-            .prepare(&catalog, ID, VERSION, None, |_, path| fs::write(
-                path, b"partial"
-            ))
+            .prepare(&catalog, ID, VERSION, None, |_| Ok(&b"partial"[..]))
             .is_err()
     );
     assert!(!archives.join(&archive_hash).exists());
+    assert_eq!(fs::read_dir(&archives).unwrap().count(), 0);
     let partial = super::filesystem::private_workspace(&archives, ".download-")
         .unwrap()
         .keep();
     fs::write(partial.join("archive"), b"interrupted transfer").unwrap();
     let staged = installer
-        .prepare(&catalog, ID, VERSION, None, |asset, path| {
+        .prepare(&catalog, ID, VERSION, None, |asset| {
             assert!(
                 asset
                     .url
                     .starts_with("https://github.com/RentnerProxy/app-catalog/releases/download/")
             );
-            assert!(path.parent().unwrap().starts_with(&archives));
-            assert_ne!(path.parent().unwrap(), archives);
-            fs::write(path, &archive)
+            Ok(archive.as_slice())
         })
         .unwrap();
     assert!(!partial.exists());
@@ -411,18 +408,13 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
     );
     assert!(
         installer
-            .prepare(&catalog, ID, VERSION, None, |_, path| fs::write(
-                path,
-                b"invalid retry"
-            ))
+            .prepare(&catalog, ID, VERSION, None, |_| Ok(&b"invalid retry"[..]))
             .is_err()
     );
     assert_eq!(fs::read(&cached_archive).unwrap(), b"changed");
     assert_eq!(
         installer
-            .prepare(&catalog, ID, VERSION, None, |_, path| fs::write(
-                path, &archive
-            ))
+            .prepare(&catalog, ID, VERSION, None, |_| Ok(archive.as_slice()))
             .unwrap()
             .directory,
         staged.directory

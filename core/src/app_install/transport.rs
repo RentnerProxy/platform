@@ -1,12 +1,15 @@
 use std::{
     io::{self, Read},
-    path::Path,
     time::{Duration, Instant},
 };
 
-use marketplace_artifacts::{FileIdentity, StreamVerification, invalid, verify_stream};
+use marketplace_artifacts::invalid;
 use rentnerproxy_app_contracts::DownloadAsset;
-use reqwest::{StatusCode, Url, blocking::Client, redirect::Policy};
+use reqwest::{
+    StatusCode, Url,
+    blocking::{Client, Response},
+    redirect::Policy,
+};
 
 #[cfg(test)]
 #[path = "../../tests/private/app_install_transport.rs"]
@@ -99,7 +102,7 @@ impl Http {
         Ok(Some(bytes))
     }
 
-    pub(super) fn archive(&self, asset: &DownloadAsset<'_>, destination: &Path) -> io::Result<()> {
+    pub(super) fn archive(&self, asset: &DownloadAsset<'_>) -> io::Result<Response> {
         let response = self
             .package_client
             .get(&asset.url)
@@ -113,16 +116,7 @@ impl Http {
         {
             return Err(invalid("Package server returned an invalid response"));
         }
-        let expected = FileIdentity {
-            sha256: asset.sha256.to_owned(),
-            size_bytes: asset.size_bytes,
-        };
-        if verify_stream(response, &expected, Some(destination))? != StreamVerification::Verified {
-            return Err(invalid(
-                "Compressed package differs from its signed identity",
-            ));
-        }
-        Ok(())
+        Ok(response)
     }
 }
 

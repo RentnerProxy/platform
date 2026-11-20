@@ -1,8 +1,9 @@
 use crate::models::{DefaultSite, ProxyHost, ProxyHttpSettings, RedirectHost, TrustedCa};
 use aws_lc_rs::digest::{SHA256, digest};
+use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::ser::SerializeMap;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt;
 use std::sync::LazyLock;
 
 pub(super) static SNAPSHOT_LAYOUT: LazyLock<SnapshotLayout> = LazyLock::new(|| {
@@ -166,12 +167,7 @@ fn hash_snapshot(snapshot: &impl Serialize) -> String {
 
 pub(crate) fn revision_from_config(contents: &str) -> Option<String> {
     let config = serde_json::from_str::<ProbeConfig>(contents).ok()?;
-    config
-        .apps?
-        .http?
-        .servers
-        .get("rentnerproxy-probe")
-        .and_then(|server| find_revision(&server.routes))
+    find_revision(&config.apps?.http?.servers?.routes)
 }
 
 fn find_revision(routes: &[ProbeRoute]) -> Option<String> {
@@ -228,8 +224,38 @@ struct ProbeApps {
 
 #[derive(Deserialize)]
 struct ProbeHttp {
-    #[serde(default)]
-    servers: BTreeMap<String, ProbeServer>,
+    #[serde(default, deserialize_with = "deserialize_probe_server")]
+    servers: Option<ProbeServer>,
+}
+
+fn deserialize_probe_server<'de, D>(deserializer: D) -> Result<Option<ProbeServer>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct ProbeServerVisitor;
+
+    impl<'de> Visitor<'de> for ProbeServerVisitor {
+        type Value = Option<ProbeServer>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a map of Caddy HTTP servers")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut servers: A) -> Result<Self::Value, A::Error> {
+            let mut probe = None;
+            while let Some(name) = servers.next_key::<String>()? {
+                if name == "rentnerproxy-probe" {
+                    probe = Some(servers.next_value()?);
+                } else {
+                    // Consume the entire value without allocating its route and handler trees.
+                    servers.next_value::<IgnoredAny>()?;
+                }
+            }
+            Ok(probe)
+        }
+    }
+
+    deserializer.deserialize_map(ProbeServerVisitor)
 }
 
 #[derive(Deserialize)]

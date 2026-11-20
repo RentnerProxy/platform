@@ -173,6 +173,30 @@ fn private_probe_ignores_invalid_bodies_and_non_probe_handlers() {
 }
 
 #[test]
+fn private_probe_requires_complete_caddy_json() {
+    let configuration = validate_proxy_config(with_site(DefaultSite::default())).unwrap();
+    let rendered = render_config(Some(&configuration), &settings()).unwrap();
+    let escaped_name = rendered.replacen("rentnerproxy-probe", r"rentnerproxy\u002dprobe", 1);
+    assert_eq!(
+        revision_from_config(&escaped_name).as_deref(),
+        Some(configuration.revision.as_str())
+    );
+    assert_eq!(revision_from_config(&format!("{rendered} null")), None);
+
+    let mut config: Value = serde_json::from_str(&rendered).unwrap();
+    let servers = &mut config["apps"]["http"]["servers"];
+    let probe = servers["rentnerproxy-probe"].clone();
+    servers["zz-other-server"] = json!({"routes": [], "ignoredMarker": [true]});
+    let malformed = config
+        .to_string()
+        .replace(r#""ignoredMarker":[true]"#, r#""ignoredMarker":[}"#);
+    assert_eq!(revision_from_config(&malformed), None);
+
+    config["apps"]["http"]["servers"] = json!([probe]);
+    assert_eq!(revision_from_config(&config.to_string()), None);
+}
+
+#[test]
 fn default_site_rejects_wrong_shapes_bounds_urls_and_revision() {
     for value in [
         json!(null),

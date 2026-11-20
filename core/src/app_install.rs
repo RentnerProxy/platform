@@ -9,7 +9,7 @@ pub(crate) mod tests;
 
 use std::{
     fs::File,
-    io,
+    io::{self, Read},
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -91,8 +91,8 @@ impl Installer {
             |path, limit| transport.metadata(path, limit),
             OffsetDateTime::now_utc(),
         )?;
-        self.prepare(&catalog, app_id, version, None, |asset, path| {
-            transport.archive(asset, path)
+        self.prepare(&catalog, app_id, version, None, |asset| {
+            transport.archive(asset)
         })
     }
 
@@ -107,18 +107,18 @@ impl Installer {
         let (_, catalog) = self
             .checkpoint()?
             .ok_or_else(|| invalid("No verified catalog checkpoint"))?;
-        self.prepare(&catalog, app_id, version, Some(archive_sha256), |_, _| {
+        self.prepare::<io::Empty>(&catalog, app_id, version, Some(archive_sha256), |_| {
             Err(invalid("Verified archive is missing"))
         })
     }
 
-    fn prepare(
+    fn prepare<R: Read>(
         &self,
         trusted: &marketplace_app_catalog::TrustedCatalog,
         app_id: &str,
         version: &str,
         expected_hash: Option<&str>,
-        fetch: impl FnOnce(&rentnerproxy_app_contracts::DownloadAsset<'_>, &Path) -> io::Result<()>,
+        fetch: impl FnOnce(&rentnerproxy_app_contracts::DownloadAsset<'_>) -> io::Result<R>,
     ) -> io::Result<StagedPackage> {
         let document = parse_json(trusted.catalog_bytes())?;
         let catalog = self
