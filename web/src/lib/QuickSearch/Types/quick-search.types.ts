@@ -18,10 +18,11 @@ export interface QuickSearchEntity {
 }
 
 export type QuickSearchResult = QuickSearchEntity & {
-    readonly category: QuickSearchCategory | 'navigation' | 'settings' | 'actions'
+    readonly category: QuickSearchCategory | 'navigation' | 'settings' | 'actions' | 'apps'
     readonly entityId?: string | undefined
     readonly actionId?: QuickSearchActionId | undefined
 } & (
         | { readonly to: ApplicationNavigationItem['to']; readonly section?: never }
         | { readonly to: '/account'; readonly section: (typeof USER_SETTINGS_SECTIONS)[number] }
+        | { readonly to: '/apps/$installationId/{-$routeId}'; readonly installationId: string }
     )

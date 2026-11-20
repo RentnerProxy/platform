@@ -14,12 +14,12 @@ export const Route = createFileRoute('/_authenticated')({
 })
 
 function AuthenticatedLayout() {
-    const { user } = Route.useRouteContext()
+    const { user, sessionId } = Route.useRouteContext()
     const bootstrap = Route.useLoaderData()
 
     return (
         <AuthenticatedLanguageProvider key={user.id} bootstrap={bootstrap}>
-            <AuthenticatedRouteLayout user={user} />
+            <AuthenticatedRouteLayout user={user} sessionId={sessionId} />
         </AuthenticatedLanguageProvider>
     )
 }

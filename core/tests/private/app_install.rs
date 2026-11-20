@@ -18,6 +18,13 @@ use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::{Config, Installer};
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[path = "app_install/greeting.rs"]
+mod greeting;
+
 const PIN: &[u8] = include_bytes!("../fixtures/app-install/1.root.json");
 const ID: &str = "example.probe";
 const VERSION: &str = "1.0.0";
@@ -128,8 +135,7 @@ fn package(directory: &Path) -> (Value, Vec<u8>) {
 
 fn archive_fixture(directory: &Path, manifest: Value, backend: Vec<u8>) -> (Value, Vec<u8>) {
     let raw = serde_json::to_vec(&manifest).unwrap();
-    let mut tar = Vec::new();
-    for (path, mode, body) in [
+    let files = [
         ("app.json", 0o644, raw.clone()),
         ("bin/app", 0o755, backend),
         ("LICENSE", 0o644, b"MIT".to_vec()),
@@ -138,7 +144,22 @@ fn archive_fixture(directory: &Path, manifest: Value, backend: Vec<u8>) -> (Valu
             0o644,
             br#"{"openapi":"3.1.0","info":{"title":"Probe","version":"1"},"paths":{}}"#.to_vec(),
         ),
-    ] {
+    ];
+    let archive = pack_fixture(directory, files);
+    let sidecar = json!({"sizeBytes":1,"sha256":"a".repeat(64)});
+    let release = json!({"appId":ID,"version":manifest["version"],"source":manifest["source"],
+        "publisher":{"namespace":"example","name":"Fixture"},"packages":[{"manifest":manifest,
+        "archive":{"sha256":digest(&archive),"sizeBytes":archive.len()},"manifestSha256":digest(&raw),
+        "sbom":sidecar,"provenance":sidecar}]});
+    (release, archive)
+}
+
+fn pack_fixture<'a>(
+    directory: &Path,
+    files: impl IntoIterator<Item = (&'a str, usize, Vec<u8>)>,
+) -> Vec<u8> {
+    let mut tar = Vec::new();
+    for (path, mode, body) in files {
         let mut header = [0; 512];
         header[..path.len()].copy_from_slice(path.as_bytes());
         let octal = |field: &mut [u8], number| {
@@ -172,13 +193,7 @@ fn archive_fixture(directory: &Path, manifest: Value, backend: Vec<u8>) -> (Valu
         json!({"inputPath":input,"outputPath":output}),
     )
     .unwrap();
-    let archive = fs::read(output).unwrap();
-    let sidecar = json!({"sizeBytes":1,"sha256":"a".repeat(64)});
-    let release = json!({"appId":ID,"version":manifest["version"],"source":manifest["source"],
-        "publisher":{"namespace":"example","name":"Fixture"},"packages":[{"manifest":manifest,
-        "archive":{"sha256":digest(&archive),"sizeBytes":archive.len()},"manifestSha256":digest(&raw),
-        "sbom":sidecar,"provenance":sidecar}]});
-    (release, archive)
+    fs::read(output).unwrap()
 }
 
 #[cfg(all(

@@ -33,7 +33,9 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use super::{Bootstrap, LaunchConfig, VERSION, filesystem::connect_peer, record_id, wire_json};
+use super::{
+    Bootstrap, LaunchConfig, VERSION, filesystem::connect_peer, lease, record_id, wire_json,
+};
 
 const INSTALLATION: &str = "x-app-installation";
 const GENERATION: &str = "x-app-generation";
@@ -42,12 +44,14 @@ const IDEMPOTENCY: &str = "idempotency-key";
 const EVENT_CURSOR: &str = "last-event-id";
 const TRUSTED_APP_ID: &str = "x-rentnerproxy-app-id";
 const TRUSTED_APP_UID: &str = "x-rentnerproxy-app-uid";
-const MAX_JSON_BYTES: usize = 1_048_576;
-const MAX_HEADER_BYTES: usize = 16_384;
-const MAX_HEADERS: usize = 32;
+pub(crate) const MAX_JSON_BYTES: usize = 1_048_576;
+pub(crate) const MAX_HEADER_BYTES: usize = 16_384;
+pub(crate) const MAX_HEADERS: usize = 32;
 const MAX_CONNECTIONS: usize = 32;
-const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
-const RPC_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const RPC_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const APP_API_PREFIX: &str = "/app/v1/api/";
+pub(crate) const UI_LEASE: &str = "/internal/v1/app-ui/lease";
 const STREAM_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(super) struct Generation {
@@ -61,6 +65,12 @@ pub(super) struct Generation {
     gateway_uid: u32,
     bridge_auth: HeaderValue,
     lease_identity: Bytes,
+    app_target: Option<AppTarget>,
+}
+
+struct AppTarget {
+    socket: PathBuf,
+    authorization: HeaderValue,
 }
 
 impl Generation {
@@ -92,7 +102,18 @@ impl Generation {
                 })
                 .to_string(),
             ),
+            app_target: None,
         })
+    }
+
+    pub(super) fn set_app_target(&mut self, socket: PathBuf, credential: &str) -> io::Result<()> {
+        let mut authorization = identity_header(&format!("Bearer {credential}"))?;
+        authorization.set_sensitive(true);
+        self.app_target = Some(AppTarget {
+            socket,
+            authorization,
+        });
+        Ok(())
     }
 
     pub(super) async fn lease_expires_at(&self) -> io::Result<Option<u64>> {
@@ -160,7 +181,13 @@ pub(super) async fn serve(listener: UnixListener, generation: Arc<Generation>) -
                     let service = service_fn(move |request| {
                         let generation = Arc::clone(&generation);
                         async move {
-                            let response = match timeout(RPC_TIMEOUT, forward(&generation, peer, request)).await {
+                            let response = match timeout(RPC_TIMEOUT, async {
+                                if peer == Some(0) && generation.app_target.is_some() {
+                                    dispatch_app(&generation, request).await
+                                } else {
+                                    forward(&generation, peer, request).await
+                                }
+                            }).await {
                                 Ok(Ok(response)) => response,
                                 Ok(Err(problem)) => problem.response(),
                                 Err(_) => Problem::Deadline.response(),
@@ -179,6 +206,100 @@ pub(super) async fn serve(listener: UnixListener, generation: Arc<Generation>) -
             }
         }
     }
+}
+
+async fn require_lease(generation: &Generation) -> Result<(), Problem> {
+    match lease::check(generation).await {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(Problem::Identity),
+        Err(_) => Err(Problem::Unavailable),
+    }
+}
+
+async fn dispatch_app(
+    generation: &Generation,
+    request: Request<Incoming>,
+) -> Result<Response<Body>, Problem> {
+    let target = generation.app_target.as_ref().ok_or(Problem::Route)?;
+    let uri = request.uri();
+    if request.version() != Version::HTTP_11
+        || uri.scheme().is_some()
+        || uri.authority().is_some()
+        || uri.query().is_some()
+        || unique_header(request.headers(), INSTALLATION)? != Some(&generation.installation)
+        || unique_header(request.headers(), GENERATION)? != Some(&generation.generation)
+    {
+        return Err(Problem::Identity);
+    }
+    if request.method() == Method::GET && uri.path() == UI_LEASE {
+        if !collect(request.into_body()).await?.is_empty() {
+            return Err(Problem::Request);
+        }
+        require_lease(generation).await?;
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Body::empty())
+            .map_err(|_| Problem::Unavailable);
+    }
+    if request.method() != Method::POST
+        || !uri
+            .path()
+            .strip_prefix(APP_API_PREFIX)
+            .is_some_and(record_id)
+    {
+        return Err(Problem::Route);
+    }
+    let (parts, incoming) = request.into_parts();
+    let key = unique_header(&parts.headers, IDEMPOTENCY)?
+        .filter(|value| value.to_str().is_ok_and(record_id))
+        .ok_or(Problem::Request)?;
+    if !unique_header(&parts.headers, header::CONTENT_TYPE.as_str())?
+        .is_some_and(|value| media_type(value, "application/json"))
+    {
+        return Err(Problem::MediaType);
+    }
+    let body = collect(incoming).await?;
+    if !wire_json::valid(&body) {
+        return Err(Problem::Request);
+    }
+    let outgoing = Request::post(parts.uri)
+        .header(header::HOST, "localhost")
+        .header(header::CONNECTION, "close")
+        .header(header::AUTHORIZATION, &target.authorization)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(INSTALLATION, &generation.installation)
+        .header(GENERATION, &generation.generation)
+        .header(IDEMPOTENCY, key)
+        .body(Full::new(body))
+        .map_err(|_| Problem::Request)?;
+    require_lease(generation).await?;
+    let (response, _connection) = send_to_peer(&target.socket, generation.uid, outgoing)
+        .await
+        .map_err(|_| Problem::Unavailable)?;
+    if response.status() == StatusCode::CONFLICT {
+        return Response::builder()
+            .status(StatusCode::CONFLICT)
+            .body(Body::empty())
+            .map_err(|_| Problem::Unavailable);
+    }
+    if response.status() != StatusCode::OK
+        || !unique_header(response.headers(), header::CONTENT_TYPE.as_str())
+            .map_err(|_| Problem::Unavailable)?
+            .is_some_and(|value| media_type(value, "application/json"))
+    {
+        return Err(Problem::Unavailable);
+    }
+    let result = collect(response.into_body())
+        .await
+        .map_err(|_| Problem::Unavailable)?;
+    if !wire_json::valid(&result) {
+        return Err(Problem::Unavailable);
+    }
+    require_lease(generation).await?;
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(result))
+        .map_err(|_| Problem::Unavailable)
 }
 
 #[derive(Clone, Copy)]
@@ -370,7 +491,7 @@ async fn collect(body: Incoming) -> Result<Bytes, Problem> {
         })
 }
 
-struct PeerConnection(JoinHandle<()>);
+pub(crate) struct PeerConnection(JoinHandle<()>);
 
 impl Drop for PeerConnection {
     fn drop(&mut self) {
@@ -378,7 +499,7 @@ impl Drop for PeerConnection {
     }
 }
 
-async fn send_to_peer(
+pub(crate) async fn send_to_peer(
     socket: &Path,
     uid: u32,
     request: Request<Full<Bytes>>,

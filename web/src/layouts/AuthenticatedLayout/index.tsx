@@ -8,6 +8,7 @@ import AuthenticatedShell from './Components/ApplicationShell/index.tsx'
 import ThemeModeSwitch from '@/shared/Theme/index.tsx'
 import { TOAST_PROVIDER_PROPS } from '@/config/toast.config.ts'
 import CertificateJobProgressObserver from '@/features/Admin/ProxyHostManagement/CertificateJobs/CertificateJobProgressObserver.tsx'
+import AppUiProvider from '@/features/AppUi/AppUiProvider.tsx'
 import type { AuthenticatedRouteLayoutProps } from './Types/authenticated-route-layout.types.ts'
 import PageAlertsProvider from '@/shared/PageAlerts/PageAlertsProvider.tsx'
 import QuickActionsProvider from '@/shared/QuickActions/Components/QuickActionsProvider.tsx'
@@ -16,7 +17,7 @@ import DelayedLoadingPage from '@/shared/SystemStatePage/DelayedLoadingPage.tsx'
 import useAuthenticatedLayoutLogic from './Hooks/useAuthenticatedLayoutLogic.ts'
 import RestoreProgress from './Components/RestoreProgress.tsx'
 
-export default function AuthenticatedLayout({ user }: AuthenticatedRouteLayoutProps) {
+export default function AuthenticatedLayout({ user, sessionId }: AuthenticatedRouteLayoutProps) {
     const { state, handler } = useAuthenticatedLayoutLogic(user)
     return (
         <>
@@ -56,28 +57,37 @@ export default function AuthenticatedLayout({ user }: AuthenticatedRouteLayoutPr
                                 {...(state.selectNonce ? { nonce: state.selectNonce } : {})}
                             >
                                 <QuickActionsProvider key={user.id} permissions={user.permissions}>
-                                    <AuthenticatedShell
-                                        key={user.id}
+                                    <AppUiProvider
                                         user={user}
-                                        navigationGroupPreferences={
-                                            state.navigationGroupPreferences
-                                        }
-                                        onNavigationGroupChange={
-                                            handler.handleNavigationGroupChange
-                                        }
-                                        isLoggingOut={state.isLoggingOut}
-                                        onLogout={handler.handleLogout}
-                                        themeMode={state.themeMode}
-                                        themeControl={
-                                            <ThemeModeSwitch
-                                                isSaving={state.isSavingTheme}
-                                                onToggle={handler.handleToggleTheme}
-                                                themeMode={state.themeMode}
-                                            />
+                                        sessionId={sessionId ?? null}
+                                        theme={state.themeMode}
+                                        active={
+                                            !state.isIdentityPending && !state.restoreMaintenance
                                         }
                                     >
-                                        <Outlet />
-                                    </AuthenticatedShell>
+                                        <AuthenticatedShell
+                                            key={user.id}
+                                            user={user}
+                                            navigationGroupPreferences={
+                                                state.navigationGroupPreferences
+                                            }
+                                            onNavigationGroupChange={
+                                                handler.handleNavigationGroupChange
+                                            }
+                                            isLoggingOut={state.isLoggingOut}
+                                            onLogout={handler.handleLogout}
+                                            themeMode={state.themeMode}
+                                            themeControl={
+                                                <ThemeModeSwitch
+                                                    isSaving={state.isSavingTheme}
+                                                    onToggle={handler.handleToggleTheme}
+                                                    themeMode={state.themeMode}
+                                                />
+                                            }
+                                        >
+                                            <Outlet />
+                                        </AuthenticatedShell>
+                                    </AppUiProvider>
                                 </QuickActionsProvider>
                             </SelectProvider>
                         </InputProvider>

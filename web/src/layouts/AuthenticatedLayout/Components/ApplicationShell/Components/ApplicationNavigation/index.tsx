@@ -10,6 +10,7 @@ import {
     RefreshCw,
     KeyRound,
     LayoutDashboard,
+    Puzzle,
     Settings2,
     Network,
     Import,
@@ -21,9 +22,14 @@ import {
 } from 'lucide-react'
 
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
+import { useAppUiSlot } from '@/features/AppUi/AppUiProvider.tsx'
 
 import useApplicationNavigationLogic from './Hooks/useApplicationNavigationLogic.ts'
 import type { ApplicationNavigationProps } from '../../Types/application-shell.types.ts'
+
+const linkClassName =
+    'group relative inline-flex w-full flex-none cursor-pointer items-center gap-[0.65rem] border-y border-transparent px-3.5 py-[0.72rem] text-[0.85rem] font-[750] text-mist-300 no-underline transition-[background-color,border-color,color] duration-180 hover:border-white/10 hover:bg-white/[0.055] hover:text-white focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand-300 shell:-ml-[1.35rem] shell:w-[calc(100%+4.125rem)] shell:pl-[2.2rem] motion-reduce:transition-none'
+const activeProps = { className: 'border-brand-500/20 bg-brand-500/12 text-white' }
 
 export default function ApplicationNavigation({
     items,
@@ -33,6 +39,7 @@ export default function ApplicationNavigation({
 }: ApplicationNavigationProps) {
     const { t } = useTranslationStore()
     const { state, handler } = useApplicationNavigationLogic(items, groupPreferences, onGroupChange)
+    const apps = useAppUiSlot('navigation')
 
     return (
         <nav aria-label={t('shell.navigation')} className="grid content-start gap-2.5">
@@ -87,10 +94,8 @@ export default function ApplicationNavigation({
                                     to={item.to}
                                     activeOptions={{ exact: item.exact ?? false }}
                                     onClick={onNavigate}
-                                    className="group relative inline-flex w-full flex-none cursor-pointer items-center gap-[0.65rem] border-y border-transparent px-3.5 py-[0.72rem] text-[0.85rem] font-[750] text-mist-300 no-underline transition-[background-color,border-color,color] duration-180 hover:border-white/10 hover:bg-white/[0.055] hover:text-white focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand-300 shell:-ml-[1.35rem] shell:w-[calc(100%+4.125rem)] shell:pl-[2.2rem] motion-reduce:transition-none"
-                                    activeProps={{
-                                        className: 'border-brand-500/20 bg-brand-500/12 text-white',
-                                    }}
+                                    className={linkClassName}
+                                    activeProps={activeProps}
                                 >
                                     {item.to === '/' ? (
                                         <LayoutDashboard
@@ -204,6 +209,32 @@ export default function ApplicationNavigation({
                     </section>
                 )
             })}
+            {apps.length > 0 ? (
+                <section className="min-w-0">
+                    <h2 className="m-0 px-3.5 py-2 font-mono text-[0.67rem] font-bold tracking-[0.09em] text-mist-300 uppercase">
+                        {t('appUi.apps')}
+                    </h2>
+                    {apps.map((app) => (
+                        <Link
+                            key={app.installationId}
+                            to="/apps/$installationId/{-$routeId}"
+                            params={{ installationId: app.installationId, routeId: undefined }}
+                            search={{}}
+                            activeOptions={{ includeSearch: false }}
+                            onClick={onNavigate}
+                            className={linkClassName}
+                            activeProps={activeProps}
+                        >
+                            <Puzzle
+                                aria-hidden="true"
+                                className="size-4 shrink-0"
+                                strokeWidth={1.8}
+                            />
+                            <span className="truncate">{app.name}</span>
+                        </Link>
+                    ))}
+                </section>
+            ) : null}
         </nav>
     )
 }

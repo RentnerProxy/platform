@@ -1,0 +1,29 @@
+{
+    "formatVersion": 1,
+    "id": "rentnerproxy.greeting",
+    "version": "1.0.0",
+    "display": {
+        "name": "Greeting",
+        "summary": "Save a greeting in this RentnerProxy installation.",
+        "license": "MIT"
+    },
+    "requires": {
+        "runtimeProfile": "rentnerproxy-linux-v1",
+        "platformApi": ">=1.0.0 <2.0.0",
+        "appProtocol": ">=1.0.0 <2.0.0",
+        "uiBridge": ">=1.0.0 <2.0.0",
+        "engineCapabilities": []
+    },
+    "entrypoint": "bin/app",
+    "api": "api/openapi.json",
+    "ui": { "entrypoint": "ui/index.html", "slots": ["navigation"] },
+    "providers": [],
+    "capabilities": [],
+    "permissions": ["greeting-read", "greeting-write"],
+    "resources": {
+        "startupTimeoutMs": 10000,
+        "drainTimeoutMs": 2000,
+        "memoryMiB": 128,
+        "processLimit": 64
+    }
+}

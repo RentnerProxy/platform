@@ -303,24 +303,6 @@ export default function useProxyHostFormModalLogic({
         invalid?.scrollIntoView({ block: 'nearest' })
         validationFocusPending.current = false
     }, [formId, activeTab, validationAttempt])
-    const handleTabKeyDown: ProxyHostFormModalHandler['handleTabKeyDown'] = (event, tab) => {
-        const index = tabs.indexOf(tab)
-        const nextIndex =
-            event.key === 'ArrowRight'
-                ? (index + 1) % tabs.length
-                : event.key === 'ArrowLeft'
-                  ? (index - 1 + tabs.length) % tabs.length
-                  : event.key === 'Home'
-                    ? 0
-                    : event.key === 'End'
-                      ? tabs.length - 1
-                      : null
-        if (nextIndex === null) return
-        event.preventDefault()
-        const next = tabs[nextIndex]!
-        setSelectedTab(next)
-        document.getElementById(`${formId}-tab-${next}`)?.focus({ preventScroll: true })
-    }
     const challengeType = useStore(
         certificateRequest.form.store,
         (state) => state.values.challengeType,
@@ -441,7 +423,6 @@ export default function useProxyHostFormModalLogic({
         } satisfies Omit<ProxyHostFormModalState, 'form' | 'certificateRequestForm'>,
         handler: {
             setActiveTab: setSelectedTab,
-            handleTabKeyDown,
             handleBrowserCacheChange,
             handleToggleGuide,
             handleNextGuideStep,

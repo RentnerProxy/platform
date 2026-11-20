@@ -5,7 +5,7 @@ use serde::de::{DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Visi
 
 const MAX_MAGNITUDE: u64 = 9_007_199_254_740_991;
 
-pub(super) fn valid(body: &[u8]) -> bool {
+pub(crate) fn valid(body: &[u8]) -> bool {
     let mut deserializer = serde_json::Deserializer::from_slice(body);
     Check(0).deserialize(&mut deserializer).is_ok() && deserializer.end().is_ok()
 }

@@ -167,6 +167,7 @@ pub(super) struct Running {
     child: Child,
     pipe: Option<ChildStdin>,
     renewal: Option<Renewal>,
+    pub ui: Option<super::ui::Publication>,
 }
 
 pub(super) struct Renewal {
@@ -261,6 +262,7 @@ impl Running {
             child,
             pipe: None,
             renewal: None,
+            ui: None,
         }
     }
 
@@ -326,6 +328,7 @@ impl Running {
             child,
             pipe: Some(pipe),
             renewal: Some(renewal),
+            ui: None,
         })
     }
     pub fn exited(&mut self) -> io::Result<bool> {
@@ -342,6 +345,7 @@ impl Running {
             .await
     }
     pub fn close(&mut self) {
+        self.ui.take();
         self.renewal.take();
         self.pipe.take();
     }

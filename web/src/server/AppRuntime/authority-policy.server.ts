@@ -10,6 +10,11 @@ import {
     type AppRuntimePrincipal,
 } from './Types/authority.types.ts'
 
+type AppRuntimeAuthorizationSubject = Pick<
+    AppRuntimePrincipal,
+    'kind' | 'identity' | 'expiresAt' | 'permissions' | 'appPermissions' | 'grants'
+>
+
 export const APP_RUNTIME_SUPPORT_CAPABILITIES = {
     audit: { id: 'app.audit.record', scope: 'installation' },
     secret: { id: 'app.secret.read', scope: 'secretReferences' },
@@ -68,7 +73,7 @@ export function qualifyAppRuntimePermission(appId: string, permissionKey: string
 }
 
 export function isAppRuntimeGrantAuthorized(
-    principal: AppRuntimePrincipal,
+    principal: AppRuntimeAuthorizationSubject,
     grant: AppRuntimeGrant,
     extraPermissions: readonly PermissionKey[] = [],
 ): boolean {
@@ -101,7 +106,7 @@ export function isAppRuntimeGrantAuthorized(
 }
 
 export function isAppRuntimeAuthorized(
-    principal: AppRuntimePrincipal,
+    principal: AppRuntimeAuthorizationSubject,
     capability: AppRuntimeCapability,
     resourceId: string,
     extraPermissions: readonly PermissionKey[] = [],
@@ -115,7 +120,7 @@ export function isAppRuntimeAuthorized(
 }
 
 export function requireAppRuntimeAuthorization(
-    principal: AppRuntimePrincipal,
+    principal: AppRuntimeAuthorizationSubject,
     capability: AppRuntimeCapability,
     resourceId: string,
     extraPermissions: readonly PermissionKey[] = [],
@@ -125,7 +130,7 @@ export function requireAppRuntimeAuthorization(
 }
 
 export function requireAppRuntimePermission(
-    principal: AppRuntimePrincipal,
+    principal: AppRuntimeAuthorizationSubject,
     permissionKey: string,
 ): void {
     if (

@@ -4,18 +4,42 @@ on:
     pull_request:
         paths:
             - .github/workflows/app-runtime-reference.yml
+            - .github/scripts/ci/fixtures/app-greeting-native.sh
             - '.github/scripts/ci/fixtures/app-runtime-reference/**'
+            - 'core/src/app_install.rs'
+            - 'core/src/app_install/**'
+            - core/Cargo.lock
+            - core/Cargo.toml
+            - 'core/tests/private/app_install.rs'
+            - 'core/tests/private/app_install/**'
             - 'core/tests/fixtures/app-runtime-reference/**'
             - scripts/smoke/wait.ts
+            - 'web/src/lib/AppUi/**'
+            - web/src/server/security-headers.ts
             - 'web/src/tests/fixtures/app-runtime-reference/**'
+            - 'web/src/tests/fixtures/app-template/**'
+            - bun.lock
+            - package.json
     push:
         branches: [main]
         paths:
             - .github/workflows/app-runtime-reference.yml
+            - .github/scripts/ci/fixtures/app-greeting-native.sh
             - '.github/scripts/ci/fixtures/app-runtime-reference/**'
+            - 'core/src/app_install.rs'
+            - 'core/src/app_install/**'
+            - core/Cargo.lock
+            - core/Cargo.toml
+            - 'core/tests/private/app_install.rs'
+            - 'core/tests/private/app_install/**'
             - 'core/tests/fixtures/app-runtime-reference/**'
             - scripts/smoke/wait.ts
+            - 'web/src/lib/AppUi/**'
+            - web/src/server/security-headers.ts
             - 'web/src/tests/fixtures/app-runtime-reference/**'
+            - 'web/src/tests/fixtures/app-template/**'
+            - bun.lock
+            - package.json
     workflow_dispatch:
 
 permissions:
@@ -29,7 +53,7 @@ jobs:
     native:
         name: Native app runtime reference (${{ matrix.architecture }})
         runs-on: ${{ matrix.runner }}
-        timeout-minutes: 15
+        timeout-minutes: 25
         strategy:
             fail-fast: false
             matrix:
@@ -76,6 +100,30 @@ jobs:
                   test -s "$RUNNER_TEMP/app-runtime-reference/native.json"
                   test -s "$RUNNER_TEMP/app-runtime-reference/browser.json"
 
+            - name: Set up the controller Rust toolchain
+              shell: bash
+              run: |
+                  rustup toolchain install 1.99.1 --profile minimal
+                  rustup override set 1.99.1
+
+            - name: Restore Cargo dependency cache
+              uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: |
+                      ~/.cargo/registry/index
+                      ~/.cargo/registry/cache
+                      ~/.cargo/registry/src
+                      ~/.cargo/git/db
+                  key: ${{ runner.os }}-cargo-1.99.1-${{ hashFiles('core/Cargo.lock') }}
+
+            - name: Verify the signed Greeting package in Linux and Chromium
+              shell: bash
+              env:
+                  REPOSITORY_ID: ${{ github.repository_id }}
+              run: |
+                  bun install --no-env-file --frozen-lockfile --ignore-scripts
+                  bash .github/scripts/ci/fixtures/app-greeting-native.sh "$RUNNER_TEMP/app-runtime-reference" "$REPOSITORY_ID"
+
             - name: Upload native and browser evidence
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
@@ -85,3 +133,5 @@ jobs:
                   path: |
                       ${{ runner.temp }}/app-runtime-reference/native.json
                       ${{ runner.temp }}/app-runtime-reference/browser.json
+                      ${{ runner.temp }}/app-runtime-reference/greeting.json
+                      ${{ runner.temp }}/app-runtime-reference/greeting-browser.json
