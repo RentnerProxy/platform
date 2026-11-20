@@ -7,7 +7,7 @@ use std::{
     convert::Infallible,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use tokio::{net::UnixListener, time::Instant};
@@ -78,6 +78,8 @@ async fn start_detects_an_exited_broker_before_the_retirement_tick() {
         gateway: authority(&dir.path().join("web.sock"), |_, _| StatusCode::NO_CONTENT),
         running: BTreeMap::from([("exited".into(), Running::fixture_child(child))]),
         fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
     };
     manager
         .journal
@@ -127,34 +129,48 @@ async fn command(socket: &Path, body: Value) -> Value {
 }
 
 #[tokio::test]
-async fn staging_retires_its_exited_broker_before_the_download_finishes() {
+async fn staging_services_status_and_publishes_candidate_while_retirement_is_busy() {
     use std::process::Stdio;
     if unsafe { libc::geteuid() } != 0 {
         return;
     }
     let dir = tempfile::tempdir_in("/root").unwrap();
     let socket = dir.path().join("control.sock");
+    let listener = Arc::new(UnixListener::bind(&socket).unwrap());
     let mut child = tokio::process::Command::new("/bin/cat")
         .stdin(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .unwrap();
     let pipe = child.stdin.take().unwrap();
-    let fenced = Arc::new(tokio::sync::Notify::new());
-    let observed = fenced.clone();
+    let workers_busy = Arc::new(tokio::sync::Notify::new());
+    let allow_acknowledgment = Arc::new(AtomicBool::new(false));
+    let retire_calls = Arc::new(AtomicUsize::new(0));
     let mut manager = Manager {
-        listener: Some(Arc::new(UnixListener::bind(&socket).unwrap())),
+        listener: Some(Arc::clone(&listener)),
         config: dir.path().join("offline"),
         journal: Journal::open(&dir.path().join("journal")).unwrap(),
-        gateway: authority(&dir.path().join("web.sock"), move |action, body| {
-            assert_eq!(body["identity"]["installationId"], "staged");
-            if action == "workers-stopped" {
-                observed.notify_one();
+        gateway: authority(&dir.path().join("web.sock"), {
+            let workers_busy = Arc::clone(&workers_busy);
+            let allow_acknowledgment = Arc::clone(&allow_acknowledgment);
+            let retire_calls = Arc::clone(&retire_calls);
+            move |action, body| {
+                assert_eq!(body["identity"]["installationId"], "staged");
+                assert_eq!(body["identity"]["generation"], 1);
+                if action == "retire" {
+                    retire_calls.fetch_add(1, Ordering::SeqCst);
+                }
+                if action == "workers-stopped" && !allow_acknowledgment.load(Ordering::SeqCst) {
+                    workers_busy.notify_one();
+                    return StatusCode::CONFLICT;
+                }
+                StatusCode::NO_CONTENT
             }
-            StatusCode::NO_CONTENT
         }),
         running: BTreeMap::from([("staged".into(), Running::fixture_child(child))]),
         fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
     };
     let active = Release {
         version: "1.0.0".into(),
@@ -178,43 +194,70 @@ async fn staging_retires_its_exited_broker_before_the_download_finishes() {
         )
         .unwrap();
     let (release, downloaded) = tokio::sync::oneshot::channel();
-    let stage = manager.stage("staged", "fixture.staged".into(), "2.0.0".into(), async {
-        downloaded.await.map_err(io::Error::other)?;
-        Ok(StagedPackage {
-            directory: dir.path().into(),
-            manifest: json!({}),
-            archive_sha256: "c".repeat(64),
-            manifest_sha256: "d".repeat(64),
-            catalog_revision: 2,
-        })
-    });
+    let (stop_serving, serving) = tokio::sync::oneshot::channel();
+    let drive_manager = async {
+        manager
+            .stage("staged", "fixture.staged".into(), "2.0.0".into(), async {
+                downloaded.await.map_err(io::Error::other)?;
+                Ok(StagedPackage {
+                    directory: dir.path().into(),
+                    manifest: json!({}),
+                    archive_sha256: "c".repeat(64),
+                    manifest_sha256: "d".repeat(64),
+                    catalog_revision: 2,
+                })
+            })
+            .await
+            .unwrap();
+        let slot = manager.journal.slot("staged").unwrap();
+        assert!(slot.pending_fence);
+        assert_eq!(slot.candidate.as_ref().unwrap().version, "2.0.0");
+        tokio::select! {
+            result = manager.serve_control(&listener) => panic!("Control stopped: {result:?}"),
+            result = serving => result.unwrap(),
+        }
+        manager.shutdown().await.unwrap();
+    };
     let requests = async {
         assert_eq!(
             command(&socket, json!({"action":"status"})).await["result"]["staged"]["running"],
             true
         );
         drop(pipe);
-        assert_eq!(
-            command(&socket, json!({"action":"stop","installationId":"staged"})).await["ok"],
-            false
-        );
-        fenced.notified().await;
-        let state = command(&socket, json!({"action":"status"})).await;
-        assert_eq!(state["result"]["staged"]["running"], false);
-        assert_eq!(state["result"]["staged"]["recoveryRequired"], true);
+        workers_busy.notified().await;
+        timeout(Duration::from_secs(2), async {
+            let state = command(&socket, json!({"action":"status"})).await;
+            assert_eq!(state["result"]["staged"]["running"], false);
+            assert_eq!(state["result"]["staged"]["recoveryRequired"], true);
+            assert_eq!(state["result"]["staged"]["candidate"], Value::Null);
+            let stop = command(&socket, json!({"action":"stop","installationId":"staged"})).await;
+            assert_eq!(stop["ok"], false);
+        })
+        .await
+        .unwrap();
         release.send(()).unwrap();
+        let state = timeout(
+            Duration::from_secs(2),
+            command(&socket, json!({"action":"status"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(state["result"]["staged"]["candidate"], "2.0.0");
+        allow_acknowledgment.store(true, Ordering::SeqCst);
+        stop_serving.send(()).unwrap();
     };
-    let (result, ()) = timeout(Duration::from_secs(8), async {
-        tokio::join!(stage, requests)
+    timeout(Duration::from_secs(10), async {
+        tokio::join!(drive_manager, requests)
     })
     .await
     .unwrap();
-    result.unwrap();
     let slot = manager.journal.slot("staged").unwrap();
     assert!(slot.recovery_required && slot.desired_running && !slot.pending_fence);
+    assert_eq!(slot.generation, 1);
     assert_eq!(slot.authority_recorded, Some(true));
     assert_eq!(slot.active, Some(active));
     assert_eq!(slot.candidate.as_ref().unwrap().version, "2.0.0");
+    assert_eq!(retire_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -240,6 +283,8 @@ async fn pending_launch_services_status_unrelated_stop_and_exit_retirement() {
         }),
         running: BTreeMap::new(),
         fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
     };
     for (id, uid) in [("busy", 53351), ("stop", 53352), ("exited", 53353)] {
         manager
@@ -289,6 +334,7 @@ async fn pending_launch_services_status_unrelated_stop_and_exit_retirement() {
     .await
     .unwrap();
     result.unwrap();
+    manager.wait_for_drain("exited").await.unwrap();
     assert!(manager.journal.slot("busy").unwrap().pending_fence);
     assert!(!manager.journal.slot("stop").unwrap().desired_running);
     assert!(!manager.journal.slot("exited").unwrap().pending_fence);
@@ -438,6 +484,8 @@ async fn drain_retires_authority_while_a_writer_is_stopping_and_waits_for_worker
         gateway,
         running: BTreeMap::new(),
         fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
     };
     let uid = 53337;
     manager
@@ -494,6 +542,8 @@ async fn failed_retirement_keeps_other_slots_progressing_and_retries_on_tick() {
         gateway,
         running: BTreeMap::new(),
         fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
     };
     for (id, uid) in [("a", 53335), ("b", 53336)] {
         manager
@@ -518,7 +568,8 @@ async fn failed_retirement_keeps_other_slots_progressing_and_retries_on_tick() {
         manager.journal.slot("b").unwrap().authority_recorded,
         Some(true)
     );
-    manager.check_exits().await.unwrap();
+    manager.check_exits(None).unwrap();
+    manager.wait_for_drain("a").await.unwrap();
     assert!(!manager.journal.slot("a").unwrap().pending_fence);
     assert!(manager.running.is_empty());
 }

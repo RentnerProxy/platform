@@ -65,6 +65,8 @@ async fn privileged_postgres_uid_fencing() {
         gateway: Gateway::fixture(temp.path().join("absent.sock"), 0),
         running: BTreeMap::new(),
         fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
     };
     let first = manager.allocate("fixture.app".into()).await.unwrap().uid;
     let mut unrelated = Process::new("/bin/sleep")
@@ -328,6 +330,8 @@ async fn dependency_block_and_separate_purge_keep_the_uid_reserved() {
         gateway: Gateway::fixture(temp.path().join("absent.sock"), 0),
         running: BTreeMap::new(),
         fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
     };
     let slot = Slot {
         app_id: "example.test".into(),

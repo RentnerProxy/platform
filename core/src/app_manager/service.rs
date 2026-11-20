@@ -30,7 +30,10 @@ impl Manager {
         }
         slot.desired_running = false;
         self.journal.save(id, slot)?;
-        self.drain_slots(vec![id.to_owned()]).await
+        if !self.is_draining(id) {
+            self.begin_drain(id.to_owned())?;
+        }
+        self.wait_for_drain(id).await
     }
 
     async fn handle_during(&mut self, busy: &str, mut stream: UnixStream) -> io::Result<()> {
@@ -72,12 +75,22 @@ impl Manager {
         tokio::pin!(phase);
         let mut accepting = true;
         loop {
-            let connection = tokio::select! {
+            let stream = tokio::select! {
                 biased;
                 result = &mut phase => return result,
-                _ = tick.tick() => None,
+                _ = tick.tick() => {
+                    if let Err(error) = self.check_exits(exclude_from_retirement) {
+                        eprintln!("Application exit check failed: {error}");
+                    }
+                    self.journal.writable()?;
+                    continue;
+                }
+                Some(job) = self.drains.join_next_with_id(), if !self.drains.is_empty() => {
+                    self.report_exit(job)?;
+                    continue;
+                }
                 connection = listener.accept(), if accepting => match connection {
-                    Ok((stream, _)) => Some(stream),
+                    Ok((stream, _)) => stream,
                     Err(error) => {
                         eprintln!("Application control accept failed: {error}");
                         accepting = false;
@@ -86,12 +99,8 @@ impl Manager {
                 },
             };
             let servicing = async {
-                let side = match connection {
-                    Some(stream) => self.handle_during(busy, stream).await,
-                    None => self.check_other_exits(exclude_from_retirement).await,
-                };
-                if let Err(error) = side {
-                    eprintln!("Unrelated application control or retirement failed: {error}");
+                if let Err(error) = self.handle_during(busy, stream).await {
+                    eprintln!("Unrelated application control failed: {error}");
                 }
                 self.journal.writable()
             };

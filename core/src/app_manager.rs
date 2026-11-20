@@ -19,7 +19,7 @@ use runtime::Running;
 use serde_json::{Value, json};
 use service::Operation;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs::File,
     io,
     path::{Path, PathBuf},
@@ -29,7 +29,7 @@ use std::{
 };
 use tokio::{
     io::AsyncWriteExt,
-    task::JoinSet,
+    task::{Id, JoinError, JoinSet},
     time::{sleep, timeout},
 };
 
@@ -57,6 +57,15 @@ struct Manager {
     gateway: Gateway,
     running: BTreeMap<String, Running>,
     fence_cursor: String,
+    drains: JoinSet<io::Result<()>>,
+    draining: HashMap<Id, Drain>,
+}
+
+struct Drain {
+    installation_id: String,
+    uid: u32,
+    generation: u64,
+    fencing_authority: bool,
 }
 
 impl Manager {
@@ -405,6 +414,11 @@ impl Manager {
             return Err(bad("Invalid installation ID"));
         }
         if let Some(id) = cmd.id()
+            && !matches!(cmd, Command::Stage { .. } | Command::Stop { .. })
+        {
+            self.settle_exit(id).await?;
+        }
+        if let Some(id) = cmd.id()
             && let Some(slot) = self.journal.slots().get(id)
             && slot.removal != Removal::Installed
             && !matches!(cmd, Command::Remove { .. } | Command::Purge { .. })
@@ -502,6 +516,7 @@ impl Manager {
         let mut lock_retries = 7;
         let slots: Vec<_> = self.journal.slots().keys().cloned().collect();
         for id in slots {
+            self.settle_exit(&id).await?;
             let mut slot = self.journal.slot(&id)?.clone();
             let result = async {
                 match slot.removal {
@@ -548,11 +563,18 @@ impl Manager {
         let listener = Arc::new(control::bind()?);
         self.listener = Some(Arc::clone(&listener));
         self.reconcile().await?;
+        self.serve_control(&listener).await
+    }
+
+    async fn serve_control(&mut self, listener: &tokio::net::UnixListener) -> io::Result<()> {
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
-                _ = tick.tick() => self.check_exits().await?,
+                _ = tick.tick() => self.check_exits(None)?,
+                Some(job) = self.drains.join_next_with_id(), if !self.drains.is_empty() => {
+                    self.report_exit(job)?;
+                }
                 connection = listener.accept() => self.reply(connection?.0).await?,
             }
         }
@@ -560,22 +582,25 @@ impl Manager {
 
     /// After an unexpected exit, ticks retry retirement and leave the app stopped for manual recovery with `start`.
     /// The next manager boot reconciles the saved running intent.
-    async fn check_exits(&mut self) -> io::Result<()> {
-        self.check_other_exits(None).await
-    }
-
-    async fn check_other_exits(&mut self, busy: Option<&str>) -> io::Result<()> {
+    fn check_exits(&mut self, busy: Option<&str>) -> io::Result<()> {
         let pending: Vec<_> = self
             .journal
             .slots()
             .iter()
             .filter(|(id, s)| {
-                Some(id.as_str()) != busy && s.pending_fence && !self.running.contains_key(*id)
+                Some(id.as_str()) != busy
+                    && s.pending_fence
+                    && !self.running.contains_key(*id)
+                    && !self.is_draining(id)
             })
             .map(|(id, _)| id.clone())
             .collect();
         let start = pending.partition_point(|id| id <= &self.fence_cursor);
-        let retry = pending[start..].iter().chain(&pending[..start]).take(8);
+        // Keep the retry budget across ticks while earlier drains are still in flight.
+        let retry = pending[start..]
+            .iter()
+            .chain(&pending[..start])
+            .take(8usize.saturating_sub(self.drains.len()));
         let mut dead = Vec::new();
         for (id, live) in &mut self.running {
             if Some(id.as_str()) != busy && live.exited()? {
@@ -591,8 +616,8 @@ impl Manager {
             self.fence_cursor.clone_from(id);
             dead.push(id.clone());
         }
-        if let Err(error) = self.drain_slots(dead).await {
-            eprintln!("Application retirement pending: {error}");
+        for id in dead {
+            self.begin_drain(id)?;
         }
         Ok(())
     }
@@ -623,72 +648,19 @@ impl Manager {
             .journal
             .slots()
             .iter()
-            .filter(|(id, s)| s.pending_fence || self.running.contains_key(*id))
+            .filter(|(id, s)| {
+                (s.pending_fence || self.running.contains_key(*id)) && !self.is_draining(id)
+            })
             .map(|(id, _)| id.clone())
             .collect();
-        self.drain_slots(pending).await
-    }
-
-    async fn drain_slots(&mut self, ids: Vec<String>) -> io::Result<()> {
-        let mut jobs = JoinSet::new();
-        for id in ids {
-            let slot = self.journal.slot(&id)?.clone();
-            let path = self.journal.writer_path(slot.uid);
-            let gateway = self.gateway.clone();
-            let mut live = self.running.remove(&id);
-            if let Some(live) = &mut live {
-                live.close();
-            }
-            jobs.spawn(async move {
-                let fenced = timeout(DRAIN_IO_BUDGET, async {
-                    // Authority can be withdrawn as the broker exits. A provisioning writer
-                    // could re-enable its DB role, so confirm writer and UID retirement first.
-                    let (broker, database, authority) = tokio::join!(
-                        async {
-                            if let Some(live) = live {
-                                live.stop().await?;
-                            }
-                            Ok::<_, io::Error>(())
-                        },
-                        async {
-                            let _guard = Self::wait_writer(path, slot.uid).await?;
-                            if slot.pending_fence {
-                                Self::retire_database(&slot).await?;
-                            }
-                            Ok::<_, io::Error>(())
-                        },
-                        async {
-                            if slot.pending_fence {
-                                Self::retire_authority(&gateway, &id, &slot).await?;
-                            }
-                            Ok::<_, io::Error>(())
-                        }
-                    );
-                    broker?;
-                    database?;
-                    authority
-                })
-                .await
-                .map_err(io::Error::from)
-                .and_then(|result| result);
-                (id, slot, fenced)
-            });
+        for id in pending {
+            self.begin_drain(id)?;
         }
         let mut failures = Vec::new();
-        while let Some(job) = jobs.join_next().await {
-            match job {
-                Ok((id, mut slot, fenced)) => match fenced {
-                    Ok(()) if slot.pending_fence => {
-                        slot.pending_fence = false;
-                        slot.authority_recorded = Some(true);
-                        if let Err(e) = self.journal.save(&id, slot) {
-                            failures.push(format!("{id} journal: {e}"));
-                        }
-                    }
-                    Ok(()) => (),
-                    Err(e) => failures.push(format!("{id} fence: {e}")),
-                },
-                Err(e) => failures.push(e.to_string()),
+        while let Some(job) = self.drains.join_next_with_id().await {
+            let (id, result) = self.finish_drain(job);
+            if let Err(error) = result {
+                failures.push(format!("{id} fence: {error}"));
             }
         }
         if failures.is_empty() {
@@ -696,6 +668,120 @@ impl Manager {
         } else {
             Err(io::Error::other(failures.join("; ")))
         }
+    }
+
+    fn is_draining(&self, id: &str) -> bool {
+        self.draining
+            .values()
+            .any(|drain| drain.installation_id == id)
+    }
+
+    fn begin_drain(&mut self, id: String) -> io::Result<()> {
+        let slot = self.journal.slot(&id)?.clone();
+        let path = self.journal.writer_path(slot.uid);
+        let gateway = self.gateway.clone();
+        let mut live = self.running.remove(&id);
+        if let Some(live) = &mut live {
+            live.close();
+        }
+        let drain = Drain {
+            installation_id: id.clone(),
+            uid: slot.uid,
+            generation: slot.generation,
+            fencing_authority: slot.pending_fence,
+        };
+        let task = self.drains.spawn(async move {
+            timeout(DRAIN_IO_BUDGET, async {
+                // Authority can be withdrawn as the broker exits. A provisioning writer
+                // could re-enable its DB role, so confirm writer and UID retirement first.
+                let (broker, database, authority) = tokio::join!(
+                    async {
+                        if let Some(live) = live {
+                            live.stop().await?;
+                        }
+                        Ok::<_, io::Error>(())
+                    },
+                    async {
+                        let _guard = Self::wait_writer(path, slot.uid).await?;
+                        if slot.pending_fence {
+                            Self::retire_database(&slot).await?;
+                        }
+                        Ok::<_, io::Error>(())
+                    },
+                    async {
+                        if slot.pending_fence {
+                            Self::retire_authority(&gateway, &id, &slot).await?;
+                        }
+                        Ok::<_, io::Error>(())
+                    }
+                );
+                broker?;
+                database?;
+                authority
+            })
+            .await?
+        });
+        self.draining.insert(task.id(), drain);
+        Ok(())
+    }
+
+    fn finish_drain(
+        &mut self,
+        job: Result<(Id, io::Result<()>), JoinError>,
+    ) -> (String, io::Result<()>) {
+        let (task, result) = match job {
+            Ok(result) => result,
+            Err(error) => (error.id(), Err(error.into())),
+        };
+        let drain = self.draining.remove(&task).expect("tracked drain task");
+        let id = drain.installation_id;
+        let result = result.and_then(|()| {
+            let slot = self.journal.slot(&id)?;
+            // Staging can publish a candidate while the existing generation drains.
+            if drain.fencing_authority
+                && slot.uid == drain.uid
+                && slot.generation == drain.generation
+                && slot.pending_fence
+            {
+                let mut slot = slot.clone();
+                slot.pending_fence = false;
+                slot.authority_recorded = Some(true);
+                self.journal.save(&id, slot)?;
+            }
+            Ok(())
+        });
+        (id, result)
+    }
+
+    fn report_exit(&mut self, job: Result<(Id, io::Result<()>), JoinError>) -> io::Result<()> {
+        let (id, result) = self.finish_drain(job);
+        if let Err(error) = result {
+            eprintln!("Application {id} retirement pending: {error}");
+        }
+        self.journal.writable()
+    }
+
+    async fn wait_for_drain(&mut self, id: &str) -> io::Result<()> {
+        if self.is_draining(id) {
+            while let Some(job) = self.drains.join_next_with_id().await {
+                let (completed, result) = self.finish_drain(job);
+                if completed == id {
+                    return result;
+                }
+                if let Err(error) = result {
+                    eprintln!("Application {completed} retirement pending: {error}");
+                }
+                self.journal.writable()?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn settle_exit(&mut self, id: &str) -> io::Result<()> {
+        if let Err(error) = self.wait_for_drain(id).await {
+            eprintln!("Application {id} retirement pending: {error}");
+        }
+        self.journal.writable()
     }
 }
 
@@ -800,6 +886,8 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
         gateway: Gateway::open()?,
         running: BTreeMap::new(),
         fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
     };
     let result = tokio::select! {
         biased;
