@@ -142,17 +142,10 @@ export async function verifyApplianceRestoreSafety(context: ApplianceRestoreSafe
         'invalid backups leave the running target database, secrets and CrowdSec state untouched',
     )
 
-    const changedPublicOrigin = 'https://changed.appliance-smoke.invalid'
-    const changedTrustedProxyCidrs = '192.0.2.0/24'
-    const changedDeploymentEnvironment: NodeJS.ProcessEnv = {
-        ...context.scriptEnvironment,
-        PUBLIC_ORIGIN: changedPublicOrigin,
-        PROXY_TRUSTED_PROXY_CIDRS: changedTrustedProxyCidrs,
-    }
     await assertRestorePreflightFailure(
         context.backupPath,
         'deployment mismatch',
-        changedDeploymentEnvironment,
+        context.deploymentChangeScriptEnvironment,
     )
     context.passed('restore rejects a deployment mismatch before stopping or replacing the target')
     await context.command(
@@ -177,7 +170,7 @@ export async function verifyApplianceRestoreSafety(context: ApplianceRestoreSafe
             '--confirm-replace',
             '--allow-deployment-change',
         ],
-        changedDeploymentEnvironment,
+        context.deploymentChangeScriptEnvironment,
         900_000,
     )
     const deploymentChangeId = await context.containerId(context.deploymentChangeCompose)
@@ -185,9 +178,11 @@ export async function verifyApplianceRestoreSafety(context: ApplianceRestoreSafe
     const deploymentChangeRuntime = JSON.parse(
         await context.inspect(deploymentChangeId, '{{json .Config.Env}}'),
     ) as string[]
-    assert.ok(deploymentChangeRuntime.includes('PUBLIC_ORIGIN=' + changedPublicOrigin))
+    assert.ok(deploymentChangeRuntime.includes('PUBLIC_ORIGIN=' + context.changedPublicOrigin))
     assert.ok(
-        deploymentChangeRuntime.includes('PROXY_TRUSTED_PROXY_CIDRS=' + changedTrustedProxyCidrs),
+        deploymentChangeRuntime.includes(
+            'PROXY_TRUSTED_PROXY_CIDRS=' + context.changedTrustedProxyCidrs,
+        ),
     )
     await context.assertRealTraffic(
         deploymentChangeId,

@@ -74,7 +74,7 @@ async fn start_detects_an_exited_broker_before_the_retirement_tick() {
     let mut manager = Manager {
         ui: ui::Registry::default(),
         listener: None,
-        config: dir.path().join("missing-config"),
+        config: Some(dir.path().join("missing-config")),
         journal: Journal::open(&dir.path().join("journal")).unwrap(),
         gateway: authority(&dir.path().join("web.sock"), |_, _| StatusCode::NO_CONTENT),
         running: BTreeMap::from([("exited".into(), Running::fixture_child(child))]),
@@ -155,7 +155,7 @@ async fn staging_services_status_and_publishes_candidate_while_retirement_is_bus
     let mut manager = Manager {
         ui: ui::Registry::default(),
         listener: Some(Arc::clone(&listener)),
-        config: dir.path().join("offline"),
+        config: Some(dir.path().join("offline")),
         journal: Journal::open(&dir.path().join("journal")).unwrap(),
         gateway: authority(&dir.path().join("web.sock"), {
             let workers_busy = Arc::clone(&workers_busy);
@@ -296,7 +296,7 @@ async fn stage_services_status_and_broker_exit_during_an_unrelated_stop() {
     let mut manager = Manager {
         ui: ui::Registry::default(),
         listener: Some(Arc::clone(&listener)),
-        config: dir.path().join("offline"),
+        config: Some(dir.path().join("offline")),
         journal: Journal::open(&dir.path().join("manager")).unwrap(),
         gateway: authority(&dir.path().join("web.sock"), {
             let workers_busy = Arc::clone(&workers_busy);
@@ -591,7 +591,7 @@ async fn drain_retires_authority_while_a_writer_is_stopping_and_waits_for_worker
     let mut manager = Manager {
         ui: ui::Registry::default(),
         listener: None,
-        config: dir.path().join("offline"),
+        config: Some(dir.path().join("offline")),
         journal: Journal::open(&dir.path().join("journal")).unwrap(),
         gateway,
         running: BTreeMap::new(),
@@ -650,7 +650,7 @@ async fn failed_retirement_keeps_other_slots_progressing_and_retries_on_tick() {
     let mut manager = Manager {
         ui: ui::Registry::default(),
         listener: None,
-        config: dir.path().join("offline"),
+        config: Some(dir.path().join("offline")),
         journal: Journal::open(&dir.path().join("journal")).unwrap(),
         gateway,
         running: BTreeMap::new(),
@@ -719,7 +719,7 @@ async fn shutdown_retries_failed_inherited_drains_once() {
     let mut manager = Manager {
         ui: ui::Registry::default(),
         listener: None,
-        config: dir.path().join("offline"),
+        config: Some(dir.path().join("offline")),
         journal: Journal::open(&dir.path().join("journal")).unwrap(),
         gateway,
         running: BTreeMap::new(),
@@ -927,7 +927,7 @@ async fn shutdown_batch_fixture() {
     let mut manager = Manager {
         ui: ui::Registry::default(),
         listener: None,
-        config: dir.path().join("offline"),
+        config: Some(dir.path().join("offline")),
         journal: Journal::open(&directory).unwrap(),
         gateway: authority(&dir.path().join("web.sock"), |_, _| StatusCode::NO_CONTENT),
         running: BTreeMap::new(),

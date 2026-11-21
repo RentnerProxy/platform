@@ -1,0 +1,6 @@
+{
+    "storeDirectory": "/var/lib/rentnerproxy/app-packages",
+    "pinnedRoot": "/usr/share/rentnerproxy/app-catalog/root.json",
+    "repositoryUrl": "https://raw.githubusercontent.com/RentnerProxy/app-catalog/main/",
+    "engineCapabilities": []
+}

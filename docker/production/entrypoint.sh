@@ -399,10 +399,9 @@ start_web() {
 }
 
 start_app_manager() {
-    local config=${RENTNERPROXY_APP_INSTALLER_CONFIG:-}
-    [[ -n $config ]] || return 0
+    [[ -n ${RENTNERPROXY_APP_INSTALLER_CONFIG:-} || -f /usr/share/rentnerproxy/app-catalog/root.json ]] || return 0
     start_child app-manager env RENTNERPROXY_CONTROLLER_TOKEN_FILE="$controller_token_file" \
-        /usr/local/bin/rentnerproxy-controller --app-manager "$config"
+        /usr/local/bin/rentnerproxy-controller --app-manager
 }
 
 # Allow at most 60 seconds for dependency-aware readiness, with each probe bounded to the remaining budget.
