@@ -400,18 +400,13 @@ function parseSmtpFrom(value: string): string | null {
 
 export function getSmtpConfiguration(): SmtpConfiguration | null {
     const hostValue = process.env.SMTP_HOST
-    const portValue = process.env.SMTP_PORT
-    const secureValue = process.env.SMTP_SECURE
+    const portValue = process.env.SMTP_PORT || '587'
+    const secureValue = process.env.SMTP_SECURE || 'false'
     const fromValue = process.env.SMTP_FROM
     const userValue = process.env.SMTP_USER
     const passwordValue = process.env.SMTP_PASSWORD
 
-    if (
-        hostValue === undefined ||
-        portValue === undefined ||
-        secureValue === undefined ||
-        fromValue === undefined
-    ) {
+    if (hostValue === undefined || fromValue === undefined) {
         return null
     }
 

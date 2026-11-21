@@ -1,3 +1,8 @@
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod appliance;
 mod catalog;
 mod filesystem;
 mod package;
@@ -53,6 +58,18 @@ pub struct StagedPackage {
 
 impl Installer {
     pub fn open(config: &Path) -> io::Result<Self> {
+        Self::with_config(Self::read_config(config)?)
+    }
+
+    fn read_config(path: &Path) -> io::Result<Config> {
+        filesystem::check_root_path(path, false)?;
+        Ok(serde_json::from_value(parse_json(&read_file(
+            path,
+            16 * 1024,
+        )?)?)?)
+    }
+
+    fn with_config(config: Config) -> io::Result<Self> {
         let target = match (std::env::consts::OS, std::env::consts::ARCH) {
             ("linux", "x86_64") => "linux-amd64",
             ("linux", "aarch64") => "linux-arm64",
@@ -62,8 +79,6 @@ impl Installer {
                 ));
             }
         };
-        filesystem::check_root_path(config, false)?;
-        let config: Config = serde_json::from_value(parse_json(&read_file(config, 16 * 1024)?)?)?;
         filesystem::check_root_path(&config.store_directory, true)?;
         filesystem::check_root_path(&config.pinned_root, false)?;
         transport::repository_url(&config.repository_url)?;

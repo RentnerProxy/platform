@@ -46,10 +46,12 @@ export async function verifyApplianceStartup(context: ApplianceStartupContext) {
         [
             ...context.smtpNames,
             'PROXY_TRUSTED_PROXY_CIDRS',
+            'RENTNERPROXY_IMAGE',
             'RENTNERPROXY_PROXY_PUBLIC_HTTPS_PORT',
             'PUBLIC_ORIGIN',
         ].toSorted(),
     )
+    assert.equal(service.environment?.RENTNERPROXY_IMAGE, context.imageTag)
     assert.equal(service.environment?.PROXY_TRUSTED_PROXY_CIDRS, context.trustedProxyCidrs)
     assert.equal(service.environment?.PUBLIC_ORIGIN, context.publicOrigin)
     assert.deepEqual(

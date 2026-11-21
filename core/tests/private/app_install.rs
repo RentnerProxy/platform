@@ -360,6 +360,95 @@ fn persisted_roles_protect_against_rollback_expiry_and_partial_metadata() {
 }
 
 #[test]
+fn startup_refresh_allows_local_readers_and_cannot_replace_a_newer_catalog() {
+    let store = tempfile::tempdir().unwrap();
+    let installer = manager(store.path());
+    let initial = bootstrap_catalog(PIN, &keys(), now()).unwrap();
+
+    installer
+        .refresh_in_background(
+            |name, _| {
+                let _lock = installer.lock()?;
+                Ok(initial.get(name).cloned())
+            },
+            now(),
+        )
+        .unwrap();
+
+    let mut newer = initial.clone();
+    newer.extend(update(
+        &initial,
+        json!({"formatVersion":1,"revision":2,"releases":[],"revocations":[]}),
+        &Files::new(),
+    ));
+    let mut changed = false;
+    let result = installer.refresh_in_background(
+        |name, _| {
+            if !changed {
+                let _lock = installer.lock()?;
+                refresh(&installer, &newer, now())?;
+                changed = true;
+            }
+            Ok(initial.get(name).cloned())
+        },
+        now(),
+    );
+    assert!(result.is_err());
+    assert!(changed);
+    let (_, persisted) = installer.checkpoint().unwrap().unwrap();
+    let document: Value = serde_json::from_slice(persisted.catalog_bytes()).unwrap();
+    assert_eq!(document["revision"], 2);
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[test]
+fn bundled_installer_creates_a_protected_store_after_the_root_is_available() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let base = tempfile::tempdir_in("/run").unwrap();
+    fs::set_permissions(base.path(), fs::Permissions::from_mode(0o711)).unwrap();
+    let store = base.path().join("packages");
+    let root = base.path().join("root.json");
+    let installer = base.path().join("installer.json");
+    fs::write(
+        &installer,
+        serde_json::to_vec(&json!({
+            "storeDirectory": store,
+            "pinnedRoot": root,
+            "repositoryUrl": "https://invalid.example/",
+            "engineCapabilities": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        Installer::open_bundled(&installer).err().unwrap().kind(),
+        io::ErrorKind::NotFound
+    );
+    assert!(!store.exists());
+    fs::write(&root, PIN).unwrap();
+    let configured = Installer::open_bundled(&installer).unwrap();
+    assert_eq!(configured.pinned_root, PIN);
+    let metadata = fs::metadata(&store).unwrap();
+    assert_eq!(metadata.uid(), 0);
+    assert_eq!(metadata.mode() & 0o777, 0o711);
+    assert_eq!(
+        Installer::open_bundled(&installer)
+            .unwrap()
+            .config
+            .store_directory,
+        store
+    );
+}
+
+#[test]
 fn signed_package_preparation_enforces_ui_limits_for_fresh_and_cached_trees() {
     let limit = super::package::UI_ASSET_LIMIT as usize;
     for (ui, openapi, asset_size, expected_error) in [
