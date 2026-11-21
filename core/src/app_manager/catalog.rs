@@ -14,7 +14,7 @@ use crate::app_install::{CatalogEntry, Installer};
 
 #[cfg(test)]
 #[path = "../../tests/private/app_manager/catalog.rs"]
-mod tests;
+pub(super) mod tests;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -262,8 +262,9 @@ impl Manager {
                 .active
                 .as_ref()
                 .is_some_and(|release| selection.matches(release))
-                && self.running.contains_key(id)
                 && !slot.recovery_required
+                && let Some(live) = self.running.get_mut(id)
+                && !live.exited()?
             {
                 return Ok(id.to_owned());
             }

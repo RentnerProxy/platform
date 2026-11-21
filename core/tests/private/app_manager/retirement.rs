@@ -64,7 +64,7 @@ fn failures_before_activation_preserve_grants_and_legacy_interruptions_remain_co
 }
 
 #[tokio::test]
-async fn start_detects_an_exited_broker_before_the_retirement_tick() {
+async fn start_and_catalog_detect_an_exited_broker_before_the_retirement_tick() {
     if unsafe { libc::geteuid() } != 0 {
         return;
     }
@@ -102,6 +102,14 @@ async fn start_detects_an_exited_broker_before_the_retirement_tick() {
             },
         )
         .unwrap();
+    let selection = serde_json::from_value(json!({
+        "appId": "fixture.exited",
+        "version": "1.0.0",
+        "archiveSha256": "a".repeat(64),
+    }))
+    .unwrap();
+    let error = manager.install_catalog(&selection).await.unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
     // A real start reaches package recovery and reports the unavailable configuration.
     assert!(
         manager

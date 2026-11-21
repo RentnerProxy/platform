@@ -2,35 +2,52 @@ use serde_json::json;
 
 use super::*;
 
-#[test]
-fn accepts_only_listed_packages_and_coalesces_identical_requests() {
-    let (endpoint, mut requests) = Endpoint::new(None);
-    let selection = Selection {
+fn greeting() -> Selection {
+    Selection {
         app_id: "rentnerproxy.greeting".into(),
         version: "1.0.0".into(),
         archive_sha256: "a".repeat(64),
-    };
+    }
+}
+
+fn entry(selection: &Selection, availability: &str) -> CatalogEntry {
+    let mut value = serde_json::to_value(selection).unwrap();
+    value["name"] = json!("Greeting");
+    value["summary"] = json!("Say hello");
+    value["publisher"] = json!("RentnerProxy");
+    value["hasUi"] = json!(true);
+    value["availability"] = json!(availability);
+    serde_json::from_value(value).unwrap()
+}
+
+pub(in crate::app_manager) fn ready_endpoint() -> (Endpoint, mpsc::Receiver<Selection>, Selection) {
+    let (endpoint, requests) = Endpoint::new(None);
+    let selection = greeting();
+    endpoint
+        .finish_refresh(Ok(vec![entry(&selection, "available")]))
+        .unwrap();
+    (endpoint, requests, selection)
+}
+
+#[test]
+fn accepts_only_listed_packages_and_coalesces_identical_requests() {
+    let (endpoint, mut requests) = Endpoint::new(None);
+    let selection = greeting();
     assert!(matches!(
         endpoint.submit(selection.clone()),
         Err(Failure::Unavailable)
     ));
 
-    let mut entry = serde_json::to_value(&selection).unwrap();
-    entry["name"] = json!("Greeting");
-    entry["summary"] = json!("Say hello");
-    entry["publisher"] = json!("RentnerProxy");
-    entry["availability"] = json!("grantsRequired");
     endpoint
-        .finish_refresh(Ok(vec![serde_json::from_value(entry.clone()).unwrap()]))
+        .finish_refresh(Ok(vec![entry(&selection, "grantsRequired")]))
         .unwrap();
     assert!(matches!(
         endpoint.submit(selection.clone()),
         Err(Failure::Conflict)
     ));
 
-    entry["availability"] = json!("available");
     endpoint
-        .finish_refresh(Ok(vec![serde_json::from_value(entry).unwrap()]))
+        .finish_refresh(Ok(vec![entry(&selection, "available")]))
         .unwrap();
     let mismatched = Selection {
         archive_sha256: "b".repeat(64),
@@ -63,4 +80,52 @@ fn accepts_only_listed_packages_and_coalesces_identical_requests() {
     assert_eq!(view["state"], "ready");
     assert_eq!(view["install"]["status"], "installed");
     assert_eq!(view["install"]["installationId"], "greeting-test");
+}
+
+#[test]
+fn failed_refresh_keeps_the_last_verified_listing_and_allows_recovery() {
+    let (endpoint, _) = Endpoint::new(None);
+    let fail = || {
+        endpoint
+            .finish_refresh(Err(io::Error::other("fixture offline")))
+            .unwrap()
+    };
+    let view = || serde_json::from_slice::<serde_json::Value>(&endpoint.view().unwrap()).unwrap();
+    fail();
+    assert_eq!(view()["state"], "unavailable");
+    assert_eq!(view()["entries"], json!([]));
+
+    endpoint
+        .finish_refresh(Ok(vec![entry(&greeting(), "available")]))
+        .unwrap();
+    let listing = view()["entries"].clone();
+    fail();
+    assert_eq!(view()["state"], "stale");
+    assert_eq!(view()["entries"], listing);
+
+    endpoint.finish_refresh(Ok(vec![])).unwrap();
+    assert_eq!(view()["state"], "ready");
+    assert_eq!(view()["entries"], json!([]));
+}
+
+#[test]
+fn a_failed_install_releases_the_queue_and_reports_a_safe_failure() {
+    let (endpoint, mut requests, selection) = ready_endpoint();
+    for (kind, failure) in [
+        (io::ErrorKind::AlreadyExists, "conflict"),
+        (io::ErrorKind::TimedOut, "unavailable"),
+        (io::ErrorKind::InvalidData, "installFailed"),
+    ] {
+        endpoint.submit(selection.clone()).unwrap();
+        assert_eq!(requests.try_recv().unwrap(), selection);
+        endpoint
+            .finish(
+                selection.clone(),
+                Err(io::Error::new(kind, "fixture failure")),
+            )
+            .unwrap();
+        let view: serde_json::Value = serde_json::from_slice(&endpoint.view().unwrap()).unwrap();
+        assert_eq!(view["install"]["status"], "failed");
+        assert_eq!(view["install"]["error"], failure);
+    }
 }

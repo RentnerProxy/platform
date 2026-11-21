@@ -22,6 +22,7 @@ const catalogEntrySchema = catalogSelectorSchema.extend({
     name: displayText(80),
     summary: displayText(400),
     publisher: displayText(80),
+    hasUi: z.boolean(),
     availability: z.enum(['available', 'incompatible', 'grantsRequired']),
 })
 

@@ -595,6 +595,14 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
             .all(|path| !path.starts_with("targets/assets/"))
     );
     installer.config.engine_capabilities.clear();
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        let entries = serde_json::to_value(installer.catalog_entries(&catalog).unwrap()).unwrap();
+        assert_eq!(entries[0]["availability"], "incompatible");
+    }
     assert!(
         installer
             .prepare::<io::Empty>(

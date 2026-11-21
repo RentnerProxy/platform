@@ -27,6 +27,7 @@ const entry = {
     name: 'Greeting',
     summary: 'Say hello.',
     publisher: 'RentnerProxy',
+    hasUi: true,
     availability: 'available' as const,
 }
 

@@ -7,8 +7,12 @@ import {
     catalogInstallSchema,
     sameCatalogRelease,
     type CatalogSelector,
-    type CatalogSnapshot,
 } from '@/lib/AppCatalog/contract.ts'
+import {
+    keepCatalogInstall,
+    unavailableCatalog,
+    type CatalogQueryResult,
+} from '@/lib/AppCatalog/installProgress.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import { getAppCatalogHandler } from '../middleware.ts'
 
@@ -57,7 +61,15 @@ export default function useAppCatalogLogic() {
     const queryKey = ['app-catalog', inventory?.sessionId ?? null] as const
     const query = useQuery({
         queryKey,
-        queryFn: ({ signal }) => getAppCatalogHandler({ signal }),
+        queryFn: async ({ signal }) => {
+            const current = await getAppCatalogHandler({ signal }).catch(() => unavailableCatalog)
+            signal.throwIfAborted()
+            return keepCatalogInstall(
+                queryClient.getQueryData<CatalogQueryResult>(queryKey),
+                current,
+                Date.now(),
+            )
+        },
         retry: false,
         refetchInterval: ({ state }) => {
             if (state.data?.install?.status === 'installing') return 2_000
@@ -69,8 +81,8 @@ export default function useAppCatalogLogic() {
         mutationFn: installRelease,
         onSuccess: async (install) => {
             await queryClient.cancelQueries({ queryKey })
-            queryClient.setQueryData<CatalogSnapshot>(queryKey, (current) =>
-                current ? { ...current, install } : current,
+            queryClient.setQueryData<CatalogQueryResult>(queryKey, (current) =>
+                current ? { state: current.state, entries: current.entries, install } : current,
             )
             await queryClient.invalidateQueries({ queryKey })
         },
@@ -97,8 +109,10 @@ export default function useAppCatalogLogic() {
     const installed = new Map(inventory?.apps.map((app) => [app.appId, app.installationId]))
     const entries = (snapshot?.entries ?? []).map((entry) => {
         const isSelected = !!install && sameCatalogRelease(install, entry)
-        const installationId = installed.get(entry.appId)
-        const isInstalled = !!installationId || (isSelected && install.status === 'installed')
+        const completed = isSelected && install.status === 'installed' ? install : undefined
+        const installationId =
+            installed.get(entry.appId) ?? (entry.hasUi ? completed?.installationId : undefined)
+        const isInstalled = !!installationId || !!completed
         const isRetry = isSelected && install.status === 'failed'
         return {
             entry,

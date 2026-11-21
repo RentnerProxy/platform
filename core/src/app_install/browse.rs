@@ -18,6 +18,7 @@ pub(crate) struct CatalogEntry {
     name: String,
     summary: String,
     publisher: String,
+    has_ui: bool,
     availability: Availability,
 }
 
@@ -95,6 +96,7 @@ impl Installer {
                 name: field(&manifest["display"], "name")?.to_owned(),
                 summary: field(&manifest["display"], "summary")?.to_owned(),
                 publisher: field(&release["publisher"], "name")?.to_owned(),
+                has_ui: manifest["ui"].is_object(),
                 availability,
             });
         }
