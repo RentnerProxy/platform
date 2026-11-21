@@ -451,11 +451,12 @@ export async function createApplianceSmokeContext() {
     const scriptEnvironment: NodeJS.ProcessEnv = {
         ...commandEnvironment,
         COMPOSE_DISABLE_ENV_FILE: '1',
-        RENTNERPROXY_IMAGE: imageTag,
+        COMPOSE_ENV_FILES: envFile,
         RENTNERPROXY_COMPOSE_FILE: temporaryComposeFile,
     }
     const deploymentChangeScriptEnvironment: NodeJS.ProcessEnv = {
         ...scriptEnvironment,
+        COMPOSE_ENV_FILES: deploymentChangeEnvFile,
         RENTNERPROXY_COMPOSE_FILE: deploymentChangeComposeFile,
     }
 
