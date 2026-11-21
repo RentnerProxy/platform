@@ -10,6 +10,7 @@ import {
     RefreshCw,
     KeyRound,
     LayoutDashboard,
+    PackageSearch,
     Puzzle,
     Settings2,
     Network,
@@ -209,11 +210,26 @@ export default function ApplicationNavigation({
                     </section>
                 )
             })}
-            {apps.length > 0 ? (
+            {state.appCatalog || apps.length > 0 ? (
                 <section className="min-w-0">
                     <h2 className="m-0 px-3.5 py-2 font-mono text-[0.67rem] font-bold tracking-[0.09em] text-mist-300 uppercase">
                         {t('appUi.apps')}
                     </h2>
+                    {state.appCatalog ? (
+                        <Link
+                            to="/app-catalog"
+                            onClick={onNavigate}
+                            className={linkClassName}
+                            activeProps={activeProps}
+                        >
+                            <PackageSearch
+                                aria-hidden="true"
+                                className="size-4 shrink-0"
+                                strokeWidth={1.8}
+                            />
+                            <span className="truncate">{state.appCatalog.label}</span>
+                        </Link>
+                    ) : null}
                     {apps.map((app) => (
                         <Link
                             key={app.installationId}

@@ -16,7 +16,7 @@ use rentnerproxy_app_contracts::Contracts;
 use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
-use super::{Config, Installer};
+use super::{Config, Installer, PackageSource};
 
 #[cfg(all(
     target_os = "linux",
@@ -274,7 +274,9 @@ pub(crate) fn lifecycle_packages(
         .zip(archives)
         .map(|(v, bytes)| {
             installer
-                .prepare(&catalog, ID, v, None, |_| Ok(io::Cursor::new(bytes)))
+                .prepare(&catalog, ID, v, PackageSource::Catalog(None), |_| {
+                    Ok(io::Cursor::new(bytes))
+                })
                 .unwrap()
         })
         .collect();
@@ -490,7 +492,9 @@ fn signed_package_preparation_enforces_ui_limits_for_fresh_and_cached_trees() {
             &Files::new(),
         ));
         let catalog = refresh(&installer, &files, now()).unwrap();
-        let fresh = installer.prepare(&catalog, ID, VERSION, None, |_| Ok(archive.as_slice()));
+        let fresh = installer.prepare(&catalog, ID, VERSION, PackageSource::Catalog(None), |_| {
+            Ok(archive.as_slice())
+        });
         let Some(expected) = expected_error else {
             let staged = fresh.unwrap();
             assert_eq!(
@@ -553,6 +557,33 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
     );
     files.extend(next);
     let catalog = refresh(&installer, &files, now()).unwrap();
+    let archive_hash = digest(&archive);
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        let entries = serde_json::to_value(installer.catalog_entries(&catalog).unwrap()).unwrap();
+        assert_eq!(entries.as_array().unwrap().len(), 1);
+        assert_eq!(entries[0]["appId"], ID);
+        assert_eq!(entries[0]["version"], VERSION);
+        assert_eq!(entries[0]["archiveSha256"], archive_hash);
+        assert_eq!(entries[0]["name"], "Probe");
+        assert_eq!(entries[0]["availability"], "available");
+    }
+    let error = installer
+        .prepare::<io::Empty>(
+            &catalog,
+            ID,
+            VERSION,
+            PackageSource::Catalog(Some(&"f".repeat(64))),
+            |_| panic!("a different signed archive reached the download boundary"),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Package identity differs from the signed catalog"
+    );
     let checkpoint: Value =
         serde_json::from_slice(&fs::read(store.path().join("catalog-checkpoint.json")).unwrap())
             .unwrap();
@@ -564,11 +595,23 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
             .all(|path| !path.starts_with("targets/assets/"))
     );
     installer.config.engine_capabilities.clear();
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        let entries = serde_json::to_value(installer.catalog_entries(&catalog).unwrap()).unwrap();
+        assert_eq!(entries[0]["availability"], "incompatible");
+    }
     assert!(
         installer
-            .prepare::<io::Empty>(&catalog, ID, VERSION, None, |_| panic!(
-                "incompatible package downloaded"
-            ))
+            .prepare::<io::Empty>(
+                &catalog,
+                ID,
+                VERSION,
+                PackageSource::Catalog(None),
+                |_| panic!("incompatible package downloaded")
+            )
             .is_err()
     );
     installer
@@ -577,10 +620,11 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
         .push("caddy.load-balancing.v1".into());
     let archives = store.path().join("archives");
     let packages = store.path().join("packages");
-    let archive_hash = digest(&archive);
     assert!(
         installer
-            .prepare(&catalog, ID, VERSION, None, |_| Ok(&b"partial"[..]))
+            .prepare(&catalog, ID, VERSION, PackageSource::Catalog(None), |_| Ok(
+                &b"partial"[..]
+            ))
             .is_err()
     );
     assert!(!archives.join(&archive_hash).exists());
@@ -589,16 +633,21 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
         .unwrap()
         .keep();
     fs::write(partial.join("archive"), b"interrupted transfer").unwrap();
-    let staged = installer
-        .prepare(&catalog, ID, VERSION, None, |asset| {
-            assert!(
-                asset
-                    .url
-                    .starts_with("https://github.com/RentnerProxy/app-catalog/releases/download/")
-            );
-            Ok(archive.as_slice())
-        })
-        .unwrap();
+    let staged =
+        installer
+            .prepare(
+                &catalog,
+                ID,
+                VERSION,
+                PackageSource::Catalog(Some(&archive_hash)),
+                |asset| {
+                    assert!(asset.url.starts_with(
+                        "https://github.com/RentnerProxy/app-catalog/releases/download/"
+                    ));
+                    Ok(archive.as_slice())
+                },
+            )
+            .unwrap();
     assert!(!partial.exists());
     assert_eq!(staged.archive_sha256, archive_hash);
     assert_eq!(staged.catalog_revision, 2);
@@ -679,13 +728,17 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
     );
     assert!(
         installer
-            .prepare(&catalog, ID, VERSION, None, |_| Ok(&b"invalid retry"[..]))
+            .prepare(&catalog, ID, VERSION, PackageSource::Catalog(None), |_| Ok(
+                &b"invalid retry"[..]
+            ))
             .is_err()
     );
     assert_eq!(fs::read(&cached_archive).unwrap(), b"changed");
     assert_eq!(
         installer
-            .prepare(&catalog, ID, VERSION, None, |_| Ok(archive.as_slice()))
+            .prepare(&catalog, ID, VERSION, PackageSource::Catalog(None), |_| Ok(
+                archive.as_slice()
+            ))
             .unwrap()
             .directory,
         staged.directory

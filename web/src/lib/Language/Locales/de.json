@@ -154,6 +154,35 @@
         "ddns": "DDNS",
         "dockerDiscovery": "Docker Discovery"
     },
+    "appCatalog": {
+        "title": "App-Katalog",
+        "description": "Installiere Apps aus dem signierten RentnerProxy-Katalog.",
+        "refresh": "Katalog aktualisieren",
+        "empty": "Der Katalog enthält keine Apps für diese Appliance.",
+        "release": "{{publisher}} · Version {{version}}",
+        "install": "Installieren",
+        "retry": "Installation wiederholen",
+        "installing": "App wird installiert …",
+        "installed": "Installiert",
+        "open": "App öffnen",
+        "status": {
+            "loading": "App-Katalog wird geladen …",
+            "stale": "Der Katalog ist veraltet. Aktualisiere ihn, bevor du eine App installierst.",
+            "unavailable": "Der App-Katalog ist derzeit nicht verfügbar."
+        },
+        "availability": {
+            "incompatible": "Mit dieser Appliance inkompatibel",
+            "grantsRequired": "Zusätzliche Berechtigungen erforderlich"
+        },
+        "errors": {
+            "invalid": "Die gewählte Version ist ungültig.",
+            "forbidden": "Nur Eigentümer der Appliance können Apps installieren.",
+            "conflict": "Die Version hat sich geändert oder eine Installation läuft bereits. Aktualisiere den Katalog und versuche es erneut.",
+            "rateLimited": "Zu viele Installationsanfragen. Warte kurz und versuche es erneut.",
+            "unavailable": "Der Installationsdienst ist nicht verfügbar. Versuche es erneut.",
+            "installFailed": "Die Installation ist fehlgeschlagen. Du kannst es erneut versuchen."
+        }
+    },
     "appUi": {
         "apps": "Apps",
         "loading": "App wird geladen…",

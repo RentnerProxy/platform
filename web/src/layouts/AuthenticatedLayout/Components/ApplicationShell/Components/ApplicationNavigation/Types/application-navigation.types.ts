@@ -9,6 +9,7 @@ export interface ApplicationNavigationLogicResult {
         readonly activeGroupId: NavigationGroupId | undefined
         readonly expandedGroupIds: ReadonlySet<NavigationGroupId>
         readonly instanceId: string
+        readonly appCatalog: ApplicationNavigationItem | undefined
     }
     readonly handler: { readonly toggleGroup: (id: NavigationGroupId) => void }
 }

@@ -1,3 +1,4 @@
+mod catalog;
 mod control;
 mod gateway;
 mod journal;
@@ -31,7 +32,7 @@ use std::{
 use tokio::{
     io::AsyncWriteExt,
     net::UnixStream,
-    sync::watch,
+    sync::{mpsc, watch},
     task::{Id, JoinError, JoinSet},
     time::{Instant, sleep, timeout, timeout_at},
 };
@@ -66,6 +67,12 @@ struct Manager {
     draining: HashMap<Id, Drain>,
 }
 
+enum PackageRequest {
+    Current,
+    Selected(String),
+    Recorded(Release),
+}
+
 struct Drain {
     installation_id: String,
     uid: u32,
@@ -86,7 +93,7 @@ impl Manager {
         config: Option<PathBuf>,
         app: String,
         version: String,
-        record: Option<Release>,
+        request: PackageRequest,
     ) -> io::Result<StagedPackage> {
         let (send, result) = tokio::sync::oneshot::channel();
         // Catalog downloads may outlive a shutdown request. Only the async owner publishes journal transitions.
@@ -95,10 +102,12 @@ impl Manager {
             .spawn(move || {
                 let _ = send.send((|| {
                     let installer = Installer::open_appliance(config.as_deref())?;
-                    let package = if let Some(record) = record {
-                        recover(&installer, &app, &record)?
-                    } else {
-                        installer.stage(&app, &version)?
+                    let package = match request {
+                        PackageRequest::Current => installer.stage(&app, &version)?,
+                        PackageRequest::Selected(digest) => {
+                            installer.stage_selected(&app, &version, &digest)?
+                        }
+                        PackageRequest::Recorded(record) => recover(&installer, &app, &record)?,
                     };
                     if package.manifest["id"] != app
                         || package.manifest["version"] != version
@@ -304,7 +313,7 @@ impl Manager {
                         config.clone(),
                         slot.app_id.clone(),
                         release.version.clone(),
-                        Some(release.clone()),
+                        PackageRequest::Recorded(release.clone()),
                     )
                     .await;
                     if result
@@ -508,8 +517,12 @@ impl Manager {
                 app_id,
                 version,
             } => {
-                let download =
-                    Self::package(self.config.clone(), app_id.clone(), version.clone(), None);
+                let download = Self::package(
+                    self.config.clone(),
+                    app_id.clone(),
+                    version.clone(),
+                    PackageRequest::Current,
+                );
                 self.stage(&installation_id, app_id, version, download)
                     .await?;
             }
@@ -625,19 +638,28 @@ impl Manager {
         Ok(())
     }
 
-    async fn serve(&mut self, startup_catalog: Option<Installer>) -> io::Result<()> {
+    async fn serve(
+        &mut self,
+        catalog: &catalog::Endpoint,
+        installations: &mut mpsc::Receiver<catalog::Selection>,
+    ) -> io::Result<()> {
         let listener = Arc::new(control::bind()?);
         self.listener = Some(Arc::clone(&listener));
         self.reconcile().await?;
-        if let Some(installer) = startup_catalog
-            && let Err(error) = installer.refresh_on_start()
+        if self.config.is_none()
+            && let Err(error) = catalog.refresh()
         {
             eprintln!("Could not start application catalog refresh: {error}");
         }
-        self.serve_control(&listener).await
+        self.serve_control(&listener, catalog, installations).await
     }
 
-    async fn serve_control(&mut self, listener: &tokio::net::UnixListener) -> io::Result<()> {
+    async fn serve_control(
+        &mut self,
+        listener: &tokio::net::UnixListener,
+        catalog: &catalog::Endpoint,
+        installations: &mut mpsc::Receiver<catalog::Selection>,
+    ) -> io::Result<()> {
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -645,6 +667,11 @@ impl Manager {
                 _ = tick.tick() => self.check_exits(None)?,
                 Some(job) = self.drains.join_next_with_id(), if !self.drains.is_empty() => {
                     self.report_exit(job).await?;
+                }
+                Some(selection) = installations.recv() => {
+                    let result = self.install_catalog(&selection).await;
+                    catalog.finish(selection, result)?;
+                    self.journal.writable()?;
                 }
                 connection = listener.accept() => self.reply(connection?.0).await?,
             }
@@ -1082,11 +1109,10 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
         ));
     }
     let check = config.clone();
-    let startup_catalog = tokio::task::spawn_blocking(move || {
-        let installer = Installer::open_appliance(check.as_deref())?;
-        Ok::<_, io::Error>(check.is_none().then_some(installer))
-    })
-    .await??;
+    tokio::task::spawn_blocking(move || Installer::open_appliance(check.as_deref()).map(|_| ()))
+        .await??;
+    let (catalog, mut installations) = catalog::Endpoint::new(config.clone());
+    let ui_catalog = catalog.clone();
     let ui = ui::Registry::default();
     let mut manager = Manager {
         listener: None,
@@ -1102,10 +1128,10 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
     let result = tokio::select! {
         biased;
         _ = crate::shutdown::wait_for_shutdown() => Ok(()),
-        result = manager.serve(startup_catalog) => result,
+        result = manager.serve(&catalog, &mut installations) => result,
         () = async move {
             let result = match ui::bind() {
-                Ok(listener) => ui::serve(listener, ui).await,
+                Ok(listener) => ui::serve(listener, ui, ui_catalog).await,
                 Err(error) => Err(error),
             };
             if let Err(error) = result {
