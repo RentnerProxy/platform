@@ -141,6 +141,9 @@ export default function useAppCatalogLogic() {
         },
         handler: {
             handleInstall: mutation.mutate,
+            handleOpen: (appId: string) => {
+                if (!installed.has(appId)) void refreshAppUi?.().catch(() => {})
+            },
             handleRefresh: () => {
                 void query.refetch().catch(() => {})
             },

@@ -76,6 +76,7 @@ export default function AppCatalogPage() {
                                                     params={{ installationId, routeId: undefined }}
                                                     search={{}}
                                                     className={buttonClassName('secondary')}
+                                                    onClick={() => handler.handleOpen(entry.appId)}
                                                 >
                                                     {t('appCatalog.open')}
                                                 </Link>
