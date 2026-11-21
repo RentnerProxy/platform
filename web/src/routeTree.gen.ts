@@ -14,6 +14,7 @@ import { Route as PublicRouteRouteImport } from './routes/_public/route'
 import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/index'
 import { Route as AuthenticatedAccessPoliciesRouteImport } from './routes/_authenticated/access-policies'
 import { Route as AuthenticatedAccountRouteImport } from './routes/_authenticated/account'
+import { Route as AuthenticatedAppCatalogRouteImport } from './routes/_authenticated/app-catalog'
 import { Route as AuthenticatedAuditLogsRouteImport } from './routes/_authenticated/audit-logs'
 import { Route as AuthenticatedBackupsRouteImport } from './routes/_authenticated/backups'
 import { Route as AuthenticatedCertificatesRouteImport } from './routes/_authenticated/certificates'
@@ -62,6 +63,7 @@ import { Route as ApiAdminOidcProvidersRouteImport } from './routes/api/admin/oi
 import { Route as ApiAuthOidcCallbackRouteImport } from './routes/api/auth/oidc/callback'
 import { Route as ApiAuthOidcConnectionsRouteImport } from './routes/api/auth/oidc/connections'
 import { Route as ApiAuthOidcStartRouteImport } from './routes/api/auth/oidc/start'
+import { Route as ApiV1AppCatalogInstallRouteImport } from './routes/api/v1/app-catalog/install'
 import { Route as ApiAdminBackupsJobIdDownloadRouteImport } from './routes/api/admin/backups/$jobId/download'
 import { Route as ApiAdminOidcProvidersTestRouteImport } from './routes/api/admin/oidc/providers/test'
 
@@ -87,6 +89,11 @@ const AuthenticatedAccessPoliciesRoute =
 const AuthenticatedAccountRoute = AuthenticatedAccountRouteImport.update({
   id: '/account',
   path: '/account',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAppCatalogRoute = AuthenticatedAppCatalogRouteImport.update({
+  id: '/app-catalog',
+  path: '/app-catalog',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedAuditLogsRoute = AuthenticatedAuditLogsRouteImport.update({
@@ -340,6 +347,11 @@ const ApiAuthOidcStartRoute = ApiAuthOidcStartRouteImport.update({
   path: '/api/auth/oidc/start',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiV1AppCatalogInstallRoute = ApiV1AppCatalogInstallRouteImport.update({
+  id: '/api/v1/app-catalog/install',
+  path: '/api/v1/app-catalog/install',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAdminBackupsJobIdDownloadRoute =
   ApiAdminBackupsJobIdDownloadRouteImport.update({
     id: '/api/admin/backups/$jobId/download',
@@ -357,6 +369,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
   '/access-policies': typeof AuthenticatedAccessPoliciesRoute
   '/account': typeof AuthenticatedAccountRoute
+  '/app-catalog': typeof AuthenticatedAppCatalogRoute
   '/audit-logs': typeof AuthenticatedAuditLogsRoute
   '/backups': typeof AuthenticatedBackupsRoute
   '/certificates': typeof AuthenticatedCertificatesRoute
@@ -405,6 +418,7 @@ export interface FileRoutesByFullPath {
   '/api/auth/oidc/callback': typeof ApiAuthOidcCallbackRoute
   '/api/auth/oidc/connections': typeof ApiAuthOidcConnectionsRoute
   '/api/auth/oidc/start': typeof ApiAuthOidcStartRoute
+  '/api/v1/app-catalog/install': typeof ApiV1AppCatalogInstallRoute
   '/api/admin/backups/$jobId/download': typeof ApiAdminBackupsJobIdDownloadRoute
   '/api/admin/oidc/providers/test': typeof ApiAdminOidcProvidersTestRoute
 }
@@ -412,6 +426,7 @@ export interface FileRoutesByTo {
   '/': typeof AuthenticatedIndexRoute
   '/access-policies': typeof AuthenticatedAccessPoliciesRoute
   '/account': typeof AuthenticatedAccountRoute
+  '/app-catalog': typeof AuthenticatedAppCatalogRoute
   '/audit-logs': typeof AuthenticatedAuditLogsRoute
   '/backups': typeof AuthenticatedBackupsRoute
   '/certificates': typeof AuthenticatedCertificatesRoute
@@ -459,6 +474,7 @@ export interface FileRoutesByTo {
   '/api/auth/oidc/callback': typeof ApiAuthOidcCallbackRoute
   '/api/auth/oidc/connections': typeof ApiAuthOidcConnectionsRoute
   '/api/auth/oidc/start': typeof ApiAuthOidcStartRoute
+  '/api/v1/app-catalog/install': typeof ApiV1AppCatalogInstallRoute
   '/api/admin/backups/$jobId/download': typeof ApiAdminBackupsJobIdDownloadRoute
   '/api/admin/oidc/providers/test': typeof ApiAdminOidcProvidersTestRoute
 }
@@ -468,6 +484,7 @@ export interface FileRoutesById {
   '/_public': typeof PublicRouteRouteWithChildren
   '/_authenticated/access-policies': typeof AuthenticatedAccessPoliciesRoute
   '/_authenticated/account': typeof AuthenticatedAccountRoute
+  '/_authenticated/app-catalog': typeof AuthenticatedAppCatalogRoute
   '/_authenticated/audit-logs': typeof AuthenticatedAuditLogsRoute
   '/_authenticated/backups': typeof AuthenticatedBackupsRoute
   '/_authenticated/certificates': typeof AuthenticatedCertificatesRoute
@@ -517,6 +534,7 @@ export interface FileRoutesById {
   '/api/auth/oidc/callback': typeof ApiAuthOidcCallbackRoute
   '/api/auth/oidc/connections': typeof ApiAuthOidcConnectionsRoute
   '/api/auth/oidc/start': typeof ApiAuthOidcStartRoute
+  '/api/v1/app-catalog/install': typeof ApiV1AppCatalogInstallRoute
   '/api/admin/backups/$jobId/download': typeof ApiAdminBackupsJobIdDownloadRoute
   '/api/admin/oidc/providers/test': typeof ApiAdminOidcProvidersTestRoute
 }
@@ -526,6 +544,7 @@ export interface FileRouteTypes {
     | '/'
     | '/access-policies'
     | '/account'
+    | '/app-catalog'
     | '/audit-logs'
     | '/backups'
     | '/certificates'
@@ -574,6 +593,7 @@ export interface FileRouteTypes {
     | '/api/auth/oidc/callback'
     | '/api/auth/oidc/connections'
     | '/api/auth/oidc/start'
+    | '/api/v1/app-catalog/install'
     | '/api/admin/backups/$jobId/download'
     | '/api/admin/oidc/providers/test'
   fileRoutesByTo: FileRoutesByTo
@@ -581,6 +601,7 @@ export interface FileRouteTypes {
     | '/'
     | '/access-policies'
     | '/account'
+    | '/app-catalog'
     | '/audit-logs'
     | '/backups'
     | '/certificates'
@@ -628,6 +649,7 @@ export interface FileRouteTypes {
     | '/api/auth/oidc/callback'
     | '/api/auth/oidc/connections'
     | '/api/auth/oidc/start'
+    | '/api/v1/app-catalog/install'
     | '/api/admin/backups/$jobId/download'
     | '/api/admin/oidc/providers/test'
   id:
@@ -636,6 +658,7 @@ export interface FileRouteTypes {
     | '/_public'
     | '/_authenticated/access-policies'
     | '/_authenticated/account'
+    | '/_authenticated/app-catalog'
     | '/_authenticated/audit-logs'
     | '/_authenticated/backups'
     | '/_authenticated/certificates'
@@ -685,6 +708,7 @@ export interface FileRouteTypes {
     | '/api/auth/oidc/callback'
     | '/api/auth/oidc/connections'
     | '/api/auth/oidc/start'
+    | '/api/v1/app-catalog/install'
     | '/api/admin/backups/$jobId/download'
     | '/api/admin/oidc/providers/test'
   fileRoutesById: FileRoutesById
@@ -713,6 +737,7 @@ export interface RootRouteChildren {
   ApiAuthOidcCallbackRoute: typeof ApiAuthOidcCallbackRoute
   ApiAuthOidcConnectionsRoute: typeof ApiAuthOidcConnectionsRoute
   ApiAuthOidcStartRoute: typeof ApiAuthOidcStartRoute
+  ApiV1AppCatalogInstallRoute: typeof ApiV1AppCatalogInstallRoute
   ApiAdminBackupsJobIdDownloadRoute: typeof ApiAdminBackupsJobIdDownloadRoute
 }
 
@@ -751,6 +776,13 @@ declare module '@tanstack/react-router' {
       path: '/account'
       fullPath: '/account'
       preLoaderRoute: typeof AuthenticatedAccountRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/app-catalog': {
+      id: '/_authenticated/app-catalog'
+      path: '/app-catalog'
+      fullPath: '/app-catalog'
+      preLoaderRoute: typeof AuthenticatedAppCatalogRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/audit-logs': {
@@ -1089,6 +1121,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthOidcStartRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/v1/app-catalog/install': {
+      id: '/api/v1/app-catalog/install'
+      path: '/api/v1/app-catalog/install'
+      fullPath: '/api/v1/app-catalog/install'
+      preLoaderRoute: typeof ApiV1AppCatalogInstallRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/admin/backups/$jobId/download': {
       id: '/api/admin/backups/$jobId/download'
       path: '/api/admin/backups/$jobId/download'
@@ -1109,6 +1148,7 @@ declare module '@tanstack/react-router' {
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedAccessPoliciesRoute: typeof AuthenticatedAccessPoliciesRoute
   AuthenticatedAccountRoute: typeof AuthenticatedAccountRoute
+  AuthenticatedAppCatalogRoute: typeof AuthenticatedAppCatalogRoute
   AuthenticatedAuditLogsRoute: typeof AuthenticatedAuditLogsRoute
   AuthenticatedBackupsRoute: typeof AuthenticatedBackupsRoute
   AuthenticatedCertificatesRoute: typeof AuthenticatedCertificatesRoute
@@ -1134,6 +1174,7 @@ interface AuthenticatedRouteRouteChildren {
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAccessPoliciesRoute: AuthenticatedAccessPoliciesRoute,
   AuthenticatedAccountRoute: AuthenticatedAccountRoute,
+  AuthenticatedAppCatalogRoute: AuthenticatedAppCatalogRoute,
   AuthenticatedAuditLogsRoute: AuthenticatedAuditLogsRoute,
   AuthenticatedBackupsRoute: AuthenticatedBackupsRoute,
   AuthenticatedCertificatesRoute: AuthenticatedCertificatesRoute,
@@ -1243,6 +1284,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthOidcCallbackRoute: ApiAuthOidcCallbackRoute,
   ApiAuthOidcConnectionsRoute: ApiAuthOidcConnectionsRoute,
   ApiAuthOidcStartRoute: ApiAuthOidcStartRoute,
+  ApiV1AppCatalogInstallRoute: ApiV1AppCatalogInstallRoute,
   ApiAdminBackupsJobIdDownloadRoute: ApiAdminBackupsJobIdDownloadRoute,
 }
 export const routeTree = rootRouteImport

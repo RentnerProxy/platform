@@ -184,7 +184,7 @@ async function nativeRequest(path: string, signal: AbortSignal, init?: RequestIn
     }
 }
 
-async function nativeJson<T>(
+export async function nativeAppRuntimeJson<T>(
     schema: z.ZodType<T>,
     path: string,
     signal: AbortSignal,
@@ -207,11 +207,11 @@ function nativePath(binding: Binding): string {
 }
 
 export function nativeAppUis(signal: AbortSignal) {
-    return nativeJson(nativeApps, '/v1/apps', signal, undefined, 4 * 1024 * 1024)
+    return nativeAppRuntimeJson(nativeApps, '/v1/apps', signal, undefined, 4 * 1024 * 1024)
 }
 
 export function nativeAppUi(binding: Binding, signal: AbortSignal) {
-    return nativeJson(nativeApp, nativePath(binding) + '/metadata', signal)
+    return nativeAppRuntimeJson(nativeApp, nativePath(binding) + '/metadata', signal)
 }
 
 export function nativeAppUiAsset(binding: Binding, path: string, signal: AbortSignal) {
@@ -221,12 +221,12 @@ export function nativeAppUiAsset(binding: Binding, path: string, signal: AbortSi
 
 export function nativeAppUiPolicy(input: AppUiCallInput, signal: AbortSignal) {
     const path = nativePath(input) + '/operations/' + input.operationId
-    return nativeJson(operationPolicy, path, signal)
+    return nativeAppRuntimeJson(operationPolicy, path, signal)
 }
 
 export function nativeAppUiCall(input: AppUiCallInput, signal: AbortSignal) {
     const path = nativePath(input) + '/operations/' + input.operationId
-    return nativeJson(appUiPayload, path, signal, {
+    return nativeAppRuntimeJson(appUiPayload, path, signal, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',

@@ -12,6 +12,19 @@ const translate = (key: string) =>
         .reduce<unknown>((value, part) => (value as Record<string, unknown>)[part], en) as string
 
 describe('quick search navigation', () => {
+    test('finds the app catalog only for owners', () => {
+        expect(
+            getQuickSearchNavigation(Object.values(PERMISSIONS), 'app catalog', translate, [
+                SYSTEM_ROLES.ADMIN,
+            ]),
+        ).toEqual([])
+        expect(
+            getQuickSearchNavigation(Object.values(PERMISSIONS), 'app catalog', translate, [
+                SYSTEM_ROLES.OWNER,
+            ]),
+        ).toEqual([expect.objectContaining({ to: '/app-catalog', label: 'App catalog' })])
+    })
+
     test('finds identity-provider setup only for the current owner role', () => {
         expect(
             getQuickSearchNavigation(Object.values(PERMISSIONS), 'identity providers', translate),

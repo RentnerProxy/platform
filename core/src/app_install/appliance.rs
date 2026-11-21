@@ -3,10 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::{Installer, filesystem};
 use marketplace_artifacts::invalid;
-use time::OffsetDateTime;
-
-use super::{Installer, filesystem, transport};
 
 const BUNDLED_INSTALLER_CONFIG: &str = "/usr/share/rentnerproxy/app-catalog/installer.json";
 
@@ -39,23 +37,5 @@ impl Installer {
             Ok(_) => {}
         }
         Self::with_config(config)
-    }
-
-    pub(crate) fn refresh_on_start(self) -> io::Result<()> {
-        // A network wait must not delay the manager's async shutdown or app recovery.
-        std::thread::Builder::new()
-            .name("app-catalog-refresh".into())
-            .spawn(move || {
-                let result = transport::Http::new(&self.config.repository_url).and_then(|http| {
-                    self.refresh_in_background(
-                        |path, limit| http.metadata(path, limit),
-                        OffsetDateTime::now_utc(),
-                    )
-                });
-                if let Err(error) = result {
-                    eprintln!("Could not refresh the application catalog: {error}");
-                }
-            })?;
-        Ok(())
     }
 }

@@ -80,7 +80,13 @@ export default function useApplicationNavigationLogic(
     }
 
     return {
-        state: { groups, activeGroupId, expandedGroupIds, instanceId },
+        state: {
+            groups,
+            activeGroupId,
+            expandedGroupIds,
+            instanceId,
+            appCatalog: items.find((item) => item.to === '/app-catalog'),
+        },
         handler: {
             toggleGroup(id: NavigationGroupId) {
                 if (onGroupChange) {

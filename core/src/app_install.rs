@@ -3,6 +3,11 @@
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 mod appliance;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod browse;
 mod catalog;
 mod filesystem;
 mod package;
@@ -19,6 +24,11 @@ use std::{
     process::ExitCode,
 };
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) use browse::CatalogEntry;
 use marketplace_artifacts::{invalid, parse_json, read_file};
 #[cfg(all(
     target_os = "linux",
@@ -54,6 +64,12 @@ pub struct StagedPackage {
     pub archive_sha256: String,
     pub manifest_sha256: String,
     pub catalog_revision: u64,
+}
+
+#[derive(Clone, Copy)]
+enum PackageSource<'a> {
+    Catalog(Option<&'a str>),
+    Recorded(&'a str),
 }
 
 impl Installer {
@@ -105,15 +121,28 @@ impl Installer {
 
     /// Refresh signed metadata before selecting or downloading an exact release.
     pub fn stage(&self, app_id: &str, version: &str) -> io::Result<StagedPackage> {
+        self.stage_catalog(app_id, version, None)
+    }
+
+    fn stage_catalog(
+        &self,
+        app_id: &str,
+        version: &str,
+        selected_hash: Option<&str>,
+    ) -> io::Result<StagedPackage> {
         let _lock = self.lock()?;
         let transport = transport::Http::new(&self.config.repository_url)?;
         let catalog = self.refresh(
             |path, limit| transport.metadata(path, limit),
             OffsetDateTime::now_utc(),
         )?;
-        self.prepare(&catalog, app_id, version, None, |asset| {
-            transport.archive(asset)
-        })
+        self.prepare(
+            &catalog,
+            app_id,
+            version,
+            PackageSource::Catalog(selected_hash),
+            |asset| transport.archive(asset),
+        )
     }
 
     /// Reauthenticate the last accepted repository and reconstruct from a verified local archive.
@@ -127,9 +156,13 @@ impl Installer {
         let (_, catalog) = self
             .checkpoint()?
             .ok_or_else(|| invalid("No verified catalog checkpoint"))?;
-        self.prepare::<io::Empty>(&catalog, app_id, version, Some(archive_sha256), |_| {
-            Err(invalid("Verified archive is missing"))
-        })
+        self.prepare::<io::Empty>(
+            &catalog,
+            app_id,
+            version,
+            PackageSource::Recorded(archive_sha256),
+            |_| Err(invalid("Verified archive is missing")),
+        )
     }
 
     fn prepare<R: Read>(
@@ -137,7 +170,7 @@ impl Installer {
         trusted: &marketplace_app_catalog::TrustedPackageCatalog,
         app_id: &str,
         version: &str,
-        expected_hash: Option<&str>,
+        source: PackageSource<'_>,
         fetch: impl FnOnce(&rentnerproxy_app_contracts::DownloadAsset<'_>) -> io::Result<R>,
     ) -> io::Result<StagedPackage> {
         let document = parse_json(trusted.catalog_bytes())?;
@@ -150,11 +183,38 @@ impl Installer {
             .ok_or_else(|| {
                 invalid("App release is revoked, missing, or unavailable for this target")
             })?;
+        let expected_hash = match source {
+            PackageSource::Catalog(hash) => hash,
+            PackageSource::Recorded(hash) => Some(hash),
+        };
         if expected_hash.is_some_and(|hash| hash != package.archive_sha256()) {
-            return Err(invalid(
-                "Recorded package identity differs from the signed catalog",
-            ));
+            return Err(invalid("Package identity differs from the signed catalog"));
         }
+        self.check_compatibility(package.manifest())?;
+        if matches!(source, PackageSource::Catalog(Some(_))) && requires_grants(package.manifest())
+        {
+            return Err(invalid("Application requires explicit platform grants"));
+        }
+        let directory = package::stage(
+            &self.config.store_directory,
+            &package,
+            self.target,
+            matches!(source, PackageSource::Catalog(_)),
+            fetch,
+        )?;
+        Ok(StagedPackage {
+            directory,
+            manifest: package.manifest().clone(),
+            archive_sha256: package.archive_sha256().to_owned(),
+            manifest_sha256: package.manifest_sha256().to_owned(),
+            catalog_revision: document["revision"]
+                .as_f64()
+                .ok_or_else(|| invalid("Missing catalog revision"))?
+                as u64,
+        })
+    }
+
+    fn check_compatibility(&self, manifest: &Value) -> io::Result<()> {
         let capabilities: Vec<_> = self
             .config
             .engine_capabilities
@@ -170,26 +230,15 @@ impl Installer {
             engine_capabilities: &capabilities,
         };
         self.contracts
-            .check_manifest_compatibility(package.manifest(), &environment)
-            .map_err(invalid_contract)?;
-        let directory = package::stage(
-            &self.config.store_directory,
-            &package,
-            self.target,
-            expected_hash.is_none(),
-            fetch,
-        )?;
-        Ok(StagedPackage {
-            directory,
-            manifest: package.manifest().clone(),
-            archive_sha256: package.archive_sha256().to_owned(),
-            manifest_sha256: package.manifest_sha256().to_owned(),
-            catalog_revision: document["revision"]
-                .as_f64()
-                .ok_or_else(|| invalid("Missing catalog revision"))?
-                as u64,
-        })
+            .check_manifest_compatibility(manifest, &environment)
+            .map_err(invalid_contract)
     }
+}
+
+fn requires_grants(manifest: &Value) -> bool {
+    !manifest["capabilities"]
+        .as_array()
+        .is_some_and(Vec::is_empty)
 }
 
 fn invalid_contract(error: rentnerproxy_app_contracts::ContractError) -> io::Error {

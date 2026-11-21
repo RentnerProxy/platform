@@ -30,6 +30,7 @@ type AppDialog = {
 type AppUiContext = {
     apps: AppUiSummary[]
     isPending: boolean
+    isRefreshing: boolean
     sessionId: string | null
     theme: UserThemeMode
     refresh: () => Promise<AppUiSummary[]>
@@ -88,11 +89,12 @@ export default function AppUiProvider({
         setDialog(null)
         current?.settle(outcome)
     }, [])
-    const { data, isError, isPending, refetch } = inventory
+    const { data, isError, isFetching, isPending, refetch } = inventory
     const context = useMemo<AppUiContext>(
         () => ({
             apps: enabled && !isError ? (data ?? []) : [],
             isPending: enabled && isPending,
+            isRefreshing: enabled && isFetching,
             sessionId,
             theme,
             refresh: async () => {
@@ -112,7 +114,7 @@ export default function AppUiProvider({
                 if (busy.current?.mount === mount) settle('cancelled')
             },
         }),
-        [data, enabled, isError, isPending, refetch, sessionId, settle, theme],
+        [data, enabled, isError, isFetching, isPending, refetch, sessionId, settle, theme],
     )
 
     return (

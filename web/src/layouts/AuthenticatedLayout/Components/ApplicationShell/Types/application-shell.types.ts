@@ -46,6 +46,7 @@ export interface ApplicationNavigationItem {
         | '/access-policies'
         | '/providers'
         | '/identity-providers'
+        | '/app-catalog'
         | '/ddns'
         | '/docker-discovery'
         | '/proxy-access-logs'
