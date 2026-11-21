@@ -77,6 +77,10 @@ anonymous pulls; no GitHub or registry login is required.
 Save this as `docker-compose.yml` (or use the [repository file](docker-compose.yml)):
 
 ```yaml
+x-required-smtp-settings:
+    - ${SMTP_HOST:?Set SMTP_HOST in .env}
+    - ${SMTP_FROM:?Set SMTP_FROM in .env}
+
 services:
     rentnerproxy:
         image: ${RENTNERPROXY_IMAGE:?Set RENTNERPROXY_IMAGE to a RentnerProxy image}

@@ -1,3 +1,7 @@
+x-required-smtp-settings:
+    - ${SMTP_HOST:?Set SMTP_HOST in .env}
+    - ${SMTP_FROM:?Set SMTP_FROM in .env}
+
 services:
     rentnerproxy:
         image: ${RENTNERPROXY_IMAGE:?Set RENTNERPROXY_IMAGE to a RentnerProxy image}
