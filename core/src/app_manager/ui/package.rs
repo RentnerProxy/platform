@@ -10,7 +10,7 @@ use std::{
     path::Path,
 };
 
-use jsonschema::{Draft, Validator};
+use jsonschema::{Draft, PatternOptions, Validator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
@@ -27,6 +27,9 @@ const MAX_REFERENCE_BYTES: usize = 1024;
 const MAX_SCHEMA_NODES: usize = 192;
 const MAX_SCHEMA_DEPTH: usize = 20;
 const MAX_SCHEMA_BYTES: usize = 32 * 1024;
+const MAX_SCHEMA_PATTERNS: usize = 8;
+const MAX_PATTERN_BYTES: usize = 1024;
+const MAX_PATTERN_ENGINE_BYTES: usize = 32 * 1024;
 
 #[cfg(test)]
 #[path = "../../../tests/private/app_ui_package.rs"]
@@ -391,10 +394,16 @@ fn compile(document: &Value, schema: &Value) -> Option<Validator> {
     let mut budget = Expansion {
         nodes: MAX_SCHEMA_NODES,
         bytes: MAX_SCHEMA_BYTES,
+        patterns: MAX_SCHEMA_PATTERNS,
     };
     let expanded = expand_schema(document, schema, &mut budget, 0)?;
     jsonschema::options()
         .with_draft(Draft::Draft202012)
+        .with_pattern_options(
+            PatternOptions::regex()
+                .size_limit(MAX_PATTERN_ENGINE_BYTES)
+                .dfa_size_limit(MAX_PATTERN_ENGINE_BYTES),
+        )
         .build(&expanded)
         .ok()
 }
@@ -402,6 +411,7 @@ fn compile(document: &Value, schema: &Value) -> Option<Validator> {
 struct Expansion {
     nodes: usize,
     bytes: usize,
+    patterns: usize,
 }
 
 impl Expansion {
@@ -480,6 +490,11 @@ fn expand_schema(
             "type" | "const" | "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum"
             | "multipleOf" | "minLength" | "maxLength" | "minItems" | "maxItems"
             | "minProperties" | "maxProperties" => {
+                budget.literal(value)?;
+                value.clone()
+            }
+            "pattern" if value.as_str()?.len() <= MAX_PATTERN_BYTES => {
+                budget.patterns = budget.patterns.checked_sub(1)?;
                 budget.literal(value)?;
                 value.clone()
             }

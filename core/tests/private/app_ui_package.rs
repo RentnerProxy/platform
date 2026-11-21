@@ -303,13 +303,76 @@ fn operation_requires_declared_permission_and_matching_schemas() {
 }
 
 #[test]
+fn greeting_operations_enforce_the_published_pattern() {
+    let greeting_ref = json!({"$ref": "#/components/schemas/Greeting"});
+    let operation = |id: &str, permission: &str, request: &Value| {
+        json!({
+            "post": {
+                "operationId": id,
+                "x-rentnerproxy-access": { "permissionKey": permission },
+                "requestBody": { "content": { "application/json": { "schema": request } } },
+                "responses": { "200": { "content": {
+                    "application/json": { "schema": greeting_ref }
+                } } }
+            }
+        })
+    };
+    let document = json!({
+        "paths": {
+            "/app/v1/api/get-greeting": operation(
+                "get-greeting", "greeting-read",
+                &json!({"type": "object", "additionalProperties": false}),
+            ),
+            "/app/v1/api/save-greeting": operation("save-greeting", "greeting-write", &greeting_ref),
+        },
+        "components": { "schemas": { "Greeting": {
+            "type": "object",
+            "required": ["greeting"],
+            "properties": { "greeting": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "pattern": r"^[^\s\x00-\x1f\x7f-\x9f](?:[^\x00-\x1f\x7f-\x9f]*[^\s\x00-\x1f\x7f-\x9f])?$",
+            } },
+            "additionalProperties": false,
+        } } }
+    });
+    let operations = read_operations(
+        &document,
+        &["greeting-read".into(), "greeting-write".into()],
+        &[],
+    );
+    assert_eq!(operations.len(), 2);
+    let get = &operations["get-greeting"];
+    let save = &operations["save-greeting"];
+    assert!(get.request.is_valid(&json!({})));
+    assert!(!get.request.is_valid(&json!({"greeting": "Hallo"})));
+    for validator in [&get.response, &save.request, &save.response] {
+        for greeting in [String::from("Grüße aus Obernburg!"), "ä".repeat(120)] {
+            assert!(validator.is_valid(&json!({"greeting": greeting})));
+        }
+        for invalid in [
+            json!({"greeting": ""}),
+            json!({"greeting": " Hallo"}),
+            json!({"greeting": "Hallo\u{00a0}"}),
+            json!({"greeting": "Hal\nlo"}),
+            json!({"greeting": "Hal\u{0085}lo"}),
+            json!({"greeting": "ä".repeat(121)}),
+            json!({"greeting": "Hallo", "unexpected": true}),
+        ] {
+            assert!(!validator.is_valid(&invalid), "{invalid}");
+        }
+    }
+}
+
+#[test]
 fn operation_rejects_unresolved_recursive_and_unsupported_schemas() {
     for schema in [
         json!({"$ref":"https://other.test/network.json"}),
         json!({"$ref":"local.json#/Schema"}),
         json!({"$ref":"#/components/schemas/Absent"}),
         json!({"$ref":"#/components/schemas/Greeting"}),
-        json!({"type":"string","pattern":"hello"}),
+        json!({"type":"object","patternProperties":{"^x":true}}),
         json!({"type":"unknown"}),
     ] {
         let mut document = operation_document();
@@ -549,4 +612,25 @@ fn rejects_malformed_schemas_and_bounds_expansion() {
     assert!(compile(&document, &node_limit).is_some());
     node_limit["properties"]["extra"] = json!(true);
     assert!(compile(&document, &node_limit).is_none());
+}
+
+#[test]
+fn rejects_invalid_and_over_budget_patterns() {
+    let document = json!({});
+    for pattern in [
+        json!(1),
+        json!("["),
+        json!("(?<=a)b"),
+        json!("^(?:[a-z0-9]{8}-){4096}$"),
+        json!("a".repeat(MAX_PATTERN_BYTES + 1)),
+    ] {
+        let schema = json!({"type": "string", "pattern": pattern});
+        assert!(compile(&document, &schema).is_none(), "{pattern}");
+    }
+
+    let pattern = json!({"pattern": "^hello$"});
+    let mut patterns = vec![pattern.clone(); MAX_SCHEMA_PATTERNS];
+    assert!(compile(&document, &json!({"allOf": patterns})).is_some());
+    patterns.push(pattern);
+    assert!(compile(&document, &json!({"allOf": patterns})).is_none());
 }
