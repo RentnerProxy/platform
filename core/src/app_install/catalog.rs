@@ -71,38 +71,54 @@ impl Installer {
         }
         let accepted = OffsetDateTime::from_unix_timestamp(checkpoint.accepted_at)
             .map_err(io::Error::other)?;
-        let catalog = read(
-            |name, limit| {
-                checkpoint
-                    .files
-                    .get(name)
-                    .map(|raw| {
-                        if raw.len() > limit.div_ceil(3) * 4 {
-                            return Err(invalid("Oversized checkpoint entry"));
-                        }
-                        STANDARD.decode(raw).map_err(io::Error::other)
-                    })
-                    .transpose()
-            },
-            &self.pinned_root,
-            accepted,
-            None,
-        )?;
+        let catalog = checkpoint.verify(&self.pinned_root, accepted, None)?;
         Ok(Some((checkpoint.accepted_at, catalog)))
     }
 
     pub(super) fn refresh(
         &self,
-        mut fetch: impl FnMut(&str, usize) -> io::Result<Option<Vec<u8>>>,
+        fetch: impl FnMut(&str, usize) -> io::Result<Option<Vec<u8>>>,
         now: OffsetDateTime,
     ) -> io::Result<TrustedPackageCatalog> {
-        let previous = self.checkpoint()?;
-        if previous
-            .as_ref()
-            .is_some_and(|(accepted_at, _)| *accepted_at > now.unix_timestamp())
-        {
-            return Err(invalid("Local time is earlier than the accepted catalog"));
+        let (next, catalog) = self.fetch_checkpoint(fetch, now)?;
+        write_checkpoint(&self.config.store_directory, &next)?;
+        Ok(catalog)
+    }
+
+    #[cfg(any(
+        test,
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    pub(super) fn refresh_in_background(
+        &self,
+        fetch: impl FnMut(&str, usize) -> io::Result<Option<Vec<u8>>>,
+        now: OffsetDateTime,
+    ) -> io::Result<()> {
+        let (next, _) = self.fetch_checkpoint(fetch, now)?;
+        let _lock = self.lock()?;
+        // Stage may have committed newer metadata while this refresh was fetching.
+        next.verify(&self.pinned_root, now, self.previous(now)?.as_ref())?;
+        write_checkpoint(&self.config.store_directory, &next)
+    }
+
+    fn previous(&self, now: OffsetDateTime) -> io::Result<Option<TrustedPackageCatalog>> {
+        match self.checkpoint()? {
+            Some((accepted_at, _)) if accepted_at > now.unix_timestamp() => {
+                Err(invalid("Local time is earlier than the accepted catalog"))
+            }
+            previous => Ok(previous.map(|(_, catalog)| catalog)),
         }
+    }
+
+    fn fetch_checkpoint(
+        &self,
+        mut fetch: impl FnMut(&str, usize) -> io::Result<Option<Vec<u8>>>,
+        now: OffsetDateTime,
+    ) -> io::Result<(Checkpoint, TrustedPackageCatalog)> {
+        let previous = self.previous(now)?;
         let mut next = Checkpoint {
             accepted_at: now.unix_timestamp(),
             pin_sha256: digest(&self.pinned_root),
@@ -121,10 +137,35 @@ impl Installer {
             },
             &self.pinned_root,
             now,
-            previous.as_ref().map(|(_, catalog)| catalog),
+            previous.as_ref(),
         )?;
-        write_checkpoint(&self.config.store_directory, &next)?;
-        Ok(catalog)
+        Ok((next, catalog))
+    }
+}
+
+impl Checkpoint {
+    fn verify(
+        &self,
+        pin: &[u8],
+        at: OffsetDateTime,
+        previous: Option<&TrustedPackageCatalog>,
+    ) -> io::Result<TrustedPackageCatalog> {
+        read(
+            |name, limit| {
+                self.files
+                    .get(name)
+                    .map(|raw| {
+                        if raw.len() > limit.div_ceil(3) * 4 {
+                            return Err(invalid("Oversized checkpoint entry"));
+                        }
+                        STANDARD.decode(raw).map_err(io::Error::other)
+                    })
+                    .transpose()
+            },
+            pin,
+            at,
+            previous,
+        )
     }
 }
 

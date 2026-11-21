@@ -1,12 +1,12 @@
 mod files;
 
-use crate::{app_manager, appliance_process};
+use crate::{app_install::Installer, app_manager, appliance_process};
 use marketplace_artifacts::{digest, invalid, read_file};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
+    fs,
     io::{self, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -226,9 +226,7 @@ fn process(args: &[String]) -> io::Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         return Err(invalid("Application backup requires maintenance ownership"));
     }
-    let config = env::var_os("RENTNERPROXY_APP_INSTALLER_CONFIG")
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from);
+    let config = Installer::appliance_override();
     let (_guard, inventory) = app_manager::backup_inventory(config.as_deref())?;
     let snapshot_input = match args {
         [action, path] if matches!(action.as_str(), "verify" | "restore") => {

@@ -204,6 +204,7 @@ COPY --from=valkey-runtime /usr/local/bin/valkey-server /usr/local/bin/valkey-cl
 COPY docker/production/entrypoint.sh /usr/local/bin/rentnerproxy-production
 COPY docker/production/apps/provision.sh /usr/local/bin/rentnerproxy-provision-app
 COPY docker/production/apps/pg_hba.conf docker/production/apps/pg_ident.conf /usr/local/etc/rentnerproxy/
+COPY docker/production/apps/catalog/ /usr/share/rentnerproxy/app-catalog/
 COPY docker/production/verify-platform.sh /tmp/verify-platform.sh
 COPY docker/production/backups/supervisor.sh /usr/local/lib/rentnerproxy-backups.sh
 COPY docker/production/fault-supervisor.sh /usr/local/lib/rentnerproxy-fault-supervisor.sh

@@ -6,7 +6,7 @@ import type { CrowdSecMode, CrowdSecRuntimeStatus } from '../Types/appliance-com
 import assert from 'node:assert/strict'
 import { dockerBuildDiagnostic } from '../../../../scripts/smoke/docker-build-diagnostics.ts'
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,6 +27,8 @@ const runId = randomUUID().replaceAll('-', '').slice(0, 12)
 const project = 'rentnerproxy-appliance-smoke-' + runId
 const publicOrigin = 'https://management.appliance-smoke.invalid'
 const trustedProxyCidrs = '127.0.0.1/32,::1/128'
+const changedPublicOrigin = 'https://changed.appliance-smoke.invalid'
+const changedTrustedProxyCidrs = '192.0.2.0/24'
 const smtpEnvironment = {
     SMTP_FROM: 'RentnerProxy <noreply@appliance-smoke.invalid>',
     SMTP_HOST: 'smtp.appliance-smoke.invalid',
@@ -365,8 +367,11 @@ function assertLoopbackListeners(procNet: string, port: number): void {
 
 export async function createApplianceSmokeContext() {
     const temporaryRoot = await mkdtemp(join(tmpdir(), 'rentnerproxy-appliance-smoke-'))
-    const envFile = join(temporaryRoot, 'smtp.env')
+    const envFile = join(temporaryRoot, '.env')
     const temporaryComposeFile = join(temporaryRoot, 'docker-compose.yml')
+    const deploymentChangeRoot = join(temporaryRoot, 'deployment-change')
+    const deploymentChangeEnvFile = join(deploymentChangeRoot, '.env')
+    const deploymentChangeComposeFile = join(deploymentChangeRoot, 'docker-compose.yml')
     const imageTag = sharedSmokeImage('appliance') ?? 'rentnerproxy-appliance-smoke:' + runId
     const http3Image = sharedSmokeImage('http3-client') ?? 'rentnerproxy-appliance-http3:' + runId
     const volumeName = project + '-data'
@@ -377,20 +382,14 @@ export async function createApplianceSmokeContext() {
         availableLoopbackPort(),
         availableLoopbackPort(),
     ])
-    await writeFile(
-        envFile,
-        smtpNames
-            .map((name) => `${name}=${smtpEnvironment[name as keyof typeof smtpEnvironment]}`)
-            .join('\n') +
-            '\nPUBLIC_ORIGIN=' +
-            publicOrigin +
-            '\nPROXY_TRUSTED_PROXY_CIDRS=' +
-            trustedProxyCidrs +
-            '\nRENTNERPROXY_IMAGE=' +
-            imageTag +
-            '\n',
-        'utf8',
-    )
+    const commonEnvFileContent =
+        Object.entries({
+            ...smtpEnvironment,
+            RENTNERPROXY_IMAGE: imageTag,
+            RENTNERPROXY_PROXY_PUBLIC_HTTPS_PORT: String(httpsPort),
+        })
+            .map(([name, value]) => `${name}=${value}`)
+            .join('\n') + '\n'
     const rootCompose = (await readFile(rootComposeFile, 'utf8')).replaceAll('\r\n', '\n')
     assert.match(
         rootCompose,
@@ -402,12 +401,6 @@ export async function createApplianceSmokeContext() {
             .replace(
                 'services:\n    rentnerproxy:\n',
                 'services:\n    rentnerproxy:\n        extra_hosts:\n            - host.docker.internal:host-gateway\n',
-            )
-            .replace(
-                '        environment:\n',
-                '        environment:\n            RENTNERPROXY_PROXY_PUBLIC_HTTPS_PORT: "' +
-                    httpsPort +
-                    '"\n',
             )
             .replace("- '80:8080'", `- '127.0.0.1:${httpPort}:8080'`)
             .replace("- '127.0.0.1:81:3000'", `- '127.0.0.1:${managementPort}:3000'`)
@@ -427,25 +420,44 @@ export async function createApplianceSmokeContext() {
         rootCompose,
         'temporary appliance Compose was not transformed',
     )
-    await writeFile(temporaryComposeFile, temporaryCompose, 'utf8')
+    await mkdir(deploymentChangeRoot)
+    await Promise.all([
+        writeFile(
+            envFile,
+            commonEnvFileContent +
+                `PUBLIC_ORIGIN=${publicOrigin}\nPROXY_TRUSTED_PROXY_CIDRS=${trustedProxyCidrs}\n`,
+            'utf8',
+        ),
+        writeFile(temporaryComposeFile, temporaryCompose, 'utf8'),
+        writeFile(
+            deploymentChangeEnvFile,
+            commonEnvFileContent +
+                `PUBLIC_ORIGIN=${changedPublicOrigin}\nPROXY_TRUSTED_PROXY_CIDRS=${changedTrustedProxyCidrs}\n`,
+            'utf8',
+        ),
+        writeFile(deploymentChangeComposeFile, temporaryCompose, 'utf8'),
+    ])
     const compose = composeCommand(envFile, temporaryComposeFile)
     const restoreProject = project + '-restore'
     const restoreCompose = composeCommand(envFile, temporaryComposeFile, restoreProject)
     const deploymentChangeProject = project + '-deployment-change'
     const deploymentChangeCompose = composeCommand(
-        envFile,
-        temporaryComposeFile,
+        deploymentChangeEnvFile,
+        deploymentChangeComposeFile,
         deploymentChangeProject,
     )
     let backend: ReturnType<typeof Bun.serve> | undefined
     let beta2Automation: ReturnType<typeof createBeta2AutomationFixture> | undefined
     const scriptEnvironment: NodeJS.ProcessEnv = {
         ...commandEnvironment,
-        ...smtpEnvironment,
-        RENTNERPROXY_IMAGE: imageTag,
-        PUBLIC_ORIGIN: publicOrigin,
-        PROXY_TRUSTED_PROXY_CIDRS: trustedProxyCidrs,
+        COMPOSE_DISABLE_ENV_FILE: '1',
+        COMPOSE_ENV_FILES: envFile,
         RENTNERPROXY_COMPOSE_FILE: temporaryComposeFile,
+    }
+    const deploymentChangeScriptEnvironment: NodeJS.ProcessEnv = {
+        ...scriptEnvironment,
+        COMPOSE_ENV_FILES: deploymentChangeEnvFile,
+        RENTNERPROXY_COMPOSE_FILE: deploymentChangeComposeFile,
     }
 
     return {
@@ -456,6 +468,8 @@ export async function createApplianceSmokeContext() {
         project,
         publicOrigin,
         trustedProxyCidrs,
+        changedPublicOrigin,
+        changedTrustedProxyCidrs,
         smtpEnvironment,
         smtpNames,
         passed,
@@ -509,6 +523,7 @@ export async function createApplianceSmokeContext() {
             return beta2Automation
         },
         scriptEnvironment,
+        deploymentChangeScriptEnvironment,
     }
 }
 

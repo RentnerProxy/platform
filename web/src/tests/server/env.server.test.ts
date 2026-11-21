@@ -457,7 +457,7 @@ describe('WebAuthn relying-party configuration', () => {
 describe('getSmtpConfiguration', () => {
     test('returns null unless every required field is valid', () => {
         configureRequiredSmtp()
-        delete process.env.SMTP_PORT
+        delete process.env.SMTP_HOST
         expect(getSmtpConfiguration()).toBeNull()
 
         configureRequiredSmtp()
@@ -475,6 +475,27 @@ describe('getSmtpConfiguration', () => {
         configureRequiredSmtp()
         process.env.SMTP_FROM = 'noreply@example.com\nBcc: attacker@example.com'
         expect(getSmtpConfiguration()).toBeNull()
+    })
+
+    test.each([undefined, ''])('defaults the SMTP port and TLS mode for %p', (value) => {
+        configureRequiredSmtp()
+        if (value === undefined) {
+            delete process.env.SMTP_PORT
+            delete process.env.SMTP_SECURE
+        } else {
+            process.env.SMTP_PORT = value
+            process.env.SMTP_SECURE = value
+        }
+
+        expect(getSmtpConfiguration()).toMatchObject({ port: 587, secure: false })
+    })
+
+    test('preserves explicit SMTP port and TLS settings', () => {
+        configureRequiredSmtp()
+        process.env.SMTP_PORT = '465'
+        process.env.SMTP_SECURE = 'true'
+
+        expect(getSmtpConfiguration()).toMatchObject({ port: 465, secure: true })
     })
 
     test('returns a complete configuration without optional credentials', () => {
