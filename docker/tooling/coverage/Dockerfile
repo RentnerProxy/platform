@@ -6,7 +6,7 @@ COPY core/Cargo.toml core/Cargo.lock ./
 COPY core/src ./src
 RUN CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked
 
-FROM mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d8f867cd4d520021545a9a50c120eae3b AS tooling
+FROM mirror.gcr.io/library/postgres:19.0@sha256:bb6e70add742cd868fb62cb3b2f67d1dd2bdd2b65a521e778420748753687c60 AS tooling
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
 RUN apt-get update \
