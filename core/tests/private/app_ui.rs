@@ -447,8 +447,9 @@ async fn privileged_web_socket_serves_generation_scoped_ui() {
     let listener = bind_path(&path).unwrap();
     let registry = Registry::default();
     let service = registry.clone();
+    let (endpoint, mut requests, release) = catalog::tests::ready_endpoint();
     let _server = Task(tokio::spawn(async move {
-        serve(listener, service).await.unwrap()
+        serve(listener, service, endpoint).await.unwrap()
     }));
     let client = Client(path);
 
@@ -468,6 +469,7 @@ async fn privileged_web_socket_serves_generation_scoped_ui() {
     let initial = client.get("/v1/apps").await;
     initial.assert(200);
     assert_eq!(initial.json(), value!([]));
+    assert_catalog_requests(&client, &mut requests, release).await;
     let staged = staged_package(scratch.path());
     let app_root = scratch.path().join("apps");
     let publish = |id: &str, generation, uid| {
@@ -521,6 +523,50 @@ async fn privileged_web_socket_serves_generation_scoped_ui() {
         .get(&format!("{INSTALLATION}/metadata"))
         .await
         .assert(404);
+}
+
+async fn assert_catalog_requests(
+    client: &Client,
+    requests: &mut tokio::sync::mpsc::Receiver<catalog::Selection>,
+    release: catalog::Selection,
+) {
+    const INSTALL: &str = "/v1/catalog/install";
+    const JSON: &str = "Content-Type: application/json\r\n";
+    let initial = client.get("/v1/catalog").await;
+    initial.assert(200);
+    assert_eq!(initial.json()["state"], "ready");
+    assert_eq!(
+        initial.json()["entries"][0]["appId"],
+        "rentnerproxy.greeting"
+    );
+    client.request("POST", INSTALL, "", b"{}").await.assert(400);
+    client
+        .request("POST", INSTALL, JSON, b"{")
+        .await
+        .assert(400);
+    client
+        .request("POST", INSTALL, JSON, &[b' '; MAX_INSTALL_BYTES + 1])
+        .await
+        .assert(413);
+
+    let mut wrong = serde_json::to_value(&release).unwrap();
+    wrong["archiveSha256"] = value!("f".repeat(64));
+    client
+        .request("POST", INSTALL, JSON, &serde_json::to_vec(&wrong).unwrap())
+        .await
+        .assert(409);
+
+    let selected = serde_json::to_vec(&release).unwrap();
+    for _ in 0..2 {
+        let accepted = client.request("POST", INSTALL, JSON, &selected).await;
+        accepted.assert(202);
+        assert_eq!(accepted.json()["status"], "installing");
+    }
+    assert_eq!(requests.try_recv().unwrap(), release);
+    assert!(requests.try_recv().is_err());
+    let pending = client.get("/v1/catalog").await;
+    pending.assert(200);
+    assert_eq!(pending.json()["install"]["status"], "installing");
 }
 
 async fn assert_metadata_and_assets(client: &Client) {

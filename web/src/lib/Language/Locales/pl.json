@@ -158,6 +158,35 @@
         "ddns": "DDNS",
         "dockerDiscovery": "Docker Discovery"
     },
+    "appCatalog": {
+        "title": "Katalog aplikacji",
+        "description": "Instaluj aplikacje z podpisanego katalogu RentnerProxy.",
+        "refresh": "Odśwież katalog",
+        "empty": "W katalogu nie ma aplikacji dla tego urządzenia.",
+        "release": "{{publisher}} · Wersja {{version}}",
+        "install": "Zainstaluj",
+        "retry": "Ponów instalację",
+        "installing": "Instalowanie aplikacji…",
+        "installed": "Zainstalowano",
+        "open": "Otwórz aplikację",
+        "status": {
+            "loading": "Wczytywanie katalogu aplikacji…",
+            "stale": "Katalog jest nieaktualny. Odśwież go przed zainstalowaniem aplikacji.",
+            "unavailable": "Katalog aplikacji jest obecnie niedostępny."
+        },
+        "availability": {
+            "incompatible": "Aplikacja nie jest zgodna z tym urządzeniem",
+            "grantsRequired": "Wymagane są dodatkowe uprawnienia"
+        },
+        "errors": {
+            "invalid": "Wybrana wersja jest nieprawidłowa.",
+            "forbidden": "Tylko właściciele urządzenia mogą instalować aplikacje.",
+            "conflict": "Wersja uległa zmianie lub trwa inna instalacja. Odśwież katalog i spróbuj ponownie.",
+            "rateLimited": "Zbyt wiele żądań instalacji. Odczekaj chwilę i spróbuj ponownie.",
+            "unavailable": "Usługa instalacji jest niedostępna. Spróbuj ponownie.",
+            "installFailed": "Instalacja nie powiodła się. Możesz spróbować ponownie."
+        }
+    },
     "appUi": {
         "apps": "Aplikacje",
         "loading": "Ładowanie aplikacji…",

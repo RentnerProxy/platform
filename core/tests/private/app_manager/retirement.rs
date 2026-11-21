@@ -64,7 +64,7 @@ fn failures_before_activation_preserve_grants_and_legacy_interruptions_remain_co
 }
 
 #[tokio::test]
-async fn start_detects_an_exited_broker_before_the_retirement_tick() {
+async fn start_and_catalog_detect_an_exited_broker_before_the_retirement_tick() {
     if unsafe { libc::geteuid() } != 0 {
         return;
     }
@@ -102,6 +102,14 @@ async fn start_detects_an_exited_broker_before_the_retirement_tick() {
             },
         )
         .unwrap();
+    let selection = serde_json::from_value(json!({
+        "appId": "fixture.exited",
+        "version": "1.0.0",
+        "archiveSha256": "a".repeat(64),
+    }))
+    .unwrap();
+    let error = manager.install_catalog(&selection).await.unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
     // A real start reaches package recovery and reports the unavailable configuration.
     assert!(
         manager
@@ -202,6 +210,7 @@ async fn staging_services_status_and_publishes_candidate_while_retirement_is_bus
         .unwrap();
     let (release, downloaded) = tokio::sync::oneshot::channel();
     let (stop_serving, serving) = tokio::sync::oneshot::channel();
+    let (endpoint, mut requests) = catalog::Endpoint::new(None);
     let drive_manager = async {
         manager
             .stage("staged", "fixture.staged".into(), "2.0.0".into(), async {
@@ -220,7 +229,7 @@ async fn staging_services_status_and_publishes_candidate_while_retirement_is_bus
         assert!(slot.pending_fence);
         assert_eq!(slot.candidate.as_ref().unwrap().version, "2.0.0");
         tokio::select! {
-            result = manager.serve_control(&listener) => panic!("Control stopped: {result:?}"),
+            result = manager.serve_control(&listener, &endpoint, &mut requests) => panic!("Control stopped: {result:?}"),
             result = serving => result.unwrap(),
         }
         manager.shutdown().await.unwrap();
@@ -344,6 +353,7 @@ async fn stage_services_status_and_broker_exit_during_an_unrelated_stop() {
     let (downloaded, download_finished) = tokio::sync::oneshot::channel();
     let (stage_finished, mut during_finished) = tokio::sync::oneshot::channel();
     let (stop_serving, serving) = tokio::sync::oneshot::channel();
+    let (endpoint, mut installations) = catalog::Endpoint::new(None);
     let drive_manager = async {
         manager
             .during(Operation::Stage("busy"), async {
@@ -355,7 +365,7 @@ async fn stage_services_status_and_broker_exit_during_an_unrelated_stop() {
             .unwrap();
         stage_finished.send(()).unwrap();
         tokio::select! {
-            result = manager.serve_control(&listener) => panic!("Control stopped: {result:?}"),
+            result = manager.serve_control(&listener, &endpoint, &mut installations) => panic!("Control stopped: {result:?}"),
             result = serving => result.unwrap(),
         }
         manager.wait_for_drain("exited").await.unwrap();

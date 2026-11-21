@@ -22,7 +22,8 @@ function ApplicationRoute() {
     const navigate = Route.useNavigate()
     const app = inventory?.apps.find((candidate) => candidate.installationId === installationId)
 
-    if (inventory?.isPending) return <output>{t('appUi.loading')}</output>
+    if (inventory?.isPending || (!app && inventory?.isRefreshing))
+        return <output>{t('appUi.loading')}</output>
     if (!app) return <output>{t('appUi.unavailable')}</output>
 
     const activeRoute = routeId ?? appUiDefaultRoute(app)

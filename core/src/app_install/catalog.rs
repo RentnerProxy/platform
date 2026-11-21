@@ -96,12 +96,13 @@ impl Installer {
         &self,
         fetch: impl FnMut(&str, usize) -> io::Result<Option<Vec<u8>>>,
         now: OffsetDateTime,
-    ) -> io::Result<()> {
+    ) -> io::Result<TrustedPackageCatalog> {
         let (next, _) = self.fetch_checkpoint(fetch, now)?;
         let _lock = self.lock()?;
         // Stage may have committed newer metadata while this refresh was fetching.
-        next.verify(&self.pinned_root, now, self.previous(now)?.as_ref())?;
-        write_checkpoint(&self.config.store_directory, &next)
+        let catalog = next.verify(&self.pinned_root, now, self.previous(now)?.as_ref())?;
+        write_checkpoint(&self.config.store_directory, &next)?;
+        Ok(catalog)
     }
 
     fn previous(&self, now: OffsetDateTime) -> io::Result<Option<TrustedPackageCatalog>> {
