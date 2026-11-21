@@ -1,10 +1,15 @@
+use std::{fmt, marker::PhantomData};
+
 use axum::{
     body::Bytes,
     extract::{Path, rejection::BytesRejection},
     http::{StatusCode, Uri},
     response::Response,
 };
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{DeserializeOwned, MapAccess, Visitor, value::MapAccessDeserializer},
+};
 
 use super::no_store_status_json;
 
@@ -13,6 +18,7 @@ mod download;
 pub(in crate::server) use download::download;
 
 const MAX_REQUEST_BYTES: usize = 2_048;
+const MAX_OFF_HOST_REQUEST_BYTES: usize = 8_192;
 #[cfg(any(unix, test))]
 const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 #[cfg(unix)]
@@ -63,10 +69,7 @@ pub(in crate::server) async fn off_host_config(
     uri: Uri,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    let request = body
-        .ok()
-        .filter(|value| value.len() <= 8192)
-        .and_then(|value| serde_json::from_slice::<OffHostConfig>(&value).ok());
+    let request = parse::<OffHostConfig>(body, MAX_OFF_HOST_REQUEST_BYTES);
     let bounded = |value: &str, maximum: usize| {
         value.len() <= maximum && !value.chars().any(char::is_control)
     };
@@ -140,7 +143,7 @@ pub(in crate::server) async fn delete(
     uri: Uri,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    let Some(request) = parse::<Delete>(body).filter(|request| {
+    let Some(request) = parse::<Delete>(body, MAX_REQUEST_BYTES).filter(|request| {
         canonical_uuid(&id)
             && uri.query().is_none()
             && canonical_uuid(&request.request_id)
@@ -160,7 +163,7 @@ pub(in crate::server) async fn restore(
     uri: Uri,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    let Some(request) = parse::<Restore>(body).filter(|request| {
+    let Some(request) = parse::<Restore>(body, MAX_REQUEST_BYTES).filter(|request| {
         canonical_uuid(&id)
             && uri.query().is_none()
             && canonical_uuid(&request.request_id)
@@ -197,12 +200,30 @@ fn unavailable() -> Response {
     error(StatusCode::SERVICE_UNAVAILABLE, "unavailable")
 }
 
-fn parse<T: serde::de::DeserializeOwned>(body: Result<Bytes, BytesRejection>) -> Option<T> {
+struct CommandObject<T>(PhantomData<T>);
+
+impl<'de, T: Deserialize<'de>> Visitor<'de> for CommandObject<T> {
+    type Value = T;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a backup command object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, fields: A) -> Result<T, A::Error> {
+        T::deserialize(MapAccessDeserializer::new(fields))
+    }
+}
+
+fn parse<T: DeserializeOwned>(body: Result<Bytes, BytesRejection>, max_bytes: usize) -> Option<T> {
     let body = body.ok()?;
-    if body.len() > MAX_REQUEST_BYTES {
+    if body.len() > max_bytes {
         return None;
     }
-    serde_json::from_slice(&body).ok()
+    // Deserialize only a JSON object so commands always use named fields.
+    let mut decoder = serde_json::Deserializer::from_slice(&body);
+    let request = decoder.deserialize_map(CommandObject(PhantomData)).ok()?;
+    decoder.end().ok()?;
+    Some(request)
 }
 
 pub(in crate::server) async fn status() -> Response {
@@ -210,7 +231,7 @@ pub(in crate::server) async fn status() -> Response {
 }
 
 pub(in crate::server) async fn acknowledge_audit(body: Result<Bytes, BytesRejection>) -> Response {
-    let Some(request) = parse::<AuditAcknowledgement>(body).filter(|request| {
+    let Some(request) = parse::<AuditAcknowledgement>(body, MAX_REQUEST_BYTES).filter(|request| {
         canonical_uuid(&request.store_id) && request.sequence <= 9_007_199_254_740_991
     }) else {
         return error(StatusCode::BAD_REQUEST, "invalid_input");
@@ -222,7 +243,7 @@ pub(in crate::server) async fn acknowledge_audit(body: Result<Bytes, BytesReject
 }
 
 pub(in crate::server) async fn start(body: Result<Bytes, BytesRejection>) -> Response {
-    let Some(request) = parse::<Start>(body)
+    let Some(request) = parse::<Start>(body, MAX_REQUEST_BYTES)
         .filter(|request| canonical_uuid(&request.request_id) && canonical_uuid(&request.actor_id))
     else {
         return error(StatusCode::BAD_REQUEST, "invalid_input");
@@ -234,7 +255,7 @@ pub(in crate::server) async fn start(body: Result<Bytes, BytesRejection>) -> Res
 }
 
 pub(in crate::server) async fn config(body: Result<Bytes, BytesRejection>) -> Response {
-    let Some(request) = parse::<Config>(body).filter(|request| {
+    let Some(request) = parse::<Config>(body, MAX_REQUEST_BYTES).filter(|request| {
         canonical_uuid(&request.request_id)
             && canonical_uuid(&request.actor_id)
             && (1..=8_760).contains(&request.interval_hours)

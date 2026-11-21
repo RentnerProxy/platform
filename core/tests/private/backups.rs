@@ -215,9 +215,26 @@ async fn off_host_commands_reject_unbounded_and_impersonated_payloads() {
 fn backup_config_accepts_inclusive_limits_and_rejects_unknown_fields() {
     for (hours, retention) in [(1, 1), (8_760, 50)] {
         let body = serde_json::json!({"requestId": ID, "actorId": ID, "expectedRevision": u32::MAX, "enabled": false, "intervalHours": hours, "retentionCount": retention});
-        let parsed = parse::<Config>(Ok(Bytes::from(body.to_string()))).unwrap();
+        let parsed = parse::<Config>(Ok(Bytes::from(body.to_string())), MAX_REQUEST_BYTES).unwrap();
         assert_eq!(parsed.interval_hours, hours);
         assert_eq!(parsed.retention_count, retention);
+    }
+}
+
+#[test]
+fn backup_command_decoder_requires_one_object_with_named_fields() {
+    let valid = serde_json::json!({ "requestId": ID, "actorId": ID });
+    let request =
+        parse::<Start>(Ok(Bytes::from(format!(" \n{valid}\t "))), MAX_REQUEST_BYTES).unwrap();
+    assert_eq!(request.request_id, ID);
+    assert_eq!(request.actor_id, ID);
+
+    for invalid in [
+        serde_json::json!([ID, ID]).to_string(),
+        format!("{valid} {{}}"),
+        format!(r#"{{"requestId":"{ID}","actorId":"{ID}","actorId":"{ID}"}}"#),
+    ] {
+        assert!(parse::<Start>(Ok(Bytes::from(invalid)), MAX_REQUEST_BYTES).is_none());
     }
 }
 
@@ -434,9 +451,12 @@ async fn invalid_audit_acknowledgements_never_reach_agent() {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
-    let request = parse::<AuditAcknowledgement>(Ok(Bytes::from(
-        serde_json::json!({"storeId": ID, "sequence": 9_007_199_254_740_991_u64}).to_string(),
-    )))
+    let request = parse::<AuditAcknowledgement>(
+        Ok(Bytes::from(
+            serde_json::json!({"storeId": ID, "sequence": 9_007_199_254_740_991_u64}).to_string(),
+        )),
+        MAX_REQUEST_BYTES,
+    )
     .unwrap();
     assert_eq!(request.sequence, 9_007_199_254_740_991);
     assert_eq!(
