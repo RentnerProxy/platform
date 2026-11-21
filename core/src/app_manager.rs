@@ -56,7 +56,7 @@ fn valid_id(id: &str) -> bool {
 
 struct Manager {
     listener: Option<Arc<tokio::net::UnixListener>>,
-    config: PathBuf,
+    config: Option<PathBuf>,
     journal: Journal,
     gateway: Gateway,
     ui: ui::Registry,
@@ -83,7 +83,7 @@ impl Drain {
 
 impl Manager {
     async fn package(
-        config: PathBuf,
+        config: Option<PathBuf>,
         app: String,
         version: String,
         record: Option<Release>,
@@ -94,7 +94,7 @@ impl Manager {
             .name("app-package".into())
             .spawn(move || {
                 let _ = send.send((|| {
-                    let installer = Installer::open(&config)?;
+                    let installer = Installer::open_appliance(config.as_deref())?;
                     let package = if let Some(record) = record {
                         recover(&installer, &app, &record)?
                     } else {
@@ -625,10 +625,15 @@ impl Manager {
         Ok(())
     }
 
-    async fn serve(&mut self) -> io::Result<()> {
+    async fn serve(&mut self, startup_catalog: Option<Installer>) -> io::Result<()> {
         let listener = Arc::new(control::bind()?);
         self.listener = Some(Arc::clone(&listener));
         self.reconcile().await?;
+        if let Some(installer) = startup_catalog
+            && let Err(error) = installer.refresh_on_start()
+        {
+            eprintln!("Could not start application catalog refresh: {error}");
+        }
         self.serve_control(&listener).await
     }
 
@@ -1021,9 +1026,7 @@ pub(crate) fn backup_inventory(config: Option<&Path>) -> io::Result<(impl Sized,
         {
             let installer = match &mut installer {
                 Some(existing) => existing,
-                empty => empty.insert(Installer::open(
-                    config.ok_or_else(|| bad("Missing installer configuration for backup"))?,
-                )?),
+                empty => empty.insert(Installer::open_appliance(config)?),
             };
             recover(installer, &slot.app_id, release)?;
         }
@@ -1069,18 +1072,21 @@ fn exit(result: io::Result<()>) -> ExitCode {
 }
 
 async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
-    let config = PathBuf::from(
-        arguments
-            .next()
-            .ok_or_else(|| bad("Expected installer configuration path"))?,
-    );
+    let config = arguments
+        .next()
+        .map(PathBuf::from)
+        .or_else(Installer::appliance_override);
     if arguments.next().is_some() || unsafe { libc::geteuid() } != 0 {
         return Err(bad(
-            "App manager requires root and one installer configuration",
+            "App manager requires root and accepts at most one installer configuration",
         ));
     }
     let check = config.clone();
-    tokio::task::spawn_blocking(move || Installer::open(&check).map(drop)).await??;
+    let startup_catalog = tokio::task::spawn_blocking(move || {
+        let installer = Installer::open_appliance(check.as_deref())?;
+        Ok::<_, io::Error>(check.is_none().then_some(installer))
+    })
+    .await??;
     let ui = ui::Registry::default();
     let mut manager = Manager {
         listener: None,
@@ -1096,7 +1102,7 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
     let result = tokio::select! {
         biased;
         _ = crate::shutdown::wait_for_shutdown() => Ok(()),
-        result = manager.serve() => result,
+        result = manager.serve(startup_catalog) => result,
         () = async move {
             let result = match ui::bind() {
                 Ok(listener) => ui::serve(listener, ui).await,

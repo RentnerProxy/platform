@@ -80,16 +80,7 @@ Save this as `docker-compose.yml` (or use the [repository file](docker-compose.y
 services:
     rentnerproxy:
         image: ${RENTNERPROXY_IMAGE:?Set RENTNERPROXY_IMAGE to a RentnerProxy image}
-        environment:
-            # Older Compose versions eagerly expand required-value fallbacks; startup validates the origin.
-            PUBLIC_ORIGIN: ${PUBLIC_ORIGIN-${RENTNERPROXY_PUBLIC_ORIGIN-}}
-            PROXY_TRUSTED_PROXY_CIDRS: ${PROXY_TRUSTED_PROXY_CIDRS-${RENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS:-}}
-            SMTP_FROM: ${SMTP_FROM:?Set SMTP_FROM}
-            SMTP_HOST: ${SMTP_HOST:?Set SMTP_HOST}
-            SMTP_PASSWORD: ${SMTP_PASSWORD:?Set SMTP_PASSWORD}
-            SMTP_PORT: ${SMTP_PORT:-587}
-            SMTP_SECURE: ${SMTP_SECURE:-false}
-            SMTP_USER: ${SMTP_USER:?Set SMTP_USER}
+        env_file: .env
         ports:
             - '80:8080'
             - '127.0.0.1:81:3000'
