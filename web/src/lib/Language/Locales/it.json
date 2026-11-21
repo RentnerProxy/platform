@@ -156,6 +156,35 @@
         "ddns": "DDNS",
         "dockerDiscovery": "Docker Discovery"
     },
+    "appCatalog": {
+        "title": "Catalogo delle app",
+        "description": "Installa app dal catalogo firmato di RentnerProxy.",
+        "refresh": "Aggiorna catalogo",
+        "empty": "Il catalogo non contiene app per questo dispositivo.",
+        "release": "{{publisher}} · Versione {{version}}",
+        "install": "Installa",
+        "retry": "Riprova l’installazione",
+        "installing": "Installazione dell’app in corso…",
+        "installed": "Installata",
+        "open": "Apri app",
+        "status": {
+            "loading": "Caricamento del catalogo delle app…",
+            "stale": "Il catalogo non è aggiornato. Aggiornalo prima di installare un’app.",
+            "unavailable": "Il catalogo delle app non è al momento disponibile."
+        },
+        "availability": {
+            "incompatible": "Incompatibile con questo dispositivo",
+            "grantsRequired": "Sono necessarie autorizzazioni aggiuntive"
+        },
+        "errors": {
+            "invalid": "La versione selezionata non è valida.",
+            "forbidden": "Solo i proprietari del dispositivo possono installare app.",
+            "conflict": "La versione è cambiata o è in corso un’altra installazione. Aggiorna il catalogo e riprova.",
+            "rateLimited": "Troppe richieste di installazione. Attendi e riprova.",
+            "unavailable": "Il servizio di installazione non è disponibile. Riprova.",
+            "installFailed": "L’installazione non è riuscita. Puoi riprovare."
+        }
+    },
     "appUi": {
         "apps": "App",
         "loading": "Caricamento dell’app…",

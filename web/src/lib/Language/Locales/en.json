@@ -154,6 +154,35 @@
         "ddns": "DDNS",
         "dockerDiscovery": "Docker Discovery"
     },
+    "appCatalog": {
+        "title": "App catalog",
+        "description": "Install apps from the signed RentnerProxy catalog.",
+        "refresh": "Refresh catalog",
+        "empty": "There are no apps in the catalog for this appliance.",
+        "release": "{{publisher}} · Version {{version}}",
+        "install": "Install",
+        "retry": "Retry installation",
+        "installing": "Installing app…",
+        "installed": "Installed",
+        "open": "Open app",
+        "status": {
+            "loading": "Loading the app catalog…",
+            "stale": "The catalog is out of date. Refresh it before installing an app.",
+            "unavailable": "The app catalog is currently unavailable."
+        },
+        "availability": {
+            "incompatible": "Incompatible with this appliance",
+            "grantsRequired": "Additional grants required"
+        },
+        "errors": {
+            "invalid": "The selected release is invalid.",
+            "forbidden": "Only appliance owners can install apps.",
+            "conflict": "The release changed or another installation is running. Refresh the catalog and try again.",
+            "rateLimited": "Too many installation requests. Please wait and try again.",
+            "unavailable": "The app installation service is unavailable. Please try again.",
+            "installFailed": "Installation failed. You can try again."
+        }
+    },
     "appUi": {
         "apps": "Apps",
         "loading": "Loading app…",

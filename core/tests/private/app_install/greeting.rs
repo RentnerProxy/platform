@@ -16,7 +16,7 @@ use marketplace_app_catalog::bootstrap_catalog;
 use marketplace_artifacts::{digest, file_identity};
 use serde_json::{Value, json};
 
-use super::{Installer, PIN, keys, now, refresh};
+use super::{Installer, PIN, PackageSource, keys, now, refresh};
 
 #[path = "greeting/publication.rs"]
 mod publication;
@@ -165,9 +165,13 @@ fn privileged_signed_greeting_package() {
     let first_snapshot = files.clone();
     let trusted = refresh(&installer, &first_snapshot, now()).unwrap();
     let first_stage = installer
-        .prepare(&trusted, ID, FIRST_VERSION, None, |asset| {
-            download(&releases, asset)
-        })
+        .prepare(
+            &trusted,
+            ID,
+            FIRST_VERSION,
+            PackageSource::Catalog(None),
+            |asset| download(&releases, asset),
+        )
         .unwrap();
     assert_eq!(first_stage.catalog_revision, 2);
     let first_archive = first.archive(native);
@@ -177,9 +181,13 @@ fn privileged_signed_greeting_package() {
         file_identity(&first_archive, first_size).unwrap().sha256
     );
     let unavailable = installer
-        .prepare::<std::io::Empty>(&trusted, ID, SECOND_VERSION, None, |_| {
-            panic!("Unapproved version reached the download boundary")
-        })
+        .prepare::<std::io::Empty>(
+            &trusted,
+            ID,
+            SECOND_VERSION,
+            PackageSource::Catalog(None),
+            |_| panic!("Unapproved version reached the download boundary"),
+        )
         .unwrap_err();
     assert!(
         unavailable
@@ -202,9 +210,13 @@ fn privileged_signed_greeting_package() {
     assert_ne!(approved.sha256, first_stage.archive_sha256);
     flip_archive_byte(&distributed);
     let corrupt = installer
-        .prepare(&trusted, ID, SECOND_VERSION, None, |asset| {
-            download(&releases, asset)
-        })
+        .prepare(
+            &trusted,
+            ID,
+            SECOND_VERSION,
+            PackageSource::Catalog(None),
+            |asset| download(&releases, asset),
+        )
         .unwrap_err();
     assert_eq!(
         corrupt.to_string(),
@@ -215,9 +227,13 @@ fn privileged_signed_greeting_package() {
     }
     flip_archive_byte(&distributed);
     let second_stage = installer
-        .prepare(&trusted, ID, SECOND_VERSION, None, |asset| {
-            download(&releases, asset)
-        })
+        .prepare(
+            &trusted,
+            ID,
+            SECOND_VERSION,
+            PackageSource::Catalog(None),
+            |asset| download(&releases, asset),
+        )
         .unwrap();
     assert_eq!(second_stage.archive_sha256, approved.sha256);
     assert_eq!(second_stage.catalog_revision, 3);

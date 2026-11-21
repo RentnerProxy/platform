@@ -26,6 +26,7 @@ use serde_json::Value;
 use tokio::{net::UnixListener, sync::Semaphore, task::JoinSet, time::timeout};
 use tokio_util::sync::CancellationToken;
 
+use super::catalog;
 use crate::app_ipc::{
     APP_ROOT, WEB_UID,
     filesystem::require_safe_parents,
@@ -43,6 +44,8 @@ const SOCKET: &str = "/run/rentnerproxy/app-ui/web.sock";
 const MAX_CONNECTIONS: usize = 16;
 const MAX_LIST_PROBES: usize = 16;
 const MAX_LIST_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CATALOG_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
+const MAX_INSTALL_BYTES: usize = 4 * 1024;
 const MAX_OPERATIONS_PER_INSTALLATION: usize = 4;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -166,7 +169,11 @@ fn bind_path(path: &Path) -> io::Result<UnixListener> {
     Ok(listener)
 }
 
-pub(super) async fn serve(listener: UnixListener, registry: Registry) -> io::Result<()> {
+pub(super) async fn serve(
+    listener: UnixListener,
+    registry: Registry,
+    catalog: catalog::Endpoint,
+) -> io::Result<()> {
     let mut connections = JoinSet::new();
     let blocking = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
@@ -178,13 +185,15 @@ pub(super) async fn serve(listener: UnixListener, registry: Registry) -> io::Res
                     continue;
                 }
                 let registry = registry.clone();
+                let catalog = catalog.clone();
                 let blocking = Arc::clone(&blocking);
                 connections.spawn(async move {
                     let service = service_fn(move |request| {
                         let registry = registry.clone();
+                        let catalog = catalog.clone();
                         let blocking = Arc::clone(&blocking);
                         async move {
-                            let response = timeout(RPC_TIMEOUT, handle(registry, blocking, request))
+                            let response = timeout(RPC_TIMEOUT, handle(registry, catalog, blocking, request))
                                 .await
                                 .unwrap_or(Err(StatusCode::GATEWAY_TIMEOUT))
                                 .unwrap_or_else(empty);
@@ -207,6 +216,7 @@ pub(super) async fn serve(listener: UnixListener, registry: Registry) -> io::Res
 
 async fn handle(
     registry: Registry,
+    catalog: catalog::Endpoint,
     blocking: Arc<Semaphore>,
     request: Request<Incoming>,
 ) -> Result<Response<Body>, StatusCode> {
@@ -226,6 +236,15 @@ async fn handle(
         }
         if path == "/v1/apps" {
             return list(&registry).await;
+        }
+        if path == "/v1/catalog" {
+            let view = catalog
+                .view()
+                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+            if view.len() > MAX_CATALOG_RESPONSE_BYTES {
+                return Err(StatusCode::PAYLOAD_TOO_LARGE);
+            }
+            return response("application/json", Bytes::from(view));
         }
         let (entry, resource, value) = selection(&registry, path)?;
         return protected(&entry, async {
@@ -263,6 +282,21 @@ async fn handle(
     }
     if parts.method != Method::POST {
         return Err(StatusCode::NOT_FOUND);
+    }
+    if path == "/v1/catalog/install" {
+        if !header_value(&parts.headers, header::CONTENT_TYPE.as_str()).is_some_and(json_media_type)
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let bytes = read_body_limited(incoming, MAX_INSTALL_BYTES).await?;
+        let selection = serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+        let install = catalog.submit(selection).map_err(|error| match error {
+            catalog::Failure::Conflict => StatusCode::CONFLICT,
+            _ => StatusCode::SERVICE_UNAVAILABLE,
+        })?;
+        let mut reply = json(&install, MAX_INSTALL_BYTES)?;
+        *reply.status_mut() = StatusCode::ACCEPTED;
+        return Ok(reply);
     }
     let (entry, "operations", Some(id)) = selection(&registry, path)? else {
         return Err(StatusCode::NOT_FOUND);
@@ -481,7 +515,11 @@ fn bounded_lists(value: &Value) -> bool {
 }
 
 async fn read_body(incoming: Incoming) -> Result<Bytes, StatusCode> {
-    Limited::new(incoming, MAX_JSON_BYTES)
+    read_body_limited(incoming, MAX_JSON_BYTES).await
+}
+
+async fn read_body_limited(incoming: Incoming, limit: usize) -> Result<Bytes, StatusCode> {
+    Limited::new(incoming, limit)
         .collect()
         .await
         .map(|collected| collected.to_bytes())

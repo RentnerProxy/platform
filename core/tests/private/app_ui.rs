@@ -447,8 +447,9 @@ async fn privileged_web_socket_serves_generation_scoped_ui() {
     let listener = bind_path(&path).unwrap();
     let registry = Registry::default();
     let service = registry.clone();
+    let (endpoint, _requests) = catalog::Endpoint::new(None);
     let _server = Task(tokio::spawn(async move {
-        serve(listener, service).await.unwrap()
+        serve(listener, service, endpoint).await.unwrap()
     }));
     let client = Client(path);
 

@@ -1,4 +1,7 @@
 import { z } from 'zod'
+import { appRecordId } from '@/lib/AppUi/identifiers.ts'
+
+export { appIdSchema, appRecordId } from '@/lib/AppUi/identifiers.ts'
 
 // Platform's request schemas follow the Marketplace App API v1 contract.
 export const appRpcLimits = {
@@ -7,10 +10,6 @@ export const appRpcLimits = {
     requestMs: 10_000,
 } as const
 
-export const appRecordId = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/u)
-export const appIdSchema = z
-    .string()
-    .regex(/^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?\.[a-z](?:[a-z0-9-]{0,62}[a-z0-9])?$/u)
 export const appGenerationSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
 export const appUidSchema = z.number().int().min(20_000).max(59_999)
 export const appCursorSchema = z.string().regex(/^[A-Za-z0-9_-]{1,256}$/u)

@@ -135,6 +135,35 @@
         "ddns": "DDNS",
         "dockerDiscovery": "Docker Discovery"
     },
+    "appCatalog": {
+        "title": "Appcatalogus",
+        "description": "Installeer apps uit de ondertekende RentnerProxy-catalogus.",
+        "refresh": "Catalogus vernieuwen",
+        "empty": "De catalogus bevat geen apps voor dit apparaat.",
+        "release": "{{publisher}} · Versie {{version}}",
+        "install": "Installeren",
+        "retry": "Installatie opnieuw proberen",
+        "installing": "App wordt geïnstalleerd…",
+        "installed": "Geïnstalleerd",
+        "open": "App openen",
+        "status": {
+            "loading": "Appcatalogus laden…",
+            "stale": "De catalogus is verouderd. Vernieuw deze voordat je een app installeert.",
+            "unavailable": "De appcatalogus is momenteel niet beschikbaar."
+        },
+        "availability": {
+            "incompatible": "Niet compatibel met dit apparaat",
+            "grantsRequired": "Aanvullende machtigingen vereist"
+        },
+        "errors": {
+            "invalid": "De geselecteerde versie is ongeldig.",
+            "forbidden": "Alleen eigenaren van het apparaat kunnen apps installeren.",
+            "conflict": "De versie is gewijzigd of er loopt een andere installatie. Vernieuw de catalogus en probeer het opnieuw.",
+            "rateLimited": "Te veel installatieverzoeken. Wacht even en probeer het opnieuw.",
+            "unavailable": "De installatieservice is niet beschikbaar. Probeer het opnieuw.",
+            "installFailed": "De installatie is mislukt. Je kunt het opnieuw proberen."
+        }
+    },
     "appUi": {
         "apps": "Apps",
         "loading": "App wordt geladen…",

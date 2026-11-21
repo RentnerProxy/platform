@@ -156,6 +156,35 @@
         "ddns": "DDNS",
         "dockerDiscovery": "Docker Discovery"
     },
+    "appCatalog": {
+        "title": "Catalogue d’applications",
+        "description": "Installez des applications depuis le catalogue signé de RentnerProxy.",
+        "refresh": "Actualiser le catalogue",
+        "empty": "Le catalogue ne contient aucune application pour cet appareil.",
+        "release": "{{publisher}} · Version {{version}}",
+        "install": "Installer",
+        "retry": "Réessayer l’installation",
+        "installing": "Installation de l’application…",
+        "installed": "Installée",
+        "open": "Ouvrir l’application",
+        "status": {
+            "loading": "Chargement du catalogue d’applications…",
+            "stale": "Le catalogue est obsolète. Actualisez-le avant d’installer une application.",
+            "unavailable": "Le catalogue d’applications est actuellement indisponible."
+        },
+        "availability": {
+            "incompatible": "Incompatible avec cet appareil",
+            "grantsRequired": "Autorisations supplémentaires requises"
+        },
+        "errors": {
+            "invalid": "La version sélectionnée est invalide.",
+            "forbidden": "Seuls les propriétaires de l’appareil peuvent installer des applications.",
+            "conflict": "La version a changé ou une autre installation est en cours. Actualisez le catalogue et réessayez.",
+            "rateLimited": "Trop de demandes d’installation. Patientez, puis réessayez.",
+            "unavailable": "Le service d’installation est indisponible. Réessayez.",
+            "installFailed": "L’installation a échoué. Vous pouvez réessayer."
+        }
+    },
     "appUi": {
         "apps": "Applications",
         "loading": "Chargement de l’application…",

@@ -6,6 +6,7 @@ import type { CurrentSession } from '@/server/Auth/Core/Types/auth-service.types
 import { AuthDomainError } from '@/server/Auth/Core/errors.server.ts'
 import { getCurrentSessionService, requireActiveSessionInTransaction } from './sessions.service.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { hasOwnerRole } from './rbac.service.ts'
 
 export async function requireSessionService(): Promise<CurrentSession> {
     const session = await getCurrentSessionService()
@@ -20,6 +21,13 @@ export async function requireSessionService(): Promise<CurrentSession> {
 export async function requireUserService(): Promise<AuthenticatedUser> {
     const session = await requireSessionService()
     return session.user
+}
+
+export async function requireOwnerSessionService(): Promise<CurrentSession> {
+    const session = await requireSessionService()
+    if (!hasOwnerRole(session.user.roles))
+        throw new AuthDomainError('owner_required', 'Owner is required.')
+    return session
 }
 
 export async function requirePermissionService(
