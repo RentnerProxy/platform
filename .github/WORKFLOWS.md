@@ -181,7 +181,10 @@ eigene SemVer-Release; ein neueres `codeql-bundle-*`-Tag ist keine Action-Versio
 
 Dependabot prüft routinemäßige Versionsupdates montags um 03:00 Uhr Europe/Berlin,
 gruppiert Minor-/Patch-Updates und lässt Security-Updates aktiv; siehe
-[dependabot.yml](dependabot.yml).
+[dependabot.yml](dependabot.yml). [PR Maintenance](workflows/pr-maintenance.yml) bringt
+automatisch mergebare Dependabot-PRs nacheinander auf den Stand von `main`, damit nach
+einem Merge nicht jedes offene Update die komplette CI erneut startet. Menschliche PRs und
+Updates mit manueller Prüfung werden weiterhin sofort aktualisiert.
 
 Docker-Hub-Images werden über Googles Cache `mirror.gcr.io` geladen, damit
 gemeinsame Download-Limits der CI-Runner Builds nicht abbrechen. Die gepinnten
