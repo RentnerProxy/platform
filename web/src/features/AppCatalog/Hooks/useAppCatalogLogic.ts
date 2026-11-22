@@ -25,7 +25,7 @@ export default function useAppCatalogLogic() {
     const inventory = useAppUi()
     const queryClient = useQueryClient()
     const [confirmation, setConfirmation] = useState<CatalogConfirmation | null>(null)
-    const previousReceipt = useRef<CatalogLifecycle | null>(null)
+    const [previousReceipt, setPreviousReceipt] = useState<CatalogLifecycle | null>(null)
     const queryKey = ['app-catalog', inventory?.sessionId ?? null] as const
     const query = useQuery({
         queryKey,
@@ -70,8 +70,9 @@ export default function useAppCatalogLogic() {
     const lifecycleMutation = useMutation({
         mutationFn: manageCatalogInstallation,
         onMutate: () => {
-            previousReceipt.current =
-                queryClient.getQueryData<CatalogQueryResult>(queryKey)?.lifecycle ?? null
+            setPreviousReceipt(
+                queryClient.getQueryData<CatalogQueryResult>(queryKey)?.lifecycle ?? null,
+            )
         },
         onSuccess: async (lifecycle) => {
             await queryClient.cancelQueries({ queryKey })
@@ -161,7 +162,7 @@ export default function useAppCatalogLogic() {
     const unconfirmed =
         lifecycleMutation.isError &&
         (!lifecycle ||
-            lifecycle === previousReceipt.current ||
+            lifecycle === previousReceipt ||
             !sameCatalogLifecycle(lifecycle, lifecycleMutation.variables))
     const reportedAction = pendingAction ?? (unconfirmed ? lifecycleMutation.variables : lifecycle)
     const operationName = installations.find(
