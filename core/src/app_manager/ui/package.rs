@@ -30,6 +30,7 @@ const MAX_SCHEMA_BYTES: usize = 32 * 1024;
 const MAX_SCHEMA_PATTERNS: usize = 8;
 const MAX_PATTERN_BYTES: usize = 1024;
 const MAX_PATTERN_ENGINE_BYTES: usize = 32 * 1024;
+const MAX_NATIVE_PRESENTATION_BYTES: usize = 8 * 1024;
 
 #[cfg(test)]
 #[path = "../../../tests/private/app_ui_package.rs"]
@@ -50,6 +51,8 @@ pub(super) struct Metadata {
     routes: Vec<String>,
     dialogs: Vec<String>,
     events: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_presentation: Option<Value>,
 }
 
 pub(in crate::app_manager) struct Package {
@@ -138,8 +141,9 @@ impl Package {
             return Err(invalid());
         }
         routes.insert(0, "overview".into());
-        let operations = document.map_or_else(BTreeMap::new, |document| {
-            read_operations(&document, &permission_keys, &capabilities)
+        let native_presentation = document.as_ref().and_then(read_native_presentation);
+        let operations = document.as_ref().map_or_else(BTreeMap::new, |document| {
+            read_operations(document, &permission_keys, &capabilities)
         });
         let metadata = Metadata {
             app_id: field(manifest, "id")?.into(),
@@ -154,6 +158,7 @@ impl Package {
             routes,
             dialogs,
             events,
+            native_presentation,
         };
         Ok(Some(Self {
             metadata,
@@ -165,6 +170,13 @@ impl Package {
     pub(super) fn asset(&self, path: &str) -> io::Result<Vec<u8>> {
         read_beneath(&self.ui_directory, path, UI_ASSET_LIMIT)
     }
+}
+
+fn read_native_presentation(document: &Value) -> Option<Value> {
+    let presentation = document.get("x-rentnerproxy-native-ui")?;
+    (presentation.is_object()
+        && serde_json::to_vec(presentation).ok()?.len() <= MAX_NATIVE_PRESENTATION_BYTES)
+        .then(|| presentation.clone())
 }
 
 fn invalid() -> io::Error {

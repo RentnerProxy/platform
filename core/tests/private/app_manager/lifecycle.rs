@@ -1,3 +1,4 @@
+use super::super::ui::tests::manager_catalog;
 use super::super::*;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -8,7 +9,10 @@ use std::{
     fs,
     os::unix::fs::{OpenOptionsExt, PermissionsExt, chown},
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -22,6 +26,99 @@ const INTERRUPTED: &str = "interrupted-claim";
 const UID: u32 = 59553;
 const ROOT: &str = "/var/lib/rentnerproxy/app-manager";
 const SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
+
+struct CatalogServer {
+    stop: Arc<AtomicBool>,
+    task: Option<std::thread::JoinHandle<()>>,
+}
+
+impl CatalogServer {
+    fn start(root: &Path, backend: &Path) -> (Self, PathBuf, Vec<StagedPackage>) {
+        use std::{
+            io::{BufRead, BufReader, Read, Write},
+            net::TcpListener,
+        };
+
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+        fs::write(root.join("catalog-ca.pem"), certificate.cert.pem()).unwrap();
+        let tls = Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![certificate.cert.der().clone()],
+                    rustls::pki_types::PrivatePkcs8KeyDer::from(
+                        certificate.signing_key.serialize_der(),
+                    )
+                    .into(),
+                )
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("https://{}/", listener.local_addr().unwrap());
+        let (config, packages, files) =
+            crate::app_install::tests::lifecycle_packages(root, backend, &origin);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+        let task = std::thread::spawn(move || {
+            while !stopping.load(Ordering::Acquire) {
+                let (socket, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(error) => panic!("Catalog fixture listener failed: {error}"),
+                };
+                let respond = || -> io::Result<()> {
+                    socket.set_nonblocking(false)?;
+                    socket.set_read_timeout(Some(Duration::from_secs(3)))?;
+                    socket.set_write_timeout(Some(Duration::from_secs(3)))?;
+                    let connection = rustls::ServerConnection::new(Arc::clone(&tls))
+                        .map_err(io::Error::other)?;
+                    let mut stream = rustls::StreamOwned::new(connection, socket);
+                    let mut head = String::new();
+                    BufReader::new((&mut stream).take(16_384)).read_line(&mut head)?;
+                    let path = head
+                        .strip_prefix("GET /")
+                        .and_then(|line| line.split_once(' '))
+                        .map(|(path, _)| path);
+                    let (status, body) = match path.and_then(|name| files.get(name)) {
+                        Some(body) => ("200 OK", body.as_slice()),
+                        None => ("404 Not Found", b"".as_slice()),
+                    };
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )?;
+                    stream.write_all(body)?;
+                    stream.conn.send_close_notify();
+                    stream.flush()
+                };
+                if let Err(error) = respond() {
+                    eprintln!("Catalog fixture connection failed: {error}");
+                }
+            }
+        });
+        (
+            Self {
+                stop,
+                task: Some(task),
+            },
+            config,
+            packages,
+        )
+    }
+}
+
+impl Drop for CatalogServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.task.take().expect("catalog fixture thread").join();
+    }
+}
 
 async fn authority(
     request: Request<Incoming>,
@@ -139,6 +236,7 @@ async fn invoke(controller: &Path, args: &[&str]) -> io::Result<Value> {
 
 enum BootState {
     Running,
+    Disabled,
     Recovery,
     MissingData,
 }
@@ -161,6 +259,9 @@ async fn mount_manager(
         .arg("--app-manager")
         .arg(config)
         .env(crate::config::CONTROLLER_TOKEN_FILE_ENV, token)
+        .env("SSL_CERT_FILE", config.with_file_name("catalog-ca.pem"))
+        .env("NO_PROXY", "127.0.0.1")
+        .env("no_proxy", "127.0.0.1")
         .kill_on_drop(true)
         .spawn()
         .unwrap();
@@ -368,7 +469,120 @@ async fn check_control_boundary(controller: &Path, temporary: &Path) {
     invoke(controller, &["activate", ID, path]).await.unwrap();
 }
 
-async fn check_process_recovery(controller: &Path) {
+fn catalog_row(view: &Value) -> &Value {
+    view["installations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["installationId"] == ID)
+        .unwrap()
+}
+
+fn lifecycle_input(action: &str, row: &Value, target: Option<&Value>) -> Value {
+    let mut request = json!({
+        "action": action,
+        "installationId": ID,
+        "expected": {
+            "generation": row["generation"],
+            "version": row["version"],
+            "archiveSha256": row["archiveSha256"],
+        },
+    });
+    if let Some(target) = target {
+        request["target"] = target.clone();
+    }
+    request
+}
+
+async fn ui_mutate(request: &Value, expected_status: u16) {
+    let initial = manager_catalog(Some(request), expected_status).await;
+    if expected_status != 202 {
+        return;
+    }
+    assert_eq!(initial["status"], "pending");
+    timeout(Duration::from_secs(20), async {
+        loop {
+            let view = manager_catalog(None, 200).await;
+            let operation = &view["lifecycle"];
+            if operation["status"] != "pending" {
+                assert_eq!(operation["action"], request["action"]);
+                assert_eq!(operation["status"], "succeeded", "{operation}");
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+async fn ui_action(action: &str, expected_status: u16) {
+    let view = manager_catalog(None, 200).await;
+    ui_mutate(
+        &lifecycle_input(action, catalog_row(&view), None),
+        expected_status,
+    )
+    .await;
+}
+
+async fn ui_signed_switch(controller: &Path, first: &Release, second: &Release) -> Value {
+    let view = manager_catalog(None, 200).await;
+    let updated_by_cli = catalog_row(&view);
+    assert_eq!(
+        updated_by_cli["previous"]["archiveSha256"],
+        first.archive_sha256
+    );
+    let rollback = lifecycle_input(
+        "rollback",
+        updated_by_cli,
+        Some(&updated_by_cli["previous"]),
+    );
+    ui_mutate(&rollback, 202).await;
+
+    let view = timeout(Duration::from_secs(10), async {
+        loop {
+            let view = manager_catalog(None, 200).await;
+            if view["state"] == "ready" {
+                break view;
+            }
+            assert_eq!(view["state"], "loading", "{view}");
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let active = catalog_row(&view);
+    assert_eq!(active["archiveSha256"], first.archive_sha256);
+    assert_eq!(active["update"]["version"], second.version);
+    assert_eq!(active["update"]["archiveSha256"], second.archive_sha256);
+    let update = lifecycle_input("update", active, Some(&active["update"]));
+    let mut invalid = update.clone();
+    invalid["target"]["archiveSha256"] = "0".repeat(64).into();
+    ui_mutate(&invalid, 409).await;
+    let mut stale = update.clone();
+    stale["expected"]["generation"] = updated_by_cli["generation"].clone();
+    ui_mutate(&stale, 409).await;
+    let grants_file = Path::new(SOCKET).with_file_name("last-grants-generation");
+    let old_grant_state = fs::read(&grants_file).unwrap();
+    ui_mutate(&update, 202).await;
+    assert_eq!(fs::read(grants_file).unwrap(), old_grant_state);
+    let current = invoke(controller, &["status"]).await.unwrap()[ID].clone();
+    assert_eq!(current["active"], second.version);
+    assert_eq!(current["previous"], first.version);
+    assert_eq!(current["uid"], UID);
+    assert_eq!(
+        current["generation"].as_u64().unwrap(),
+        active["generation"].as_u64().unwrap() + 1
+    );
+    current
+}
+
+async fn check_process_recovery(
+    controller: &Path,
+    config: &Path,
+    token: &Path,
+    manager: &mut Child,
+) {
     let data = super::super::storage::directory(UID).join("data");
     fs::write(data.join("fixture-exit"), []).unwrap();
     timeout(Duration::from_secs(8), async {
@@ -384,13 +598,22 @@ async fn check_process_recovery(controller: &Path) {
     })
     .await
     .unwrap();
-    invoke(controller, &["start", ID]).await.unwrap();
-    invoke(controller, &["stop", ID]).await.unwrap();
+    ui_action("recover", 202).await;
+    ui_action("deactivate", 202).await;
     let stopped = invoke(controller, &["status"]).await.unwrap();
     assert_eq!(stopped[ID]["running"], false);
     assert_eq!(stopped[ID]["desiredRunning"], false);
-    invoke(controller, &["start", ID]).await.unwrap();
+    halt(manager).await;
+    *manager = mount_manager(controller, config, token, BootState::Disabled).await;
+    let persisted = invoke(controller, &["status"]).await.unwrap();
+    assert_eq!(persisted[ID]["desiredRunning"], false);
+    assert_eq!(persisted[ID]["generation"], stopped[ID]["generation"]);
+    ui_action("reactivate", 202).await;
     let started = invoke(controller, &["status"]).await.unwrap();
+    assert_eq!(
+        started[ID]["generation"].as_u64().unwrap(),
+        stopped[ID]["generation"].as_u64().unwrap() + 1
+    );
     invoke(controller, &["start", ID]).await.unwrap();
     assert_eq!(invoke(controller, &["status"]).await.unwrap(), started);
 }
@@ -467,8 +690,7 @@ pub(super) async fn exercise() {
     let token = temp.path().join("token");
     fs::write(&token, b"local-lifecycle-fixture").unwrap();
     fs::set_permissions(&token, fs::Permissions::from_mode(0o400)).unwrap();
-    let (config, packages) =
-        crate::app_install::tests::lifecycle_packages(temp.path(), &executable);
+    let (catalog, config, packages) = CatalogServer::start(temp.path(), &executable);
     let release = |p: &StagedPackage| Release {
         version: p.manifest["version"].as_str().unwrap().into(),
         archive_sha256: p.archive_sha256.clone(),
@@ -571,8 +793,24 @@ pub(super) async fn exercise() {
     let states = invoke(&controller, &["status"]).await.unwrap();
     assert_eq!(states[ID]["active"], "1.1.0");
     assert_eq!(states[ID]["previous"], "1.0.0");
+    let note = storage::directory(UID).join("data/signed-update-fixture");
+    fs::write(&note, b"data before update").unwrap();
+    chown(&note, Some(UID), Some(UID)).unwrap();
+    let updated =
+        ui_signed_switch(&controller, &release(&packages[0]), &release(&packages[1])).await;
+    halt(&mut manager).await;
+    drop(catalog);
+    let mut manager = mount_manager(&controller, &config, &token, BootState::Running).await;
+    let restored = invoke(&controller, &["status"]).await.unwrap();
+    assert_eq!(restored[ID]["active"], updated["active"]);
+    assert_eq!(restored[ID]["previous"], updated["previous"]);
+    assert_eq!(
+        restored[ID]["generation"].as_u64().unwrap(),
+        updated["generation"].as_u64().unwrap() + 1
+    );
+    assert_eq!(fs::read(&note).unwrap(), b"data before update");
     invoke(&controller, &["rollback", ID]).await.unwrap();
-    check_process_recovery(&controller).await;
+    check_process_recovery(&controller, &config, &token, &mut manager).await;
     halt(&mut manager).await;
     verify_uid_stopped(UID).unwrap();
     backup_files(&controller, &config, &token, temp.path()).await;
@@ -608,7 +846,7 @@ pub(super) async fn exercise() {
     );
     let states = invoke(&controller, &["status"]).await.unwrap();
     assert_eq!(states[ID]["active"], "1.0.0");
-    assert_eq!(states[ID]["candidate"], "1.2.0");
+    assert_eq!(states[ID]["candidate"], "1.1.0-rc.1");
     assert_eq!(states[ID]["running"], true);
     assert_eq!(states[ID]["generation"], before + 2);
     halt(&mut manager).await;
@@ -652,10 +890,11 @@ pub(super) async fn exercise() {
     crate::app_install::tests::revoke_lifecycle_release(&config, "1.0.0");
     assert!(!capture().output().await.unwrap().status.success());
     let mut manager = mount_manager(&controller, &config, &token, BootState::Recovery).await;
-    invoke(&controller, &["remove", ID]).await.unwrap();
+    ui_action("purge", 409).await;
+    ui_action("uninstall", 202).await;
     let data = super::super::storage::directory(UID);
     assert!(data.join("data/app-pid").is_file());
-    invoke(&controller, &["purge", ID]).await.unwrap();
+    ui_action("purge", 202).await;
     assert!(!data.exists());
     halt(&mut manager).await;
     verify_uid_stopped(UID).unwrap();

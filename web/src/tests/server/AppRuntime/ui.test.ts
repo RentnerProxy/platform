@@ -1,7 +1,12 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { appUiAssetPolicy, appUiAssetType } from '@/lib/AppUi/asset-policy.ts'
+import { qualifyAppRuntimePermission } from '@/server/AppRuntime/authority.server.ts'
 import { appRpcLimits } from '@/server/AppRuntime/contract.ts'
 import { getAdminUiSecurityHeaders } from '@/server/security-headers.ts'
+import {
+    authorizedNativeOperations,
+    resolveNativePresentation,
+} from '@/server/AppRuntime/ui/native-presentation.server.ts'
 import {
     appUiFrameSource,
     requireAppUiFrameGrant,
@@ -29,6 +34,12 @@ const app: NativeAppUi = {
     routes: ['overview'],
     dialogs: [],
     events: [],
+}
+const officialGreeting: NativeAppUi = {
+    ...app,
+    archiveSha256: '4d7e1b3282b663cc1bf4c268d8124c2048596d99d1f112e55161c2f199199244',
+    routes: ['overview', 'details'],
+    dialogs: ['confirm-save'],
 }
 const iframe = {
     'sec-fetch-dest': 'iframe',
@@ -195,6 +206,108 @@ test('preserves native rate limiting separately from an unavailable or stale app
             code: 'staleGeneration',
             status: 409,
         })
+    } finally {
+        fetch.mockRestore()
+    }
+})
+
+test('binds Greeting compatibility to the two signed package identities and declared routes', () => {
+    for (const archiveSha256 of [
+        officialGreeting.archiveSha256,
+        '1db86d4617764e83643ee1567367bcbd476dfff8cdb046fdfeb53f6a8b1c636a',
+    ]) {
+        const signed = { ...officialGreeting, archiveSha256 }
+        expect(resolveNativePresentation(signed)?.pages.map(({ route }) => route)).toEqual([
+            'overview',
+            'details',
+        ])
+        expect(resolveNativePresentation({ ...signed, appId: 'example.greeting' })).toBeUndefined()
+        expect(resolveNativePresentation({ ...signed, routes: ['overview'] })).toBeUndefined()
+        expect(resolveNativePresentation({ ...signed, dialogs: [] })).toBeUndefined()
+    }
+    expect(
+        resolveNativePresentation({ ...officialGreeting, archiveSha256: app.archiveSha256 }),
+    ).toBeUndefined()
+})
+
+test('validates signed native layouts against registered routes, dialogs and unique fields', () => {
+    const form = {
+        kind: 'form' as const,
+        route: 'overview',
+        label: 'Settings',
+        read: 'read-settings',
+        write: 'save-settings',
+        submitLabel: 'Save',
+        confirm: 'confirm-save',
+        fields: [{ field: 'value', label: 'Value' }],
+    }
+    const published = {
+        ...app,
+        appId: 'example.config',
+        dialogs: ['confirm-save'],
+        nativePresentation: { formatVersion: 1, pages: [form] },
+    }
+    expect(resolveNativePresentation(published)?.pages).toEqual([form])
+    expect(
+        resolveNativePresentation({
+            ...published,
+            nativePresentation: { formatVersion: 1, pages: [form, form] },
+        }),
+    ).toBeUndefined()
+    expect(
+        resolveNativePresentation({
+            ...published,
+            nativePresentation: {
+                formatVersion: 1,
+                pages: [{ ...form, fields: [...form.fields, ...form.fields] }],
+            },
+        }),
+    ).toBeUndefined()
+})
+
+test('exposes only present, actor-authorized and unscoped operations to native views', async () => {
+    const presentation = resolveNativePresentation(officialGreeting)
+    if (!presentation) throw new Error('Missing signed Greeting view')
+    const permissions = ['greeting-read', 'greeting-write'].map((permission) =>
+        qualifyAppRuntimePermission(officialGreeting.appId, permission),
+    )
+    const signal = AbortSignal.timeout(1_000)
+    const fetch = spyOn(globalThis, 'fetch')
+    const readPolicy = { permissionKey: 'greeting-read' }
+    const scopedWrite = {
+        permissionKey: 'greeting-write',
+        resource: {
+            capability: { id: 'proxy.hosts.read.v1', scope: 'proxyHosts' },
+            resourceIdField: 'hostId',
+        },
+    }
+    try {
+        fetch
+            .mockResolvedValueOnce(Response.json(readPolicy))
+            .mockResolvedValueOnce(Response.json(scopedWrite))
+        await expect(
+            authorizedNativeOperations(officialGreeting, presentation, permissions, signal),
+        ).resolves.toEqual(['get-greeting'])
+        expect(fetch).toHaveBeenNthCalledWith(
+            1,
+            'http://localhost/v1/apps/greeting/2/operations/get-greeting',
+            expect.objectContaining({ signal }),
+        )
+        expect(fetch).toHaveBeenCalledTimes(2)
+
+        fetch
+            .mockResolvedValueOnce(Response.json(readPolicy))
+            .mockResolvedValueOnce(new Response(null, { status: 404 }))
+        await expect(
+            authorizedNativeOperations(officialGreeting, presentation, [], signal),
+        ).resolves.toEqual([])
+
+        fetch
+            .mockResolvedValueOnce(Response.json(readPolicy))
+            .mockResolvedValueOnce(new Response(null, { status: 503 }))
+        await expect(
+            authorizedNativeOperations(officialGreeting, presentation, permissions, signal),
+        ).rejects.toMatchObject({ code: 'unavailable' })
     } finally {
         fetch.mockRestore()
     }

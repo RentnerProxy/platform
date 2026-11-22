@@ -160,15 +160,78 @@
     },
     "appCatalog": {
         "title": "Katalog aplikacji",
-        "description": "Instaluj aplikacje z podpisanego katalogu RentnerProxy.",
+        "description": "Zarządzaj zainstalowanymi aplikacjami i odkrywaj nowe w podpisanym katalogu RentnerProxy.",
         "refresh": "Odśwież katalog",
-        "empty": "W katalogu nie ma aplikacji dla tego urządzenia.",
+        "empty": "W katalogu nie ma innych aplikacji dla tego urządzenia.",
         "release": "{{publisher}} · Wersja {{version}}",
         "install": "Zainstaluj",
         "retry": "Ponów instalację",
         "installing": "Instalowanie aplikacji…",
-        "installed": "Zainstalowano",
         "open": "Otwórz aplikację",
+        "management": {
+            "installed": "Zainstalowane aplikacje",
+            "discover": "Odkrywaj aplikacje",
+            "retained": "Zachowane dane aplikacji",
+            "loading": "Wczytywanie zainstalowanych aplikacji…",
+            "unavailable": "Lokalna lista aplikacji jest niedostępna. Odśwież, aby połączyć się ponownie.",
+            "empty": "Na tym urządzeniu nie ma zainstalowanych aplikacji.",
+            "version": "Wersja {{version}}",
+            "updateTo": "Zaktualizuj do {{version}}",
+            "reinstall": "Zainstaluj ponownie {{version}}",
+            "failed": "Nie udało się wykonać operacji.",
+            "states": {
+                "running": "Aktywna",
+                "disabled": "Nieaktywna",
+                "recoveryRequired": "Wymaga odzyskania",
+                "removing": "Odinstalowywanie nieukończone",
+                "removed": "Dane zachowane",
+                "purging": "Usuwanie danych nieukończone"
+            },
+            "actions": {
+                "update": "Zaktualizuj",
+                "deactivate": "Dezaktywuj",
+                "reactivate": "Aktywuj ponownie",
+                "uninstall": "Odinstaluj",
+                "recover": "Ponów aktywację",
+                "rollback": "Przywróć poprzednią wersję",
+                "purge": "Usuń zachowane dane",
+                "reinstall": "Zainstaluj ponownie"
+            },
+            "pending": {
+                "update": "Aktualizowanie aplikacji…",
+                "deactivate": "Dezaktywowanie aplikacji…",
+                "reactivate": "Ponowna aktywacja aplikacji…",
+                "uninstall": "Odinstalowywanie aplikacji…",
+                "recover": "Ponawianie aktywacji…",
+                "rollback": "Przywracanie poprzedniej wersji…",
+                "purge": "Usuwanie zachowanych danych…",
+                "reinstall": "Ponowne instalowanie aplikacji…"
+            },
+            "succeeded": {
+                "update": "Zaktualizowano aplikację.",
+                "deactivate": "Dezaktywowano aplikację.",
+                "reactivate": "Ponownie aktywowano aplikację.",
+                "uninstall": "Odinstalowano aplikację. Jej dane zachowano.",
+                "recover": "Aktywowano aplikację.",
+                "rollback": "Przywrócono poprzednią wersję.",
+                "purge": "Usunięto zachowane dane aplikacji.",
+                "reinstall": "Ponownie zainstalowano aplikację."
+            },
+            "confirm": {
+                "uninstall": "Odinstalować {{name}}? Aplikacja zostanie usunięta, a jej dane pozostaną na potrzeby ponownej instalacji.",
+                "purge": "Trwale usunąć zachowane dane aplikacji {{name}}? Tej operacji nie można cofnąć.",
+                "rollback": "Przywrócić wersję {{version}} aplikacji {{name}}? Jej bieżące dane muszą być zgodne z tą wersją."
+            },
+            "errors": {
+                "invalid": "Żądana operacja jest nieprawidłowa.",
+                "forbidden": "Tylko właściciele urządzenia mogą zarządzać aplikacjami.",
+                "conflict": "Aplikacja się zmieniła, trwa inna operacja lub zależność blokuje tę operację. Odśwież i sprawdź aplikację.",
+                "rateLimited": "Zbyt wiele żądań. Poczekaj chwilę i spróbuj ponownie.",
+                "unavailable": "Usługa aplikacji jest niedostępna. Odśwież i spróbuj ponownie.",
+                "incompatibleData": "Wybrana wersja jest niezgodna z zapisanymi danymi aplikacji.",
+                "operationFailed": "Sprawdź bieżący stan aplikacji i spróbuj ponownie."
+            }
+        },
         "status": {
             "loading": "Wczytywanie katalogu aplikacji…",
             "stale": "Katalog jest nieaktualny. Odśwież go przed zainstalowaniem aplikacji.",
@@ -192,7 +255,10 @@
         "loading": "Ładowanie aplikacji…",
         "unavailable": "Ta aplikacja jest obecnie niedostępna.",
         "confirmTitle": "Potwierdź działanie aplikacji",
-        "confirmDescription": "{{name}} prosi o potwierdzenie dla {{dialog}}."
+        "confirmDescription": "{{name}} prosi o potwierdzenie dla {{dialog}}.",
+        "saved": "Zmiany zostały zapisane w aplikacji.",
+        "saveFailed": "Aplikacja nie mogła zapisać zmian. Spróbuj ponownie.",
+        "rows": "wiersze"
     },
     "quickSearch": {
         "title": "Szybkie wyszukiwanie",

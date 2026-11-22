@@ -53,6 +53,22 @@ impl Release {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ReleaseSelection {
+    pub version: String,
+    pub archive_sha256: String,
+}
+
+impl From<&Release> for ReleaseSelection {
+    fn from(release: &Release) -> Self {
+        Self {
+            version: release.version.clone(),
+            archive_sha256: release.archive_sha256.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Data {
@@ -101,6 +117,10 @@ pub(super) struct Slot {
     pub grants_uncertain: Option<bool>,
     pub provider_dependencies_unknown: bool,
     pub removal: Removal,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed_release: Option<ReleaseSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed_data_required: Option<bool>,
 }
 
 impl Slot {
