@@ -108,6 +108,8 @@ fn package_load_combines_manifest_and_openapi_metadata() {
     document["x-rentnerproxy-ui"] = json!({
         "routes": ["settings", "overview"], "dialogs": ["edit"], "events": ["changed"],
     });
+    let presentation = json!({"formatVersion": 1, "pages": []});
+    document["x-rentnerproxy-native-ui"] = presentation.clone();
     fs::write(temp.path().join("api.json"), document.to_string()).unwrap();
     let package = Package::load(&staged, "demo".into(), 7, 20_000)
         .unwrap()
@@ -118,10 +120,53 @@ fn package_load_combines_manifest_and_openapi_metadata() {
             "appId": "example.app", "installationId": "demo", "generation": 7, "uid": 20_000,
             "archiveSha256": "a".repeat(64), "name": "Example", "entrypoint": "ui/index.html",
             "slots": ["apps"], "permissionKeys": ["read"], "routes": ["overview", "settings"],
-            "dialogs": ["edit"], "events": ["changed"],
+            "dialogs": ["edit"], "events": ["changed"], "nativePresentation": presentation,
         })
     );
     assert_eq!(package.operations.keys().collect::<Vec<_>>(), &["greeting"]);
+}
+
+#[test]
+fn native_presentation_stays_within_its_metadata_budget() {
+    assert!(read_native_presentation(&json!({})).is_none());
+    assert!(read_native_presentation(&json!({"x-rentnerproxy-native-ui": []})).is_none());
+    let oversized = json!({
+        "x-rentnerproxy-native-ui": {"label": "x".repeat(MAX_NATIVE_PRESENTATION_BYTES)}
+    });
+    assert!(read_native_presentation(&oversized).is_none());
+}
+
+#[test]
+fn full_app_inventory_fits_with_maximum_presentation_metadata() {
+    let ids = (0..MAX_UI_ENTRIES)
+        .map(|index| format!("{}{:02}", "x".repeat(62), index))
+        .collect::<Vec<_>>();
+    let descriptor = json!({"label": "x".repeat(MAX_NATIVE_PRESENTATION_BYTES - 12)});
+    assert_eq!(
+        serde_json::to_vec(&descriptor).unwrap().len(),
+        MAX_NATIVE_PRESENTATION_BYTES
+    );
+    let metadata = Metadata {
+        app_id: format!("{}.{}", "x".repeat(32), "x".repeat(64)),
+        installation_id: ids[0].clone(),
+        generation: super::super::MAX_GENERATION,
+        uid: 65_000,
+        archive_sha256: "a".repeat(64),
+        name: "\u{10000}".repeat(120),
+        entrypoint: format!("ui/{}.html", "x".repeat(232)),
+        slots: ["navigation", "proxyHostTab", "dashboardWidget", "search"]
+            .map(String::from)
+            .to_vec(),
+        permission_keys: (0..64)
+            .map(|index| format!("{}{:02}", "x".repeat(30), index))
+            .collect(),
+        routes: ids.clone(),
+        dialogs: ids.clone(),
+        events: ids,
+        native_presentation: Some(descriptor),
+    };
+    let inventory = serde_json::to_vec(&vec![&metadata; 256]).unwrap();
+    assert!(inventory.len() <= super::super::MAX_LIST_RESPONSE_BYTES);
 }
 
 #[test]

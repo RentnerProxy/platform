@@ -156,15 +156,78 @@
     },
     "appCatalog": {
         "title": "App catalog",
-        "description": "Install apps from the signed RentnerProxy catalog.",
+        "description": "Manage installed apps and discover new ones in the signed RentnerProxy catalog.",
         "refresh": "Refresh catalog",
-        "empty": "There are no apps in the catalog for this appliance.",
+        "empty": "There are no other apps in the catalog for this appliance.",
         "release": "{{publisher}} · Version {{version}}",
         "install": "Install",
         "retry": "Retry installation",
         "installing": "Installing app…",
-        "installed": "Installed",
         "open": "Open app",
+        "management": {
+            "installed": "Installed apps",
+            "discover": "Discover apps",
+            "retained": "Retained app data",
+            "loading": "Loading installed apps…",
+            "unavailable": "The appliance’s app inventory is unavailable. Refresh to reconnect.",
+            "empty": "No apps are installed on this appliance.",
+            "version": "Version {{version}}",
+            "updateTo": "Update to {{version}}",
+            "reinstall": "Reinstall {{version}}",
+            "failed": "The app action could not be completed.",
+            "states": {
+                "running": "Active",
+                "disabled": "Inactive",
+                "recoveryRequired": "Recovery needed",
+                "removing": "Uninstall incomplete",
+                "removed": "Data retained",
+                "purging": "Data deletion incomplete"
+            },
+            "actions": {
+                "update": "Update",
+                "deactivate": "Deactivate",
+                "reactivate": "Reactivate",
+                "uninstall": "Uninstall",
+                "recover": "Retry activation",
+                "rollback": "Roll back",
+                "purge": "Delete retained data",
+                "reinstall": "Reinstall"
+            },
+            "pending": {
+                "update": "Updating app…",
+                "deactivate": "Deactivating app…",
+                "reactivate": "Reactivating app…",
+                "uninstall": "Uninstalling app…",
+                "recover": "Retrying activation…",
+                "rollback": "Rolling back app…",
+                "purge": "Deleting retained data…",
+                "reinstall": "Reinstalling app…"
+            },
+            "succeeded": {
+                "update": "App updated.",
+                "deactivate": "App deactivated.",
+                "reactivate": "App reactivated.",
+                "uninstall": "App uninstalled. Its data was kept.",
+                "recover": "App activated.",
+                "rollback": "App rolled back.",
+                "purge": "Retained app data deleted.",
+                "reinstall": "App reinstalled."
+            },
+            "confirm": {
+                "uninstall": "Uninstall {{name}}? The app will be removed and its data will be kept for reinstallation.",
+                "purge": "Permanently delete the retained data for {{name}}? This cannot be undone.",
+                "rollback": "Switch {{name}} to version {{version}}? Its current data must be compatible with that version."
+            },
+            "errors": {
+                "invalid": "The requested app action is invalid.",
+                "forbidden": "Only appliance owners can manage apps.",
+                "conflict": "The app changed, another action is running, or a dependency is blocking this action. Refresh and check the app before trying again.",
+                "rateLimited": "Too many app requests. Wait a moment and try again.",
+                "unavailable": "The app service is unavailable. Refresh and try again.",
+                "incompatibleData": "The selected version is incompatible with the app’s stored data.",
+                "operationFailed": "Check the app’s current state before trying again."
+            }
+        },
         "status": {
             "loading": "Loading the app catalog…",
             "stale": "The catalog is out of date. Refresh it before installing an app.",
@@ -188,7 +251,10 @@
         "loading": "Loading app…",
         "unavailable": "This app is currently unavailable.",
         "confirmTitle": "Confirm app action",
-        "confirmDescription": "{{name}} requests confirmation for {{dialog}}."
+        "confirmDescription": "{{name}} requests confirmation for {{dialog}}.",
+        "saved": "Changes saved in the app.",
+        "saveFailed": "The app could not save the changes. Try again.",
+        "rows": "rows"
     },
     "quickSearch": {
         "title": "Quick search",

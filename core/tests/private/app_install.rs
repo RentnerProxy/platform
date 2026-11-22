@@ -73,11 +73,15 @@ fn refresh(
 }
 
 fn update(files: &Files, document: Value, icons: &Files) -> Files {
+    update_at(files, document, icons, now())
+}
+
+fn update_at(files: &Files, document: Value, icons: &Files, at: OffsetDateTime) -> Files {
     let current = read_catalog(
         |name, _| Ok(files.get(name).cloned()),
         PIN,
         ReadOptions {
-            now: now(),
+            now: at,
             allow_expired_roles: false,
             next_root: None,
             previous: None,
@@ -89,7 +93,7 @@ fn update(files: &Files, document: Value, icons: &Files) -> Files {
         &serde_json::to_vec(&document).unwrap(),
         &keys(),
         UpdateOptions {
-            now: now(),
+            now: at,
             next_root: None,
             icons,
         },
@@ -223,7 +227,12 @@ fn pack_fixture_archive<'a>(
 pub(crate) fn lifecycle_packages(
     root: &Path,
     backend: &Path,
-) -> (PathBuf, Vec<super::StagedPackage>) {
+    repository_url: &str,
+) -> (
+    PathBuf,
+    Vec<super::StagedPackage>,
+    BTreeMap<String, Vec<u8>>,
+) {
     use std::os::unix::fs::PermissionsExt;
     let target = if cfg!(target_arch = "aarch64") {
         "linux-arm64"
@@ -236,16 +245,22 @@ pub(crate) fn lifecycle_packages(
     let pin = root.join("root.json");
     fs::write(&pin, PIN).unwrap();
     let config = root.join("installer.json");
-    fs::write(&config,serde_json::to_vec(&json!({
-        "storeDirectory":store, "pinnedRoot":pin,
-        "repositoryUrl":"https://invalid.example/catalog/","engineCapabilities":["caddy.load-balancing.v1"]
-    })).unwrap()).unwrap();
+    fs::write(
+        &config,
+        serde_json::to_vec(&json!({
+            "storeDirectory":store, "pinnedRoot":pin,
+            "repositoryUrl":repository_url,"engineCapabilities":["caddy.load-balancing.v1"]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let installer = Installer::open(&config).unwrap();
-    let mut files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
-    refresh(&installer, &files, now()).unwrap();
+    let signed_at = OffsetDateTime::now_utc();
+    let mut files = bootstrap_catalog(PIN, &keys(), signed_at).unwrap();
+    refresh(&installer, &files, signed_at).unwrap();
     let mut releases = Vec::new();
     let mut archives = Vec::new();
-    let versions = ["1.0.0", "1.1.0", "1.2.0"];
+    let versions = ["1.0.0", "1.1.0", "1.1.0-rc.1"];
     for version in versions {
         let mut m = manifest();
         m["version"] = version.into();
@@ -253,7 +268,7 @@ pub(crate) fn lifecycle_packages(
         m["resources"]["startupTimeoutMs"] = 2000.into();
         let work = root.join(version);
         fs::create_dir(&work).unwrap();
-        let binary = if version == "1.2.0" {
+        let binary = if version == versions[2] {
             fs::read("/usr/bin/false").unwrap()
         } else {
             fs::read(backend).unwrap()
@@ -262,13 +277,14 @@ pub(crate) fn lifecycle_packages(
         releases.push(release);
         archives.push(archive);
     }
-    let next = update(
+    let next = update_at(
         &files,
         json!({"formatVersion":1,"revision":2,"releases":releases,"revocations":[]}),
         &Files::new(),
+        signed_at,
     );
     files.extend(next);
-    let catalog = refresh(&installer, &files, now()).unwrap();
+    let catalog = refresh(&installer, &files, signed_at).unwrap();
     let packages = versions
         .into_iter()
         .zip(archives)
@@ -280,7 +296,7 @@ pub(crate) fn lifecycle_packages(
                 .unwrap()
         })
         .collect();
-    (config, packages)
+    (config, packages, files)
 }
 
 #[cfg(target_os = "linux")]
@@ -318,9 +334,10 @@ pub(crate) fn revoke_lifecycle_release(config: &Path, version: &str) {
             )
         })
         .collect();
-    let next = update(&files, next, &Files::new());
+    let signed_at = OffsetDateTime::now_utc();
+    let next = update_at(&files, next, &Files::new(), signed_at);
     files.extend(next);
-    refresh(&installer, &files, now()).unwrap();
+    refresh(&installer, &files, signed_at).unwrap();
 }
 
 #[test]

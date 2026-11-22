@@ -20,7 +20,7 @@ fn entry(selection: &Selection, availability: &str) -> CatalogEntry {
     serde_json::from_value(value).unwrap()
 }
 
-pub(in crate::app_manager) fn ready_endpoint() -> (Endpoint, mpsc::Receiver<Selection>, Selection) {
+pub(in crate::app_manager) fn ready_endpoint() -> (Endpoint, mpsc::Receiver<Request>, Selection) {
     let (endpoint, requests) = Endpoint::new(None);
     let selection = greeting();
     endpoint
@@ -67,7 +67,10 @@ fn accepts_only_listed_packages_and_coalesces_identical_requests() {
         endpoint.submit(mismatched),
         Err(Failure::Conflict)
     ));
-    assert_eq!(requests.try_recv().unwrap(), selection);
+    assert_eq!(
+        requests.try_recv().unwrap(),
+        Request::Install(selection.clone())
+    );
     assert!(matches!(
         requests.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
@@ -117,7 +120,10 @@ fn a_failed_install_releases_the_queue_and_reports_a_safe_failure() {
         (io::ErrorKind::InvalidData, "installFailed"),
     ] {
         endpoint.submit(selection.clone()).unwrap();
-        assert_eq!(requests.try_recv().unwrap(), selection);
+        assert_eq!(
+            requests.try_recv().unwrap(),
+            Request::Install(selection.clone())
+        );
         endpoint
             .finish(
                 selection.clone(),

@@ -26,7 +26,7 @@ use serde_json::Value;
 use tokio::{net::UnixListener, sync::Semaphore, task::JoinSet, time::timeout};
 use tokio_util::sync::CancellationToken;
 
-use super::catalog;
+use super::{catalog, lifecycle};
 use crate::app_ipc::{
     APP_ROOT, WEB_UID,
     filesystem::require_safe_parents,
@@ -43,7 +43,8 @@ pub(super) use package::Package;
 const SOCKET: &str = "/run/rentnerproxy/app-ui/web.sock";
 const MAX_CONNECTIONS: usize = 16;
 const MAX_LIST_PROBES: usize = 16;
-const MAX_LIST_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+// Accommodates 256 entries, including the descriptors and route/permission metadata.
+const MAX_LIST_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CATALOG_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_INSTALL_BYTES: usize = 4 * 1024;
 const MAX_OPERATIONS_PER_INSTALLATION: usize = 4;
@@ -51,7 +52,7 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[cfg(test)]
 #[path = "../../tests/private/app_ui.rs"]
-mod tests;
+pub(super) mod tests;
 
 #[derive(Clone, Default)]
 pub(super) struct Registry {
@@ -283,18 +284,29 @@ async fn handle(
     if parts.method != Method::POST {
         return Err(StatusCode::NOT_FOUND);
     }
-    if path == "/v1/catalog/install" {
+    if matches!(path, "/v1/catalog/install" | "/v1/catalog/lifecycle") {
         if !header_value(&parts.headers, header::CONTENT_TYPE.as_str()).is_some_and(json_media_type)
         {
             return Err(StatusCode::BAD_REQUEST);
         }
         let bytes = read_body_limited(incoming, MAX_INSTALL_BYTES).await?;
-        let selection = serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
-        let install = catalog.submit(selection).map_err(|error| match error {
+        let map_failure = |error| match error {
             catalog::Failure::Conflict => StatusCode::CONFLICT,
             _ => StatusCode::SERVICE_UNAVAILABLE,
-        })?;
-        let mut reply = json(&install, MAX_INSTALL_BYTES)?;
+        };
+        let mut reply = if path == "/v1/catalog/install" {
+            let selection = serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+            let install = catalog.submit(selection).map_err(map_failure)?;
+            json(&install, MAX_INSTALL_BYTES)?
+        } else {
+            let request: lifecycle::Request =
+                serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+            if !request.valid() {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            let operation = catalog.submit_lifecycle(request).map_err(map_failure)?;
+            json(&operation, MAX_INSTALL_BYTES)?
+        };
         *reply.status_mut() = StatusCode::ACCEPTED;
         return Ok(reply);
     }

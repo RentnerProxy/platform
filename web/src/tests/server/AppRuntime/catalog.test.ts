@@ -1,15 +1,22 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import {
     APP_CATALOG_INSTALL_PATH,
+    APP_CATALOG_LIFECYCLE_PATH,
     catalogSnapshotSchema,
     type CatalogInstall,
+    type CatalogLifecycle,
+    type CatalogLifecycleInput,
     type CatalogSelector,
     type CatalogSnapshot,
 } from '@/lib/AppCatalog/contract.ts'
-import { createCatalogInstallHandler } from '@/server/AppRuntime/catalog/http.server.ts'
+import {
+    createCatalogInstallHandler,
+    createCatalogLifecycleHandler,
+} from '@/server/AppRuntime/catalog/http.server.ts'
 import {
     nativeAppCatalog,
     nativeCatalogInstall,
+    nativeCatalogLifecycle,
 } from '@/server/AppRuntime/catalog/transport.server.ts'
 import { uiProblems } from '@/server/AppRuntime/ui/transport.server.ts'
 import { AuthDomainError } from '@/server/Auth/Core/errors.server.ts'
@@ -30,6 +37,15 @@ const entry = {
     hasUi: true,
     availability: 'available' as const,
 }
+
+const { version, archiveSha256 } = release
+const operation = {
+    action: 'update',
+    installationId: 'greeting-test',
+    expected: { generation: 1, version, archiveSha256 },
+    target: { version: '2.0.0', archiveSha256: 'a'.repeat(64) },
+} satisfies CatalogLifecycleInput
+const pendingOperation = { ...operation, status: 'pending' } satisfies CatalogLifecycle
 
 function request(input: unknown, requestedOrigin = origin) {
     return new Request(origin + APP_CATALOG_INSTALL_PATH, {
@@ -145,7 +161,13 @@ describe('app catalog installation HTTP boundary', () => {
 
 describe('native signed catalog wire contract', () => {
     test('validates release fields and installation state within the catalog limit', () => {
-        const snapshot = { state: 'ready', entries: [entry], install: pending }
+        const snapshot = {
+            state: 'ready',
+            entries: [entry],
+            install: pending,
+            installations: [],
+            lifecycle: null,
+        }
         expect(catalogSnapshotSchema.safeParse(snapshot).success).toBe(true)
         expect(
             catalogSnapshotSchema.safeParse({
@@ -179,6 +201,8 @@ describe('native signed catalog wire contract', () => {
             state: 'ready',
             entries: [entry],
             install: null,
+            installations: [],
+            lifecycle: null,
         } satisfies CatalogSnapshot
         const replies = spyOn(globalThis, 'fetch')
             .mockResolvedValueOnce(Response.json(snapshot))
@@ -205,4 +229,81 @@ describe('native signed catalog wire contract', () => {
             replies.mockRestore()
         }
     })
+
+    test('requires a matching pending native lifecycle acknowledgment', async () => {
+        const signal = AbortSignal.timeout(1_000)
+        const replies = spyOn(globalThis, 'fetch')
+            .mockResolvedValueOnce(Response.json(pendingOperation, { status: 202 }))
+            .mockResolvedValueOnce(
+                Response.json({
+                    ...pendingOperation,
+                    target: { ...operation.target, version: '2.1.0' },
+                }),
+            )
+            .mockResolvedValueOnce(Response.json({ ...pendingOperation, status: 'succeeded' }))
+        try {
+            await expect(nativeCatalogLifecycle(operation, signal)).resolves.toEqual(
+                pendingOperation,
+            )
+            await expect(nativeCatalogLifecycle(operation, signal)).rejects.toBe(
+                uiProblems.unavailable,
+            )
+            await expect(nativeCatalogLifecycle(operation, signal)).rejects.toBe(
+                uiProblems.unavailable,
+            )
+            expect(replies).toHaveBeenNthCalledWith(
+                1,
+                'http://localhost/v1/catalog/lifecycle',
+                expect.objectContaining({ method: 'POST', body: JSON.stringify(operation) }),
+            )
+        } finally {
+            replies.mockRestore()
+        }
+    })
+})
+
+test('guards lifecycle mutations with the existing owner and same-origin boundary', async () => {
+    const lifecycle = spyOn({ submit: nativeCatalogLifecycle }, 'submit').mockResolvedValue(
+        pendingOperation,
+    )
+    const ownerId = spyOn(
+        {
+            async get() {
+                return 'owner-id'
+            },
+        },
+        'get',
+    )
+    const handle = createCatalogLifecycleHandler({
+        enabled: () => true,
+        origin: () => origin,
+        ownerId,
+        limit: async () => {},
+        lifecycle,
+    })
+    const post = (input: unknown, requestedOrigin = origin) =>
+        handle(
+            new Request(origin + APP_CATALOG_LIFECYCLE_PATH, {
+                method: 'POST',
+                headers: { Origin: requestedOrigin, 'Content-Type': 'application/json' },
+                body: JSON.stringify(input),
+            }),
+        )
+
+    expect((await post(operation, 'https://other.example.test')).status).toBe(403)
+    expect(ownerId).toHaveBeenCalledTimes(0)
+    expect((await post({ ...operation, target: undefined })).status).toBe(400)
+    expect((await post({ ...operation, action: 'uninstall', purge: true })).status).toBe(400)
+    expect(
+        (await post({ ...operation, expected: { ...operation.expected, generation: 0 } })).status,
+    ).toBe(400)
+    expect(lifecycle).toHaveBeenCalledTimes(0)
+
+    ownerId.mockRejectedValueOnce(new AuthDomainError('owner_required', 'Role changed'))
+    expect((await post(operation)).status).toBe(403)
+    const response = await post(operation)
+    expect(response.status).toBe(202)
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store')
+    expect(await response.json()).toEqual(pendingOperation)
+    expect(lifecycle).toHaveBeenCalledWith(operation, expect.any(AbortSignal))
 })
