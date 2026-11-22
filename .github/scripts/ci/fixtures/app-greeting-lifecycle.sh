@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+stop_postgres() {
+    local status=$?
+    if gosu postgres "$postgres/pg_ctl" --pgdata="$database" status >/dev/null 2>&1; then
+        if ((status != 0)); then
+            cat "$database/server.log" >&2
+        fi
+        gosu postgres "$postgres/pg_ctl" --pgdata="$database" --mode=fast --wait --timeout=15 stop >/dev/null || status=1
+    fi
+    exit "$status"
+}
+
 if [[ ${1:-} == --container ]]; then
     postgres=/usr/lib/postgresql/18/bin
     database=/tmp/greeting-postgres
@@ -10,17 +21,7 @@ if [[ ${1:-} == --container ]]; then
     gosu postgres "$postgres/initdb" --pgdata="$database" --auth-local=peer \
         --auth-host=scram-sha-256 --encoding=UTF8 --no-locale >/dev/null
 
-    stop_postgres() {
-        local status=$?
-        if gosu postgres "$postgres/pg_ctl" --pgdata="$database" status >/dev/null 2>&1; then
-            if ((status != 0)); then
-                cat "$database/server.log" >&2
-            fi
-            gosu postgres "$postgres/pg_ctl" --pgdata="$database" --mode=fast --wait --timeout=15 stop >/dev/null || status=1
-        fi
-        exit "$status"
-    }
-    trap stop_postgres EXIT
+    trap 'stop_postgres' EXIT
     gosu postgres "$postgres/pg_ctl" --pgdata="$database" --log="$database/server.log" --wait --timeout=15 \
         --options='-c listen_addresses= -c unix_socket_directories=/var/run/postgresql,/run/rentnerproxy/app-db -c hba_file=/fixture/pg_hba.conf -c ident_file=/fixture/pg_ident.conf' start >/dev/null
     /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::privileged_published_greeting_lifecycle --nocapture
