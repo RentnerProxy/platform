@@ -49,18 +49,29 @@ export function useNativeAppUiLogic(app: AppUiSummary) {
     ) {
         const open = source.data
         if (!open?.operations.includes(operationId)) throw new Error('App operation unavailable')
-        const result = await callAppUi({
-            data: {
-                installationId: app.installationId,
-                generation: app.generation,
-                frameToken: open.frameToken,
-                operationId,
-                idempotencyKey,
-                requestId: crypto.randomUUID(),
-                payload,
-            },
-            signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
-        })
+        const deadline = AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+        const send = (frameToken: string) =>
+            callAppUi({
+                data: {
+                    installationId: app.installationId,
+                    generation: app.generation,
+                    frameToken,
+                    operationId,
+                    idempotencyKey,
+                    requestId: crypto.randomUUID(),
+                    payload,
+                },
+                signal: deadline,
+            })
+        let result = await send(open.frameToken)
+        if (!result.ok && result.problem.code === 'frameRevoked') {
+            deadline.throwIfAborted()
+            const renewed = await source.refetch({ cancelRefetch: false })
+            deadline.throwIfAborted()
+            if (renewed.isSuccess && renewed.data.operations.includes(operationId)) {
+                result = await send(renewed.data.frameToken)
+            }
+        }
         if (!result.ok) {
             if (
                 result.problem.code === 'staleGeneration' ||
@@ -81,13 +92,9 @@ export type NativeAppSession = Pick<ReturnType<typeof useNativeAppUiLogic>, 'han
     operations: readonly string[]
 }
 
-export function nativeReadKey(session: NativeAppSession, operationId: string) {
-    return [...session.scope, 'read', operationId] as const
-}
-
 export function useNativeAppRead(session: NativeAppSession, operationId: string, active: boolean) {
     return useQuery({
-        queryKey: nativeReadKey(session, operationId),
+        queryKey: [...session.scope, 'read', operationId],
         enabled: active && session.operations.includes(operationId),
         queryFn: ({ signal }) => session.handler.call(operationId, {}, signal),
         retry: false,

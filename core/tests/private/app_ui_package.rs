@@ -137,6 +137,39 @@ fn native_presentation_stays_within_its_metadata_budget() {
 }
 
 #[test]
+fn full_app_inventory_fits_with_maximum_presentation_metadata() {
+    let ids = (0..MAX_UI_ENTRIES)
+        .map(|index| format!("{}{:02}", "x".repeat(62), index))
+        .collect::<Vec<_>>();
+    let descriptor = json!({"label": "x".repeat(MAX_NATIVE_PRESENTATION_BYTES - 12)});
+    assert_eq!(
+        serde_json::to_vec(&descriptor).unwrap().len(),
+        MAX_NATIVE_PRESENTATION_BYTES
+    );
+    let metadata = Metadata {
+        app_id: format!("{}.{}", "x".repeat(32), "x".repeat(64)),
+        installation_id: ids[0].clone(),
+        generation: super::super::MAX_GENERATION,
+        uid: 65_000,
+        archive_sha256: "a".repeat(64),
+        name: "\u{10000}".repeat(120),
+        entrypoint: format!("ui/{}.html", "x".repeat(232)),
+        slots: ["navigation", "proxyHostTab", "dashboardWidget", "search"]
+            .map(String::from)
+            .to_vec(),
+        permission_keys: (0..64)
+            .map(|index| format!("{}{:02}", "x".repeat(30), index))
+            .collect(),
+        routes: ids.clone(),
+        dialogs: ids.clone(),
+        events: ids,
+        native_presentation: Some(descriptor),
+    };
+    let inventory = serde_json::to_vec(&vec![&metadata; 256]).unwrap();
+    assert!(inventory.len() <= super::super::MAX_LIST_RESPONSE_BYTES);
+}
+
+#[test]
 fn package_load_defaults_without_ui_declarations() {
     if unsafe { libc::geteuid() } != 0 {
         return;

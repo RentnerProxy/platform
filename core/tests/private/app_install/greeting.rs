@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::{
         fs::{FileExt, MetadataExt, PermissionsExt, chown},
         net::UnixStream,
@@ -94,25 +94,44 @@ fn operation(socket: &Path, generation: u64, name: &str, key: &str, body: Value)
         .set_write_timeout(Some(Duration::from_secs(3)))
         .unwrap();
     let body = body.to_string();
-    write!(
-        client,
+    let request = format!(
         "POST /app/v1/api/{name} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\
         Authorization: Bearer {APP_CREDENTIAL}\r\nX-App-Installation: {INSTALLATION}\r\n\
         X-App-Generation: {generation}\r\nIdempotency-Key: {key}\r\n\
         Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
-    )
-    .unwrap();
-    let mut response = String::new();
-    client.take(8192).read_to_string(&mut response).unwrap();
-    let (headers, body) = response.split_once("\r\n\r\n").unwrap();
-    let status = headers
+    );
+    client.write_all(request.as_bytes()).unwrap();
+    // A rejection may close the socket before consuming the request body.
+    // Read the response by its advertised length, without waiting for EOF.
+    let mut response = BufReader::new(client.take(8192));
+    let mut line = String::new();
+    response.read_line(&mut line).unwrap();
+    let status = line
         .split_ascii_whitespace()
         .nth(1)
         .unwrap()
         .parse()
         .unwrap();
-    (status, serde_json::from_str(body).unwrap())
+    let mut length = None;
+    loop {
+        line.clear();
+        assert!(
+            response.read_line(&mut line).unwrap() > 0,
+            "Incomplete {name} response"
+        );
+        if line == "\r\n" {
+            break;
+        }
+        if let Some((key, value)) = line.split_once(':')
+            && key.eq_ignore_ascii_case("content-length")
+        {
+            length = Some(value.trim().parse::<usize>().unwrap());
+        }
+    }
+    let mut body = vec![0; length.filter(|length| *length <= 8192).unwrap()];
+    response.read_exact(&mut body).unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
 }
 
 #[test]

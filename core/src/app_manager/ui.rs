@@ -43,7 +43,8 @@ pub(super) use package::Package;
 const SOCKET: &str = "/run/rentnerproxy/app-ui/web.sock";
 const MAX_CONNECTIONS: usize = 16;
 const MAX_LIST_PROBES: usize = 16;
-const MAX_LIST_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+// Accommodates 256 entries, including the descriptors and route/permission metadata.
+const MAX_LIST_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CATALOG_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_INSTALL_BYTES: usize = 4 * 1024;
 const MAX_OPERATIONS_PER_INSTALLATION: usize = 4;

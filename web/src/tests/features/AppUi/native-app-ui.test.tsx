@@ -1,7 +1,8 @@
 import { expect, mock, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { AppUiSummary } from '@/lib/AppUi/contract.ts'
+import type { callAppUi } from '@/lib/AppUi/client.ts'
+import type { AppUiResult, AppUiSummary } from '@/lib/AppUi/contract.ts'
 import { nativeAppPresentationSchema } from '@/lib/AppUi/native-presentation.ts'
 import withTestLanguage from '@/tests/Helpers/withTestLanguage.tsx'
 
@@ -42,13 +43,20 @@ const app: AppUiSummary = {
     events: [],
     permissionKeys: ['read', 'write'],
 }
-const open = mock(async () => ({
+const openedApp = {
     ok: true as const,
     src: '/__app-ui/test/index.html',
     native: { presentation: view, operations: ['read-values'] },
     frameToken: 'token',
+}
+const open = mock(async () => openedApp)
+const call = mock(async (_input: Parameters<typeof callAppUi>[0]): Promise<AppUiResult> => ({
+    ok: true,
+    payload: { greeting: 'Gude!' },
 }))
-const call = mock(async () => ({ ok: true as const, payload: { greeting: 'Gude!' } }))
+await mock.module('@rentnerkev/toasts', () => ({
+    toast: { success: mock(() => {}), error: mock(() => {}) },
+}))
 await mock.module('@/features/AppUi/AppUiProvider.tsx', () => ({
     useAppUi: () => ({ sessionId: 'test-session', cancelDialog: () => {} }),
 }))
@@ -59,7 +67,18 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const { default: App } = await import('@/features/AppUi/NativeAppUi.tsx')
 
-test('renders app forms and tables in the host and reuses the view across routes', async () => {
+async function waitFor(condition: () => boolean) {
+    const deadline = Date.now() + 2_000
+    while (!condition()) {
+        if (Date.now() >= deadline) throw new Error('Timed out waiting for the app view')
+        // oxlint-disable-next-line no-await-in-loop -- Query observers publish their state asynchronously.
+        await act(async () => await Bun.sleep(1))
+    }
+}
+
+function mountApp() {
+    open.mockClear()
+    call.mockClear()
     const container = document.createElement('div')
     document.body.append(container)
     const root = createRoot(container)
@@ -75,14 +94,20 @@ test('renders app forms and tables in the host and reuses the view across routes
                 ),
             ),
         )
-        const deadline = Date.now() + 2_000
-        while (!container.querySelector('input[value="Gude!"]') && Date.now() < deadline) {
-            // oxlint-disable-next-line no-await-in-loop -- Query observers publish their state asynchronously.
-            await act(async () => await Bun.sleep(1))
-        }
     }
+    const unmount = async () => {
+        await act(async () => root.unmount())
+        client.clear()
+        container.remove()
+    }
+    return { container, render, unmount, onNavigate }
+}
+
+test('renders app forms and tables in the host and reuses the view across routes', async () => {
+    const { container, render, unmount, onNavigate } = mountApp()
     try {
         await render('overview')
+        await waitFor(() => container.querySelector('input[value="Gude!"]') !== null)
         const greeting = container.querySelector('input[value="Gude!"]')
         expect(greeting).not.toBeNull()
         expect(greeting?.hasAttribute('readonly')).toBe(true)
@@ -103,12 +128,87 @@ test('renders app forms and tables in the host and reuses the view across routes
         expect(call).toHaveBeenCalledTimes(1)
 
         await render('overview', 8)
+        await waitFor(() => container.querySelector('input[value="Gude!"]') !== null)
         expect(container.querySelector('input[value="Gude!"]')).not.toBe(greeting)
         expect(open).toHaveBeenCalledTimes(2)
     } finally {
-        await act(async () => root.unmount())
-        client.clear()
-        container.remove()
+        await unmount()
+    }
+})
+
+test('refreshes a previously visited table after a successful save through a different operation', async () => {
+    const { container, render, unmount } = mountApp()
+    const presentation = nativeAppPresentationSchema.parse({
+        ...example,
+        pages: [example.pages[0], { ...example.pages[1], read: 'read-summary' }],
+    })
+    open.mockResolvedValueOnce({
+        ...openedApp,
+        native: { presentation, operations: ['read-values', 'write-values', 'read-summary'] },
+    })
+    try {
+        await render('details')
+        const tableText = () => container.querySelector('table tbody')?.textContent ?? ''
+        await waitFor(() => tableText().includes('Gude!'))
+        await render('overview')
+        const field = () => container.querySelector<HTMLInputElement>('input[value="Gude!"]')
+        await waitFor(() => field() !== null)
+        await act(async () => {
+            const input = field()!
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+                input,
+                'Gude neu!',
+            )
+            input.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        const submit = container.querySelector<HTMLButtonElement>('button[type="submit"]')
+        expect(submit?.disabled).toBe(false)
+        const updated: AppUiResult = { ok: true, payload: { greeting: 'Gude neu!' } }
+        call.mockResolvedValueOnce(updated)
+            .mockResolvedValueOnce(updated)
+            .mockResolvedValueOnce(updated)
+        await act(async () => submit!.click())
+        await waitFor(() => submit?.textContent === 'Save')
+        expect(call.mock.calls.map(([input]) => input.data.operationId)).toEqual([
+            'read-summary',
+            'read-values',
+            'write-values',
+            'read-values',
+        ])
+        await render('details')
+        await waitFor(() => tableText().includes('Gude neu!'))
+        expect(call.mock.calls.at(-1)?.[0].data.operationId).toBe('read-summary')
+        expect(open).toHaveBeenCalledTimes(1)
+    } finally {
+        await unmount()
+    }
+})
+
+test('reopens the presentation and reuses the request identity after a revoked app token', async () => {
+    const { container, render, unmount } = mountApp()
+    open.mockResolvedValueOnce(openedApp).mockResolvedValueOnce({
+        ...openedApp,
+        frameToken: 'renewed',
+    })
+    call.mockResolvedValueOnce({
+        ok: false,
+        problem: {
+            type: 'urn:rentnerproxy:problem:frameRevoked',
+            title: 'The app UI session has ended.',
+            code: 'frameRevoked',
+            status: 401,
+            requestId: 'revoked-request',
+        },
+    })
+    try {
+        await render('overview')
+        await waitFor(() => container.querySelector('input[value="Gude!"]') !== null)
+        const sent = call.mock.calls.map(([input]) => input.data)
+        expect(sent.map(({ frameToken }) => frameToken)).toEqual(['token', 'renewed'])
+        expect(sent[1]?.idempotencyKey).toBe(sent[0]?.idempotencyKey)
+        expect(open).toHaveBeenCalledTimes(2)
+    } finally {
+        await unmount()
     }
 })
 

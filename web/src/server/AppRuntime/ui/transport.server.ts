@@ -206,12 +206,14 @@ export async function nativeAppRuntimeJson<T>(
 
 type Binding = z.infer<typeof appUiBinding>
 
+const MAX_LIST_RESPONSE_BYTES = 8 * 1024 * 1024
+
 function nativePath(binding: Binding): string {
     return '/v1/apps/' + binding.installationId + '/' + binding.generation
 }
 
 export function nativeAppUis(signal: AbortSignal) {
-    return nativeAppRuntimeJson(nativeApps, '/v1/apps', signal, undefined, 4 * 1024 * 1024)
+    return nativeAppRuntimeJson(nativeApps, '/v1/apps', signal, undefined, MAX_LIST_RESPONSE_BYTES)
 }
 
 export function nativeAppUi(binding: Binding, signal: AbortSignal) {

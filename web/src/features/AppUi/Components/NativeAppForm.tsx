@@ -9,11 +9,7 @@ import { nativeText, type NativeAppForm as Form } from '@/lib/AppUi/native-prese
 import { buttonClassName } from '@/shared/Buttons/buttonStyles.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import { useAppUi } from '../AppUiProvider.tsx'
-import {
-    nativeReadKey,
-    useNativeAppRead,
-    type NativeAppSession,
-} from '../Hooks/useNativeAppUiLogic.ts'
+import { useNativeAppRead, type NativeAppSession } from '../Hooks/useNativeAppUiLogic.ts'
 
 export default function NativeAppForm({
     page,
@@ -68,8 +64,7 @@ export default function NativeAppForm({
         onSuccess: async () => {
             intent.current = null
             await queryClient.invalidateQueries({
-                queryKey: nativeReadKey(session, page.read),
-                exact: true,
+                queryKey: [...session.scope, 'read'],
             })
             setDraft({})
             toast.success(t('appUi.saved'), { title: t('toast.titles.success') })
