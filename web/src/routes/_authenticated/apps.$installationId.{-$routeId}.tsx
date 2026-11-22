@@ -3,6 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import AppUiFrame from '@/features/AppUi/AppUiFrame.tsx'
 import { useAppUi } from '@/features/AppUi/AppUiProvider.tsx'
+import NativeAppUi from '@/features/AppUi/NativeAppUi.tsx'
 import { requirePermissionRoute } from '@/features/Auth/route-guards.ts'
 import { appUiDefaultRoute } from '@/lib/AppUi/bridge.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
@@ -35,23 +36,22 @@ function ApplicationRoute() {
         return <output>{t('appUi.unavailable')}</output>
     }
     const slot = search.slot ?? (app.slots.includes('navigation') ? 'navigation' : undefined)
+    function openRoute(route: string) {
+        if (route === activeRoute) return
+        void navigate({
+            to: '/apps/$installationId/{-$routeId}',
+            params: { installationId, routeId: route },
+            search,
+            resetScroll: false,
+        }).catch(() => {})
+    }
+
+    if (app.native) return <NativeAppUi app={app} route={activeRoute} onNavigate={openRoute} />
 
     return (
         <section>
             <h1 className="mb-6 font-display text-4xl text-ink">{app.name}</h1>
-            <AppUiFrame
-                app={app}
-                slot={slot}
-                route={activeRoute}
-                onNavigate={(route) => {
-                    if (route === activeRoute) return
-                    void navigate({
-                        to: '/apps/$installationId/{-$routeId}',
-                        params: { installationId, routeId: route },
-                        search,
-                    }).catch(() => {})
-                }}
-            />
+            <AppUiFrame app={app} slot={slot} route={activeRoute} onNavigate={openRoute} />
         </section>
     )
 }

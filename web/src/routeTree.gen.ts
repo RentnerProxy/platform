@@ -64,6 +64,7 @@ import { Route as ApiAuthOidcCallbackRouteImport } from './routes/api/auth/oidc/
 import { Route as ApiAuthOidcConnectionsRouteImport } from './routes/api/auth/oidc/connections'
 import { Route as ApiAuthOidcStartRouteImport } from './routes/api/auth/oidc/start'
 import { Route as ApiV1AppCatalogInstallRouteImport } from './routes/api/v1/app-catalog/install'
+import { Route as ApiV1AppCatalogLifecycleRouteImport } from './routes/api/v1/app-catalog/lifecycle'
 import { Route as ApiAdminBackupsJobIdDownloadRouteImport } from './routes/api/admin/backups/$jobId/download'
 import { Route as ApiAdminOidcProvidersTestRouteImport } from './routes/api/admin/oidc/providers/test'
 
@@ -352,6 +353,12 @@ const ApiV1AppCatalogInstallRoute = ApiV1AppCatalogInstallRouteImport.update({
   path: '/api/v1/app-catalog/install',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiV1AppCatalogLifecycleRoute =
+  ApiV1AppCatalogLifecycleRouteImport.update({
+    id: '/api/v1/app-catalog/lifecycle',
+    path: '/api/v1/app-catalog/lifecycle',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiAdminBackupsJobIdDownloadRoute =
   ApiAdminBackupsJobIdDownloadRouteImport.update({
     id: '/api/admin/backups/$jobId/download',
@@ -419,6 +426,7 @@ export interface FileRoutesByFullPath {
   '/api/auth/oidc/connections': typeof ApiAuthOidcConnectionsRoute
   '/api/auth/oidc/start': typeof ApiAuthOidcStartRoute
   '/api/v1/app-catalog/install': typeof ApiV1AppCatalogInstallRoute
+  '/api/v1/app-catalog/lifecycle': typeof ApiV1AppCatalogLifecycleRoute
   '/api/admin/backups/$jobId/download': typeof ApiAdminBackupsJobIdDownloadRoute
   '/api/admin/oidc/providers/test': typeof ApiAdminOidcProvidersTestRoute
 }
@@ -475,6 +483,7 @@ export interface FileRoutesByTo {
   '/api/auth/oidc/connections': typeof ApiAuthOidcConnectionsRoute
   '/api/auth/oidc/start': typeof ApiAuthOidcStartRoute
   '/api/v1/app-catalog/install': typeof ApiV1AppCatalogInstallRoute
+  '/api/v1/app-catalog/lifecycle': typeof ApiV1AppCatalogLifecycleRoute
   '/api/admin/backups/$jobId/download': typeof ApiAdminBackupsJobIdDownloadRoute
   '/api/admin/oidc/providers/test': typeof ApiAdminOidcProvidersTestRoute
 }
@@ -535,6 +544,7 @@ export interface FileRoutesById {
   '/api/auth/oidc/connections': typeof ApiAuthOidcConnectionsRoute
   '/api/auth/oidc/start': typeof ApiAuthOidcStartRoute
   '/api/v1/app-catalog/install': typeof ApiV1AppCatalogInstallRoute
+  '/api/v1/app-catalog/lifecycle': typeof ApiV1AppCatalogLifecycleRoute
   '/api/admin/backups/$jobId/download': typeof ApiAdminBackupsJobIdDownloadRoute
   '/api/admin/oidc/providers/test': typeof ApiAdminOidcProvidersTestRoute
 }
@@ -594,6 +604,7 @@ export interface FileRouteTypes {
     | '/api/auth/oidc/connections'
     | '/api/auth/oidc/start'
     | '/api/v1/app-catalog/install'
+    | '/api/v1/app-catalog/lifecycle'
     | '/api/admin/backups/$jobId/download'
     | '/api/admin/oidc/providers/test'
   fileRoutesByTo: FileRoutesByTo
@@ -650,6 +661,7 @@ export interface FileRouteTypes {
     | '/api/auth/oidc/connections'
     | '/api/auth/oidc/start'
     | '/api/v1/app-catalog/install'
+    | '/api/v1/app-catalog/lifecycle'
     | '/api/admin/backups/$jobId/download'
     | '/api/admin/oidc/providers/test'
   id:
@@ -709,6 +721,7 @@ export interface FileRouteTypes {
     | '/api/auth/oidc/connections'
     | '/api/auth/oidc/start'
     | '/api/v1/app-catalog/install'
+    | '/api/v1/app-catalog/lifecycle'
     | '/api/admin/backups/$jobId/download'
     | '/api/admin/oidc/providers/test'
   fileRoutesById: FileRoutesById
@@ -738,6 +751,7 @@ export interface RootRouteChildren {
   ApiAuthOidcConnectionsRoute: typeof ApiAuthOidcConnectionsRoute
   ApiAuthOidcStartRoute: typeof ApiAuthOidcStartRoute
   ApiV1AppCatalogInstallRoute: typeof ApiV1AppCatalogInstallRoute
+  ApiV1AppCatalogLifecycleRoute: typeof ApiV1AppCatalogLifecycleRoute
   ApiAdminBackupsJobIdDownloadRoute: typeof ApiAdminBackupsJobIdDownloadRoute
 }
 
@@ -1128,6 +1142,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiV1AppCatalogInstallRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/v1/app-catalog/lifecycle': {
+      id: '/api/v1/app-catalog/lifecycle'
+      path: '/api/v1/app-catalog/lifecycle'
+      fullPath: '/api/v1/app-catalog/lifecycle'
+      preLoaderRoute: typeof ApiV1AppCatalogLifecycleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/admin/backups/$jobId/download': {
       id: '/api/admin/backups/$jobId/download'
       path: '/api/admin/backups/$jobId/download'
@@ -1285,6 +1306,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthOidcConnectionsRoute: ApiAuthOidcConnectionsRoute,
   ApiAuthOidcStartRoute: ApiAuthOidcStartRoute,
   ApiV1AppCatalogInstallRoute: ApiV1AppCatalogInstallRoute,
+  ApiV1AppCatalogLifecycleRoute: ApiV1AppCatalogLifecycleRoute,
   ApiAdminBackupsJobIdDownloadRoute: ApiAdminBackupsJobIdDownloadRoute,
 }
 export const routeTree = rootRouteImport

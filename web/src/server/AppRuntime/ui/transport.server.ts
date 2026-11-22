@@ -54,6 +54,7 @@ const nativeApp = z.strictObject({
     routes: z.array(appRecordId).min(1).max(32),
     dialogs: z.array(appRecordId).max(32),
     events: z.array(appRecordId).max(32),
+    nativePresentation: z.unknown().optional(),
 })
 const nativeApps = z.array(nativeApp).max(256)
 const operationPolicy = z.strictObject({
@@ -71,7 +72,10 @@ const appUiBinding = z.strictObject({
     generation: appGenerationSchema,
 })
 export const appUiSession = z.strictObject({ sessionId: z.uuid() })
-export const appUiOpenInput = appUiBinding.extend(appUiSession.shape)
+export const appUiOpenInput = appUiBinding.extend({
+    ...appUiSession.shape,
+    native: z.literal(true).optional(),
+})
 const appUiPayload = z.custom<AppUiPayload>(
     (value: unknown) =>
         value !== null &&
@@ -202,12 +206,14 @@ export async function nativeAppRuntimeJson<T>(
 
 type Binding = z.infer<typeof appUiBinding>
 
+const MAX_LIST_RESPONSE_BYTES = 8 * 1024 * 1024
+
 function nativePath(binding: Binding): string {
     return '/v1/apps/' + binding.installationId + '/' + binding.generation
 }
 
 export function nativeAppUis(signal: AbortSignal) {
-    return nativeAppRuntimeJson(nativeApps, '/v1/apps', signal, undefined, 4 * 1024 * 1024)
+    return nativeAppRuntimeJson(nativeApps, '/v1/apps', signal, undefined, MAX_LIST_RESPONSE_BYTES)
 }
 
 export function nativeAppUi(binding: Binding, signal: AbortSignal) {
@@ -219,7 +225,7 @@ export function nativeAppUiAsset(binding: Binding, path: string, signal: AbortSi
     return nativeRequest(nativePath(binding) + '/assets/' + path, signal)
 }
 
-export function nativeAppUiPolicy(input: AppUiCallInput, signal: AbortSignal) {
+export function nativeAppUiPolicy(input: Binding & { operationId: string }, signal: AbortSignal) {
     const path = nativePath(input) + '/operations/' + input.operationId
     return nativeAppRuntimeJson(operationPolicy, path, signal)
 }

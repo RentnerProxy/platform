@@ -158,15 +158,78 @@
     },
     "appCatalog": {
         "title": "Catálogo de aplicaciones",
-        "description": "Instala aplicaciones del catálogo firmado de RentnerProxy.",
+        "description": "Gestiona las aplicaciones instaladas y descubre otras en el catálogo firmado de RentnerProxy.",
         "refresh": "Actualizar catálogo",
-        "empty": "No hay aplicaciones en el catálogo para este dispositivo.",
+        "empty": "No hay más aplicaciones en el catálogo para este dispositivo.",
         "release": "{{publisher}} · Versión {{version}}",
         "install": "Instalar",
         "retry": "Reintentar instalación",
         "installing": "Instalando aplicación…",
-        "installed": "Instalada",
         "open": "Abrir aplicación",
+        "management": {
+            "installed": "Aplicaciones instaladas",
+            "discover": "Descubrir aplicaciones",
+            "retained": "Datos de aplicaciones conservados",
+            "loading": "Cargando aplicaciones instaladas…",
+            "unavailable": "No se puede acceder a la lista local de aplicaciones. Actualiza para volver a conectarte.",
+            "empty": "No hay aplicaciones instaladas en este dispositivo.",
+            "version": "Versión {{version}}",
+            "updateTo": "Actualizar a {{version}}",
+            "reinstall": "Reinstalar {{version}}",
+            "failed": "No se pudo completar la acción.",
+            "states": {
+                "running": "Activa",
+                "disabled": "Inactiva",
+                "recoveryRequired": "Requiere recuperación",
+                "removing": "Desinstalación incompleta",
+                "removed": "Datos conservados",
+                "purging": "Eliminación de datos incompleta"
+            },
+            "actions": {
+                "update": "Actualizar",
+                "deactivate": "Desactivar",
+                "reactivate": "Reactivar",
+                "uninstall": "Desinstalar",
+                "recover": "Reintentar activación",
+                "rollback": "Volver a la versión anterior",
+                "purge": "Eliminar datos conservados",
+                "reinstall": "Reinstalar"
+            },
+            "pending": {
+                "update": "Actualizando la aplicación…",
+                "deactivate": "Desactivando la aplicación…",
+                "reactivate": "Reactivando la aplicación…",
+                "uninstall": "Desinstalando la aplicación…",
+                "recover": "Reintentando la activación…",
+                "rollback": "Volviendo a la versión anterior…",
+                "purge": "Eliminando los datos conservados…",
+                "reinstall": "Reinstalando la aplicación…"
+            },
+            "succeeded": {
+                "update": "Aplicación actualizada.",
+                "deactivate": "Aplicación desactivada.",
+                "reactivate": "Aplicación reactivada.",
+                "uninstall": "Aplicación desinstalada. Se conservaron sus datos.",
+                "recover": "Aplicación activada.",
+                "rollback": "Se restauró la versión anterior.",
+                "purge": "Se eliminaron los datos conservados.",
+                "reinstall": "Aplicación reinstalada."
+            },
+            "confirm": {
+                "uninstall": "¿Desinstalar {{name}}? La aplicación se eliminará y sus datos se conservarán para una futura reinstalación.",
+                "purge": "¿Eliminar definitivamente los datos conservados de {{name}}? Esta acción es irreversible.",
+                "rollback": "¿Volver a la versión {{version}} de {{name}}? Sus datos actuales deben ser compatibles con esa versión."
+            },
+            "errors": {
+                "invalid": "La acción solicitada no es válida.",
+                "forbidden": "Solo los propietarios del dispositivo pueden gestionar aplicaciones.",
+                "conflict": "La aplicación cambió, hay otra acción en curso o una dependencia bloquea esta acción. Actualiza y comprueba la aplicación.",
+                "rateLimited": "Demasiadas solicitudes. Espera un momento y vuelve a intentarlo.",
+                "unavailable": "El servicio de aplicaciones no está disponible. Actualiza y vuelve a intentarlo.",
+                "incompatibleData": "La versión seleccionada es incompatible con los datos guardados.",
+                "operationFailed": "Comprueba el estado actual de la aplicación antes de volver a intentarlo."
+            }
+        },
         "status": {
             "loading": "Cargando el catálogo de aplicaciones…",
             "stale": "El catálogo está desactualizado. Actualízalo antes de instalar una aplicación.",
@@ -190,7 +253,10 @@
         "loading": "Cargando aplicación…",
         "unavailable": "Esta aplicación no está disponible en este momento.",
         "confirmTitle": "Confirmar acción de la aplicación",
-        "confirmDescription": "{{name}} solicita confirmación para {{dialog}}."
+        "confirmDescription": "{{name}} solicita confirmación para {{dialog}}.",
+        "saved": "Cambios guardados en la aplicación.",
+        "saveFailed": "La aplicación no pudo guardar los cambios. Inténtalo de nuevo.",
+        "rows": "filas"
     },
     "quickSearch": {
         "title": "Búsqueda rápida",

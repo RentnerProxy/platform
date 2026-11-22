@@ -23,7 +23,6 @@ import {
 } from 'lucide-react'
 
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
-import { useAppUiSlot } from '@/features/AppUi/AppUiProvider.tsx'
 
 import useApplicationNavigationLogic from './Hooks/useApplicationNavigationLogic.ts'
 import type { ApplicationNavigationProps } from '../../Types/application-shell.types.ts'
@@ -40,7 +39,6 @@ export default function ApplicationNavigation({
 }: ApplicationNavigationProps) {
     const { t } = useTranslationStore()
     const { state, handler } = useApplicationNavigationLogic(items, groupPreferences, onGroupChange)
-    const apps = useAppUiSlot('navigation')
 
     return (
         <nav aria-label={t('shell.navigation')} className="grid content-start gap-2.5">
@@ -72,11 +70,15 @@ export default function ApplicationNavigation({
                                     className={`size-1.5 shrink-0 rounded-full ${isActive ? 'bg-brand-400 shadow-[0_0_8px_var(--color-accent)]' : 'bg-mist-400/70'}`}
                                 />
                                 <span className="truncate">
-                                    {t(`shell.navigationGroups.${group.id}`)}
+                                    {group.id === 'apps'
+                                        ? t('appUi.apps')
+                                        : t(`shell.navigationGroups.${group.id}`)}
                                 </span>
                             </span>
                             <span className="flex shrink-0 items-center gap-2 text-mist-400">
-                                <span className="tabular-nums">{group.items.length}</span>
+                                <span className="tabular-nums">
+                                    {group.items.length + group.installedApps.length}
+                                </span>
                                 <ChevronDown
                                     aria-hidden="true"
                                     className={`size-3.5 transition-transform duration-200 motion-reduce:transition-none ${isExpanded ? 'rotate-180' : ''}`}
@@ -118,6 +120,12 @@ export default function ApplicationNavigation({
                                         />
                                     ) : item.to === '/docker-discovery' ? (
                                         <Boxes
+                                            aria-hidden="true"
+                                            className="size-4 shrink-0"
+                                            strokeWidth={1.8}
+                                        />
+                                    ) : item.to === '/app-catalog' ? (
+                                        <PackageSearch
                                             aria-hidden="true"
                                             className="size-4 shrink-0"
                                             strokeWidth={1.8}
@@ -203,54 +211,39 @@ export default function ApplicationNavigation({
                                             strokeWidth={1.8}
                                         />
                                     ) : null}
-                                    {item.label}
+                                    {item.to === '/app-catalog' ? (
+                                        <span className="truncate">{item.label}</span>
+                                    ) : (
+                                        item.label
+                                    )}
+                                </Link>
+                            ))}
+                            {group.installedApps.map((app) => (
+                                <Link
+                                    key={app.installationId}
+                                    to="/apps/$installationId/{-$routeId}"
+                                    params={{
+                                        installationId: app.installationId,
+                                        routeId: undefined,
+                                    }}
+                                    search={{}}
+                                    activeOptions={{ includeSearch: false }}
+                                    onClick={onNavigate}
+                                    className={linkClassName}
+                                    activeProps={activeProps}
+                                >
+                                    <Puzzle
+                                        aria-hidden="true"
+                                        className="size-4 shrink-0"
+                                        strokeWidth={1.8}
+                                    />
+                                    <span className="truncate">{app.name}</span>
                                 </Link>
                             ))}
                         </div>
                     </section>
                 )
             })}
-            {state.appCatalog || apps.length > 0 ? (
-                <section className="min-w-0">
-                    <h2 className="m-0 px-3.5 py-2 font-mono text-[0.67rem] font-bold tracking-[0.09em] text-mist-300 uppercase">
-                        {t('appUi.apps')}
-                    </h2>
-                    {state.appCatalog ? (
-                        <Link
-                            to="/app-catalog"
-                            onClick={onNavigate}
-                            className={linkClassName}
-                            activeProps={activeProps}
-                        >
-                            <PackageSearch
-                                aria-hidden="true"
-                                className="size-4 shrink-0"
-                                strokeWidth={1.8}
-                            />
-                            <span className="truncate">{state.appCatalog.label}</span>
-                        </Link>
-                    ) : null}
-                    {apps.map((app) => (
-                        <Link
-                            key={app.installationId}
-                            to="/apps/$installationId/{-$routeId}"
-                            params={{ installationId: app.installationId, routeId: undefined }}
-                            search={{}}
-                            activeOptions={{ includeSearch: false }}
-                            onClick={onNavigate}
-                            className={linkClassName}
-                            activeProps={activeProps}
-                        >
-                            <Puzzle
-                                aria-hidden="true"
-                                className="size-4 shrink-0"
-                                strokeWidth={1.8}
-                            />
-                            <span className="truncate">{app.name}</span>
-                        </Link>
-                    ))}
-                </section>
-            ) : null}
         </nav>
     )
 }
