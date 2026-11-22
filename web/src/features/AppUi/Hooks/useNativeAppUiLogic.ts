@@ -66,10 +66,20 @@ export function useNativeAppUiLogic(app: AppUiSummary) {
         let result = await send(open.frameToken)
         if (!result.ok && result.problem.code === 'frameRevoked') {
             deadline.throwIfAborted()
-            const renewed = await source.refetch({ cancelRefetch: false })
-            deadline.throwIfAborted()
-            if (renewed.isSuccess && renewed.data.operations.includes(operationId)) {
-                result = await send(renewed.data.frameToken)
+            const aborted = Promise.withResolvers<never>()
+            const rejectOnAbort = () => aborted.reject(deadline.reason)
+            deadline.addEventListener('abort', rejectOnAbort, { once: true })
+            try {
+                const renewed = await Promise.race([
+                    source.refetch({ cancelRefetch: false }),
+                    aborted.promise,
+                ])
+                deadline.throwIfAborted()
+                if (renewed.isSuccess && renewed.data.operations.includes(operationId)) {
+                    result = await send(renewed.data.frameToken)
+                }
+            } finally {
+                deadline.removeEventListener('abort', rejectOnAbort)
             }
         }
         if (!result.ok) {

@@ -1,4 +1,4 @@
-import { expect, mock, test } from 'bun:test'
+import { expect, mock, spyOn, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { callAppUi } from '@/lib/AppUi/client.ts'
@@ -54,6 +54,16 @@ const call = mock(async (_input: Parameters<typeof callAppUi>[0]): Promise<AppUi
     ok: true,
     payload: { greeting: 'Gude!' },
 }))
+const revoked: AppUiResult = {
+    ok: false,
+    problem: {
+        type: 'urn:rentnerproxy:problem:frameRevoked',
+        title: 'The app UI session has ended.',
+        code: 'frameRevoked',
+        status: 401,
+        requestId: 'revoked-request',
+    },
+}
 await mock.module('@rentnerkev/toasts', () => ({
     toast: { success: mock(() => {}), error: mock(() => {}) },
 }))
@@ -100,7 +110,17 @@ function mountApp() {
         client.clear()
         container.remove()
     }
-    return { container, render, unmount, onNavigate }
+    return { container, render, unmount, onNavigate, client }
+}
+
+async function setGreeting(input: HTMLInputElement, value: string) {
+    await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+            input,
+            value,
+        )
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
 }
 
 test('renders app forms and tables in the host and reuses the view across routes', async () => {
@@ -153,14 +173,7 @@ test('refreshes a previously visited table after a successful save through a dif
         await render('overview')
         const field = () => container.querySelector<HTMLInputElement>('input[value="Gude!"]')
         await waitFor(() => field() !== null)
-        await act(async () => {
-            const input = field()!
-            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
-                input,
-                'Gude neu!',
-            )
-            input.dispatchEvent(new Event('input', { bubbles: true }))
-        })
+        await setGreeting(field()!, 'Gude neu!')
         const submit = container.querySelector<HTMLButtonElement>('button[type="submit"]')
         expect(submit?.disabled).toBe(false)
         const updated: AppUiResult = { ok: true, payload: { greeting: 'Gude neu!' } }
@@ -190,16 +203,7 @@ test('reopens the presentation and reuses the request identity after a revoked a
         ...openedApp,
         frameToken: 'renewed',
     })
-    call.mockResolvedValueOnce({
-        ok: false,
-        problem: {
-            type: 'urn:rentnerproxy:problem:frameRevoked',
-            title: 'The app UI session has ended.',
-            code: 'frameRevoked',
-            status: 401,
-            requestId: 'revoked-request',
-        },
-    })
+    call.mockResolvedValueOnce(revoked)
     try {
         await render('overview')
         await waitFor(() => container.querySelector('input[value="Gude!"]') !== null)
@@ -208,6 +212,43 @@ test('reopens the presentation and reuses the request identity after a revoked a
         expect(sent[1]?.idempotencyKey).toBe(sent[0]?.idempotencyKey)
         expect(open).toHaveBeenCalledTimes(2)
     } finally {
+        await unmount()
+    }
+})
+
+test('releases the form when token renewal exceeds the save deadline', async () => {
+    const { container, render, unmount, client } = mountApp()
+    const appWithWrite = {
+        ...openedApp,
+        native: { ...openedApp.native, operations: ['read-values', 'write-values'] },
+    }
+    const renewal = Promise.withResolvers<typeof openedApp>()
+    open.mockResolvedValueOnce(appWithWrite).mockImplementationOnce(() => renewal.promise)
+    const expiry = new AbortController()
+    const timeout = spyOn(AbortSignal, 'timeout')
+    try {
+        await render('overview')
+        const field = () => container.querySelector<HTMLInputElement>('input[value="Gude!"]')
+        await waitFor(() => field() !== null)
+        await setGreeting(field()!, 'Gude neu!')
+        const submit = container.querySelector<HTMLButtonElement>('button[type="submit"]')
+        expect(submit?.disabled).toBe(false)
+        timeout.mockReturnValue(expiry.signal)
+        call.mockResolvedValueOnce(revoked)
+        await act(async () => submit!.click())
+        await waitFor(() => open.mock.calls.length === 2 && submit?.disabled === true)
+        await act(async () =>
+            expiry.abort(new DOMException('Save deadline exceeded', 'TimeoutError')),
+        )
+        await waitFor(() => submit?.disabled === false)
+        expect(client.isFetching()).toBe(1)
+        expect(call).toHaveBeenCalledTimes(2)
+        await act(async () => renewal.resolve({ ...appWithWrite, frameToken: 'renewed' }))
+        await waitFor(() => client.isFetching() === 0)
+        expect(call).toHaveBeenCalledTimes(2)
+    } finally {
+        timeout.mockRestore()
+        renewal.resolve(appWithWrite)
         await unmount()
     }
 })
