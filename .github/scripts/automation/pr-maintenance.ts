@@ -30,13 +30,34 @@ const CI_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   }
 }`
 
-async function successfulChecks(
+/**
+ * Every branch update reruns the complete CI suite, and with strict required checks each merge
+ * outdates all other PRs again. Auto-mergeable Dependabot updates therefore advance one at a time.
+ * An update counts as in CI only for this long, so a stuck run cannot stall the queue.
+ */
+const DEPENDABOT_IN_FLIGHT_MS = 3 * 60 * 60 * 1000
+
+type CheckState = 'success' | 'pending' | 'blocked'
+
+interface MaintenanceContext {
+    /** An eligible Dependabot update is current with main and still waiting for its CI. */
+    dependabotInFlight: boolean
+    now: number
+}
+
+interface QueuedUpdate {
+    number: number
+    action: 'queued'
+    headSha: string
+}
+
+async function currentChecks(
     request: GitHubRequest,
     repository: string,
     number: number,
     headSha: string,
     baseSha: string,
-): Promise<boolean> {
+): Promise<CheckState> {
     const [owner, name] = repository.split('/')
     const response = record(
         await request('POST', '/graphql', {
@@ -46,14 +67,14 @@ async function successfulChecks(
     )
     if (response.errors !== undefined) throw new Error('GitHub CI query failed')
     const pull = record(record(record(response.data).repository).pullRequest)
+    // A moved head or base means a new CI run is about to start for this PR.
+    if (pull.headRefOid !== headSha || pull.baseRefOid !== baseSha) return 'pending'
     if (
-        pull.headRefOid !== headSha ||
-        pull.baseRefOid !== baseSha ||
         pull.state !== 'OPEN' ||
         pull.isDraft !== false ||
         pull.reviewDecision === 'CHANGES_REQUESTED'
     ) {
-        return false
+        return 'blocked'
     }
     const threads = record(pull.reviewThreads)
     if (
@@ -61,23 +82,44 @@ async function successfulChecks(
         !Array.isArray(threads.nodes) ||
         threads.nodes.some((thread: unknown) => record(thread).isResolved !== true)
     ) {
-        return false
+        return 'blocked'
     }
     const nodes = record(pull.commits).nodes
-    if (!Array.isArray(nodes) || nodes.length !== 1) return false
+    if (!Array.isArray(nodes) || nodes.length !== 1) return 'blocked'
     const commit = record(record(nodes[0]).commit)
-    return (
-        commit.oid === headSha &&
-        commit.statusCheckRollup !== null &&
-        record(commit.statusCheckRollup).state === 'SUCCESS'
-    )
+    if (commit.oid !== headSha) return 'pending'
+    if (commit.statusCheckRollup === null) return 'pending'
+    const state = record(commit.statusCheckRollup).state
+    if (state === 'SUCCESS') return 'success'
+    return state === 'PENDING' || state === 'EXPECTED' ? 'pending' : 'blocked'
+}
+
+function recentHead(commits: unknown[], headSha: string, now: number): boolean {
+    const head = commits.map(record).find((commit) => commit.sha === headSha)
+    const date = head ? record(record(head.commit).committer).date : undefined
+    const time = typeof date === 'string' ? Date.parse(date) : Number.NaN
+    return Number.isFinite(time) && now - time >= 0 && now - time < DEPENDABOT_IN_FLIGHT_MS
+}
+
+function failureResult(number: number, error: unknown): MaintenanceResult {
+    const expected =
+        error instanceof GitHubRequestError && [403, 404, 405, 409, 422].includes(error.status)
+    return {
+        number,
+        action: expected ? 'skipped' : 'failed',
+        reason:
+            error instanceof GitHubRequestError
+                ? `GitHub HTTP ${error.status}; no update or merge was forced`
+                : 'Validation or GitHub request failed; no merge was attempted',
+    }
 }
 
 async function maintainPullRequest(
     request: GitHubRequest,
     options: MaintenanceOptions,
     number: number,
-): Promise<MaintenanceResult> {
+    context: MaintenanceContext,
+): Promise<MaintenanceResult | QueuedUpdate> {
     const prefix = `/repos/${options.repository}`
     const path = `${prefix}/pulls/${number}`
     const skipped = (reason: string): MaintenanceResult => ({ number, action: 'skipped', reason })
@@ -110,6 +152,21 @@ async function maintainPullRequest(
         ) {
             return skipped('Fork owner has not allowed maintainer branch updates')
         }
+        if (pull.draft === false && record(pull.user).login === 'dependabot[bot]') {
+            const [commits, files] = await Promise.all([
+                arrayPages(request, `${path}/commits`),
+                arrayPages(request, `${path}/files`),
+            ])
+            const queued = evaluateDependabotEligibility({
+                repository: options.repository,
+                trustedMergeBotLogin: options.trustedMergeBotLogin ?? '',
+                pullRequest: pull,
+                commits,
+                files,
+            })
+            // Auto-mergeable updates wait for their turn; manual-review updates stay current.
+            if (queued.eligible) return { number, action: 'queued', headSha }
+        }
         if (!options.dryRun) {
             await request('PUT', `${path}/update-branch`, { expected_head_sha: headSha })
         }
@@ -123,7 +180,6 @@ async function maintainPullRequest(
     if (pull.draft !== false || record(pull.user).login !== 'dependabot[bot]') {
         return skipped('Branch is current; automatic merging is limited to Dependabot updates')
     }
-    if (pull.mergeable !== true) return skipped('GitHub is still calculating mergeability')
     const [commits, files] = await Promise.all([
         arrayPages(request, `${path}/commits`),
         arrayPages(request, `${path}/files`),
@@ -136,7 +192,16 @@ async function maintainPullRequest(
         files,
     })
     if (!eligibility.eligible) return skipped(eligibility.reason)
-    if (!(await successfulChecks(request, options.repository, number, headSha, baseSha))) {
+    const markInFlight = () => {
+        if (recentHead(commits, headSha, context.now)) context.dependabotInFlight = true
+    }
+    if (pull.mergeable !== true) {
+        markInFlight()
+        return skipped('GitHub is still calculating mergeability')
+    }
+    const checks = await currentChecks(request, options.repository, number, headSha, baseSha)
+    if (checks !== 'success') {
+        if (checks === 'pending') markInFlight()
         return skipped('Waiting for current successful checks and resolution of review objections')
     }
 
@@ -146,6 +211,7 @@ async function maintainPullRequest(
         record(latest.base).sha !== baseSha ||
         latest.mergeable !== true
     ) {
+        markInFlight()
         return skipped('Pull request changed during validation; retry on the next event')
     }
     const currentEligibility = evaluateDependabotEligibility({
@@ -175,7 +241,12 @@ export async function maintainPullRequests(
 ): Promise<MaintenanceResult[]> {
     const repository = repositoryName(options.repository)
     const pulls = await arrayPages(request, `/repos/${repository}/pulls?state=open&base=main`)
+    const context: MaintenanceContext = {
+        dependabotInFlight: false,
+        now: options.now ?? Date.now(),
+    }
     const results: MaintenanceResult[] = []
+    const queued: (QueuedUpdate & { index: number })[] = []
     for (const entry of pulls) {
         const number = record(entry).number
         if (!Number.isSafeInteger(number) || Number(number) <= 0) {
@@ -187,20 +258,46 @@ export async function maintainPullRequests(
                 request,
                 { ...options, repository },
                 Number(number),
+                context,
             )
-            results.push(result)
+            if (result.action === 'queued') {
+                queued.push({ ...result, index: results.length })
+                results.push({ number: result.number, action: 'skipped', reason: '' })
+            } else {
+                results.push(result)
+            }
         } catch (error) {
-            const expected =
-                error instanceof GitHubRequestError &&
-                [403, 404, 405, 409, 422].includes(error.status)
-            results.push({
-                number: Number(number),
-                action: expected ? 'skipped' : 'failed',
-                reason:
-                    error instanceof GitHubRequestError
-                        ? `GitHub HTTP ${error.status}; no update or merge was forced`
-                        : 'Validation or GitHub request failed; no merge was attempted',
-            })
+            results.push(failureResult(Number(number), error))
+        }
+    }
+
+    // Start at most one auto-mergeable Dependabot update, oldest first, after every current
+    // update was seen; the next one follows once it merged or stopped waiting for CI.
+    let started = context.dependabotInFlight
+    for (const update of queued.toSorted((left, right) => left.number - right.number)) {
+        if (started) {
+            results[update.index] = {
+                number: update.number,
+                action: 'skipped',
+                reason: 'Waiting for the Dependabot update already in CI; updates run one at a time',
+            }
+            continue
+        }
+        try {
+            if (!options.dryRun) {
+                // eslint-disable-next-line no-await-in-loop -- only the first accepted update may start
+                await request('PUT', `/repos/${repository}/pulls/${update.number}/update-branch`, {
+                    expected_head_sha: update.headSha,
+                })
+            }
+            results[update.index] = {
+                number: update.number,
+                action: options.dryRun ? 'would-update' : 'update-requested',
+                reason: 'Requested branch update for the next Dependabot update in line',
+            }
+            started = true
+        } catch (error) {
+            results[update.index] = failureResult(update.number, error)
         }
     }
     return results
