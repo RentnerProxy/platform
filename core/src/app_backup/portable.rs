@@ -6,11 +6,18 @@ use crate::{
     app_install::{Installer, filesystem},
     app_ipc::filesystem::require_safe_parents,
     app_manager::portable_backup::{BackupJournal, Destination, Inventory, provision_database},
+    protected_files::PRIVATE_STAGING_PREFIX,
 };
 use envelope::{Kind, Member};
 use marketplace_artifacts::{file_identity, invalid};
 use serde_json::Value;
-use std::{collections::BTreeMap, fs::File, io, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs::{self, DirEntry, File},
+    io,
+    os::unix::fs::MetadataExt,
+    path::Path,
+};
 
 const APPLIANCE: &str = "/var/lib/rentnerproxy";
 
@@ -69,11 +76,16 @@ pub(super) fn capture() -> io::Result<()> {
             members.push((Member::new(Kind::Package, digest.into(), identity), path));
         }
     }
+    let mut remaining = envelope::remaining_payload(members.iter().map(|(member, _)| member))?;
     for uid in databases {
         let path = scratch.path().join(uid.to_string());
-        database::capture(uid, &path)?;
-        let identity = file_identity(&path, Member::limit(Kind::Database))?;
-        members.push((Member::new(Kind::Database, uid.to_string(), identity), path));
+        let allocation_bytes = database::capture(uid, &path, remaining)?;
+        let identity = file_identity(&path, remaining)?;
+        remaining -= identity.size_bytes;
+        members.push((
+            Member::database(uid.to_string(), identity, allocation_bytes),
+            path,
+        ));
     }
     envelope::write(inventory, members, io::stdout().lock())
 }
@@ -132,6 +144,11 @@ pub(super) fn recover(input: &Path, apply: bool) -> io::Result<()> {
         }
         Destination::Resuming => {
             for &uid in backup.databases.keys() {
+                if let Some(data) = roots.get(&uid)
+                    && let Some(root) = data.parent()
+                {
+                    clear_abandoned_credentials(root, uid)?;
+                }
                 database::reset(uid)?;
             }
             database::verify_inventory(&[])?;
@@ -161,6 +178,42 @@ pub(super) fn recover(input: &Path, apply: bool) -> io::Result<()> {
         packages.publish()?;
     }
     journal.finish(&backup.digest, backup.inventory)
+}
+
+pub(super) fn abandoned_credential(file: &DirEntry, uid: u32) -> io::Result<bool> {
+    if !file
+        .file_name()
+        .to_str()
+        .is_some_and(|name| name.starts_with(PRIVATE_STAGING_PREFIX))
+    {
+        return Ok(false);
+    }
+    let info = file.metadata()?;
+    let owner = (info.uid(), info.gid());
+    if !info.is_file()
+        || (owner != (0, 0) && owner != (uid, uid))
+        || !matches!(info.mode() & 0o7777, 0o400 | 0o600)
+        || info.nlink() != 1
+        || info.len() > 512
+    {
+        return Err(invalid("Unsafe abandoned app credential"));
+    }
+    Ok(true)
+}
+
+fn clear_abandoned_credentials(root: &Path, uid: u32) -> io::Result<()> {
+    let mut removed = false;
+    for file in fs::read_dir(root)? {
+        let file = file?;
+        if abandoned_credential(&file, uid)? {
+            fs::remove_file(file.path())?;
+            removed = true;
+        }
+    }
+    if removed {
+        File::open(root)?.sync_all()?;
+    }
+    Ok(())
 }
 
 fn validate_data(inventory: &Inventory, data: &BTreeMap<u32, Vec<files::Entry>>) -> io::Result<()> {

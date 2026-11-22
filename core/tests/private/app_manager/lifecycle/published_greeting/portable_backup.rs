@@ -71,6 +71,12 @@ pub(super) async fn capture(
 ) {
     require_offline_network();
     halt(manager).await;
+    let installation_directory = Path::new("/var/lib/rentnerproxy/apps").join(uid.to_string());
+    fs::set_permissions(
+        installation_directory.join("database-password"),
+        fs::Permissions::from_mode(0o400),
+    )
+    .unwrap();
     postgres(
         uid,
         &format!(
@@ -188,14 +194,21 @@ async fn privileged_restore_published_greeting() {
     let interrupted = backup_status(&controller, config, "restore-portable", &bundle).await;
     fs::set_permissions(app_socket, socket_permissions).unwrap();
     assert!(!interrupted);
-    assert!(
-        Path::new("/var/lib/rentnerproxy/apps")
-            .join(uid.to_string())
-            .exists()
-    );
+    let app_root = Path::new("/var/lib/rentnerproxy/apps").join(uid.to_string());
+    let staged_credential = app_root.join(format!(
+        "{}fixture",
+        crate::protected_files::PRIVATE_STAGING_PREFIX
+    ));
+    OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&staged_credential)
+        .unwrap();
     assert!(!Path::new("/var/lib/rentnerproxy/app-manager/journal.json").exists());
 
     assert!(backup_status(&controller, config, "restore-portable", &bundle).await);
+    assert!(!staged_credential.exists());
     assert_database(uid).await;
     // Repeat with the same input before starting the manager, including the
     // completion marker path used if the maintenance caller lost its response.
@@ -295,7 +308,7 @@ async fn privileged_restore_published_greeting() {
         "installationId": installation_id,
         "freshTarget": true,
         "network": "none",
-        "backupFormat": 2,
+        "appStateFormat": 2,
         "releases": expected["releases"],
         "corruptBackupRejected": true,
         "interruptedRecoveryResumed": true,

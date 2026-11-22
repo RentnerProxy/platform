@@ -110,20 +110,22 @@ fn checked_app_roots(
                 files::check_staging(&member.path())?;
                 continue;
             }
-            if portable
-                && slot["databaseProvisioned"] == true
-                && member.file_name() == "database-password"
-            {
-                let info = fs::symlink_metadata(member.path())?;
-                if !info.is_file()
-                    || info.uid() != 0
-                    || info.gid() != 0
-                    || info.nlink() != 1
-                    || info.mode() & 0o7777 != 0o600
-                {
-                    return Err(invalid("Unsafe application database password file"));
+            if portable && slot["databaseProvisioned"] == true {
+                if member.file_name() == "database-password" {
+                    let info = fs::symlink_metadata(member.path())?;
+                    if !info.is_file()
+                        || info.uid() != 0
+                        || info.gid() != 0
+                        || info.nlink() != 1
+                        || !matches!(info.mode() & 0o7777, 0o400 | 0o600)
+                    {
+                        return Err(invalid("Unsafe application database password file"));
+                    }
+                    continue;
                 }
-                continue;
+                if pending.is_some() && portable::abandoned_credential(&member, uid)? {
+                    continue;
+                }
             }
             if member.file_name() != "data"
                 && member.file_name() != ".provision.lock"

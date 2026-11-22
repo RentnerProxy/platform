@@ -99,6 +99,7 @@ test('streams portable app members and rejects corrupt or ambiguous app state', 
     const checkpoint = Buffer.from('{}')
     const packageBytes = Buffer.alloc(192 * 1024, 0x8a)
     const database = Buffer.from('PGDMP')
+    const allocationBytes = 4 * 1024 ** 2
     const header = Buffer.from(
         JSON.stringify({
             formatVersion: 2,
@@ -114,7 +115,12 @@ test('streams portable app members and rejects corrupt or ambiguous app state', 
                 { kind: 'data', key: 'files', ...digest(data) },
                 { kind: 'checkpoint', key: 'catalog', ...digest(checkpoint) },
                 { kind: 'package', key: digest(packageBytes).sha256, ...digest(packageBytes) },
-                { kind: 'database', key: String(installation.uid), ...digest(database) },
+                {
+                    kind: 'database',
+                    key: String(installation.uid),
+                    ...digest(database),
+                    allocationBytes,
+                },
             ],
         }),
     )
@@ -199,7 +205,7 @@ test('streams portable app members and rejects corrupt or ambiguous app state', 
             if (process.platform !== 'win32')
                 expect((await filesystem.stat(target)).mode & 0o777).toBe(0o600)
             expect(controllerAllocation(entries, metadata, capacity).payloadBytes).toBeGreaterThan(
-                snapshot.length,
+                snapshot.length + 2 * allocationBytes,
             )
             for (const invalid of [
                 [],

@@ -4,8 +4,9 @@ import { Database } from 'bun:sqlite'
 import { createDecipheriv, createHash } from 'node:crypto'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { PORTABLE_APP_BACKUP_VERSION } from '../../web/src/config/compatibility.config.ts'
 import {
+    APP_AWARE_BACKUP_VERSION,
+    PORTABLE_APP_BACKUP_VERSION,
     isSupportedBackupVersion,
     supportedBackupFormatLabel,
 } from '../../web/src/lib/ApplicationVersion/backupCompatibility.ts'
@@ -184,7 +185,8 @@ export async function validateDatabase(
     assertSupportedBackupVersion(metadata)
     if (
         isRecord(metadata) &&
-        (metadata.version === 5 || metadata.version === PORTABLE_APP_BACKUP_VERSION)
+        (metadata.version === APP_AWARE_BACKUP_VERSION ||
+            metadata.version === PORTABLE_APP_BACKUP_VERSION)
     ) {
         const portable = metadata.version === PORTABLE_APP_BACKUP_VERSION
         const child = Bun.spawn(

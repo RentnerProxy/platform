@@ -30,7 +30,10 @@ import { runMaintenanceProcess } from '../../../scripts/backup/maintenance-proce
 import { assertBackupCapacity, backupCapacityGuard } from '../../../scripts/backup/capacity.ts'
 import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 import { publishProductionBackup } from '../../../scripts/backup/publication.ts'
-import { snapshotProductionRestore } from '../../../scripts/backup/restore-snapshot.ts'
+import {
+    readSnapshotMetadata,
+    snapshotProductionRestore,
+} from '../../../scripts/backup/restore-snapshot.ts'
 import { appBackupCommand, appStateName } from '../../../scripts/backup/app-state.ts'
 import {
     postgresCommand,
@@ -98,6 +101,24 @@ async function validateControllerMetadata(
         maximumOutputBytes: 0,
     })
     if (result.failed || !result.stopped) throw new Error('Invalid controller metadata in backup')
+}
+
+async function restorePortableApps(snapshot: string) {
+    await command([
+        'bash',
+        '-c',
+        postgresCommand('portable-apps', snapshot, PORTABLE_APP_BACKUP_VERSION),
+    ])
+}
+
+async function restorePortableAppsFromCompose(backupId: string) {
+    const snapshot = '/backup'
+    const { metadata } = await readSnapshotMetadata(snapshot, backupId)
+    const result = await command(['bun', '--no-env-file', bootstrap, 'inspect-production-restore'])
+    const pending = Buffer.from(result.stdout).toString('utf8').trim()
+    if (metadata.version !== PORTABLE_APP_BACKUP_VERSION || pending !== backupId)
+        throw new Error('Portable application import requires the matching pending restore')
+    await restorePortableApps(snapshot)
 }
 
 function deployment() {
@@ -332,12 +353,7 @@ async function offlineRestore(options: readonly string[]) {
                 'restore',
                 join(snapshot, appStateName),
             ])
-        if (portable)
-            await command([
-                'bash',
-                '-c',
-                postgresCommand('portable-apps', snapshot, PORTABLE_APP_BACKUP_VERSION),
-            ])
+        if (portable) await restorePortableApps(snapshot)
         await command(['sync', '--file-system', '/var/lib/rentnerproxy'])
         await completeAppEncryptionKeyRestore()
         await completeProductionRestore()
@@ -369,6 +385,8 @@ if (import.meta.main) {
         if (operation === 'backup' && !options.length) await offlineBackup()
         else if (operation === 'validate' && !options.length) await offlineValidate()
         else if (operation === 'restore') await offlineRestore(options)
+        else if (operation === 'restore-portable-apps' && options.length === 1)
+            await restorePortableAppsFromCompose(options[0]!)
         else throw new Error('Invalid offline maintenance operation')
     } catch {
         console.error(

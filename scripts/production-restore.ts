@@ -12,6 +12,7 @@ const applianceService = 'rentnerproxy'
 const databaseHost = '127.0.0.1'
 const bootstrapScript = '/opt/rentnerproxy/web/docker/web/bootstrap-secrets.ts'
 const healthcheckScript = '/opt/rentnerproxy/web/docker/web/healthcheck.ts'
+const maintenanceScript = '/opt/rentnerproxy/web/backup-maintenance.js'
 import {
     postgresCommand,
     controllerRestoreCommand,
@@ -385,12 +386,14 @@ async function restore(): Promise<void> {
                         '--no-TTY',
                         '--rm',
                         '--no-deps',
-                        '--entrypoint=bash',
+                        '--entrypoint=bun',
                         '--volume',
                         archiveVolume,
                         applianceService,
-                        '-c',
-                        postgresCommand('portable-apps', '/backup', PORTABLE_APP_BACKUP_VERSION),
+                        '--no-env-file',
+                        maintenanceScript,
+                        'restore-portable-apps',
+                        backupId,
                     ],
                     'restore portable application state and databases',
                     BACKUP_RUNTIME_POLICY.databaseTimeoutMs,

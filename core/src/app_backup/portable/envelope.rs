@@ -25,6 +25,7 @@ const MAX_HEADER: usize = 8 * 1024 * 1024;
 pub(super) const MAX_FILE_DATA: u64 = super::super::MAX_ARCHIVE as u64;
 const MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_MEMBERS: usize = 256 * 4 + 2;
+const MAX_DATABASE_ALLOCATION: u64 = 9_007_199_254_740_991 / 2;
 
 #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,12 +37,14 @@ pub(super) enum Kind {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct Member {
     kind: Kind,
     key: String,
     bytes: u64,
     sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allocation_bytes: Option<u64>,
 }
 
 impl Member {
@@ -60,6 +63,14 @@ impl Member {
             key,
             bytes: identity.size_bytes,
             sha256: identity.sha256,
+            allocation_bytes: None,
+        }
+    }
+
+    pub fn database(key: String, identity: FileIdentity, allocation_bytes: u64) -> Self {
+        Self {
+            allocation_bytes: Some(allocation_bytes),
+            ..Self::new(Kind::Database, key, identity)
         }
     }
 
@@ -79,6 +90,18 @@ impl Member {
         };
         directory.join(format!("{prefix}-{}", self.key))
     }
+}
+
+pub(super) fn remaining_payload<'a>(
+    members: impl IntoIterator<Item = &'a Member>,
+) -> io::Result<u64> {
+    members
+        .into_iter()
+        .try_fold(MAX_BYTES, |remaining, member| {
+            remaining
+                .checked_sub(member.bytes)
+                .ok_or_else(|| invalid("Portable app backup exceeds its byte limit"))
+        })
 }
 
 #[derive(Deserialize, Serialize)]
@@ -115,6 +138,10 @@ impl Header {
                 || member.bytes == 0
                 || member.bytes > Member::limit(member.kind)
                 || !valid_portable_digest(&member.sha256)
+                || (member.kind == Kind::Database) != member.allocation_bytes.is_some()
+                || member
+                    .allocation_bytes
+                    .is_some_and(|bytes| !(1..=MAX_DATABASE_ALLOCATION).contains(&bytes))
             {
                 return Err(invalid("Invalid portable app backup member"));
             }

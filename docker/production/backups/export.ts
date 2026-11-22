@@ -290,7 +290,7 @@ if (import.meta.main) {
             await checkLiveAppDatabase(
                 resume ? metadata.applications.installations : [],
                 controller.signal,
-                resume ? 'portable-resume' : 'legacy',
+                resume ? 'portable-resume' : 'portable-fresh',
             )
         } else if (args.length === 7 && args[0] === '--check-portable-restore-capacity') {
             const positive = z.coerce.number().int().safe().positive()

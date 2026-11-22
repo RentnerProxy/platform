@@ -92,7 +92,12 @@ fn verify_expected(uids: &[u32], exact: bool, fenced: bool) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn capture(uid: u32, destination: &Path) -> io::Result<()> {
+pub(super) fn capture(uid: u32, destination: &Path, limit: u64) -> io::Result<u64> {
+    if !(1..=MAX_ARCHIVE).contains(&limit) {
+        return Err(rejected(
+            "Portable app backup has no space for its database archive",
+        ));
+    }
     let app = App::new(uid)?;
     verify_expected(&[uid], false, false)?;
     verify_scope(&app, false)?;
@@ -115,16 +120,21 @@ pub(super) fn capture(uid: u32, destination: &Path) -> io::Result<()> {
             .arg(format!("--dbname={}", app.role))
             .arg(format!("--role={}", app.owner))
             .stdout(Stdio::from(output.try_clone()?));
-        run(
-            &mut command,
-            TRANSFER,
-            MAX_ARCHIVE,
-            "App database dump failed",
-        )?;
+        run(&mut command, TRANSFER, limit, "App database dump failed")?;
         archive_list(&app, &output)?;
         output.sync_all()?;
         verify_scope(&app, false)?;
-        verify_expected(&[uid], false, false)
+        verify_expected(&[uid], false, false)?;
+        let size = sql(
+            "postgres",
+            Some(&app),
+            &[],
+            "SELECT pg_database_size(:'role');\n",
+            None,
+        )?;
+        size.trim()
+            .parse::<u64>()
+            .map_err(|_| rejected("App database allocation evidence is unavailable"))
     })();
     drop(output);
     if result.is_err() {

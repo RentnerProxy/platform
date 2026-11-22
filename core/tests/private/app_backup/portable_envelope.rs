@@ -35,14 +35,15 @@ fn inventory(archive: Option<&str>) -> Inventory {
 }
 
 fn member(kind: Kind, key: &str, bytes: &[u8]) -> Member {
-    Member::new(
-        kind,
-        key.into(),
-        FileIdentity {
-            sha256: digest(bytes),
-            size_bytes: bytes.len() as u64,
-        },
-    )
+    let identity = FileIdentity {
+        sha256: digest(bytes),
+        size_bytes: bytes.len() as u64,
+    };
+    if kind == Kind::Database {
+        Member::database(key.into(), identity, 1_048_576)
+    } else {
+        Member::new(kind, key.into(), identity)
+    }
 }
 
 fn data() -> &'static [u8] {
@@ -178,13 +179,28 @@ fn requires_exact_package_and_database_members_within_the_byte_budget() {
         ],
     };
     header.validate(500).unwrap();
+    assert_eq!(
+        remaining_payload(&header.members).unwrap(),
+        MAX_BYTES
+            - header
+                .members
+                .iter()
+                .map(|member| member.bytes)
+                .sum::<u64>()
+    );
     header.members[3].bytes = database::MAX_ARCHIVE;
+    assert!(remaining_payload(&header.members).is_err());
     assert!(header.validate(500).is_err());
     header.members[3].bytes = 0;
     assert!(header.validate(500).is_err());
     header.members[3] = member(Kind::Database, "25002", b"database");
     assert!(header.validate(500).is_err());
     header.members[3] = member(Kind::Database, &UID.to_string(), b"database");
+    header.members[3].allocation_bytes = None;
+    assert!(header.validate(500).is_err());
+    header.members[3].allocation_bytes = Some(0);
+    assert!(header.validate(500).is_err());
+    header.members[3].allocation_bytes = Some(1_048_576);
     header.members.swap(1, 2);
     assert!(header.validate(500).is_err());
     header.members.swap(1, 2);

@@ -151,6 +151,7 @@ async function readPortableAppState(
     const uids = new Set(installations.map(({ uid }) => String(uid)))
     let declaredBytes = portablePrefixBytes + headerSize
     let packages = 0
+    let databaseBytes = 0
     for (const [index, member] of header.members.entries()) {
         const previous = header.members[index - 1]
         if (
@@ -167,6 +168,11 @@ async function readPortableAppState(
         )
             throw new Error('Invalid portable app snapshot member')
         if (member.kind === 'package') packages++
+        if (member.kind === 'database') {
+            databaseBytes += 2 * Math.max(member.bytes, member.allocationBytes)
+            if (!Number.isSafeInteger(databaseBytes))
+                throw new Error('Invalid app database restoration capacity')
+        }
         declaredBytes += member.bytes
     }
     const data = header.members[0]
@@ -223,11 +229,12 @@ async function readPortableAppState(
             applications: { bytes: size, sha256, installations },
             allocation: {
                 // Reserve staged members, decoded data, installed package trees and one
-                // decompression workspace. Logical database size is unavailable from this header.
+                // decompression workspace. Allow the measured database footprint and WAL headroom.
                 payloadBytes:
                     size +
                     Math.min(data.bytes, fileDataPayloadLimit) +
-                    (packages ? (packages + 1) * packagePayloadLimit : 0),
+                    (packages ? (packages + 1) * packagePayloadLimit : 0) +
+                    databaseBytes,
                 nodes: 8192 + 2 * installations.length + header.members.length,
             },
         }

@@ -5,10 +5,17 @@ import type { BackupMetadata } from '../../../scripts/backup/Types/format.types.
 
 type Inventory = Exclude<BackupMetadata, { version: 4 }>['applications']['installations']
 
+const rejectPortableAppDatabasesSql = `SELECT 1 / (NOT EXISTS (
+    SELECT FROM pg_catalog.pg_database
+    WHERE starts_with(datname, 'rp_app_') OR starts_with(datname, 'rp_migrate_')
+    UNION ALL SELECT FROM pg_catalog.pg_roles
+    WHERE starts_with(rolname, 'rp_app_') OR starts_with(rolname, 'rp_migrate_')
+))::integer;`
+
 export async function checkLiveAppDatabase(
     expected: Inventory,
     signal?: AbortSignal,
-    mode: 'legacy' | 'portable' | 'portable-resume' = 'legacy',
+    mode: 'legacy' | 'portable' | 'portable-fresh' | 'portable-resume' = 'legacy',
 ) {
     const result = await runMaintenanceProcess(
         [
@@ -32,7 +39,11 @@ export async function checkLiveAppDatabase(
             maximumOutputBytes: 65_536,
             input: Buffer.from(
                 [
-                    mode === 'legacy' ? rejectAppDatabasesSql : 'SELECT 1;',
+                    mode === 'legacy'
+                        ? rejectAppDatabasesSql
+                        : mode === 'portable-fresh'
+                          ? rejectPortableAppDatabasesSql
+                          : 'SELECT 1;',
                     "SELECT to_regclass('rentnerproxy.app_runtime_installations') IS NOT NULL AS has_apps",
                     '\\gset',
                     '\\if :has_apps',

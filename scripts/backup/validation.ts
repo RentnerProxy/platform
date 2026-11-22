@@ -75,12 +75,24 @@ export const appBackupInstallations = z
     .min(1)
     .max(256)
 
-export const portableAppBackupMember = z.strictObject({
-    kind: z.enum(['data', 'checkpoint', 'package', 'database']),
+const portableMemberIdentity = {
     key: z.string(),
     bytes: z.number().int().positive().max(BACKUP_RUNTIME_POLICY.maximumArtifactBytes),
     sha256: digest,
-})
+}
+
+const portableAppBackupMember = z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.enum(['data', 'checkpoint', 'package']), ...portableMemberIdentity }),
+    z.strictObject({
+        kind: z.literal('database'),
+        ...portableMemberIdentity,
+        allocationBytes: z
+            .number()
+            .int()
+            .positive()
+            .max(Math.floor(Number.MAX_SAFE_INTEGER / 2)),
+    }),
+])
 
 // The native controller validates the full journal Slot and its release/storage semantics.
 const installSlotIdentity = z.object({
