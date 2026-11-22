@@ -232,6 +232,17 @@ async fn wait_lifecycle(action: &str) -> Value {
     .unwrap()
 }
 
+fn running_installation<'a>(view: &'a Value, id: &str) -> &'a Value {
+    let row = view["installations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["installationId"] == id)
+        .expect("Greeting installation in the catalog view");
+    assert_eq!(row["state"], "running", "{row}");
+    row
+}
+
 fn lifecycle_request(action: &str, installation: &Value, target: Option<&Value>) -> Value {
     let mut request = json!({
         "action": action,
@@ -435,13 +446,7 @@ async fn privileged_published_greeting_lifecycle() {
     let installed = installed_view["install"].clone();
     assert_eq!(installed["status"], "installed");
     assert_eq!(installed["installationId"], installation_id);
-    let first_install = installed_view["installations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["installationId"] == installation_id)
-        .unwrap()
-        .clone();
+    let first_install = running_installation(&installed_view, &installation_id);
     assert_eq!(first_install["version"], first.version);
     assert_eq!(first_install["archiveSha256"], first.archive_sha256);
     let first_generation = first_install["generation"].as_u64().unwrap();
@@ -456,19 +461,18 @@ async fn privileged_published_greeting_lifecycle() {
         PERSISTED_GREETING
     );
 
-    let offered = first_install["update"].clone();
+    let ready = wait_catalog_state("ready").await;
+    let before_update = running_installation(&ready, &installation_id);
+    assert_eq!(before_update["generation"], first_generation);
+    assert_eq!(before_update["version"], first.version);
+    assert_eq!(before_update["archiveSha256"], first.archive_sha256);
+    let offered = &before_update["update"];
     assert_eq!(offered["version"], second.version);
     assert_eq!(offered["archiveSha256"], second.archive_sha256);
-    let update = lifecycle_request("update", &first_install, Some(&offered));
+    let update = lifecycle_request("update", before_update, Some(offered));
     post_lifecycle(&update).await;
     let updated_view = wait_lifecycle("update").await;
-    let updated = updated_view["installations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["installationId"] == installation_id)
-        .unwrap()
-        .clone();
+    let updated = running_installation(&updated_view, &installation_id);
     assert_eq!(updated["version"], second.version);
     assert_eq!(updated["archiveSha256"], second.archive_sha256);
     assert_eq!(updated["previous"]["version"], first.version);
@@ -491,16 +495,10 @@ async fn privileged_published_greeting_lifecycle() {
     );
 
     catalog.stop();
-    let offline_rollback = lifecycle_request("rollback", &updated, Some(&updated["previous"]));
+    let offline_rollback = lifecycle_request("rollback", updated, Some(&updated["previous"]));
     post_lifecycle(&offline_rollback).await;
     let rolled_back_view = wait_lifecycle("rollback").await;
-    let rolled_back = rolled_back_view["installations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["installationId"] == installation_id)
-        .unwrap()
-        .clone();
+    let rolled_back = running_installation(&rolled_back_view, &installation_id);
     assert_eq!(rolled_back["version"], first.version);
     assert_eq!(rolled_back["archiveSha256"], first.archive_sha256);
     assert_eq!(rolled_back["previous"]["version"], second.version);
