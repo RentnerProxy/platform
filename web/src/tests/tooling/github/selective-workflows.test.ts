@@ -33,7 +33,6 @@ async function workflow(name: string): Promise<{ jobs: Record<string, Job> }> {
 test.each([
     ['beta2-integration', 'beta2', 'runtime'],
     ['arm64-appliance', 'native-arm64', 'runtime'],
-    ['workflow-lint', 'workflow-lint', 'actions'],
     ['codeql', 'analyze', '[matrix.scope]'],
 ])(
     '%s preserves its status and rejects failed detection before omitting work',
@@ -55,6 +54,21 @@ test.each([
             expect(step.if, step.name).toContain("env.RUN_CHECK == 'true'")
     },
 )
+
+test('Workflow Lint always lints in full without waiting for a detection runner', async () => {
+    const { jobs } = await workflow('workflow-lint')
+    expect(Object.keys(jobs)).toEqual(['workflow-lint'])
+    const job = jobs['workflow-lint']!
+    expect(job.name).toBe('Workflow Lint')
+    expect(job.needs).toBeUndefined()
+    expect(job.if).toBeUndefined()
+    for (const step of job.steps!) expect(step.if, step.name).toBeUndefined()
+    const commands = job.steps!.flatMap((step) => (step.run ? [step.run] : []))
+    expect(commands.some((command) => command.includes('"$RUNNER_TEMP/actionlint"'))).toBe(true)
+    expect(commands.some((command) => command.includes('shellcheck'))).toBe(true)
+    const tooling = job.steps!.find((step) => step.with?.path === 'trusted')
+    expect(tooling?.with?.ref).toBe('${{ github.event.pull_request.base.sha || github.sha }}')
+})
 
 test.each([
     ['beta2-integration', 'beta2', "needs.changes.outputs.runtime != 'false'"],

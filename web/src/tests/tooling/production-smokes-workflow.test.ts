@@ -3,6 +3,8 @@ import { resolve } from 'node:path'
 
 import { describe, expect, test } from 'bun:test'
 
+import { smokeSuites } from '../../../../.github/scripts/ci/production-smoke-ci.ts'
+
 const repositoryRoot = resolve(import.meta.dir, '../../../..')
 const workflowPath = resolve(repositoryRoot, '.github/workflows/production-smokes.yml')
 
@@ -89,14 +91,33 @@ describe('production smokes workflow triggers and gate', () => {
         }
         const gate = document.jobs['production-smokes']!
         expect(gate.name).toBe('Production Smokes')
-        expect(gate.needs).toEqual(['changes', 'build-runtime-images'])
+        expect(gate.needs).toEqual([
+            'changes',
+            'build-runtime-images',
+            'smokes-appliance',
+            'smokes-services',
+        ])
         expect(gate.if).toBe('${{ !cancelled() }}')
-        expect(gate.steps[0]?.env?.IMAGE_BUILD_RESULT).toBe(
-            '${{ needs.build-runtime-images.result }}',
+        expect(gate.steps).toHaveLength(1)
+        expect(gate.steps[0]?.env).toEqual({
+            SELECTION_RESULT: '${{ needs.changes.result }}',
+            RUNTIME_SELECTED: '${{ needs.changes.outputs.runtime }}',
+            IMAGE_BUILD_RESULT: '${{ needs.build-runtime-images.result }}',
+            APPLIANCE_RESULT: '${{ needs.smokes-appliance.result }}',
+            SERVICES_RESULT: '${{ needs.smokes-services.result }}',
+        })
+        expect(gate.steps[0]?.run).toContain(
+            'true) test "$IMAGE_BUILD_RESULT" = success && test "$APPLIANCE_RESULT" = success && test "$SERVICES_RESULT" = success',
         )
-        expect(gate.steps[0]?.run).toContain('true) test "$IMAGE_BUILD_RESULT" = success')
         expect(gate.steps[0]?.run).toContain('test "$SELECTION_RESULT" = success')
-        const backups = gate.steps.find((step) =>
+        for (const name of ['smokes-appliance', 'smokes-services']) {
+            expect(document.jobs[name]?.name).toStartWith('Production Smokes / ')
+            expect(document.jobs[name]?.needs).toEqual(['changes', 'build-runtime-images'])
+            expect(document.jobs[name]?.if).toBe(
+                "${{ !cancelled() && needs.changes.outputs.runtime == 'true' }}",
+            )
+        }
+        const backups = document.jobs['smokes-services']!.steps.find((step) =>
             step.run?.endsWith('production-smoke-ci.ts backups'),
         )
         expect(backups?.env?.RENTNERPROXY_LARGE_BACKUP_INTEGRATION).toBe(
@@ -154,26 +175,29 @@ describe('production smokes workflow execution contract', () => {
     test('builds all runtime images once from committed OCI source on one builder', async () => {
         const document = Bun.YAML.parse(await workflow()) as {
             env: Record<string, string>
-            jobs: {
-                'production-smokes': {
-                    steps: { uses?: string; run?: string; with?: Record<string, unknown> }[]
-                }
-            }
+            jobs: Record<
+                string,
+                { steps: { uses?: string; run?: string; with?: Record<string, unknown> }[] }
+            >
         }
-        const steps = document.jobs['production-smokes'].steps
-        const builds = steps.filter((step) => step.uses?.startsWith('docker/build-push-action@'))
-        expect(builds).toHaveLength(0)
-        expect(
-            steps.some((step) => step.uses?.startsWith('docker/setup-buildx-action@')),
-        ).toBeFalse()
-        const verify = steps.findIndex((step) =>
-            step.run?.endsWith('production-smoke-ci.ts verify-images'),
-        )
-        const load = steps.findIndex(
-            (step) => step.uses === './.github/actions/load-runtime-images',
-        )
-        expect(load).toBeGreaterThan(-1)
-        expect(verify).toBeGreaterThan(load)
+        for (const name of ['smokes-appliance', 'smokes-services']) {
+            const steps = document.jobs[name]!.steps
+            const builds = steps.filter((step) =>
+                step.uses?.startsWith('docker/build-push-action@'),
+            )
+            expect(builds).toHaveLength(0)
+            expect(
+                steps.some((step) => step.uses?.startsWith('docker/setup-buildx-action@')),
+            ).toBeFalse()
+            const verify = steps.findIndex((step) =>
+                step.run?.endsWith('production-smoke-ci.ts verify-images'),
+            )
+            const load = steps.findIndex(
+                (step) => step.uses === './.github/actions/load-runtime-images',
+            )
+            expect(load).toBeGreaterThan(-1)
+            expect(verify).toBeGreaterThan(load)
+        }
         expect(document.env.DOCKER_BUILD_SUMMARY).toBe('false')
         expect(document.env.DOCKER_BUILD_RECORD_UPLOAD).toBe('false')
         expect(await workflow()).not.toContain('ACTIONS_RUNTIME_TOKEN')
@@ -342,7 +366,12 @@ describe('production smokes workflow execution contract', () => {
                 .flatMap((job) => job.steps ?? [])
                 .filter((step) => step.uses === './.github/actions/runtime-images'),
         ).toHaveLength(1)
-        for (const name of ['production-smokes', 'runtime-reliability', 'release-compatibility']) {
+        for (const name of [
+            'smokes-appliance',
+            'smokes-services',
+            'runtime-reliability',
+            'release-compatibility',
+        ]) {
             const job = document.jobs[name]!
             expect(job.env?.RENTNERPROXY_SMOKE_RUN).toBe(
                 '${{ needs.build-runtime-images.outputs.scope }}',
@@ -362,7 +391,7 @@ describe('production smokes workflow execution contract', () => {
                     '${{ needs.build-runtime-images.outputs.' + key + ' }}',
                 )
             }
-            if (name === 'production-smokes') {
+            if (name.startsWith('smokes-')) {
                 expect(loader.with?.include_proxy_runtime).toBe('true')
                 for (const key of ['proxy_archive_sha256', 'proxy_identity_sha256']) {
                     expect(producer.outputs?.[key]).toBe('${{ steps.images.outputs.' + key + ' }}')
@@ -422,53 +451,83 @@ describe('production smokes workflow execution contract', () => {
     test('prepares scoped images before consumers and leaves final cleanup enabled', async () => {
         const document = Bun.YAML.parse(await workflow()) as {
             env: Record<string, string>
-            jobs: { 'production-smokes': { steps: { run?: string; if?: string }[] } }
+            jobs: Record<string, { steps: { run?: string; if?: string }[] }>
         }
         expect(document.env.RENTNERPROXY_SMOKE_REUSE_IMAGES).toBe('1')
-        const steps = document.jobs['production-smokes'].steps
-        const commands = steps.flatMap((step) => (step.run ? [step.run] : []))
-        const prepare = commands.findIndex((command) =>
-            command.endsWith('production-smoke-ci.ts verify-images'),
-        )
-        const proxy = commands.findIndex((command) =>
-            command.endsWith('production-smoke-ci.ts proxy'),
-        )
-        expect(prepare).toBeGreaterThan(-1)
-        expect(proxy).toBeGreaterThan(prepare)
-        expect(
-            commands.filter((command) => command.endsWith('production-smoke-ci.ts verify-images')),
-        ).toHaveLength(1)
-        expect(steps.at(-1)?.if).toBe("always() && steps.bun.outcome == 'success'")
-    })
-    test('runs runtime and managed backup smoke scripts as separate sequential steps', async () => {
-        const source = await workflow()
-        const commands = [
-            'bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts proxy',
-            'bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts production',
-            'bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts backups',
-            'bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts certificates',
-            'bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts upstream-tls',
-        ]
-        let previous = -1
-
-        for (const command of commands) {
+        for (const [name, firstSuite] of [
+            ['smokes-appliance', 'production'],
+            ['smokes-services', 'proxy'],
+        ] as const) {
+            const steps = document.jobs[name]!.steps
+            const commands = steps.flatMap((step) => (step.run ? [step.run] : []))
+            const prepare = commands.findIndex((command) =>
+                command.endsWith('production-smoke-ci.ts verify-images'),
+            )
+            const suite = commands.findIndex((command) =>
+                command.endsWith('production-smoke-ci.ts ' + firstSuite),
+            )
+            expect(prepare).toBeGreaterThan(-1)
+            expect(suite).toBeGreaterThan(prepare)
             expect(
-                source.match(new RegExp(command.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'gu')),
+                commands.filter((command) =>
+                    command.endsWith('production-smoke-ci.ts verify-images'),
+                ),
             ).toHaveLength(1)
-            const position = source.indexOf(command)
-            expect(position).toBeGreaterThan(previous)
-            previous = position
+            expect(steps.at(-1)?.if).toBe("always() && steps.bun.outcome == 'success'")
         }
+    })
+    test('runs every smoke suite exactly once, sequentially within its parallel group', async () => {
+        const source = await workflow()
+        const document = Bun.YAML.parse(source) as {
+            jobs: Record<string, { env?: Record<string, string>; steps: { run?: string }[] }>
+        }
+        const prefix = 'bun --no-env-file --no-orphans .github/scripts/ci/'
+        const groups = {
+            'smokes-appliance': ['production-smoke-ci.ts production', 'appliance-drain-smoke.ts'],
+            'smokes-services': [
+                'production-smoke-ci.ts proxy',
+                'production-smoke-ci.ts backups',
+                'production-smoke-ci.ts certificates',
+                'production-smoke-ci.ts upstream-tls',
+            ],
+        }
+        for (const [name, commands] of Object.entries(groups)) {
+            const runs = document.jobs[name]!.steps.flatMap((step) => (step.run ? [step.run] : []))
+            let previous = -1
+            for (const command of commands) {
+                expect(
+                    source.match(
+                        new RegExp(
+                            (prefix + command).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'),
+                            'gu',
+                        ),
+                    ),
+                ).toHaveLength(1)
+                const position = runs.indexOf(prefix + command)
+                expect(position, command).toBeGreaterThan(previous)
+                previous = position
+            }
+        }
+        // Each job summarizes exactly the suites it runs; together they cover every suite once.
+        expect(document.jobs['smokes-appliance']?.env?.RENTNERPROXY_SMOKE_SUITES).toBe('production')
+        expect(document.jobs['smokes-services']?.env?.RENTNERPROXY_SMOKE_SUITES).toBe(
+            'proxy,backups,certificates,upstream-tls',
+        )
+        expect(Object.keys(smokeSuites).toSorted()).toEqual(
+            ['production', 'proxy', 'backups', 'certificates', 'upstream-tls'].toSorted(),
+        )
     })
 
     test('always invokes scoped cleanup after successful Bun setup', async () => {
         const document = Bun.YAML.parse(await workflow()) as {
             jobs: Record<string, { steps: { if?: string; run?: string }[] }>
         }
-        const cleanup = document.jobs['production-smokes']!.steps.find((step) =>
-            step.run?.endsWith('production-smoke-ci.ts cleanup'),
-        )!
-        expect(cleanup.if).toBe("always() && steps.bun.outcome == 'success'")
+        for (const name of ['smokes-appliance', 'smokes-services']) {
+            const cleanup = document.jobs[name]!.steps.find((step) =>
+                step.run?.endsWith('production-smoke-ci.ts cleanup'),
+            )!
+            expect(cleanup.if).toBe("always() && steps.bun.outcome == 'success'")
+        }
     })
 
     test('maps each CI phase to the existing smoke implementation and builds production from checkout', async () => {
@@ -552,7 +611,21 @@ test.skipIf(process.platform === 'win32').each([
     const document = Bun.YAML.parse(await workflow()) as {
         jobs: Record<string, { steps: { run?: string; if?: string }[] }>
     }
-    for (const name of ['production-smokes', 'production-candidate', 'runtime-reliability']) {
+    for (const name of ['smokes-appliance', 'smokes-services']) {
+        const job = document.jobs[name]!
+        const result = Bun.spawnSync(['bash', '-e', '-c', job.steps[0]!.run!], {
+            env: {
+                ...process.env,
+                SELECTION_RESULT: scenario.selection,
+                RUNTIME_SELECTED: scenario.selected,
+                IMAGE_BUILD_RESULT: scenario.producer,
+            },
+            stdout: 'pipe',
+            stderr: 'pipe',
+        })
+        expect(result.exitCode).toBe(scenario.exit)
+    }
+    for (const name of ['production-candidate', 'runtime-reliability']) {
         const job = document.jobs[name]!
         const result = Bun.spawnSync(['bash', '-e', '-c', job.steps[0]!.run!], {
             env: {
@@ -571,6 +644,61 @@ test.skipIf(process.platform === 'win32').each([
                 expect(step.if).toContain("needs.changes.outputs.runtime == 'true'")
         }
     }
+})
+
+test.skipIf(process.platform === 'win32').each([
+    { selected: 'true', selection: 'success', groups: ['success', 'success'], exit: 0 },
+    { selected: 'true', selection: 'success', groups: ['failure', 'success'], exit: 1 },
+    { selected: 'true', selection: 'success', groups: ['success', 'skipped'], exit: 1 },
+    { selected: 'true', selection: 'success', groups: ['cancelled', 'success'], exit: 1 },
+    {
+        selected: 'true',
+        selection: 'success',
+        producer: 'failure',
+        groups: ['skipped', 'skipped'],
+        exit: 1,
+    },
+    {
+        selected: 'false',
+        selection: 'success',
+        producer: 'skipped',
+        groups: ['skipped', 'skipped'],
+        exit: 0,
+    },
+    {
+        selected: 'false',
+        selection: 'failure',
+        producer: 'skipped',
+        groups: ['skipped', 'skipped'],
+        exit: 1,
+    },
+    {
+        selected: '',
+        selection: 'success',
+        producer: 'skipped',
+        groups: ['skipped', 'skipped'],
+        exit: 1,
+    },
+])('the Production Smokes check requires every parallel smoke group %j', async (scenario) => {
+    const document = Bun.YAML.parse(await workflow()) as {
+        jobs: Record<string, { steps: { run?: string }[] }>
+    }
+    const result = Bun.spawnSync(
+        ['bash', '-e', '-c', document.jobs['production-smokes']!.steps[0]!.run!],
+        {
+            env: {
+                ...process.env,
+                SELECTION_RESULT: scenario.selection,
+                RUNTIME_SELECTED: scenario.selected,
+                IMAGE_BUILD_RESULT: scenario.producer ?? 'success',
+                APPLIANCE_RESULT: scenario.groups[0],
+                SERVICES_RESULT: scenario.groups[1],
+            },
+            stdout: 'pipe',
+            stderr: 'pipe',
+        },
+    )
+    expect(result.exitCode).toBe(scenario.exit)
 })
 
 test('main and manual consumers reuse one runtime producer and expose honest full-run evidence', async () => {
@@ -597,6 +725,8 @@ test('main and manual consumers reuse one runtime producer and expose honest ful
     expect(marker.needs).toEqual([
         'changes',
         'build-runtime-images',
+        'smokes-appliance',
+        'smokes-services',
         'production-smokes',
         'production-candidate',
         'runtime-reliability',
@@ -606,6 +736,6 @@ test('main and manual consumers reuse one runtime producer and expose honest ful
     ])
     expect(marker.steps?.[0]?.run).toContain('test "$COMPLETE" = true')
     expect(marker.steps?.[0]?.run).toContain(
-        'success,success,success,success,success,success,success,success',
+        'test "$RESULTS" = ' + Array.from({ length: 10 }, () => 'success').join(','),
     )
 })
