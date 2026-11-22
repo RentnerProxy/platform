@@ -20,6 +20,9 @@ use tokio::{
     process::{Child, Command as Process},
 };
 
+#[path = "lifecycle/published_greeting.rs"]
+mod published_greeting;
+
 const ID: &str = "fixture-install";
 const UNCLAIMED: &str = "never-provisioned";
 const INTERRUPTED: &str = "interrupted-claim";
@@ -124,13 +127,55 @@ async fn authority(
     request: Request<Incoming>,
     generations: Arc<Mutex<BTreeMap<u64, bool>>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    let method = request.method().clone();
     let path = request.uri().path().to_owned();
     assert_eq!(
         request.headers()["authorization"],
         "Bearer local-lifecycle-fixture"
     );
+    let headers = request.headers().clone();
     let body = request.into_body().collect().await.unwrap().to_bytes();
-    let value: Value = serde_json::from_slice(&body).unwrap();
+    if method == hyper::Method::GET && path == "/platform/v1/context" {
+        assert!(body.is_empty(), "Context request must not have a body");
+        let installation_id = headers["x-app-installation"].to_str().unwrap();
+        let expected_id =
+            std::env::var("RENTNERPROXY_TEST_APP_INSTALLATION").unwrap_or_else(|_| ID.to_owned());
+        assert_eq!(installation_id, expected_id);
+        let app_id = headers["x-rentnerproxy-app-id"].to_str().unwrap();
+        assert_eq!(app_id, "rentnerproxy.greeting");
+        let generation = headers["x-app-generation"]
+            .to_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let uid = headers["x-rentnerproxy-app-uid"]
+            .to_str()
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        assert!((20_000..=59_999).contains(&uid));
+        // The app reads its context while the registered generation prepares to start.
+        assert!(generations.lock().unwrap().contains_key(&generation));
+        let context = json!({
+            "appId": app_id,
+            "installationId": installation_id,
+            "generation": generation,
+            "runtimeProfile": "rentnerproxy-linux-v1",
+            "versions": {
+                "appProtocol": "1.0.0",
+                "platformApi": "1.0.0",
+                "uiBridge": "1.0.0",
+            },
+            "capabilities": [],
+        });
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(context.to_string())))
+            .unwrap());
+    }
+    let value: Value = serde_json::from_slice(&body)
+        .unwrap_or_else(|error| panic!("Invalid gateway fixture request {method} {path}: {error}"));
     if let Some(uid) = match value["identity"]["installationId"].as_str() {
         Some(UNCLAIMED) => Some(UID + 1),
         Some(INTERRUPTED) => Some(UID + 2),
@@ -147,8 +192,18 @@ async fn authority(
             .body(Full::new(Bytes::new()))
             .unwrap());
     }
-    assert_eq!(value["identity"]["installationId"], ID);
-    assert_eq!(value["identity"]["uid"], UID);
+    let uid = value["identity"]["uid"].as_u64().unwrap();
+    if let Ok(expected_id) = std::env::var("RENTNERPROXY_TEST_APP_INSTALLATION") {
+        assert_eq!(value["identity"]["installationId"], expected_id);
+        if let Ok(expected_uid) = std::env::var("RENTNERPROXY_TEST_APP_UID") {
+            assert_eq!(uid, expected_uid.parse::<u64>().unwrap());
+        } else {
+            assert!((20_000..=59_999).contains(&uid));
+        }
+    } else {
+        assert_eq!(value["identity"]["installationId"], ID);
+        assert_eq!(uid, u64::from(UID));
+    }
     let generation = value["identity"]["generation"].as_u64().unwrap();
     let mut states = generations.lock().unwrap();
     let action = path.strip_prefix("/internal/v1/app-generations/").unwrap();
@@ -241,6 +296,16 @@ enum BootState {
     MissingData,
 }
 
+async fn manager_status() -> io::Result<Value> {
+    let mut stream = UnixStream::connect("/run/rentnerproxy/app-manager/control.sock").await?;
+    stream.write_all(br#"{"action":"status"}"#).await?;
+    stream.shutdown().await?;
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).await?;
+    let reply: Value = serde_json::from_slice(&bytes)?;
+    Ok(reply["result"].clone())
+}
+
 async fn mount_manager(
     controller: &Path,
     config: &Path,
@@ -270,18 +335,7 @@ async fn mount_manager(
             assert!(child.try_wait().unwrap().is_none());
             // Poll over the private socket without spawning short-lived process trees
             // while startup is verifying the appliance's process identities.
-            let status = async {
-                let mut stream =
-                    UnixStream::connect("/run/rentnerproxy/app-manager/control.sock").await?;
-                stream.write_all(br#"{"action":"status"}"#).await?;
-                stream.shutdown().await?;
-                let mut bytes = Vec::new();
-                stream.read_to_end(&mut bytes).await?;
-                let reply: Value = serde_json::from_slice(&bytes)?;
-                Ok::<_, io::Error>(reply["result"].clone())
-            }
-            .await;
-            if status.is_ok_and(|state| {
+            if manager_status().await.is_ok_and(|state| {
                 state[ID]["running"] == matches!(expected, BootState::Running)
                     && state[ID]["recoveryRequired"] == matches!(expected, BootState::Recovery)
             }) {
