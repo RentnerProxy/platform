@@ -1,6 +1,24 @@
 import { describe, expect, test } from 'bun:test'
 
-import { smokeProgress } from '../../../../../.github/scripts/ci/production-smoke-ci.ts'
+import {
+    reportedSuites,
+    smokeProgress,
+} from '../../../../../.github/scripts/ci/production-smoke-ci.ts'
+import type { Suite } from '../../../../../.github/scripts/ci/Types/production-smoke-ci.types.ts'
+
+test('parallel smoke jobs summarize only their own suites and fall back to every suite', () => {
+    const every: Suite[] = ['proxy', 'certificates', 'upstream-tls', 'production', 'backups']
+    expect(reportedSuites('production')).toEqual(['production'])
+    expect(reportedSuites('proxy, backups,certificates,upstream-tls')).toEqual([
+        'proxy',
+        'certificates',
+        'upstream-tls',
+        'backups',
+    ])
+    expect(reportedSuites(undefined)).toEqual(every)
+    expect(reportedSuites('')).toEqual(every)
+    expect(reportedSuites('production,unknown')).toEqual(every)
+})
 
 test('forwards only fixed native app smoke stages', () => {
     const progress = smokeProgress('production')

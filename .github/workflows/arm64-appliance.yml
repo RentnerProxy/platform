@@ -1,7 +1,35 @@
 name: ARM64 Appliance
 
 on:
+    # Application code behaves the same on both architectures. Pull requests therefore run native
+    # ARM64 only for inputs whose result can differ per architecture: images, packaging, toolchains,
+    # locked dependencies (every Dependabot update that reaches the appliance) and this automation.
+    # Main pushes and the release pipeline always verify ARM64 natively.
     pull_request:
+        paths:
+            - 'docker/**'
+            - 'packaging/**'
+            - 'scripts/smoke/http3/**'
+            - 'scripts/runtime-scale/**'
+            - 'docker-compose.yml'
+            - '.dockerignore'
+            - 'package.json'
+            - 'bun.lock'
+            - 'bunfig.toml'
+            - 'patches/**'
+            - 'core/Cargo.toml'
+            - 'core/Cargo.lock'
+            - 'core/.cargo/**'
+            - '.cargo/**'
+            - 'rust-toolchain*'
+            - 'core/caddy-modules/responsecache/go.mod'
+            - 'core/caddy-modules/responsecache/go.sum'
+            - '.github/actions/**'
+            - '.github/workflows/arm64-appliance.yml'
+            - '.github/workflows/detect-changes.yml'
+            - '.github/scripts/ci/changes.ts'
+            - '.github/scripts/ci/runtime-image-artifact.ts'
+            - '.github/scripts/security/**'
     push:
         branches:
             - main

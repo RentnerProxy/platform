@@ -42,7 +42,15 @@ concurrency:
 jobs:
     maintain:
         name: Update PR branches and merge eligible Dependabot updates
-        if: vars.PR_AUTOMATION_CLIENT_ID != ''
+        # Completed main, scheduled, cancelled or skipped runs cannot make a PR mergeable; the
+        # push trigger already handles main. Skipping them keeps CI runners free for PR checks.
+        if: >-
+            vars.PR_AUTOMATION_CLIENT_ID != '' &&
+            (github.event_name != 'workflow_run' ||
+            (github.event.workflow_run.event != 'push' &&
+            github.event.workflow_run.event != 'schedule' &&
+            github.event.workflow_run.conclusion != 'cancelled' &&
+            github.event.workflow_run.conclusion != 'skipped'))
         runs-on: ubuntu-latest
         timeout-minutes: 15
         steps:

@@ -22,4 +22,6 @@ export interface MaintenanceOptions {
     repository: string
     dryRun: boolean
     trustedMergeBotLogin?: string
+    /** Clock in milliseconds, sampled when a head is inspected; defaults to Date.now for production. */
+    clock?: () => number
 }
