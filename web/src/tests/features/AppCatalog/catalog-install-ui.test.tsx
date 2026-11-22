@@ -228,6 +228,38 @@ test('updates to the offered signed version and reflects the confirmed generatio
     }
 })
 
+test('recovers a completed lifecycle action when its POST response is lost', async () => {
+    const action = {
+        action: 'deactivate',
+        installationId: current.installationId,
+        expected: { generation: current.generation, version, archiveSha256 },
+    } satisfies CatalogLifecycleInput
+    snapshot = { ...ready, installations: [current] }
+    apps = []
+    const post = spyOn(globalThis, 'fetch').mockRejectedValueOnce(
+        new TypeError('The response was lost'),
+    )
+    const { container, button, unmount } = await mountCatalog()
+    try {
+        await waitFor(() => button('Deactivate')?.disabled === false)
+        await act(async () => {
+            button('Deactivate')!.click()
+            snapshot = {
+                ...snapshot,
+                installations: [{ ...current, state: 'disabled' }],
+                lifecycle: { ...action, status: 'succeeded' },
+            }
+        })
+        await waitFor(() => button('Reactivate')?.disabled === false)
+        expect(container.textContent).toContain('App deactivated.')
+        expect(container.textContent).not.toContain('The app action could not be completed.')
+        expect(post).toHaveBeenCalledTimes(1)
+    } finally {
+        await unmount()
+        post.mockRestore()
+    }
+})
+
 test('manages a local app while the catalog is unavailable and confirms retained-data uninstall', async () => {
     snapshot = { ...unavailableCatalog, installations: [current] }
     apps = []

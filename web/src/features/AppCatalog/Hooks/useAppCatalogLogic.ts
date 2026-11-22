@@ -3,8 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { useAppUi } from '@/features/AppUi/AppUiProvider.tsx'
 import {
+    sameCatalogLifecycle,
     sameCatalogRelease,
     type CatalogLifecycleInput,
+    type CatalogLifecycle,
     type CatalogRelease,
 } from '@/lib/AppCatalog/contract.ts'
 import { catalogInstallationActions } from '@/lib/AppCatalog/installationActions.ts'
@@ -23,6 +25,7 @@ export default function useAppCatalogLogic() {
     const inventory = useAppUi()
     const queryClient = useQueryClient()
     const [confirmation, setConfirmation] = useState<CatalogConfirmation | null>(null)
+    const previousReceipt = useRef<CatalogLifecycle | null>(null)
     const queryKey = ['app-catalog', inventory?.sessionId ?? null] as const
     const query = useQuery({
         queryKey,
@@ -66,6 +69,10 @@ export default function useAppCatalogLogic() {
     })
     const lifecycleMutation = useMutation({
         mutationFn: manageCatalogInstallation,
+        onMutate: () => {
+            previousReceipt.current =
+                queryClient.getQueryData<CatalogQueryResult>(queryKey)?.lifecycle ?? null
+        },
         onSuccess: async (lifecycle) => {
             await queryClient.cancelQueries({ queryKey })
             queryClient.setQueryData<CatalogQueryResult>(
@@ -74,12 +81,7 @@ export default function useAppCatalogLogic() {
             )
             await queryClient.invalidateQueries({ queryKey })
         },
-        onError: (error, { action }) => {
-            toast.error(t(`appCatalog.management.errors.${catalogRequestError(error)}`), {
-                title: t(`appCatalog.management.actions.${action}`),
-            })
-            void queryClient.invalidateQueries({ queryKey }).catch(() => {})
-        },
+        onError: () => queryClient.invalidateQueries({ queryKey }),
     })
 
     const snapshot = query.data
@@ -156,8 +158,12 @@ export default function useAppCatalogLogic() {
     const installed = installations.filter(
         ({ installation }) => installation.state !== 'removed' && installation.state !== 'purging',
     )
-    const reportedAction =
-        pendingAction ?? (lifecycleMutation.isError ? lifecycleMutation.variables : lifecycle)
+    const unconfirmed =
+        lifecycleMutation.isError &&
+        (!lifecycle ||
+            lifecycle === previousReceipt.current ||
+            !sameCatalogLifecycle(lifecycle, lifecycleMutation.variables))
+    const reportedAction = pendingAction ?? (unconfirmed ? lifecycleMutation.variables : lifecycle)
     const operationName = installations.find(
         ({ installation }) => installation.installationId === reportedAction?.installationId,
     )?.name
@@ -191,16 +197,14 @@ export default function useAppCatalogLogic() {
                 install?.status === 'failed' ? (install.error ?? 'installFailed') : null,
             operation: reportedAction?.action,
             operationName,
-            operationStatus: pendingAction
-                ? 'pending'
-                : lifecycleMutation.isError
-                  ? 'failed'
-                  : lifecycle?.status,
-            operationError: lifecycleMutation.isError
-                ? catalogRequestError(lifecycleMutation.error)
-                : lifecycle?.status === 'failed'
-                  ? lifecycle.error
-                  : undefined,
+            operationStatus: pendingAction ? 'pending' : unconfirmed ? 'failed' : lifecycle?.status,
+            operationError: pendingAction
+                ? undefined
+                : unconfirmed
+                  ? catalogRequestError(lifecycleMutation.error)
+                  : lifecycle?.status === 'failed'
+                    ? lifecycle.error
+                    : undefined,
         },
         handler: {
             handleInstall: installMutation.mutate,
