@@ -52,14 +52,20 @@ WORKDIR /build
 COPY core/Cargo.toml core/Cargo.lock ./
 COPY core/src ./src
 ARG RENTNERPROXY_BUILD_VERSION
-RUN set -eu; \
+# Only the binary leaves this step: the multi-GB Cargo target and registry would otherwise be
+# exported into the size-limited CI layer cache and evict every other cache. Keep this stage
+# identical in docker/proxy-runtime/Dockerfile so one builder compiles the controller once.
+RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/registry \
+    set -eu; \
     case "$TARGETOS/$TARGETARCH" in \
         linux/amd64) rust_host=x86_64-unknown-linux-gnu ;; \
         linux/arm64) rust_host=aarch64-unknown-linux-gnu ;; \
         *) echo 'Unsupported controller platform' >&2; exit 1 ;; \
     esac; \
     test "$(rustc -vV | sed -n 's/^host: //p')" = "$rust_host"; \
-    RENTNERPROXY_BUILD_VERSION="${RENTNERPROXY_BUILD_VERSION:-}" cargo build --locked --release
+    RENTNERPROXY_BUILD_VERSION="${RENTNERPROXY_BUILD_VERSION:-}" cargo build --locked --release; \
+    install -D -m 0755 target/release/rentnerproxy-controller /out/rentnerproxy-controller; \
+    rm -rf target
 
 FROM mirror.gcr.io/library/golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS caddy-go-toolchain
 
@@ -178,7 +184,7 @@ RUN apt-get update \
 
 COPY --from=web-runtime /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=web-runtime /app /opt/rentnerproxy/web
-COPY --from=controller-build /build/target/release/rentnerproxy-controller /usr/local/bin/rentnerproxy-controller
+COPY --from=controller-build /out/rentnerproxy-controller /usr/local/bin/rentnerproxy-controller
 # Retain the exact locked controller graph for recurring RustSec assessments.
 COPY core/Cargo.lock /usr/share/rentnerproxy/security/Cargo.lock
 COPY --from=caddy-build /usr/bin/caddy /usr/bin/caddy

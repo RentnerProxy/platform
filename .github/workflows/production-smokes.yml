@@ -56,8 +56,10 @@ jobs:
               with:
                   include_proxy_runtime: 'true'
 
-    production-smokes:
-        name: Production Smokes
+    # The smoke suites share no state, so two runners execute them in parallel; each job loads
+    # the same verified images and removes only its own run-scoped resources.
+    smokes-appliance:
+        name: Production Smokes / appliance
         runs-on: ubuntu-latest
         timeout-minutes: 45
         steps:
@@ -74,35 +76,18 @@ jobs:
                     *) exit 1 ;;
                   esac
             - name: Check out repository
-              if: needs.changes.outputs.runtime == 'true'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
                   ref: ${{ github.sha }}
             - name: Set up Bun
-              if: needs.changes.outputs.runtime == 'true'
               id: bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: ${{ env.BUN_VERSION }}
             - name: Install dependencies
-              if: needs.changes.outputs.runtime == 'true'
               run: bun install --frozen-lockfile
-            - name: Root-owned backup boundaries and off-host recovery
-              if: needs.changes.outputs.runtime == 'true'
-              run: |
-                  mkdir -p tmp
-                  sudo "$(command -v bun)" --no-env-file test --isolate \
-                  ./web/src/tests/tooling/docker/production/backup-download.test.ts \
-                  ./web/src/tests/tooling/docker/production/off-host.test.ts \
-                  ./web/src/tests/tooling/docker/web/bootstrap-secrets.test.ts \
-                  ./web/src/tests/tooling/scripts/backup/offhost/envelope.test.ts \
-                  ./web/src/tests/tooling/recover-offhost-backup.test.ts
-            - name: Docker discovery socket proxy restrictions
-              if: needs.changes.outputs.runtime == 'true'
-              run: bun --no-env-file --no-orphans scripts/smoke/docker-discovery.ts
             - name: Verify and load same-run runtime images
-              if: needs.changes.outputs.runtime == 'true'
               uses: ./.github/actions/load-runtime-images
               with:
                   include_proxy_runtime: 'true'
@@ -114,36 +99,115 @@ jobs:
                   http3_archive_sha256: ${{ needs.build-runtime-images.outputs.http3_archive_sha256 }}
                   http3_identity_sha256: ${{ needs.build-runtime-images.outputs.http3_identity_sha256 }}
             - name: Verify images for this run
-              if: needs.changes.outputs.runtime == 'true'
+              run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts verify-images
+            - name: 'Production appliance, backup and restore'
+              run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts production
+            - name: Production appliance request draining
+              run: bun --no-env-file --no-orphans .github/scripts/ci/appliance-drain-smoke.ts
+            - name: Clean up this run and summarize
+              if: "always() && steps.bun.outcome == 'success'"
+              run: bun --no-env-file .github/scripts/ci/production-smoke-ci.ts cleanup
+        needs: [changes, build-runtime-images]
+        if: ${{ !cancelled() && needs.changes.outputs.runtime == 'true' }}
+        env:
+            RENTNERPROXY_SMOKE_REUSE_IMAGES: '1'
+            RENTNERPROXY_SMOKE_RUN: ${{ needs.build-runtime-images.outputs.scope }}
+            RENTNERPROXY_SMOKE_SUITES: production
+
+    smokes-services:
+        name: Production Smokes / backups, certificates and proxy
+        runs-on: ubuntu-latest
+        timeout-minutes: 45
+        steps:
+            - name: Require successful selection and selected runtime image producer
+              env:
+                  SELECTION_RESULT: ${{ needs.changes.result }}
+                  RUNTIME_SELECTED: ${{ needs.changes.outputs.runtime }}
+                  IMAGE_BUILD_RESULT: ${{ needs.build-runtime-images.result }}
+              run: |
+                  test "$SELECTION_RESULT" = success
+                  case "$RUNTIME_SELECTED" in
+                    true) test "$IMAGE_BUILD_RESULT" = success ;;
+                    false) echo 'Runtime inputs unchanged; no runtime execution required.' ;;
+                    *) exit 1 ;;
+                  esac
+            - name: Check out repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+                  ref: ${{ github.sha }}
+            - name: Set up Bun
+              id: bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: ${{ env.BUN_VERSION }}
+            - name: Install dependencies
+              run: bun install --frozen-lockfile
+            - name: Root-owned backup boundaries and off-host recovery
+              run: |
+                  mkdir -p tmp
+                  sudo "$(command -v bun)" --no-env-file test --isolate \
+                  ./web/src/tests/tooling/docker/production/backup-download.test.ts \
+                  ./web/src/tests/tooling/docker/production/off-host.test.ts \
+                  ./web/src/tests/tooling/docker/web/bootstrap-secrets.test.ts \
+                  ./web/src/tests/tooling/scripts/backup/offhost/envelope.test.ts \
+                  ./web/src/tests/tooling/recover-offhost-backup.test.ts
+            - name: Docker discovery socket proxy restrictions
+              run: bun --no-env-file --no-orphans scripts/smoke/docker-discovery.ts
+            - name: Verify and load same-run runtime images
+              uses: ./.github/actions/load-runtime-images
+              with:
+                  include_proxy_runtime: 'true'
+                  proxy_archive_sha256: ${{ needs.build-runtime-images.outputs.proxy_archive_sha256 }}
+                  proxy_identity_sha256: ${{ needs.build-runtime-images.outputs.proxy_identity_sha256 }}
+                  scope: ${{ needs.build-runtime-images.outputs.scope }}
+                  appliance_archive_sha256: ${{ needs.build-runtime-images.outputs.appliance_archive_sha256 }}
+                  appliance_identity_sha256: ${{ needs.build-runtime-images.outputs.appliance_identity_sha256 }}
+                  http3_archive_sha256: ${{ needs.build-runtime-images.outputs.http3_archive_sha256 }}
+                  http3_identity_sha256: ${{ needs.build-runtime-images.outputs.http3_identity_sha256 }}
+            - name: Verify images for this run
               run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts verify-images
             - name: Proxy runtime
-              if: needs.changes.outputs.runtime == 'true'
               run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts proxy
-            - name: 'Production appliance, backup and restore'
-              if: needs.changes.outputs.runtime == 'true'
-              run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts production
             - name: 'Managed backups, secure downloads and recovery'
               env:
                   RENTNERPROXY_LARGE_BACKUP_INTEGRATION: ${{ inputs.large_backup && '1' || '0' }}
-              if: needs.changes.outputs.runtime == 'true'
               run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts backups
-            - name: Production appliance request draining
-              if: needs.changes.outputs.runtime == 'true'
-              run: bun --no-env-file --no-orphans .github/scripts/ci/appliance-drain-smoke.ts
             - name: Certificates and ACME
-              if: needs.changes.outputs.runtime == 'true'
               run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts certificates
             - name: Upstream TLS
-              if: needs.changes.outputs.runtime == 'true'
               run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts upstream-tls
             - name: Clean up this run and summarize
               if: "always() && steps.bun.outcome == 'success'"
               run: bun --no-env-file .github/scripts/ci/production-smoke-ci.ts cleanup
         needs: [changes, build-runtime-images]
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.changes.outputs.runtime == 'true' }}
         env:
             RENTNERPROXY_SMOKE_REUSE_IMAGES: '1'
             RENTNERPROXY_SMOKE_RUN: ${{ needs.build-runtime-images.outputs.scope }}
+            RENTNERPROXY_SMOKE_SUITES: proxy,backups,certificates,upstream-tls
+
+    production-smokes:
+        name: Production Smokes
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - name: Require successful selection, runtime images and every smoke group
+              env:
+                  SELECTION_RESULT: ${{ needs.changes.result }}
+                  RUNTIME_SELECTED: ${{ needs.changes.outputs.runtime }}
+                  IMAGE_BUILD_RESULT: ${{ needs.build-runtime-images.result }}
+                  APPLIANCE_RESULT: ${{ needs.smokes-appliance.result }}
+                  SERVICES_RESULT: ${{ needs.smokes-services.result }}
+              run: |
+                  test "$SELECTION_RESULT" = success
+                  case "$RUNTIME_SELECTED" in
+                    true) test "$IMAGE_BUILD_RESULT" = success && test "$APPLIANCE_RESULT" = success && test "$SERVICES_RESULT" = success ;;
+                    false) echo 'Runtime inputs unchanged; no runtime execution required.' ;;
+                    *) exit 1 ;;
+                  esac
+        needs: [changes, build-runtime-images, smokes-appliance, smokes-services]
+        if: ${{ !cancelled() }}
 
     production-candidate:
         name: Production image dependency audit
@@ -433,6 +497,8 @@ jobs:
             [
                 changes,
                 build-runtime-images,
+                smokes-appliance,
+                smokes-services,
                 production-smokes,
                 production-candidate,
                 runtime-reliability,
@@ -450,4 +516,4 @@ jobs:
                   COMPLETE: ${{ needs.select-compatibility-sources.outputs.complete }}
               run: |
                   test "$COMPLETE" = true
-                  test "$RESULTS" = success,success,success,success,success,success,success,success
+                  test "$RESULTS" = success,success,success,success,success,success,success,success,success,success
