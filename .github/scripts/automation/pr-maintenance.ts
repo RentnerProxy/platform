@@ -39,7 +39,8 @@ const DEPENDABOT_IN_FLIGHT_MS = 3 * 60 * 60 * 1000
 /** Tolerated difference between GitHub's commit timestamps and the runner clock. */
 const CLOCK_SKEW_MS = 5 * 60 * 1000
 
-type CheckState = 'success' | 'pending' | 'blocked'
+/** `moved`: the PR head changed since it was read, so a new CI run is starting. */
+type CheckState = 'success' | 'pending' | 'moved' | 'blocked'
 
 interface MaintenanceContext {
     /** An eligible Dependabot update is current with main and still waiting for its CI. */
@@ -69,8 +70,9 @@ async function currentChecks(
     )
     if (response.errors !== undefined) throw new Error('GitHub CI query failed')
     const pull = record(record(record(response.data).repository).pullRequest)
-    // A moved head or base means a new CI run is about to start for this PR.
-    if (pull.headRefOid !== headSha || pull.baseRefOid !== baseSha) return 'pending'
+    if (pull.headRefOid !== headSha) return 'moved'
+    // A moved base makes the PR outdated; it is updated again on its turn.
+    if (pull.baseRefOid !== baseSha) return 'pending'
     if (
         pull.state !== 'OPEN' ||
         pull.isDraft !== false ||
@@ -89,7 +91,7 @@ async function currentChecks(
     const nodes = record(pull.commits).nodes
     if (!Array.isArray(nodes) || nodes.length !== 1) return 'blocked'
     const commit = record(record(nodes[0]).commit)
-    if (commit.oid !== headSha) return 'pending'
+    if (commit.oid !== headSha) return 'moved'
     if (commit.statusCheckRollup === null) return 'pending'
     const state = record(commit.statusCheckRollup).state
     if (state === 'SUCCESS') return 'success'
@@ -200,47 +202,56 @@ async function maintainPullRequest(
         files,
     })
     if (!eligibility.eligible) return skipped(eligibility.reason)
-    const markInFlight = () => {
-        if (recentHead(commits, headSha, context.clock)) context.dependabotInFlight = true
+    // A head that moved during this run starts a new CI run now, so it counts as in CI whatever
+    // the age of the head read before; the next run measures the replacement head itself.
+    const markInFlight = (headMoved = false) => {
+        if (headMoved || recentHead(commits, headSha, context.clock))
+            context.dependabotInFlight = true
     }
-    if (pull.mergeable !== true) {
-        markInFlight()
-        return skipped('GitHub is still calculating mergeability')
-    }
-    const checks = await currentChecks(request, options.repository, number, headSha, baseSha)
-    if (checks !== 'success') {
-        if (checks === 'pending') markInFlight()
-        return skipped('Waiting for current successful checks and resolution of review objections')
-    }
+    try {
+        if (pull.mergeable !== true) {
+            markInFlight()
+            return skipped('GitHub is still calculating mergeability')
+        }
+        const checks = await currentChecks(request, options.repository, number, headSha, baseSha)
+        if (checks !== 'success') {
+            if (checks !== 'blocked') markInFlight(checks === 'moved')
+            return skipped(
+                'Waiting for current successful checks and resolution of review objections',
+            )
+        }
 
-    const latest = record(await request('GET', path))
-    if (
-        record(latest.head).sha !== headSha ||
-        record(latest.base).sha !== baseSha ||
-        latest.mergeable !== true
-    ) {
-        markInFlight()
-        return skipped('Pull request changed during validation; retry on the next event')
-    }
-    const currentEligibility = evaluateDependabotEligibility({
-        repository: options.repository,
-        trustedMergeBotLogin: options.trustedMergeBotLogin ?? '',
-        pullRequest: latest,
-        commits,
-        files,
-    })
-    if (!currentEligibility.eligible) return skipped(currentEligibility.reason)
-    if (options.dryRun) {
-        return { number, action: 'would-merge', reason: eligibility.reason }
-    }
+        const latest = record(await request('GET', path))
+        const headMoved = record(latest.head).sha !== headSha
+        if (headMoved || record(latest.base).sha !== baseSha || latest.mergeable !== true) {
+            markInFlight(headMoved)
+            return skipped('Pull request changed during validation; retry on the next event')
+        }
+        const currentEligibility = evaluateDependabotEligibility({
+            repository: options.repository,
+            trustedMergeBotLogin: options.trustedMergeBotLogin ?? '',
+            pullRequest: latest,
+            commits,
+            files,
+        })
+        if (!currentEligibility.eligible) return skipped(currentEligibility.reason)
+        if (options.dryRun) {
+            return { number, action: 'would-merge', reason: eligibility.reason }
+        }
 
-    // Only the review ruleset exempts this App; GitHub enforces strict CI and main protections.
-    const merged = record(
-        await request('PUT', `${path}/merge`, { sha: headSha, merge_method: 'squash' }),
-    )
-    return merged.merged === true
-        ? { number, action: 'merged', reason: 'Verified Dependabot update passed current CI' }
-        : skipped('GitHub declined the merge; required rules remain enforced')
+        // Only the review ruleset exempts this App; GitHub enforces strict CI and main protections.
+        const merged = record(
+            await request('PUT', `${path}/merge`, { sha: headSha, merge_method: 'squash' }),
+        )
+        return merged.merged === true
+            ? { number, action: 'merged', reason: 'Verified Dependabot update passed current CI' }
+            : skipped('GitHub declined the merge; required rules remain enforced')
+    } catch (error) {
+        // A failed query or an unknown outcome leaves a recent update possibly still in CI, so the
+        // queue stays closed for this run; the next run inspects the PR again.
+        if (!definiteRefusal(error)) markInFlight()
+        throw error
+    }
 }
 
 export async function maintainPullRequests(

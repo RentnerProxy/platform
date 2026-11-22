@@ -401,6 +401,10 @@ describe('Dependabot update queue', () => {
         inspectedAt?: string
         major?: boolean
         refusal?: number
+        /** The GitHub CI query for this PR returns errors. */
+        checksFail?: boolean
+        /** A new head arrives while CI is queried, or just before merging. */
+        moved?: 'during-checks' | 'before-merge'
     }
 
     function queue(entries: Entry[]) {
@@ -423,8 +427,10 @@ describe('Dependabot update queue', () => {
             }
             if (path === '/graphql') {
                 const selected = byNumber.get(Number(record(record(body).variables).number))!
+                if (selected.checksFail) return { errors: [{ message: 'unavailable' }] }
                 const graph = structuredClone(template.graph)
-                graph.headRefOid = head(selected.number)
+                graph.headRefOid =
+                    selected.moved === 'during-checks' ? 'e'.repeat(40) : head(selected.number)
                 graph.commits.nodes[0]!.commit = {
                     oid: head(selected.number),
                     statusCheckRollup: { state: selected.rollup ?? 'PENDING' },
@@ -451,9 +457,13 @@ describe('Dependabot update queue', () => {
                 return [commit]
             }
             if (path.includes('/files?')) return template.files
+            const reads = calls.filter((call) => call.method === 'GET' && call.path === path)
             const pull = structuredClone(template.pull)
             pull.number = selected.number
-            pull.head.sha = head(selected.number)
+            pull.head.sha =
+                selected.moved === 'before-merge' && reads.length > 1
+                    ? 'e'.repeat(40)
+                    : head(selected.number)
             pull.user.login = selected.login ?? bot.login
             return pull
         }
@@ -583,6 +593,37 @@ describe('Dependabot update queue', () => {
         expect(results[0]?.reason).toContain('HTTP 422')
         expect(state.writes()).toEqual(['/pulls/43/update-branch', '/pulls/44/update-branch'])
     })
+
+    test('a failed CI query for a recent update keeps the queue closed for this run', async () => {
+        const state = queue([
+            { number: 42, behind: 0, checksFail: true },
+            { number: 50, behind: 1 },
+        ])
+        const results = await state.run()
+        expect(results.map((result) => result.action)).toEqual(['failed', 'skipped'])
+        expect(state.writes()).toEqual([])
+    })
+
+    test.each(['during-checks', 'before-merge'] as const)(
+        'a head that moved %s keeps the queue closed even when the previous head was old',
+        async (moved) => {
+            const state = queue([
+                {
+                    number: 42,
+                    behind: 0,
+                    rollup: 'SUCCESS',
+                    committed: '2026-11-22T08:00:00Z',
+                    moved,
+                },
+                { number: 50, behind: 1 },
+            ])
+            expect((await state.run()).map((result) => result.action)).toEqual([
+                'skipped',
+                'skipped',
+            ])
+            expect(state.writes()).toEqual([])
+        },
+    )
 
     test('an update request with an unknown outcome stops further queued updates', async () => {
         const state = queue([
