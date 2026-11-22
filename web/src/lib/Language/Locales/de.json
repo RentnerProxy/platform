@@ -156,15 +156,78 @@
     },
     "appCatalog": {
         "title": "App-Katalog",
-        "description": "Installiere Apps aus dem signierten RentnerProxy-Katalog.",
+        "description": "Verwalte installierte Apps und entdecke neue Apps im signierten RentnerProxy-Katalog.",
         "refresh": "Katalog aktualisieren",
-        "empty": "Der Katalog enthält keine Apps für diese Appliance.",
+        "empty": "Im Katalog gibt es keine weiteren Apps für diese Appliance.",
         "release": "{{publisher}} · Version {{version}}",
         "install": "Installieren",
         "retry": "Installation wiederholen",
         "installing": "App wird installiert …",
-        "installed": "Installiert",
         "open": "App öffnen",
+        "management": {
+            "installed": "Installierte Apps",
+            "discover": "Apps entdecken",
+            "retained": "Aufbewahrte App-Daten",
+            "loading": "Installierte Apps werden geladen …",
+            "unavailable": "Die lokale App-Liste ist nicht erreichbar. Aktualisiere die Ansicht, um die Verbindung wiederherzustellen.",
+            "empty": "Auf dieser Appliance sind keine Apps installiert.",
+            "version": "Version {{version}}",
+            "updateTo": "Auf {{version}} aktualisieren",
+            "reinstall": "{{version}} erneut installieren",
+            "failed": "Die App-Aktion konnte nicht abgeschlossen werden.",
+            "states": {
+                "running": "Aktiv",
+                "disabled": "Inaktiv",
+                "recoveryRequired": "Wiederherstellung nötig",
+                "removing": "Deinstallation unvollständig",
+                "removed": "Daten aufbewahrt",
+                "purging": "Datenlöschung unvollständig"
+            },
+            "actions": {
+                "update": "Aktualisieren",
+                "deactivate": "Deaktivieren",
+                "reactivate": "Reaktivieren",
+                "uninstall": "Deinstallieren",
+                "recover": "Aktivierung wiederholen",
+                "rollback": "Zurücksetzen",
+                "purge": "Aufbewahrte Daten löschen",
+                "reinstall": "Erneut installieren"
+            },
+            "pending": {
+                "update": "App wird aktualisiert …",
+                "deactivate": "App wird deaktiviert …",
+                "reactivate": "App wird reaktiviert …",
+                "uninstall": "App wird deinstalliert …",
+                "recover": "Aktivierung wird wiederholt …",
+                "rollback": "App wird zurückgesetzt …",
+                "purge": "Aufbewahrte Daten werden gelöscht …",
+                "reinstall": "App wird erneut installiert …"
+            },
+            "succeeded": {
+                "update": "App wurde aktualisiert.",
+                "deactivate": "App wurde deaktiviert.",
+                "reactivate": "App wurde reaktiviert.",
+                "uninstall": "App wurde deinstalliert. Ihre Daten wurden aufbewahrt.",
+                "recover": "App wurde aktiviert.",
+                "rollback": "App wurde zurückgesetzt.",
+                "purge": "Aufbewahrte App-Daten wurden gelöscht.",
+                "reinstall": "App wurde erneut installiert."
+            },
+            "confirm": {
+                "uninstall": "{{name}} deinstallieren? Die App wird entfernt und ihre Daten bleiben für eine erneute Installation erhalten.",
+                "purge": "Die aufbewahrten Daten von {{name}} endgültig löschen? Das lässt sich nicht rückgängig machen.",
+                "rollback": "{{name}} auf Version {{version}} zurücksetzen? Die aktuellen Daten müssen mit dieser Version kompatibel sein."
+            },
+            "errors": {
+                "invalid": "Die angeforderte App-Aktion ist ungültig.",
+                "forbidden": "Nur Eigentümer der Appliance können Apps verwalten.",
+                "conflict": "Die App hat sich geändert, eine andere Aktion läuft oder eine Abhängigkeit blockiert diese Aktion. Aktualisiere die Ansicht und überprüfe die App.",
+                "rateLimited": "Zu viele App-Anfragen. Warte kurz und versuche es erneut.",
+                "unavailable": "Der App-Dienst ist nicht verfügbar. Aktualisiere die Ansicht und versuche es erneut.",
+                "incompatibleData": "Die gewählte Version ist mit den gespeicherten App-Daten inkompatibel.",
+                "operationFailed": "Überprüfe den aktuellen Zustand der App und versuche es erneut."
+            }
+        },
         "status": {
             "loading": "App-Katalog wird geladen …",
             "stale": "Der Katalog ist veraltet. Aktualisiere ihn, bevor du eine App installierst.",
@@ -188,7 +251,10 @@
         "loading": "App wird geladen…",
         "unavailable": "Diese App ist derzeit nicht verfügbar.",
         "confirmTitle": "App-Aktion bestätigen",
-        "confirmDescription": "{{name}} bittet um Bestätigung für {{dialog}}."
+        "confirmDescription": "{{name}} bittet um Bestätigung für {{dialog}}.",
+        "saved": "Änderungen in der App gespeichert.",
+        "saveFailed": "Die App konnte die Änderungen nicht speichern. Versuche es erneut.",
+        "rows": "Zeilen"
     },
     "quickSearch": {
         "title": "Schnell suchen",

@@ -9,7 +9,11 @@ use marketplace_artifacts::digest;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::{Command, Manager, PackageRequest, journal::Release, journal::Removal};
+use super::{
+    Command, Manager, PackageRequest,
+    journal::{Grant, Release, Removal},
+    lifecycle,
+};
 use crate::app_install::{CatalogEntry, Installer};
 
 #[cfg(test)]
@@ -40,6 +44,12 @@ pub(super) enum Failure {
     InstallFailed,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum Request {
+    Install(Selection),
+    Lifecycle(lifecycle::Request),
+}
+
 #[derive(Clone, Serialize)]
 #[serde(
     tag = "status",
@@ -62,6 +72,31 @@ pub(super) struct Install {
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
+enum LifecycleFailure {
+    Conflict,
+    Unavailable,
+    IncompatibleData,
+    OperationFailed,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+enum LifecycleStatus {
+    Pending,
+    Succeeded,
+    Failed { error: LifecycleFailure },
+}
+
+#[derive(Clone, Serialize)]
+pub(super) struct Lifecycle {
+    #[serde(flatten)]
+    request: lifecycle::Request,
+    #[serde(flatten)]
+    status: LifecycleStatus,
+}
+
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 enum CatalogStatus {
     Loading,
     Ready,
@@ -74,29 +109,49 @@ struct View<'a> {
     state: CatalogStatus,
     entries: &'a [CatalogEntry],
     install: Option<Install>,
+    installations: Vec<lifecycle::Installation>,
+    lifecycle: Option<Lifecycle>,
 }
 
 struct State {
     status: CatalogStatus,
     entries: Option<Arc<[CatalogEntry]>>,
     install: Option<Install>,
+    installations: Arc<[lifecycle::Installation]>,
+    lifecycle: Option<Lifecycle>,
     next_refresh: Option<Instant>,
+}
+
+impl State {
+    fn installing(&self) -> bool {
+        self.install
+            .as_ref()
+            .is_some_and(|install| matches!(install.status, InstallStatus::Installing))
+    }
+
+    fn lifecycle_pending(&self) -> Option<&Lifecycle> {
+        self.lifecycle
+            .as_ref()
+            .filter(|operation| matches!(operation.status, LifecycleStatus::Pending))
+    }
 }
 
 #[derive(Clone)]
 pub(super) struct Endpoint {
     config: Option<PathBuf>,
     state: Arc<Mutex<State>>,
-    requests: mpsc::Sender<Selection>,
+    requests: mpsc::Sender<Request>,
 }
 
 impl Endpoint {
-    pub(super) fn new(config: Option<PathBuf>) -> (Self, mpsc::Receiver<Selection>) {
+    pub(super) fn new(config: Option<PathBuf>) -> (Self, mpsc::Receiver<Request>) {
         let (requests, receiver) = mpsc::channel(1);
         let state = State {
             status: CatalogStatus::Loading,
             entries: None,
             install: None,
+            installations: Arc::from([]),
+            lifecycle: None,
             next_refresh: Some(Instant::now()),
         };
         (
@@ -117,25 +172,43 @@ impl Endpoint {
 
     pub(super) fn view(&self) -> io::Result<Vec<u8>> {
         self.refresh()?;
-        let (status, entries, install) = {
+        let (status, entries, install, installations, lifecycle) = {
             let state = self.state()?;
-            (state.status, state.entries.clone(), state.install.clone())
+            (
+                state.status,
+                state.entries.clone(),
+                state.install.clone(),
+                Arc::clone(&state.installations),
+                state.lifecycle.clone(),
+            )
         };
+        let entries = entries.as_deref().unwrap_or_default();
+        let mut installations = installations.to_vec();
+        if status == CatalogStatus::Ready {
+            for installation in &mut installations {
+                installation.set_update(entries);
+            }
+        }
         Ok(serde_json::to_vec(&View {
             state: status,
-            entries: entries.as_deref().unwrap_or_default(),
+            entries,
             install,
+            installations,
+            lifecycle,
         })?)
+    }
+
+    pub(super) fn publish(&self, installations: Vec<lifecycle::Installation>) -> io::Result<()> {
+        self.state()?.installations = installations.into();
+        Ok(())
     }
 
     pub(super) fn refresh(&self) -> io::Result<()> {
         let load_checkpoint = {
             let mut state = self.state()?;
             if state.next_refresh.is_none_or(|next| next > Instant::now())
-                || state
-                    .install
-                    .as_ref()
-                    .is_some_and(|install| matches!(install.status, InstallStatus::Installing))
+                || state.installing()
+                || state.lifecycle_pending().is_some()
             {
                 return Ok(());
             }
@@ -188,6 +261,9 @@ impl Endpoint {
 
     pub(super) fn submit(&self, selection: Selection) -> Result<Install, Failure> {
         let mut state = self.state().map_err(|_| Failure::Unavailable)?;
+        if state.lifecycle_pending().is_some() {
+            return Err(Failure::Conflict);
+        }
         if let Some(current) = &state.install
             && matches!(current.status, InstallStatus::Installing)
         {
@@ -207,7 +283,7 @@ impl Endpoint {
             return Err(Failure::Conflict);
         }
         self.requests
-            .try_send(selection.clone())
+            .try_send(Request::Install(selection.clone()))
             .map_err(|_| Failure::Unavailable)?;
         let install = Install {
             selection,
@@ -238,11 +314,87 @@ impl Endpoint {
         self.state()?.install = Some(Install { selection, status });
         Ok(())
     }
+
+    pub(super) fn submit_lifecycle(
+        &self,
+        request: lifecycle::Request,
+    ) -> Result<Lifecycle, Failure> {
+        let mut state = self.state().map_err(|_| Failure::Unavailable)?;
+        if let Some(current) = state.lifecycle_pending() {
+            return if current.request == request {
+                Ok(current.clone())
+            } else {
+                Err(Failure::Conflict)
+            };
+        }
+        if state.installing() {
+            return Err(Failure::Conflict);
+        }
+        let mut current = state
+            .installations
+            .iter()
+            .find(|installation| installation.id() == request.installation_id)
+            .cloned()
+            .ok_or(Failure::Conflict)?;
+        let entries = if state.status == CatalogStatus::Ready {
+            state.entries.as_deref().unwrap_or_default()
+        } else {
+            &[]
+        };
+        current.set_update(entries);
+        if !current.offers(&request, entries) {
+            return Err(Failure::Conflict);
+        }
+        self.requests
+            .try_send(Request::Lifecycle(request.clone()))
+            .map_err(|_| Failure::Unavailable)?;
+        let operation = Lifecycle {
+            request,
+            status: LifecycleStatus::Pending,
+        };
+        state.lifecycle = Some(operation.clone());
+        Ok(operation)
+    }
+
+    pub(super) fn finish_lifecycle(
+        &self,
+        request: lifecycle::Request,
+        result: io::Result<()>,
+    ) -> io::Result<()> {
+        let status = match result {
+            Ok(()) => LifecycleStatus::Succeeded,
+            Err(error) => {
+                eprintln!(
+                    "Application lifecycle operation failed for {}: {error}",
+                    request.installation_id
+                );
+                let error = if error
+                    .get_ref()
+                    .is_some_and(|cause| cause.is::<lifecycle::IncompatibleData>())
+                {
+                    LifecycleFailure::IncompatibleData
+                } else {
+                    match error.kind() {
+                        io::ErrorKind::AlreadyExists | io::ErrorKind::ResourceBusy => {
+                            LifecycleFailure::Conflict
+                        }
+                        io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::ConnectionRefused => LifecycleFailure::Unavailable,
+                        _ => LifecycleFailure::OperationFailed,
+                    }
+                };
+                LifecycleStatus::Failed { error }
+            }
+        };
+        self.state()?.lifecycle = Some(Lifecycle { request, status });
+        Ok(())
+    }
 }
 
 impl Manager {
     pub(super) async fn install_catalog(&mut self, selection: &Selection) -> io::Result<String> {
-        let installation_id = format!("app-{}", &digest(selection.app_id.as_bytes())[..32]);
+        let mut installation_id = format!("app-{}", &digest(selection.app_id.as_bytes())[..32]);
         let conflict = || {
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -255,27 +407,36 @@ impl Manager {
             .iter()
             .filter(|(_, slot)| slot.app_id == selection.app_id);
         if let Some((id, slot)) = matches.next() {
-            if matches.next().is_some() || slot.removal != Removal::Installed {
+            if matches.next().is_some() {
                 return Err(conflict());
             }
-            if slot
-                .active
-                .as_ref()
-                .is_some_and(|release| selection.matches(release))
-                && !slot.recovery_required
-                && let Some(live) = self.running.get_mut(id)
-                && !live.exited()?
-            {
-                return Ok(id.to_owned());
-            }
-            if id != &installation_id
-                || slot.active.is_some()
-                || slot
-                    .candidate
-                    .as_ref()
-                    .is_some_and(|release| !selection.matches(release))
-            {
-                return Err(conflict());
+            match slot.removal {
+                Removal::Removed if slot.removed_release.is_none() => {
+                    installation_id.clone_from(id)
+                }
+                Removal::Purged => installation_id.clone_from(id),
+                Removal::Installed => {
+                    if slot
+                        .active
+                        .as_ref()
+                        .is_some_and(|release| selection.matches(release))
+                        && !slot.recovery_required
+                        && let Some(live) = self.running.get_mut(id)
+                        && !live.exited()?
+                    {
+                        return Ok(id.to_owned());
+                    }
+                    if id != &installation_id
+                        || slot.active.is_some()
+                        || slot
+                            .candidate
+                            .as_ref()
+                            .is_some_and(|release| !selection.matches(release))
+                    {
+                        return Err(conflict());
+                    }
+                }
+                Removal::Removed | Removal::Removing | Removal::Purging => return Err(conflict()),
             }
         } else if self.journal.slots().contains_key(&installation_id) {
             return Err(conflict());
@@ -302,11 +463,30 @@ impl Manager {
             download,
         )
         .await?;
-        self.execute(Command::Activate {
-            installation_id: installation_id.clone(),
-            grants: Vec::new(),
-        })
-        .await?;
+        self.activate_catalog(&installation_id, Some(&[])).await?;
         Ok(installation_id)
+    }
+
+    pub(super) async fn activate_catalog(
+        &mut self,
+        id: &str,
+        grants: Option<&[Grant]>,
+    ) -> io::Result<()> {
+        self.settle_exit(id).await?;
+        let slot = self.journal.slot(id)?;
+        let candidate = slot
+            .candidate
+            .clone()
+            .ok_or_else(|| super::bad("No staged catalog candidate"))?;
+        if slot.removal == Removal::Purged {
+            // The new generation may claim fresh storage before activation finishes.
+            // Keep that claim recoverable, with the same UID and generation history.
+            let mut slot = slot.clone();
+            slot.removal = Removal::Removed;
+            slot.removed_release = Some((&candidate).into());
+            slot.removed_data_required = Some(false);
+            self.journal.save(id, slot)?;
+        }
+        self.switch(id, candidate, grants).await
     }
 }

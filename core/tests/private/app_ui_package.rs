@@ -108,6 +108,8 @@ fn package_load_combines_manifest_and_openapi_metadata() {
     document["x-rentnerproxy-ui"] = json!({
         "routes": ["settings", "overview"], "dialogs": ["edit"], "events": ["changed"],
     });
+    let presentation = json!({"formatVersion": 1, "pages": []});
+    document["x-rentnerproxy-native-ui"] = presentation.clone();
     fs::write(temp.path().join("api.json"), document.to_string()).unwrap();
     let package = Package::load(&staged, "demo".into(), 7, 20_000)
         .unwrap()
@@ -118,10 +120,20 @@ fn package_load_combines_manifest_and_openapi_metadata() {
             "appId": "example.app", "installationId": "demo", "generation": 7, "uid": 20_000,
             "archiveSha256": "a".repeat(64), "name": "Example", "entrypoint": "ui/index.html",
             "slots": ["apps"], "permissionKeys": ["read"], "routes": ["overview", "settings"],
-            "dialogs": ["edit"], "events": ["changed"],
+            "dialogs": ["edit"], "events": ["changed"], "nativePresentation": presentation,
         })
     );
     assert_eq!(package.operations.keys().collect::<Vec<_>>(), &["greeting"]);
+}
+
+#[test]
+fn native_presentation_stays_within_its_metadata_budget() {
+    assert!(read_native_presentation(&json!({})).is_none());
+    assert!(read_native_presentation(&json!({"x-rentnerproxy-native-ui": []})).is_none());
+    let oversized = json!({
+        "x-rentnerproxy-native-ui": {"label": "x".repeat(MAX_NATIVE_PRESENTATION_BYTES)}
+    });
+    assert!(read_native_presentation(&oversized).is_none());
 }
 
 #[test]

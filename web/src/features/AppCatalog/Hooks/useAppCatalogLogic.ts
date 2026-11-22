@@ -1,70 +1,36 @@
 import { toast } from '@rentnerkev/toasts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAppUi } from '@/features/AppUi/AppUiProvider.tsx'
 import {
-    APP_CATALOG_INSTALL_PATH,
-    catalogInstallSchema,
     sameCatalogRelease,
-    type CatalogSelector,
+    type CatalogLifecycleInput,
+    type CatalogRelease,
 } from '@/lib/AppCatalog/contract.ts'
+import { catalogInstallationActions } from '@/lib/AppCatalog/installationActions.ts'
+import { keepCatalogProgress, type CatalogQueryResult } from '@/lib/AppCatalog/installProgress.ts'
 import {
-    keepCatalogInstall,
-    unavailableCatalog,
-    type CatalogQueryResult,
-} from '@/lib/AppCatalog/installProgress.ts'
+    catalogRequestError,
+    installCatalogRelease,
+    manageCatalogInstallation,
+} from '@/lib/AppCatalog/requests.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
+import type { CatalogConfirmation, CatalogInstallationView } from '../Types/app-catalog.types.ts'
 import { getAppCatalogHandler } from '../middleware.ts'
-
-const installErrors = {
-    400: 'invalid',
-    401: 'forbidden',
-    403: 'forbidden',
-    409: 'conflict',
-    413: 'invalid',
-    429: 'rateLimited',
-} as const
-
-class CatalogRequestError extends Error {
-    constructor(readonly code: (typeof installErrors)[keyof typeof installErrors]) {
-        super(code)
-    }
-}
-
-function isKnownInstallError(status: number): status is keyof typeof installErrors {
-    return Object.hasOwn(installErrors, status)
-}
-
-async function installRelease(input: CatalogSelector) {
-    const { appId, version, archiveSha256 } = input
-    const response = await fetch(APP_CATALOG_INSTALL_PATH, {
-        method: 'POST',
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ appId, version, archiveSha256 }),
-    })
-    if (isKnownInstallError(response.status)) {
-        throw new CatalogRequestError(installErrors[response.status])
-    }
-    if (!response.ok) throw new Error('Catalog installation is unavailable.')
-    const value: unknown = await response.json()
-    const result = catalogInstallSchema.parse(value)
-    if (!sameCatalogRelease(result, input)) throw new Error('Unexpected catalog selection.')
-    return result
-}
 
 export default function useAppCatalogLogic() {
     const { t } = useTranslationStore()
     const inventory = useAppUi()
     const queryClient = useQueryClient()
+    const [confirmation, setConfirmation] = useState<CatalogConfirmation | null>(null)
     const queryKey = ['app-catalog', inventory?.sessionId ?? null] as const
     const query = useQuery({
         queryKey,
         queryFn: async ({ signal }) => {
-            const current = await getAppCatalogHandler({ signal }).catch(() => unavailableCatalog)
+            const current = await getAppCatalogHandler({ signal }).catch(() => null)
             signal.throwIfAborted()
-            return keepCatalogInstall(
+            if (current === 'forbidden') return keepCatalogProgress(undefined, null, Date.now())
+            return keepCatalogProgress(
                 queryClient.getQueryData<CatalogQueryResult>(queryKey),
                 current,
                 Date.now(),
@@ -72,77 +38,180 @@ export default function useAppCatalogLogic() {
         },
         retry: false,
         refetchInterval: ({ state }) => {
-            if (state.data?.install?.status === 'installing') return 2_000
+            if (
+                state.data?.install?.status === 'installing' ||
+                state.data?.lifecycle?.status === 'pending'
+            )
+                return 2_000
             if (state.data?.state === 'loading') return 5_000
             return false
         },
     })
-    const mutation = useMutation({
-        mutationFn: installRelease,
+    const installMutation = useMutation({
+        mutationFn: installCatalogRelease,
         onSuccess: async (install) => {
             await queryClient.cancelQueries({ queryKey })
-            queryClient.setQueryData<CatalogQueryResult>(queryKey, (current) =>
-                current ? { state: current.state, entries: current.entries, install } : current,
+            queryClient.setQueryData<CatalogQueryResult>(
+                queryKey,
+                (current) => current && { ...current, install },
             )
             await queryClient.invalidateQueries({ queryKey })
         },
         onError: (error) => {
-            const code = error instanceof CatalogRequestError ? error.code : 'unavailable'
-            toast.error(t(`appCatalog.errors.${code}`), { title: t('toast.titles.error') })
+            toast.error(t(`appCatalog.errors.${catalogRequestError(error)}`), {
+                title: t('toast.titles.error'),
+            })
+            void queryClient.invalidateQueries({ queryKey }).catch(() => {})
+        },
+    })
+    const lifecycleMutation = useMutation({
+        mutationFn: manageCatalogInstallation,
+        onSuccess: async (lifecycle) => {
+            await queryClient.cancelQueries({ queryKey })
+            queryClient.setQueryData<CatalogQueryResult>(
+                queryKey,
+                (current) => current && { ...current, lifecycle },
+            )
+            await queryClient.invalidateQueries({ queryKey })
+        },
+        onError: (error, { action }) => {
+            toast.error(t(`appCatalog.management.errors.${catalogRequestError(error)}`), {
+                title: t(`appCatalog.management.actions.${action}`),
+            })
             void queryClient.invalidateQueries({ queryKey }).catch(() => {})
         },
     })
 
-    const snapshot = query.isError ? undefined : query.data
+    const snapshot = query.data
     const install = snapshot?.install
-    const isInstalling = mutation.isPending || install?.status === 'installing'
+    const lifecycle = snapshot?.lifecycle
+    const pendingAction = lifecycleMutation.isPending
+        ? lifecycleMutation.variables
+        : lifecycle?.status === 'pending'
+          ? lifecycle
+          : undefined
+    const isInstalling = installMutation.isPending || install?.status === 'installing'
     const status = snapshot?.state ?? (query.isPending ? 'loading' : 'unavailable')
+    const canManage = snapshot?.isConnected === true && !isInstalling && !pendingAction
     const refreshAppUi = inventory?.refresh
-    const installedAppId = install?.status === 'installed' ? install.installationId : undefined
-    const refreshedInstall = useRef<string | undefined>(undefined)
+    const refreshedInstall = useRef<typeof install>(undefined)
     useEffect(() => {
-        if (!installedAppId || !refreshAppUi || refreshedInstall.current === installedAppId) return
-        refreshedInstall.current = installedAppId
+        if (
+            install?.status !== 'installed' ||
+            !refreshAppUi ||
+            refreshedInstall.current === install
+        )
+            return
+        refreshedInstall.current = install
         void refreshAppUi().catch(() => {})
-    }, [installedAppId, refreshAppUi])
+    }, [install, refreshAppUi])
 
-    const installed = new Map(inventory?.apps.map((app) => [app.appId, app.installationId]))
-    const entries = (snapshot?.entries ?? []).map((entry) => {
-        const isSelected = !!install && sameCatalogRelease(install, entry)
-        const completed = isSelected && install.status === 'installed' ? install : undefined
-        const installationId =
-            installed.get(entry.appId) ?? (entry.hasUi ? completed?.installationId : undefined)
-        const isInstalled = !!installationId || !!completed
-        const isRetry = isSelected && install.status === 'failed'
-        return {
-            entry,
-            installationId,
-            isInstalled,
-            isRetry,
-            canInstall:
-                !isInstalled &&
-                !isInstalling &&
-                status === 'ready' &&
-                entry.availability === 'available',
+    const refreshedLifecycle = useRef<typeof lifecycle>(undefined)
+    useEffect(() => {
+        if (!lifecycle || lifecycle.status === 'pending') {
+            refreshedLifecycle.current = undefined
+            return
         }
-    })
-    const showInstalled =
-        !!installedAppId &&
-        !entries.some(({ entry, isInstalled }) => entry.appId === install?.appId && isInstalled)
+        if (refreshedLifecycle.current === lifecycle) return
+        refreshedLifecycle.current = lifecycle
+        void refreshAppUi?.().catch(() => {})
+    }, [lifecycle, refreshAppUi])
+
+    const catalogEntries = snapshot?.entries ?? []
+    const catalogNames = new Map(catalogEntries.map((entry) => [entry.appId, entry]))
+    const availableReleases = new Map<string, CatalogRelease>(
+        catalogEntries
+            .filter(({ availability }) => availability === 'available')
+            .map(({ appId, version, archiveSha256 }) => [appId, { version, archiveSha256 }]),
+    )
+    const accessibleApps = new Map(inventory?.apps.map((app) => [app.installationId, app]))
+    const installedAppIds = new Set(snapshot?.installations.map((row) => row.appId))
+    const installations: CatalogInstallationView[] = (snapshot?.installations ?? []).map(
+        (installation) => {
+            const declaredApp = catalogNames.get(installation.appId)
+            const app = accessibleApps.get(installation.installationId)
+            return {
+                installation,
+                name: declaredApp?.name ?? app?.name ?? installation.appId,
+                publisher: declaredApp?.publisher,
+                canOpen: installation.state === 'running' && app?.appId === installation.appId,
+                actions: catalogInstallationActions(
+                    installation,
+                    status === 'ready',
+                    availableReleases.get(installation.appId),
+                ),
+            }
+        },
+    )
+    const entries = catalogEntries
+        .filter((entry) => !installedAppIds.has(entry.appId))
+        .map((entry) => ({
+            entry,
+            isRetry: install?.status === 'failed' && sameCatalogRelease(install, entry),
+            canInstall: canManage && status === 'ready' && entry.availability === 'available',
+        }))
+    const retained = installations.filter(
+        ({ installation }) => installation.state === 'removed' || installation.state === 'purging',
+    )
+    const installed = installations.filter(
+        ({ installation }) => installation.state !== 'removed' && installation.state !== 'purging',
+    )
+    const reportedAction =
+        pendingAction ?? (lifecycleMutation.isError ? lifecycleMutation.variables : lifecycle)
+    const operationName = installations.find(
+        ({ installation }) => installation.installationId === reportedAction?.installationId,
+    )?.name
+
+    function handleAction({ name }: CatalogInstallationView, request: CatalogLifecycleInput) {
+        if (!canManage) return
+        if (
+            request.action === 'uninstall' ||
+            request.action === 'purge' ||
+            request.action === 'rollback'
+        ) {
+            setConfirmation({ name, request })
+            return
+        }
+        lifecycleMutation.mutate(request)
+    }
 
     return {
         state: {
             status,
             entries,
+            installed,
+            retained,
             isInstalling,
             isRefreshing: query.isFetching,
-            failure: install?.status === 'failed' ? (install.error ?? 'installFailed') : null,
-            showInstalled,
+            isLoading: query.isPending,
+            isConnected: snapshot?.isConnected === true,
+            canManage,
+            confirmation,
+            installFailure:
+                install?.status === 'failed' ? (install.error ?? 'installFailed') : null,
+            operation: reportedAction?.action,
+            operationName,
+            operationStatus: pendingAction
+                ? 'pending'
+                : lifecycleMutation.isError
+                  ? 'failed'
+                  : lifecycle?.status,
+            operationError: lifecycleMutation.isError
+                ? catalogRequestError(lifecycleMutation.error)
+                : lifecycle?.status === 'failed'
+                  ? lifecycle.error
+                  : undefined,
         },
         handler: {
-            handleInstall: mutation.mutate,
-            handleOpen: (appId: string) => {
-                if (!installed.has(appId)) void refreshAppUi?.().catch(() => {})
+            handleInstall: installMutation.mutate,
+            handleAction,
+            handleConfirm: () => {
+                if (!canManage || !confirmation) return
+                setConfirmation(null)
+                lifecycleMutation.mutate(confirmation.request)
+            },
+            handleConfirmationChange: (open: boolean) => {
+                if (!open) setConfirmation(null)
             },
             handleRefresh: () => {
                 void query.refetch().catch(() => {})

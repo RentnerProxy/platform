@@ -12,6 +12,7 @@ import {
 import { appRecordId } from '../contract.ts'
 import { appRuntimeTransaction, withAppRuntimeErrors } from '../services.server.ts'
 import { AppRuntimeAuthorityError, type AppRuntimeIdentity } from '../Types/authority.types.ts'
+import { resolveNativePresentation } from './native-presentation.server.ts'
 import {
     appUiEnabled,
     nativeAppUi,
@@ -44,6 +45,7 @@ async function summarize(
             routes,
             dialogs,
             events,
+            ...(resolveNativePresentation(app) && { native: true as const }),
             permissionKeys: app.permissionKeys.filter((key) =>
                 principal.appPermissions.includes(qualifyAppRuntimePermission(appId, key)),
             ),
@@ -97,7 +99,7 @@ export function authorizeAppUi(
     signal: AbortSignal,
     policy?: AppUiOperationPolicy,
     payload?: AppUiCallInput['payload'],
-): Promise<void> {
+): Promise<readonly string[]> {
     return withAppRuntimeErrors(() =>
         appRuntimeTransaction(signal, async (transaction) => {
             const actor = await readAppUiActorInTransaction(transaction, sessionId)
@@ -118,6 +120,7 @@ export function authorizeAppUi(
                 if (!resourceId.success) throw uiProblems.invalid
                 requireAppRuntimeAuthorization(principal, capability, resourceId.data)
             }
+            return principal.appPermissions
         }),
     )
 }
