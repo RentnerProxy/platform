@@ -4,15 +4,27 @@ on:
     pull_request:
         paths:
             - .github/workflows/app-runtime-reference.yml
+            - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
             - .github/scripts/ci/fixtures/app-greeting-native.sh
             - '.github/scripts/ci/fixtures/app-runtime-reference/**'
             - 'core/src/app_install.rs'
             - 'core/src/app_install/**'
+            - 'core/src/app_ipc.rs'
+            - 'core/src/app_ipc/**'
+            - 'core/src/app_manager.rs'
+            - 'core/src/app_manager/**'
             - core/Cargo.lock
             - core/Cargo.toml
             - 'core/tests/private/app_install.rs'
             - 'core/tests/private/app_install/**'
+            - core/tests/private/app_manager.rs
+            - core/tests/private/app_manager/lifecycle.rs
+            - 'core/tests/private/app_manager/lifecycle/**'
+            - core/tests/private/app_ui.rs
             - 'core/tests/fixtures/app-runtime-reference/**'
+            - docker/production/apps/catalog/root.json
+            - docker/production/apps/pg_hba.conf
+            - docker/production/apps/pg_ident.conf
             - scripts/smoke/wait.ts
             - 'web/src/lib/AppUi/**'
             - web/src/server/security-headers.ts
@@ -24,15 +36,27 @@ on:
         branches: [main]
         paths:
             - .github/workflows/app-runtime-reference.yml
+            - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
             - .github/scripts/ci/fixtures/app-greeting-native.sh
             - '.github/scripts/ci/fixtures/app-runtime-reference/**'
             - 'core/src/app_install.rs'
             - 'core/src/app_install/**'
+            - 'core/src/app_ipc.rs'
+            - 'core/src/app_ipc/**'
+            - 'core/src/app_manager.rs'
+            - 'core/src/app_manager/**'
             - core/Cargo.lock
             - core/Cargo.toml
             - 'core/tests/private/app_install.rs'
             - 'core/tests/private/app_install/**'
+            - core/tests/private/app_manager.rs
+            - core/tests/private/app_manager/lifecycle.rs
+            - 'core/tests/private/app_manager/lifecycle/**'
+            - core/tests/private/app_ui.rs
             - 'core/tests/fixtures/app-runtime-reference/**'
+            - docker/production/apps/catalog/root.json
+            - docker/production/apps/pg_hba.conf
+            - docker/production/apps/pg_ident.conf
             - scripts/smoke/wait.ts
             - 'web/src/lib/AppUi/**'
             - web/src/server/security-headers.ts
@@ -116,13 +140,17 @@ jobs:
                       ~/.cargo/git/db
                   key: ${{ runner.os }}-cargo-1.99.1-${{ hashFiles('core/Cargo.lock') }}
 
-            - name: Verify two approved Greeting versions through the signed catalog
+            - name: Verify synthetic Greeting packages and browser fixture
               shell: bash
               env:
                   REPOSITORY_ID: ${{ github.repository_id }}
               run: |
                   bun install --no-env-file --frozen-lockfile --ignore-scripts
                   bash .github/scripts/ci/fixtures/app-greeting-native.sh "$RUNNER_TEMP/app-runtime-reference" "$REPOSITORY_ID"
+
+            - name: Verify published Greeting install, update and offline rollback
+              shell: bash
+              run: bash .github/scripts/ci/fixtures/app-greeting-lifecycle.sh "$RUNNER_TEMP/app-runtime-reference"
 
             - name: Upload native and browser evidence
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -135,3 +163,4 @@ jobs:
                       ${{ runner.temp }}/app-runtime-reference/browser.json
                       ${{ runner.temp }}/app-runtime-reference/greeting.json
                       ${{ runner.temp }}/app-runtime-reference/greeting-browser.json
+                      ${{ runner.temp }}/app-runtime-reference/greeting-lifecycle.json

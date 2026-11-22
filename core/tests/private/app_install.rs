@@ -25,6 +25,13 @@ use super::{Config, Installer, PackageSource};
 #[path = "app_install/greeting.rs"]
 mod greeting;
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[path = "app_install/published_greeting.rs"]
+pub(crate) mod published_greeting;
+
 const PIN: &[u8] = include_bytes!("../fixtures/app-install/1.root.json");
 const ID: &str = "example.probe";
 const VERSION: &str = "1.0.0";

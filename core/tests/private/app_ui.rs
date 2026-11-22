@@ -278,6 +278,22 @@ impl Client {
     }
 }
 
+pub(in crate::app_manager) async fn fixture_request(
+    method: &str,
+    path: &str,
+    headers: &str,
+    body: &[u8],
+) -> (u16, Value) {
+    let client = Client(PathBuf::from(SOCKET));
+    let reply = client.request(method, path, headers, body).await;
+    let value = if reply.body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&reply.body).unwrap()
+    };
+    (reply.status, value)
+}
+
 fn staged_package(root: &Path) -> StagedPackage {
     fs::create_dir(root.join("ui")).unwrap();
     fs::create_dir(root.join("api")).unwrap();
