@@ -36,13 +36,15 @@ const CI_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
  * An update counts as in CI only for this long, so a stuck run cannot stall the queue.
  */
 const DEPENDABOT_IN_FLIGHT_MS = 3 * 60 * 60 * 1000
+/** Tolerated difference between GitHub's commit timestamps and the runner clock. */
+const CLOCK_SKEW_MS = 5 * 60 * 1000
 
 type CheckState = 'success' | 'pending' | 'blocked'
 
 interface MaintenanceContext {
     /** An eligible Dependabot update is current with main and still waiting for its CI. */
     dependabotInFlight: boolean
-    now: number
+    clock: () => number
 }
 
 interface QueuedUpdate {
@@ -94,19 +96,25 @@ async function currentChecks(
     return state === 'PENDING' || state === 'EXPECTED' ? 'pending' : 'blocked'
 }
 
-function recentHead(commits: unknown[], headSha: string, now: number): boolean {
+/** Measures the head's age when it is inspected, not when the maintenance run started. */
+function recentHead(commits: unknown[], headSha: string, clock: () => number): boolean {
     const head = commits.map(record).find((commit) => commit.sha === headSha)
     const date = head ? record(record(head.commit).committer).date : undefined
     const time = typeof date === 'string' ? Date.parse(date) : Number.NaN
-    return Number.isFinite(time) && now - time >= 0 && now - time < DEPENDABOT_IN_FLIGHT_MS
+    if (!Number.isFinite(time)) return false
+    const age = clock() - time
+    return age > -CLOCK_SKEW_MS && age < DEPENDABOT_IN_FLIGHT_MS
+}
+
+/** GitHub definitely rejected the request, so nothing was changed. */
+function definiteRefusal(error: unknown): boolean {
+    return error instanceof GitHubRequestError && [403, 404, 405, 409, 422].includes(error.status)
 }
 
 function failureResult(number: number, error: unknown): MaintenanceResult {
-    const expected =
-        error instanceof GitHubRequestError && [403, 404, 405, 409, 422].includes(error.status)
     return {
         number,
-        action: expected ? 'skipped' : 'failed',
+        action: definiteRefusal(error) ? 'skipped' : 'failed',
         reason:
             error instanceof GitHubRequestError
                 ? `GitHub HTTP ${error.status}; no update or merge was forced`
@@ -193,7 +201,7 @@ async function maintainPullRequest(
     })
     if (!eligibility.eligible) return skipped(eligibility.reason)
     const markInFlight = () => {
-        if (recentHead(commits, headSha, context.now)) context.dependabotInFlight = true
+        if (recentHead(commits, headSha, context.clock)) context.dependabotInFlight = true
     }
     if (pull.mergeable !== true) {
         markInFlight()
@@ -243,7 +251,7 @@ export async function maintainPullRequests(
     const pulls = await arrayPages(request, `/repos/${repository}/pulls?state=open&base=main`)
     const context: MaintenanceContext = {
         dependabotInFlight: false,
-        now: options.now ?? Date.now(),
+        clock: options.clock ?? (() => Date.now()),
     }
     const results: MaintenanceResult[] = []
     const queued: (QueuedUpdate & { index: number })[] = []
@@ -298,6 +306,8 @@ export async function maintainPullRequests(
             started = true
         } catch (error) {
             results[update.index] = failureResult(update.number, error)
+            // Only a definite refusal hands the turn on; any other failure may have been accepted.
+            if (!definiteRefusal(error)) started = true
         }
     }
     return results

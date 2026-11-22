@@ -8,7 +8,7 @@ COPY core/Cargo.toml core/Cargo.lock ./
 COPY core/src ./src
 # Only the binary leaves this step so CI can cache the image without exporting target/.
 RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/registry \
-    CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked \
+    CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked \
     && install -D -m 0755 target/debug/rentnerproxy-controller /out/rentnerproxy-controller \
     && rm -rf target
 

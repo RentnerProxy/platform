@@ -22,6 +22,6 @@ export interface MaintenanceOptions {
     repository: string
     dryRun: boolean
     trustedMergeBotLogin?: string
-    /** Current time in milliseconds; defaults to Date.now() and exists for deterministic tests. */
-    now?: number
+    /** Clock in milliseconds, sampled when a head is inspected; defaults to Date.now for production. */
+    clock?: () => number
 }

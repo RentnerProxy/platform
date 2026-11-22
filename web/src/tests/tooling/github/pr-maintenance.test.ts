@@ -397,12 +397,16 @@ describe('Dependabot update queue', () => {
         login?: string
         rollup?: string
         committed?: string
+        /** Advances the clock when this PR's commits are read, as time passes during a run. */
+        inspectedAt?: string
         major?: boolean
         refusal?: number
     }
 
     function queue(entries: Entry[]) {
         const template = fixture()
+        let time = now
+        const clock = () => time
         const byNumber = new Map(entries.map((entry) => [entry.number, entry]))
         const byHead = new Map(entries.map((entry) => [head(entry.number), entry]))
         const calls: { method: string; path: string; body: unknown }[] = []
@@ -433,6 +437,7 @@ describe('Dependabot update queue', () => {
                 return { merged: true }
             }
             if (path.includes('/commits?')) {
+                if (selected.inspectedAt) time = Date.parse(selected.inspectedAt)
                 const commit = structuredClone(template.commits[0]!)
                 commit.sha = head(selected.number)
                 Object.assign(commit.commit.committer, {
@@ -452,7 +457,7 @@ describe('Dependabot update queue', () => {
             pull.user.login = selected.login ?? bot.login
             return pull
         }
-        const run = (dryRun = false) => maintainPullRequests(request, { repository, dryRun, now })
+        const run = (dryRun = false) => maintainPullRequests(request, { repository, dryRun, clock })
         const writes = () =>
             calls
                 .filter((call) => call.method === 'PUT')
@@ -506,6 +511,30 @@ describe('Dependabot update queue', () => {
         expect(state.writes()).toEqual(['/pulls/50/update-branch'])
     })
 
+    test('measures head age when the head is inspected, not when maintenance started', async () => {
+        const state = queue([
+            {
+                number: 42,
+                behind: 0,
+                rollup: 'PENDING',
+                committed: '2026-11-22T12:10:00Z',
+                inspectedAt: '2026-11-22T12:10:05Z',
+            },
+            { number: 50, behind: 1 },
+        ])
+        await state.run()
+        expect(state.writes()).toEqual([])
+    })
+
+    test('a head dated beyond the clock-skew allowance does not hold the queue', async () => {
+        const state = queue([
+            { number: 42, behind: 0, rollup: 'PENDING', committed: '2026-11-22T13:00:00Z' },
+            { number: 50, behind: 1 },
+        ])
+        await state.run()
+        expect(state.writes()).toEqual(['/pulls/50/update-branch'])
+    })
+
     test('a merged update lets the next Dependabot update start in the same run', async () => {
         const state = queue([
             { number: 42, behind: 0, rollup: 'SUCCESS' },
@@ -553,6 +582,17 @@ describe('Dependabot update queue', () => {
         expect(results.map((result) => result.action)).toEqual(['skipped', 'update-requested'])
         expect(results[0]?.reason).toContain('HTTP 422')
         expect(state.writes()).toEqual(['/pulls/43/update-branch', '/pulls/44/update-branch'])
+    })
+
+    test('an update request with an unknown outcome stops further queued updates', async () => {
+        const state = queue([
+            { number: 43, behind: 1, refusal: 503 },
+            { number: 44, behind: 1 },
+        ])
+        const results = await state.run()
+        expect(results.map((result) => result.action)).toEqual(['failed', 'skipped'])
+        expect(results[1]?.reason).toContain('one at a time')
+        expect(state.writes()).toEqual(['/pulls/43/update-branch'])
     })
 })
 
