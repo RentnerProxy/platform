@@ -36,6 +36,21 @@ fi
 
 output=${1:?Expected an evidence output directory}
 fixture_script=$(realpath "${BASH_SOURCE[0]}")
+coverage_mount=()
+case $# in
+    1) ;;
+    4)
+        # The coverage job already built both instrumented executables.
+        app_tests=$(realpath "$2")
+        controller=$(realpath "$3")
+        profiles=$(realpath "$4")
+        coverage_mount=(
+            --mount "type=bind,source=$profiles,target=/profiles"
+            --env 'LLVM_PROFILE_FILE=/profiles/greeting-%p-%m.profraw'
+        )
+        ;;
+    *) printf 'Expected an output directory and optionally two binaries and a profile directory\n' >&2; exit 1 ;;
+esac
 case "$(uname -s)/$(uname -m)" in
     Linux/x86_64) native=amd64 ;;
     Linux/aarch64) native=arm64 ;;
@@ -79,10 +94,12 @@ snapshot() {
 snapshot 1.0.0 44557b84bce0a63cb71aadc636f8a9c18efeea22 2 889c8db9e97f1e240ae4488f3b34dd6efb086c3425d6f949a6056a0c06231585
 snapshot 1.0.1 37bcec3118a244ff024e9d6f5d92806aeaa2fa0c 3 9872367ede865ddd204520a2880b506644d6ad22461d70c439de2bfc965797be
 
-artifacts=$(cargo test --locked --manifest-path core/Cargo.toml --lib --no-run --message-format=json-render-diagnostics)
-app_tests=$(jq -er 'select(.reason == "compiler-artifact" and .target.kind == ["lib"] and .profile.test) | .executable // empty' <<< "$artifacts")
-artifacts=$(cargo build --locked --manifest-path core/Cargo.toml --bin rentnerproxy-controller --message-format=json-render-diagnostics)
-controller=$(jq -er 'select(.reason == "compiler-artifact" and .target.name == "rentnerproxy-controller" and .target.kind == ["bin"]) | .executable // empty' <<< "$artifacts")
+if [[ $# == 1 ]]; then
+    artifacts=$(cargo test --locked --manifest-path core/Cargo.toml --lib --no-run --message-format=json-render-diagnostics)
+    app_tests=$(jq -er 'select(.reason == "compiler-artifact" and .target.kind == ["lib"] and .profile.test) | .executable // empty' <<< "$artifacts")
+    artifacts=$(cargo build --locked --manifest-path core/Cargo.toml --bin rentnerproxy-controller --message-format=json-render-diagnostics)
+    controller=$(jq -er 'select(.reason == "compiler-artifact" and .target.name == "rentnerproxy-controller" and .target.kind == ["bin"]) | .executable // empty' <<< "$artifacts")
+fi
 [[ -x $app_tests && -x $controller ]]
 
 run_fixture() {
@@ -101,6 +118,7 @@ run_fixture() {
         --mount "type=bind,source=$PWD/docker/production/apps/pg_ident.conf,target=/fixture/pg_ident.conf,readonly" \
         --mount "type=bind,source=$output,target=/evidence" \
         --env RENTNERPROXY_TEST_CONTROLLER=/controller \
+        "${coverage_mount[@]}" \
         "$@" \
         --entrypoint /bin/bash \
         ghcr.io/rentnerproxy/platform@sha256:fe320f29302a2253296b986962de9d3d84fd6f0abb788a414cc325ca424c74e3 \

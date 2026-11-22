@@ -9,6 +9,7 @@ use marketplace_artifacts::{
     FileIdentity, StreamVerification, hash_stream, invalid, parse_json, verify_stream,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
@@ -212,7 +213,7 @@ pub(super) fn read(path: &Path, directory: Option<&Path>) -> io::Result<Backup> 
     if hash_stream(&mut data_source, &mut data, data_member.bytes)? != data_member.identity() {
         return Err(invalid("Application file data checksum mismatch"));
     }
-    let data = serde_json::from_value(parse_json(&data)?)?;
+    let data = decode_data(&data)?;
     validate_data(&header.installations, &data)?;
 
     let mut backup = Backup {
@@ -261,6 +262,23 @@ pub(super) fn read(path: &Path, directory: Option<&Path>) -> io::Result<Backup> 
     Ok(backup)
 }
 
+fn decode_data(bytes: &[u8]) -> io::Result<BTreeMap<u32, Vec<files::Entry>>> {
+    let Value::Object(data) = parse_json(bytes)? else {
+        return Err(invalid("Invalid portable application file data"));
+    };
+    data.into_iter()
+        .map(|(key, entries)| {
+            let uid = key
+                .parse::<u32>()
+                .map_err(|_| invalid("Invalid application file UID"))?;
+            if uid.to_string() != key {
+                return Err(invalid("Noncanonical application file UID"));
+            }
+            Ok((uid, serde_json::from_value(entries)?))
+        })
+        .collect()
+}
+
 pub(super) fn write(
     inventory: Inventory,
     members: Vec<(Member, PathBuf)>,
@@ -298,3 +316,7 @@ fn open_file(path: &Path) -> io::Result<File> {
     }
     Ok(file)
 }
+
+#[cfg(test)]
+#[path = "../../../tests/private/app_backup/portable_envelope.rs"]
+mod tests;
