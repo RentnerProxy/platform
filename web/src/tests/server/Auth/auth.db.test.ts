@@ -672,12 +672,9 @@ describe('navigation preferences with PostgreSQL', () => {
                     ),
                 ),
             )
-            expect((await loadActiveAccess(user.id)).navigationGroupPreferences).toEqual({
-                operations: true,
-                security: true,
-                administration: true,
-                records: true,
-            })
+            const expanded = Object.fromEntries(NAVIGATION_GROUP_IDS.map((id) => [id, true]))
+            const collapsed = Object.fromEntries(NAVIGATION_GROUP_IDS.map((id) => [id, false]))
+            expect((await loadActiveAccess(user.id)).navigationGroupPreferences).toEqual(expanded)
             await Promise.all(
                 NAVIGATION_GROUP_IDS.map((groupId) =>
                     runWithSessionToken(session.token, () =>
@@ -689,22 +686,12 @@ describe('navigation preferences with PostgreSQL', () => {
                     ),
                 ),
             )
-            expect((await loadActiveAccess(user.id)).navigationGroupPreferences).toEqual({
-                operations: false,
-                security: false,
-                administration: false,
-                records: false,
-            })
+            expect((await loadActiveAccess(user.id)).navigationGroupPreferences).toEqual(collapsed)
             await getAuthDatabase()
                 .insert(userSettings)
                 .values({ userId: user.id, themeMode: 'dark' })
                 .onConflictDoUpdate({ target: userSettings.userId, set: { themeMode: 'dark' } })
-            expect((await loadActiveAccess(user.id)).navigationGroupPreferences).toEqual({
-                operations: false,
-                security: false,
-                administration: false,
-                records: false,
-            })
+            expect((await loadActiveAccess(user.id)).navigationGroupPreferences).toEqual(collapsed)
         },
     )
 
