@@ -1,4 +1,5 @@
 mod files;
+mod portable;
 
 use crate::{app_install::Installer, app_manager, appliance_process};
 use marketplace_artifacts::{digest, invalid, read_file};
@@ -50,20 +51,31 @@ fn app_roots(
     installations: &Value,
     pending: Option<&str>,
 ) -> io::Result<BTreeMap<u32, PathBuf>> {
+    checked_app_roots(root, installations, pending, false)
+}
+
+fn checked_app_roots(
+    root: &Path,
+    installations: &Value,
+    pending: Option<&str>,
+    portable: bool,
+) -> io::Result<BTreeMap<u32, PathBuf>> {
     let mut slots = BTreeMap::new();
-    for slot in installations
+    for (id, slot) in installations
         .as_object()
         .ok_or_else(|| invalid("Invalid backup inventory"))?
-        .values()
     {
         let uid = slot["uid"]
             .as_u64()
             .filter(|u| (20000..=59999).contains(u))
             .ok_or_else(|| invalid("Invalid backup UID"))? as u32;
-        if slot["databaseProvisioned"] != false || !slot["written"].is_null() {
+        if !portable && (slot["databaseProvisioned"] != false || !slot["written"].is_null()) {
             return Err(invalid("Application database recovery is unavailable"));
         }
-        if slots.insert(uid, storage_requirement(slot)?).is_some() {
+        if slots
+            .insert(uid, (storage_requirement(slot)?, id, slot))
+            .is_some()
+        {
             return Err(invalid("Duplicate installation UID"));
         }
     }
@@ -81,10 +93,13 @@ fn app_roots(
             .and_then(|s| s.parse::<u32>().ok())
             .filter(|u| {
                 u.to_string().as_str() == name
-                    && slots.get(u).is_some_and(|claim| *claim != Some(false))
+                    && slots
+                        .get(u)
+                        .is_some_and(|(claim, _, _)| *claim != Some(false))
             })
             .ok_or_else(|| invalid("Untracked installation data"))?;
         let root = entry.path();
+        let (_, id, slot) = slots[&uid];
         let meta = fs::symlink_metadata(&root)?;
         if !meta.is_dir() || meta.uid() != 0 || meta.gid() != uid || meta.mode() & 0o7777 != 0o710 {
             return Err(invalid("Unsafe installation directory"));
@@ -95,6 +110,21 @@ fn app_roots(
                 files::check_staging(&member.path())?;
                 continue;
             }
+            if portable
+                && slot["databaseProvisioned"] == true
+                && member.file_name() == "database-password"
+            {
+                let info = fs::symlink_metadata(member.path())?;
+                if !info.is_file()
+                    || info.uid() != 0
+                    || info.gid() != 0
+                    || info.nlink() != 1
+                    || info.mode() & 0o7777 != 0o600
+                {
+                    return Err(invalid("Unsafe application database password file"));
+                }
+                continue;
+            }
             if member.file_name() != "data"
                 && member.file_name() != ".provision.lock"
                 && member.file_name() != ".manager-owner"
@@ -102,12 +132,6 @@ fn app_roots(
                 return Err(invalid("Unsupported installation storage"));
             }
         }
-        let (id, slot) = installations
-            .as_object()
-            .unwrap()
-            .iter()
-            .find(|(_, s)| s["uid"].as_u64() == Some(u64::from(uid)))
-            .ok_or_else(|| invalid("Unknown UID"))?;
         let owner = root.join(".manager-owner");
         let owner_meta = fs::symlink_metadata(&owner)?;
         let app = slot["appId"]
@@ -134,13 +158,21 @@ fn app_roots(
         }
         roots.insert(uid, data);
     }
-    if slots
-        .iter()
-        .any(|(uid, claim)| *claim == Some(true) && !roots.contains_key(uid))
+    if !(portable && pending.is_some())
+        && slots
+            .iter()
+            .any(|(uid, (claim, _, _))| *claim == Some(true) && !roots.contains_key(uid))
     {
         return Err(invalid("Provisioned application data is missing"));
     }
     Ok(roots)
+}
+
+pub(crate) fn valid_portable_digest(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_snapshot(snapshot: &Snapshot) -> io::Result<()> {
@@ -215,16 +247,27 @@ fn compatible_inventory(snapshot: &mut Snapshot, inventory: &Value) -> io::Resul
 }
 
 fn process(args: &[String]) -> io::Result<()> {
-    if let [action, path] = args
-        && action == "inspect"
-    {
-        return validate_snapshot(&serde_json::from_slice(&read_file(
-            Path::new(path),
-            MAX_ARCHIVE as u64,
-        )?)?);
+    if let [action, path] = args {
+        match action.as_str() {
+            "inspect" => {
+                return validate_snapshot(&serde_json::from_slice(&read_file(
+                    Path::new(path),
+                    MAX_ARCHIVE as u64,
+                )?)?);
+            }
+            "inspect-portable" => return portable::inspect(Path::new(path)),
+            _ => {}
+        }
     }
     if unsafe { libc::geteuid() } != 0 {
         return Err(invalid("Application backup requires maintenance ownership"));
+    }
+    match args {
+        [action] if action == "capture-portable" => return portable::capture(),
+        [action, path] if matches!(action.as_str(), "verify-portable" | "restore-portable") => {
+            return portable::recover(Path::new(path), action == "restore-portable");
+        }
+        _ => {}
     }
     let config = Installer::appliance_override();
     let (_guard, inventory) = app_manager::backup_inventory(config.as_deref())?;

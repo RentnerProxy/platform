@@ -1,6 +1,7 @@
 use super::{MAX_DATA, MAX_NODES};
 
 const MAX_OUTGOING_NODES: usize = 65_536;
+const DATABASE_URL: &str = "database-url";
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use marketplace_artifacts::invalid;
 use serde::{Deserialize, Serialize};
@@ -158,8 +159,24 @@ fn walk_data(
 }
 
 pub(super) fn capture(root: &Path, uid: u32, budget: &mut Budget) -> io::Result<Vec<Entry>> {
+    capture_files(root, uid, budget, false)
+}
+
+pub(super) fn capture_files(
+    root: &Path,
+    uid: u32,
+    budget: &mut Budget,
+    database: bool,
+) -> io::Result<Vec<Entry>> {
     let mut entries = Vec::new();
     walk_data(root, uid, |path, info| {
+        if database && path == DATABASE_URL {
+            return if info.is_file() {
+                Ok(())
+            } else {
+                Err(invalid("Unsafe application database URL file"))
+            };
+        }
         let size = if info.is_file() {
             usize::try_from(info.len()).map_err(|_| invalid("Oversized file"))?
         } else {
@@ -253,10 +270,19 @@ pub(super) fn inspect_targets(
 }
 
 pub(super) fn validate(entries: &[Entry], budget: &mut Budget) -> io::Result<()> {
+    validate_files(entries, budget, false)
+}
+
+pub(super) fn validate_files(
+    entries: &[Entry],
+    budget: &mut Budget,
+    database: bool,
+) -> io::Result<()> {
     let mut parents = BTreeMap::new();
     for entry in entries {
         safe_name(&entry.path)?;
-        if entry.mode & !0o777 != 0
+        if (database && entry.path == DATABASE_URL)
+            || entry.mode & !0o777 != 0
             || entry
                 .path
                 .rsplit_once('/')

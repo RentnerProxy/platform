@@ -11,6 +11,7 @@ export const CURRENT_COMPATIBILITY_PROFILE = {
 } as const
 
 export const APP_AWARE_BACKUP_VERSION = 5
+export const PORTABLE_APP_BACKUP_VERSION = 6
 
 export const RELEASE_REPOSITORY = 'RentnerProxy/platform'
 export const RELEASE_IMAGE = 'ghcr.io/rentnerproxy/platform'

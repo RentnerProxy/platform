@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
-import { APP_AWARE_BACKUP_VERSION } from '../../web/src/config/compatibility.config.ts'
+import {
+    APP_AWARE_BACKUP_VERSION,
+    PORTABLE_APP_BACKUP_VERSION,
+} from '../../web/src/config/compatibility.config.ts'
 
 // Covers 256 installation summaries plus escaped deployment strings in formatted JSON.
 export const maximumBackupMetadataBytes = 512 * 1024
@@ -72,6 +75,36 @@ export const appBackupInstallations = z
     .min(1)
     .max(256)
 
+export const portableAppBackupMember = z.strictObject({
+    kind: z.enum(['data', 'checkpoint', 'package', 'database']),
+    key: z.string(),
+    bytes: z.number().int().positive().max(BACKUP_RUNTIME_POLICY.maximumArtifactBytes),
+    sha256: digest,
+})
+
+// The native controller validates the full journal Slot and its release/storage semantics.
+const installSlotIdentity = z.object({
+    uid: z.number(),
+    appId: z.string(),
+    generation: z.number(),
+    authorityRecorded: z.boolean().optional(),
+})
+
+export const legacyAppBackupSummary = z.object({
+    formatVersion: z.literal(1),
+    installations: z.record(z.string(), installSlotIdentity),
+})
+
+export const portableAppBackupHeader = z.strictObject({
+    formatVersion: z.literal(2),
+    installations: z.record(z.string(), installSlotIdentity),
+    // At most three package references and one database per installation, plus data and catalog.
+    members: z
+        .array(portableAppBackupMember)
+        .min(1)
+        .max(256 * 4 + 2),
+})
+
 export const metadataSchema = z.discriminatedUnion('version', [
     metadata.extend({ version: z.literal(4) }),
     metadata.extend({
@@ -80,5 +113,9 @@ export const metadataSchema = z.discriminatedUnion('version', [
             bytes: z.number().int().positive().max(BACKUP_RUNTIME_POLICY.maximumAppStateBytes),
             installations: appBackupInstallations,
         }),
+    }),
+    metadata.extend({
+        version: z.literal(PORTABLE_APP_BACKUP_VERSION),
+        applications: artifact.extend({ installations: appBackupInstallations }),
     }),
 ])

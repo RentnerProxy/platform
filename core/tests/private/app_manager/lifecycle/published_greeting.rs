@@ -15,6 +15,9 @@ use std::{
 };
 use tokio::process::{Child, Command as Process};
 
+#[path = "published_greeting/portable_backup.rs"]
+mod portable_backup;
+
 const APP_ID: &str = "rentnerproxy.greeting";
 const APP_API_SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
 const APP_UI_SOCKET: &str = "/run/rentnerproxy/app-ui/web.sock";
@@ -292,11 +295,14 @@ async fn start_manager(
             Ok(())
         });
     }
+    let catalog_ca = config.with_file_name("catalog-ca.pem");
+    if catalog_ca.is_file() {
+        command.env("SSL_CERT_FILE", catalog_ca);
+    }
     let mut child = command
         .arg("--app-manager")
         .arg(config)
         .env(crate::config::CONTROLLER_TOKEN_FILE_ENV, token)
-        .env("SSL_CERT_FILE", config.with_file_name("catalog-ca.pem"))
         .env("NO_PROXY", "github.com,127.0.0.1")
         .env("no_proxy", "github.com,127.0.0.1")
         .kill_on_drop(true)
@@ -373,6 +379,49 @@ fn require_isolated_state() {
     );
 }
 
+struct InstallerFixture {
+    work: tempfile::TempDir,
+    root: PathBuf,
+    config: PathBuf,
+    token: PathBuf,
+}
+
+impl InstallerFixture {
+    fn new(root_bytes: &[u8]) -> Self {
+        // Package installer paths are root-verified; keep them off world-writable /tmp.
+        let work = tempfile::tempdir_in("/var/lib/rentnerproxy").unwrap();
+        fs::set_permissions(work.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let store = PathBuf::from("/var/lib/rentnerproxy/published-greeting-store");
+        fs::create_dir(&store).unwrap();
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o711)).unwrap();
+        let root = work.path().join("root.json");
+        fs::write(&root, root_bytes).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o600)).unwrap();
+        let token = work.path().join("controller-token");
+        fs::write(&token, b"local-lifecycle-fixture").unwrap();
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o400)).unwrap();
+        let config = work.path().join("installer.json");
+        fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "storeDirectory": store,
+                "pinnedRoot": root,
+                "repositoryUrl": "https://github.com/RentnerProxy/app-catalog/",
+                "engineCapabilities": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+        Self {
+            work,
+            root,
+            config,
+            token,
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires native Linux, root, the published Greeting fixture and isolated PostgreSQL"]
 async fn privileged_published_greeting_lifecycle() {
@@ -388,34 +437,10 @@ async fn privileged_published_greeting_lifecycle() {
     );
     let mut authority = start_authority(&installation_id).await;
 
-    // Package installer paths are root-verified; keep them off world-writable /tmp.
-    let work = tempfile::tempdir_in("/var/lib/rentnerproxy").unwrap();
-    fs::set_permissions(work.path(), fs::Permissions::from_mode(0o700)).unwrap();
-    let store = PathBuf::from("/var/lib/rentnerproxy/published-greeting-store");
-    fs::create_dir(&store).unwrap();
-    fs::set_permissions(&store, fs::Permissions::from_mode(0o711)).unwrap();
-    let root = work.path().join("root.json");
-    fs::write(&root, &fixture.root).unwrap();
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o600)).unwrap();
-    let token = work.path().join("controller-token");
-    fs::write(&token, b"local-lifecycle-fixture").unwrap();
-    fs::set_permissions(&token, fs::Permissions::from_mode(0o400)).unwrap();
-    let config = work.path().join("installer.json");
-    fs::write(
-        &config,
-        serde_json::to_vec(&json!({
-            "storeDirectory": store,
-            "pinnedRoot": root,
-            "repositoryUrl": "https://github.com/RentnerProxy/app-catalog/",
-            "engineCapabilities": [],
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
-
-    let mut catalog = PublishedCatalogServer::start(work.path(), &fixture);
-    let mut manager = start_manager(&controller, &config, &token, None).await;
+    let installer = InstallerFixture::new(&fixture.root);
+    let (config, token) = (&installer.config, &installer.token);
+    let mut catalog = PublishedCatalogServer::start(installer.work.path(), &fixture);
+    let mut manager = start_manager(&controller, config, token, None).await;
     let listing = wait_catalog_state("ready").await;
     let first = &fixture.snapshots[0];
     let second = &fixture.snapshots[1];
@@ -494,8 +519,34 @@ async fn privileged_published_greeting_lifecycle() {
         PERSISTED_GREETING
     );
 
+    let after_backup;
+    let before_rollback = if let Some(directory) = std::env::var_os("RP_GREETING_CAPTURE_DIRECTORY")
+    {
+        portable_backup::capture(
+            &controller,
+            &installer,
+            &mut manager,
+            &fixture.snapshots,
+            u32::try_from(uid).unwrap(),
+            Path::new(&directory),
+        )
+        .await;
+        manager = start_manager(&controller, config, token, Some(&installation_id)).await;
+        after_backup = wait_catalog_state("ready").await;
+        let continued = running_installation(&after_backup, &installation_id);
+        assert_eq!(continued["version"], second.version);
+        assert_eq!(continued["archiveSha256"], second.archive_sha256);
+        assert_eq!(continued["generation"], updated_generation + 1);
+        continued
+    } else {
+        updated
+    };
     catalog.stop();
-    let offline_rollback = lifecycle_request("rollback", updated, Some(&updated["previous"]));
+    let offline_rollback = lifecycle_request(
+        "rollback",
+        before_rollback,
+        Some(&before_rollback["previous"]),
+    );
     post_lifecycle(&offline_rollback).await;
     let rolled_back_view = wait_lifecycle("rollback").await;
     let rolled_back = running_installation(&rolled_back_view, &installation_id);
@@ -507,7 +558,10 @@ async fn privileged_published_greeting_lifecycle() {
         second.archive_sha256
     );
     let rollback_generation = rolled_back["generation"].as_u64().unwrap();
-    assert_eq!(rollback_generation, updated_generation + 1);
+    assert_eq!(
+        rollback_generation,
+        before_rollback["generation"].as_u64().unwrap() + 1
+    );
     assert_eq!(
         read_greeting(&installation_id, rollback_generation).await,
         PERSISTED_GREETING
@@ -518,7 +572,7 @@ async fn privileged_published_greeting_lifecycle() {
     );
 
     halt(&mut manager).await;
-    manager = start_manager(&controller, &config, &token, Some(&installation_id)).await;
+    manager = start_manager(&controller, config, token, Some(&installation_id)).await;
     let after_restart = manager_status().await.unwrap()[&installation_id].clone();
     assert_eq!(after_restart["active"], first.version);
     let restarted_generation = rollback_generation + 1;

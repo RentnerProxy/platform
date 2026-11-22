@@ -10,7 +10,8 @@ use super::{Installer, filesystem};
 
 const METADATA_BUDGET: usize = 64 * 1024 * 1024;
 const MAX_FILES: usize = 5300;
-const CHECKPOINT: &str = "catalog-checkpoint.json";
+pub(super) const CHECKPOINT: &str = "catalog-checkpoint.json";
+pub(super) const CHECKPOINT_LIMIT: u64 = 96 * 1024 * 1024;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -55,7 +56,7 @@ impl Installer {
     pub(super) fn checkpoint(&self) -> io::Result<Option<(i64, TrustedPackageCatalog)>> {
         let bytes = match read_file(
             &self.config.store_directory.join(CHECKPOINT),
-            96 * 1024 * 1024,
+            CHECKPOINT_LIMIT,
         ) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),

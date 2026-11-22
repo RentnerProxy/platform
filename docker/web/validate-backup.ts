@@ -4,6 +4,7 @@ import { Database } from 'bun:sqlite'
 import { createDecipheriv, createHash } from 'node:crypto'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { PORTABLE_APP_BACKUP_VERSION } from '../../web/src/config/compatibility.config.ts'
 import {
     isSupportedBackupVersion,
     supportedBackupFormatLabel,
@@ -181,13 +182,20 @@ export async function validateDatabase(
         await readFile(join(backupDirectory, 'metadata.json'), 'utf8'),
     )
     assertSupportedBackupVersion(metadata)
-    if (isRecord(metadata) && metadata.version === 5) {
+    if (
+        isRecord(metadata) &&
+        (metadata.version === 5 || metadata.version === PORTABLE_APP_BACKUP_VERSION)
+    ) {
+        const portable = metadata.version === PORTABLE_APP_BACKUP_VERSION
         const child = Bun.spawn(
             [
                 '/usr/local/bin/rentnerproxy-controller',
                 '--app-backup',
-                'inspect',
-                join(backupDirectory, '.rentnerproxy-app-state-v1'),
+                portable ? 'inspect-portable' : 'inspect',
+                join(
+                    backupDirectory,
+                    portable ? '.rentnerproxy-app-state-v2' : '.rentnerproxy-app-state-v1',
+                ),
             ],
             { stdout: 'ignore', stderr: 'ignore' },
         )
@@ -231,7 +239,9 @@ export async function validateDatabase(
             ? await sql`SELECT id, app_id AS "appId", uid::integer AS uid FROM rentnerproxy.app_runtime_installations LIMIT 257`
             : []
         const apps =
-            isRecord(metadata) && metadata.version === 5 && isRecord(metadata.applications)
+            isRecord(metadata) &&
+            (metadata.version === 5 || metadata.version === PORTABLE_APP_BACKUP_VERSION) &&
+            isRecord(metadata.applications)
                 ? metadata.applications.installations
                 : []
         assertBackupAppRows(apps, appRows)

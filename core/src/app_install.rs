@@ -9,8 +9,13 @@ mod appliance;
 ))]
 mod browse;
 mod catalog;
-mod filesystem;
+pub(crate) mod filesystem;
 mod package;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) mod recovery;
 mod transport;
 
 #[cfg(test)]
@@ -174,15 +179,7 @@ impl Installer {
         fetch: impl FnOnce(&rentnerproxy_app_contracts::DownloadAsset<'_>) -> io::Result<R>,
     ) -> io::Result<StagedPackage> {
         let document = parse_json(trusted.catalog_bytes())?;
-        let catalog = self
-            .contracts
-            .validate_catalog(&document)
-            .map_err(invalid_contract)?;
-        let package = catalog
-            .package(app_id, version, self.target)
-            .ok_or_else(|| {
-                invalid("App release is revoked, missing, or unavailable for this target")
-            })?;
+        let (package, catalog_revision) = self.signed_package(&document, app_id, version)?;
         let expected_hash = match source {
             PackageSource::Catalog(hash) => hash,
             PackageSource::Recorded(hash) => Some(hash),
@@ -207,11 +204,29 @@ impl Installer {
             manifest: package.manifest().clone(),
             archive_sha256: package.archive_sha256().to_owned(),
             manifest_sha256: package.manifest_sha256().to_owned(),
-            catalog_revision: document["revision"]
-                .as_f64()
-                .ok_or_else(|| invalid("Missing catalog revision"))?
-                as u64,
+            catalog_revision,
         })
+    }
+
+    fn signed_package<'a>(
+        &self,
+        document: &'a Value,
+        app_id: &str,
+        version: &str,
+    ) -> io::Result<(rentnerproxy_app_contracts::Package<'a>, u64)> {
+        let catalog = self
+            .contracts
+            .validate_catalog(document)
+            .map_err(invalid_contract)?;
+        let package = catalog
+            .package(app_id, version, self.target)
+            .ok_or_else(|| {
+                invalid("App release is revoked, missing, or unavailable for this target")
+            })?;
+        let revision = document["revision"]
+            .as_f64()
+            .ok_or_else(|| invalid("Missing catalog revision"))? as u64;
+        Ok((package, revision))
     }
 
     fn check_compatibility(&self, manifest: &Value) -> io::Result<()> {

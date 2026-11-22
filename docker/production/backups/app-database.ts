@@ -3,9 +3,13 @@ import { rejectAppDatabasesSql } from '../../../scripts/backup/app-state.ts'
 import { runMaintenanceProcess } from '../../../scripts/backup/maintenance-process.ts'
 import type { BackupMetadata } from '../../../scripts/backup/Types/format.types.ts'
 
-type Inventory = Extract<BackupMetadata, { version: 5 }>['applications']['installations']
+type Inventory = Exclude<BackupMetadata, { version: 4 }>['applications']['installations']
 
-export async function checkLiveAppDatabase(expected: Inventory, signal?: AbortSignal) {
+export async function checkLiveAppDatabase(
+    expected: Inventory,
+    signal?: AbortSignal,
+    mode: 'legacy' | 'portable' | 'portable-resume' = 'legacy',
+) {
     const result = await runMaintenanceProcess(
         [
             'gosu',
@@ -28,7 +32,7 @@ export async function checkLiveAppDatabase(expected: Inventory, signal?: AbortSi
             maximumOutputBytes: 65_536,
             input: Buffer.from(
                 [
-                    rejectAppDatabasesSql,
+                    mode === 'legacy' ? rejectAppDatabasesSql : 'SELECT 1;',
                     "SELECT to_regclass('rentnerproxy.app_runtime_installations') IS NOT NULL AS has_apps",
                     '\\gset',
                     '\\if :has_apps',
@@ -47,5 +51,6 @@ export async function checkLiveAppDatabase(expected: Inventory, signal?: AbortSi
     if (!output.startsWith('1\n')) throw new Error('Invalid live application database evidence')
     const rows: unknown = JSON.parse(output.slice(2))
     if (!Array.isArray(rows)) throw new Error('Invalid application inventory')
+    if (mode === 'portable-resume' && rows.length === 0) return
     assertBackupAppRows(expected, rows)
 }

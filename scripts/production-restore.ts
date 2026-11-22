@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readDeploymentEnvironmentVariable } from '../web/src/lib/Environment/deployment-environment.ts'
 import { BACKUP_RUNTIME_POLICY } from '../web/src/config/backup-runtime.config.ts'
+import { PORTABLE_APP_BACKUP_VERSION } from '../web/src/config/compatibility.config.ts'
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url))
 const defaultComposeFile = join(repositoryRoot, 'docker-compose.yml')
@@ -65,7 +66,7 @@ async function restore(): Promise<void> {
     try {
         // Only the bounded DNS registry and certificate index are retained for the pinned target image.
         const controllerDocuments: { kind: string; bytes: Uint8Array }[] = []
-        const { metadata, backupId } = await snapshotProductionRestore(
+        const { metadata, backupId, stateCapacity } = await snapshotProductionRestore(
             inputPath,
             snapshot,
             undefined,
@@ -75,6 +76,9 @@ async function restore(): Promise<void> {
             },
         )
 
+        const portable = metadata.version === PORTABLE_APP_BACKUP_VERSION
+        const appAware = portable ? PORTABLE_APP_BACKUP_VERSION : metadata.version === 5
+        const resume = argumentsList.includes('--resume')
         const project = composeProject(argumentsList)
         const composeFile = resolve(process.env.RENTNERPROXY_COMPOSE_FILE ?? defaultComposeFile)
         await stat(composeFile)
@@ -127,7 +131,7 @@ async function restore(): Promise<void> {
                 30_000,
             )
         }
-        await runCommand(
+        const validation = await runCommand(
             [
                 'docker',
                 'run',
@@ -138,11 +142,27 @@ async function restore(): Promise<void> {
                 snapshot + ':/backup:ro',
                 imageId,
                 '-c',
-                postgresCommand(true, '/backup', metadata.version === 5),
+                postgresCommand(true, '/backup', appAware),
             ],
             'restore PostgreSQL',
             BACKUP_RUNTIME_POLICY.databaseTimeoutMs,
         )
+        let portableCapacity: string[] = []
+        if (portable) {
+            const size = /^PORTABLE_RESTORE_CAPACITY=([1-9][0-9]*),([1-9][0-9]*)$/u.exec(
+                validation.split('\n').at(-1) ?? '',
+            )
+            if (!size || !size.slice(1).map(Number).every(Number.isSafeInteger))
+                throw new Error('Isolated restore capacity evidence is unavailable')
+            portableCapacity = [
+                size[1]!,
+                size[2]!,
+                String(stateCapacity.controllerState.payloadBytes),
+                String(stateCapacity.controllerState.nodes),
+                String(stateCapacity.crowdSecState.payloadBytes),
+                String(stateCapacity.crowdSecState.nodes),
+            ]
+        }
 
         const keyVolume = snapshot + ':/restore-key:ro'
         const archiveVolume = snapshot + ':/backup:ro'
@@ -158,7 +178,7 @@ async function restore(): Promise<void> {
             '--env',
             'RENTNERPROXY_RESTORE_BACKUP_ID=' + backupId,
             '--env',
-            'RENTNERPROXY_RESTORE_RESUME=' + argumentsList.includes('--resume'),
+            'RENTNERPROXY_RESTORE_RESUME=' + resume,
             '--volume',
             keyVolume,
             applianceService,
@@ -169,10 +189,9 @@ async function restore(): Promise<void> {
             bootstrap('inspect-production-restore'),
             'inspect pending restore',
         )
-        if (pending && (!argumentsList.includes('--resume') || pending !== backupId))
+        if (pending && (!resume || pending !== backupId))
             throw new Error('interrupted restore requires --resume with the same backup')
-        if (!pending && argumentsList.includes('--resume'))
-            throw new Error('no interrupted restore is pending')
+        if (!pending && resume) throw new Error('no interrupted restore is pending')
         const previouslyRunning =
             !pending &&
             (await runCommand(
@@ -205,15 +224,26 @@ async function restore(): Promise<void> {
                     archiveVolume,
                     applianceService,
                     '-c',
-                    'if bash -c "$1" >&2; then echo accepted; else echo rejected; fi',
+                    portable
+                        ? 'if ! bun --no-env-file /opt/rentnerproxy/web/backup-export.js --check-portable-restore-capacity "${@:2}" >&2; then echo insufficient-capacity; elif bash -c "$1" >&2; then echo accepted; else echo rejected; fi'
+                        : 'if bash -c "$1" >&2; then echo accepted; else echo rejected; fi',
                     'inventory',
-                    postgresCommand('inventory', '/backup', metadata.version === 5, backupId),
+                    postgresCommand('inventory', '/backup', appAware, backupId, resume),
+                    ...portableCapacity,
                 ],
                 'check target application inventory',
-                metadata.version === 5 ? BACKUP_RUNTIME_POLICY.databaseTimeoutMs : 180_000,
+                appAware ? BACKUP_RUNTIME_POLICY.databaseTimeoutMs : 180_000,
             )
+            if (inventory === 'insufficient-capacity')
+                throw new Error(
+                    'Portable application restore target lacks verified storage capacity',
+                )
             if (inventory !== 'accepted')
-                throw new Error('Could not check target application inventory')
+                throw new Error(
+                    portable
+                        ? 'Portable application restore requires verified releases and a fresh application target or the same interrupted restore'
+                        : 'Could not check target application inventory',
+                )
         } catch (error) {
             if (previouslyRunning) {
                 commands.assertRestartSafe()
@@ -306,7 +336,7 @@ async function restore(): Promise<void> {
                     archiveVolume,
                     applianceService,
                     '-c',
-                    controllerRestoreCommand(metadata.version === 5),
+                    controllerRestoreCommand(appAware),
                 ],
                 'restore controller state',
                 BACKUP_RUNTIME_POLICY.captureTimeoutMs,
@@ -346,6 +376,24 @@ async function restore(): Promise<void> {
                     ],
                     'restore verified application files',
                     BACKUP_RUNTIME_POLICY.captureTimeoutMs,
+                )
+            if (portable)
+                await runCommand(
+                    [
+                        ...compose,
+                        'run',
+                        '--no-TTY',
+                        '--rm',
+                        '--no-deps',
+                        '--entrypoint=bash',
+                        '--volume',
+                        archiveVolume,
+                        applianceService,
+                        '-c',
+                        postgresCommand('portable-apps', '/backup', PORTABLE_APP_BACKUP_VERSION),
+                    ],
+                    'restore portable application state and databases',
+                    BACKUP_RUNTIME_POLICY.databaseTimeoutMs,
                 )
             await runCommand(
                 [
