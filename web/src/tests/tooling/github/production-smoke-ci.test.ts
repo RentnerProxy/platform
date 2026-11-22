@@ -4,9 +4,10 @@ import {
     reportedSuites,
     smokeProgress,
 } from '../../../../../.github/scripts/ci/production-smoke-ci.ts'
+import type { Suite } from '../../../../../.github/scripts/ci/Types/production-smoke-ci.types.ts'
 
 test('parallel smoke jobs summarize only their own suites and fall back to every suite', () => {
-    const every = ['proxy', 'certificates', 'upstream-tls', 'production', 'backups']
+    const every: Suite[] = ['proxy', 'certificates', 'upstream-tls', 'production', 'backups']
     expect(reportedSuites('production')).toEqual(['production'])
     expect(reportedSuites('proxy, backups,certificates,upstream-tls')).toEqual([
         'proxy',
