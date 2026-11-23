@@ -81,7 +81,7 @@ test.each([
             expect(service.image).toContain(selection!)
             expect(service.image).toContain("|| ''")
             expect(service.image).toMatch(
-                /'mirror\.gcr\.io\/[\w/]+:\d+\.\d+(?:\.\d+)?-(?:alpine|trixie)'/u,
+                /'mirror\.gcr\.io\/[\w/]+:\d+\.\d+(?:\.\d+)?-alpine(?:\d+\.\d+)?'/u,
             )
         }
     },

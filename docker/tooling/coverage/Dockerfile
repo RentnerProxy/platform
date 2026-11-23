@@ -2,8 +2,9 @@
 
 FROM mirror.gcr.io/oven/bun:1.4.5 AS bun
 
-FROM mirror.gcr.io/library/rust:1.100.0-trixie AS controller
+FROM mirror.gcr.io/library/rust:1.100.0-alpine3.24 AS controller
 WORKDIR /build
+RUN apk add --no-cache build-base cmake perl
 COPY core/Cargo.toml core/Cargo.lock ./
 COPY core/src ./src
 # Only the binary leaves this step so CI can cache the image without exporting target/.

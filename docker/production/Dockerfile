@@ -44,7 +44,7 @@ COPY --from=web-build /app/docker/web/static-assets.ts ./docker/web/static-asset
 COPY --from=web-build /app/docker/web/serve.ts ./docker/web/serve.ts
 COPY --from=web-build /app/docker/web/healthcheck.ts ./docker/web/healthcheck.ts
 
-FROM mirror.gcr.io/library/rust:1.100.0-alpine AS controller-build
+FROM mirror.gcr.io/library/rust:1.100.0-alpine3.24 AS controller-build
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -118,7 +118,7 @@ COPY docker/gosu/tooling/ /opt/gosu-build/
 RUN test "$(go env GOOS)/$(go env GOARCH)" = "$TARGETOS/$TARGETARCH" \
     && /bin/sh /opt/gosu-build/build.sh /out
 
-FROM ghcr.io/crowdsecurity/crowdsec:v1.8.2-debian AS crowdsec-assets
+FROM ghcr.io/crowdsecurity/crowdsec:v1.8.2 AS crowdsec-assets
 
 COPY docker/crowdsec/hub/data.sha256 /tmp/rentnerproxy-crowdsec-hub-data.sha256
 # The pinned Hub scenario fetches a moving upstream list. Use the revision selected by the manifest.
@@ -139,7 +139,7 @@ RUN set -eux; \
     cscli -c /etc/crowdsec/config.yaml collections install crowdsecurity/caddy --force --error >/dev/null; \
     cd /var/lib/crowdsec/data; \
     install -m 0644 /tmp/rentnerproxy-crowdsec-sensitive-data.txt sensitive_data.txt; \
-    sha256sum --check /tmp/rentnerproxy-crowdsec-hub-data.sha256; \
+    sha256sum -c /tmp/rentnerproxy-crowdsec-hub-data.sha256; \
     rm -f /etc/crowdsec/local_api_credentials.yaml \
         /etc/crowdsec/online_api_credentials.yaml; \
     cp -aL /etc/crowdsec/. /opt/rentnerproxy/crowdsec-config/

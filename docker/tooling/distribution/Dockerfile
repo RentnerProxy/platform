@@ -1,4 +1,4 @@
-FROM mirror.gcr.io/library/rust:1.100.0-alpine AS verifier-build
+FROM mirror.gcr.io/library/rust:1.100.0-alpine3.24 AS verifier-build
 WORKDIR /build
 COPY core/distribution-tooling/Cargo.toml core/distribution-tooling/Cargo.lock ./
 COPY core/distribution-tooling/src/ ./src/

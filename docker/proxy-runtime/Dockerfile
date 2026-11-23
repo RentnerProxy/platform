@@ -3,7 +3,7 @@
 # The controller-build and caddy-build stages (and this frontend) intentionally match
 # docker/production/Dockerfile instruction for instruction: CI builds both images on one
 # BuildKit builder, which then compiles the controller and Caddy only once.
-FROM mirror.gcr.io/library/rust:1.100.0-alpine AS controller-build
+FROM mirror.gcr.io/library/rust:1.100.0-alpine3.24 AS controller-build
 
 ARG TARGETOS
 ARG TARGETARCH
