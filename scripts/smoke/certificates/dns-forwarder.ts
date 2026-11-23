@@ -4,8 +4,7 @@ import { connect, createServer, isIP } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import type { CertificateSetupContext } from './Types/scenarios.types.ts'
 
-const forwarderImage =
-    'mirror.gcr.io/oven/bun:1.4.5'
+const forwarderImage = 'mirror.gcr.io/oven/bun:1.4.5'
 
 export function manualDnsForwarderName(project: string): string {
     assert.match(project, /^rentnerproxy-certificate-smoke-[a-f0-9]{12}$/u)

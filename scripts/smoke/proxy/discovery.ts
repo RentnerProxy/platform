@@ -14,8 +14,7 @@ export async function runDiscoverySmoke(deps: DiscoverySmokeDependencies): Promi
     const engine = deps.backend + '-engine'
     const oldBackend = deps.backend + '-old'
     const directory = join(deps.directory, 'discovery')
-    const bun =
-        'mirror.gcr.io/oven/bun:1.4.5'
+    const bun = 'mirror.gcr.io/oven/bun:1.4.5'
     const actorUserId = Bun.randomUUIDv7()
     const registry: DiscoveryRegistry = {
         version: 1,
