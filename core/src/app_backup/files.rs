@@ -411,7 +411,8 @@ fn stage_and_exchange(
     let target = CString::new(root.as_os_str().as_bytes())?;
     // Both directories are under root-owned installation parents, on the same filesystem.
     if unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             source.as_ptr(),
             libc::AT_FDCWD,

@@ -20,8 +20,7 @@ function basicHeader(username: string, password: string): string {
     return 'Basic ' + Buffer.from(username + ':' + password).toString('base64')
 }
 
-const POSTGRES_IMAGE =
-    'mirror.gcr.io/library/postgres:18.7-trixie'
+const POSTGRES_IMAGE = 'mirror.gcr.io/library/postgres:18.7-alpine3.24'
 const repositoryRoot = fileURLToPath(new URL('../../..', import.meta.url))
 const runId = randomUUID().replaceAll('-', '').slice(0, 12)
 const project = 'rentnerproxy-smoke-' + runId

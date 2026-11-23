@@ -37,6 +37,7 @@ fi
 output=${1:?Expected an evidence output directory}
 fixture_script=$(realpath "${BASH_SOURCE[0]}")
 coverage_mount=()
+controller=
 case $# in
     1) ;;
     4)
@@ -103,13 +104,23 @@ snapshot() {
 snapshot 1.0.0 44557b84bce0a63cb71aadc636f8a9c18efeea22 2 889c8db9e97f1e240ae4488f3b34dd6efb086c3425d6f949a6056a0c06231585
 snapshot 1.0.1 37bcec3118a244ff024e9d6f5d92806aeaa2fa0c 3 9872367ede865ddd204520a2880b506644d6ad22461d70c439de2bfc965797be
 
+controller_mount=()
 if [[ $# == 1 ]]; then
     artifacts=$(cargo test --locked --manifest-path core/Cargo.toml --lib --no-run --message-format=json-render-diagnostics)
     app_tests=$(jq -er 'select(.reason == "compiler-artifact" and .target.kind == ["lib"] and .profile.test) | .executable // empty' <<< "$artifacts")
-    artifacts=$(cargo build --locked --manifest-path core/Cargo.toml --bin rentnerproxy-controller --message-format=json-render-diagnostics)
-    controller=$(jq -er 'select(.reason == "compiler-artifact" and .target.name == "rentnerproxy-controller" and .target.kind == ["bin"]) | .executable // empty' <<< "$artifacts")
+    if [[ ! ${GREETING_APPLIANCE_IMAGE_ID+x} ]]; then
+        artifacts=$(cargo build --locked --manifest-path core/Cargo.toml --bin rentnerproxy-controller --message-format=json-render-diagnostics)
+        controller=$(jq -er 'select(.reason == "compiler-artifact" and .target.name == "rentnerproxy-controller" and .target.kind == ["bin"]) | .executable // empty' <<< "$artifacts")
+    fi
 fi
-[[ -x $app_tests && -x $controller ]]
+[[ -x $app_tests ]]
+if [[ -n $controller ]]; then
+    [[ -x $controller ]]
+    controller_mount=(--mount "type=bind,source=$controller,target=/controller,readonly")
+    controller_path=/controller
+else
+    controller_path=/usr/local/bin/rentnerproxy-controller
+fi
 
 run_fixture() {
     local mode=$1
@@ -121,12 +132,12 @@ run_fixture() {
         --tmpfs '/tmp:rw,exec,mode=01777,size=1024m' \
         --tmpfs '/var/lib/rentnerproxy:rw,exec,mode=0711,size=1024m' \
         --mount "type=bind,source=$app_tests,target=/app-tests,readonly" \
-        --mount "type=bind,source=$controller,target=/controller,readonly" \
+        "${controller_mount[@]}" \
         --mount "type=bind,source=$fixture_script,target=/fixture/run.sh,readonly" \
         --mount "type=bind,source=$PWD/docker/production/apps/pg_hba.conf,target=/fixture/pg_hba.conf,readonly" \
         --mount "type=bind,source=$PWD/docker/production/apps/pg_ident.conf,target=/fixture/pg_ident.conf,readonly" \
         --mount "type=bind,source=$output,target=/evidence" \
-        --env RENTNERPROXY_TEST_CONTROLLER=/controller \
+        --env "RENTNERPROXY_TEST_CONTROLLER=$controller_path" \
         "${coverage_mount[@]}" \
         "$@" \
         --entrypoint /bin/bash \

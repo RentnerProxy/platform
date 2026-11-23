@@ -6,7 +6,6 @@ Source archive SHA256: a02cb44db1269b699629e419d4949e6e51e984b1f0e9a984e8ee1e1b3
 Valkey and inherited Redis BSD-3-Clause licenses are reproduced in LICENSE.
 The following upstream notices accompany the redistributed server and CLI.
 fast_float is used under its MIT option; liblzf under its BSD option.
-Shared system libraries retain their Debian copyright files under /usr/share/doc.
 
 ===== deps/jemalloc/COPYING =====
 

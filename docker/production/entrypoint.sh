@@ -315,6 +315,46 @@ SQL
     fi
 }
 
+verify_postgres_collations() {
+    local database_urls database compatible
+    local psql_local=(timeout --kill-after=1s 15s gosu postgres psql
+        --no-psqlrc --no-password --host=/var/run/postgresql --username=postgres
+        --tuples-only --no-align --set=ON_ERROR_STOP=1)
+
+    # Check the existing cluster before migrations or app writers start. The
+    # database may have been initialized under a different libc or ICU version.
+    compatible=$("${psql_local[@]}" --dbname=postgres --command='
+        SELECT NOT EXISTS (
+            SELECT FROM pg_database
+            WHERE datallowconn
+              AND datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)
+        )') || fatal 'could not verify PostgreSQL database collations'
+    [[ $compatible == t ]] || fatal 'PostgreSQL database collation changed; restore a logical backup into a fresh volume'
+
+    # Percent-encode every byte so a database name cannot set connection options.
+    database_urls=$("${psql_local[@]}" --dbname=postgres --command="
+        SELECT 'postgresql:///' || regexp_replace(encode(convert_to(datname, 'UTF8'), 'hex'), '(..)', '%\1', 'g')
+        FROM pg_database WHERE datallowconn ORDER BY oid
+    ") || fatal 'could not enumerate existing PostgreSQL databases'
+    while IFS= read -r database; do
+        compatible=$("${psql_local[@]}" --dbname="$database" --command="
+            SELECT NOT EXISTS (
+                SELECT FROM pg_collation AS col
+                WHERE col.collprovider IN ('c', 'i')
+                  AND (
+                      col.collnamespace <> 'pg_catalog'::regnamespace
+                      OR EXISTS (
+                          SELECT FROM pg_depend
+                          WHERE refclassid = 'pg_collation'::regclass AND refobjid = col.oid
+                      )
+                  )
+                  AND col.collversion IS DISTINCT FROM pg_collation_actual_version(col.oid)
+            )
+        ") || fatal 'could not verify PostgreSQL object collations'
+        [[ $compatible == t ]] || fatal 'PostgreSQL object collation changed; restore a logical backup into a fresh volume'
+    done <<< "$database_urls"
+}
+
 start_postgres() {
     start_child postgres gosu postgres postgres \
         -D "$postgres_directory" \
@@ -327,6 +367,9 @@ start_postgres() {
         --host=/var/run/postgresql \
         --username=postgres \
         --dbname=postgres
+    if [[ -f /etc/alpine-release ]]; then
+        verify_postgres_collations
+    fi
     ensure_application_database
 }
 

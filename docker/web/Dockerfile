@@ -1,4 +1,4 @@
-FROM mirror.gcr.io/oven/bun:1.4.5 AS dependencies
+FROM mirror.gcr.io/oven/bun:1.4.5-alpine AS dependencies
 
 WORKDIR /app
 COPY package.json bun.lock ./
@@ -13,7 +13,7 @@ RUN RENTNERPROXY_BUILD_VERSION="$RENTNERPROXY_BUILD_VERSION" bun run build:web
 RUN bun build web/src/db/migrate.ts --target=bun --outfile=/build/migrate.js \
     && bun docker/web/package-migrations.ts ./web/drizzle /build/migrations
 
-FROM mirror.gcr.io/oven/bun:1.4.5 AS runtime
+FROM mirror.gcr.io/oven/bun:1.4.5-alpine AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production \

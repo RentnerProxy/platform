@@ -181,7 +181,7 @@ jobs:
         timeout-minutes: 20
         services:
             postgres:
-                image: ${{ needs.changes.outputs.web == 'true' && 'mirror.gcr.io/library/postgres:18.7-trixie' || '' }}
+                image: ${{ needs.changes.outputs.web == 'true' && 'mirror.gcr.io/library/postgres:18.7-alpine3.24' || '' }}
                 env:
                     POSTGRES_USER: rentnerproxy
                     POSTGRES_PASSWORD: rentnerproxy

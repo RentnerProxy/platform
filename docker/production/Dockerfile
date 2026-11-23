@@ -1,6 +1,6 @@
 # syntax=mirror.gcr.io/docker/dockerfile:1.24.0
 
-FROM mirror.gcr.io/oven/bun:1.4.5 AS web-dependencies
+FROM mirror.gcr.io/oven/bun:1.4.5-alpine AS web-dependencies
 
 WORKDIR /app
 COPY package.json bun.lock ./
@@ -19,7 +19,7 @@ RUN RENTNERPROXY_BUILD_VERSION="$RENTNERPROXY_BUILD_VERSION" bun run build:web \
     && bun build docker/production/backups/build-identity.ts --target=bun --outfile=/build/backup-build-identity.js \
     && bun docker/web/package-migrations.ts ./web/drizzle /build/migrations
 
-FROM mirror.gcr.io/oven/bun:1.4.5 AS web-runtime
+FROM mirror.gcr.io/oven/bun:1.4.5-alpine AS web-runtime
 
 WORKDIR /app
 COPY package.json bun.lock ./
@@ -44,11 +44,12 @@ COPY --from=web-build /app/docker/web/static-assets.ts ./docker/web/static-asset
 COPY --from=web-build /app/docker/web/serve.ts ./docker/web/serve.ts
 COPY --from=web-build /app/docker/web/healthcheck.ts ./docker/web/healthcheck.ts
 
-FROM mirror.gcr.io/library/rust:1.100.0-trixie AS controller-build
+FROM mirror.gcr.io/library/rust:1.100.0-alpine AS controller-build
 
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /build
+RUN apk add --no-cache build-base cmake perl
 COPY core/Cargo.toml core/Cargo.lock ./
 COPY core/src ./src
 ARG RENTNERPROXY_BUILD_VERSION
@@ -58,12 +59,16 @@ ARG RENTNERPROXY_BUILD_VERSION
 RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/registry \
     set -eu; \
     case "$TARGETOS/$TARGETARCH" in \
-        linux/amd64) rust_host=x86_64-unknown-linux-gnu ;; \
-        linux/arm64) rust_host=aarch64-unknown-linux-gnu ;; \
+        linux/amd64) rust_host=x86_64-unknown-linux-musl ;; \
+        linux/arm64) rust_host=aarch64-unknown-linux-musl ;; \
         *) echo 'Unsupported controller platform' >&2; exit 1 ;; \
     esac; \
     test "$(rustc -vV | sed -n 's/^host: //p')" = "$rust_host"; \
     RENTNERPROXY_BUILD_VERSION="${RENTNERPROXY_BUILD_VERSION:-}" cargo build --locked --release; \
+    linkage=$(readelf --wide --program-headers --dynamic target/release/rentnerproxy-controller); \
+    if printf '%s\n' "$linkage" | grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)'; then \
+        echo 'Expected a static musl controller' >&2; exit 1; \
+    fi; \
     install -D -m 0755 target/release/rentnerproxy-controller /out/rentnerproxy-controller; \
     rm -rf target
 
@@ -96,12 +101,10 @@ RUN bun --no-env-file /tmp/download-geoip.ts
 
 # Build pristine upstream CrowdSec with the managed SQLite backend and pinned
 # security dependencies; exclude its unused legacy PostgreSQL backend.
-FROM mirror.gcr.io/library/golang:1.27.4-trixie AS crowdsec-build
+FROM mirror.gcr.io/library/golang:1.27.4-alpine AS crowdsec-build
 ARG TARGETOS
 ARG TARGETARCH
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential pkg-config ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache build-base ca-certificates coreutils curl linux-headers pkgconf
 COPY docker/crowdsec/tooling/engine-build/ /opt/crowdsec-build/
 COPY docker/tooling/buildinfo/verify.go /opt/verify-buildinfo.go
 RUN test "$(go env GOOS)/$(go env GOARCH)" = "$TARGETOS/$TARGETARCH" \
@@ -141,9 +144,38 @@ RUN set -eux; \
         /etc/crowdsec/online_api_credentials.yaml; \
     cp -aL /etc/crowdsec/. /opt/rentnerproxy/crowdsec-config/
 
-FROM mirror.gcr.io/valkey/valkey:9.2.0-trixie AS valkey-runtime
+FROM mirror.gcr.io/valkey/valkey:9.2.0-alpine AS valkey-runtime
 
-FROM mirror.gcr.io/library/postgres:18.7-trixie AS runtime
+# Already published app executables use the v1 GNU/Linux ABI. Keep its narrowly
+# scoped libraries and loader paths while the appliance services move to musl.
+FROM mirror.gcr.io/library/debian:13.7-slim AS published-app-glibc
+ARG TARGETARCH
+ARG BUILDKIT_SBOM_SCAN_STAGE=true
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends libc6 libgcc-s1 libstdc++6; \
+    case "$TARGETARCH" in \
+        amd64) triplet=x86_64-linux-gnu; loader=ld-linux-x86-64.so.2; loader_directory=/lib64 ;; \
+        arm64) triplet=aarch64-linux-gnu; loader=ld-linux-aarch64.so.1; loader_directory=/lib ;; \
+        *) exit 1 ;; \
+    esac; \
+    mkdir -p "/out/usr/lib/$triplet" "/out$loader_directory" /out/lib; \
+    for library in "$loader" libc.so.6 libdl.so.2 libm.so.6 libpthread.so.0 libresolv.so.2 librt.so.1 libgcc_s.so.1 libstdc++.so.6; do \
+        install -m 0755 "/usr/lib/$triplet/$library" "/out/usr/lib/$triplet/$library"; \
+    done; \
+    ln -s "/usr/lib/$triplet/$loader" "/out$loader_directory/$loader"; \
+    ln -s "/usr/lib/$triplet" "/out/lib/$triplet"; \
+    for package in libc6 libgcc-s1 libstdc++6; do \
+        install -D -m 0644 "/usr/share/doc/$package/copyright" "/out/usr/share/licenses/rentnerproxy/app-abi/$package"; \
+    done
+
+FROM mirror.gcr.io/library/postgres:18.7-alpine3.24 AS postgres-runtime
+# RentnerProxy owns the entrypoint and bundles its own gosu build.
+RUN rm -f /usr/local/bin/gosu /usr/local/bin/docker-entrypoint.sh \
+    /usr/local/bin/docker-ensure-initdb.sh /usr/local/bin/docker-enforce-initdb.sh
+
+FROM scratch AS runtime
+COPY --from=postgres-runtime / /
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -152,6 +184,7 @@ LABEL org.opencontainers.image.source="https://github.com/RentnerProxy/platform"
 
 ENV APP_DIR=/opt/rentnerproxy/web \
     NODE_ENV=production \
+    LANG=C.UTF-8 \
     PGDATA=/var/lib/rentnerproxy/postgres-data \
     RENTNERPROXY_CADDY_BIN=/usr/bin/caddy \
     RENTNERPROXY_PROXY_HTTP_PORT=8080 \
@@ -159,17 +192,24 @@ ENV APP_DIR=/opt/rentnerproxy/web \
     RENTNERPROXY_PROXY_STATE_DIR=/var/lib/rentnerproxy/proxy \
     RENTNERPROXY_SYSTEM_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 \
-    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.46-1~deb13u3' \
-    && apt-get install -y --no-install-recommends binutils ca-certificates curl openssl tini libcap2-bin libsystemd0 \
-    && rm -rf /var/lib/apt/lists/* \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache bash binutils ca-certificates coreutils curl findutils flock grep openssl procps-ng setpriv tar tini \
+    && apk add --no-cache --virtual .image-setup libcap-utils shadow \
+    && test "$(getent group 999 | cut -d: -f1)" = ping \
+    && groupdel ping \
+    && groupmod --gid 999 postgres \
+    && usermod --uid 999 --gid postgres postgres \
+    && test "$(id -u postgres):$(id -g postgres)" = 999:999 \
+    && install -d -m 0755 /usr/lib/postgresql/18/bin \
+    && for binary in postgres initdb pg_ctl pg_isready pg_dump pg_restore psql; do \
+        ln -s "/usr/local/bin/$binary" "/usr/lib/postgresql/18/bin/$binary"; \
+    done \
     && groupadd --gid 10001 rentnerproxy \
-    && useradd --uid 10001 --gid rentnerproxy --no-create-home --shell /usr/sbin/nologin rentnerproxy \
+    && useradd --uid 10001 --gid rentnerproxy --no-create-home --shell /sbin/nologin rentnerproxy \
     && groupadd --gid 10002 rentnerproxy-web \
-    && useradd --uid 10002 --gid rentnerproxy-web --no-create-home --shell /usr/sbin/nologin rentnerproxy-web \
+    && useradd --uid 10002 --gid rentnerproxy-web --no-create-home --shell /sbin/nologin rentnerproxy-web \
     && groupadd --gid 10003 crowdsec \
-    && useradd --uid 10003 --gid crowdsec --no-create-home --shell /usr/sbin/nologin crowdsec \
+    && useradd --uid 10003 --gid crowdsec --no-create-home --shell /sbin/nologin crowdsec \
     && install -d -m 0711 -o root -g root /var/lib/rentnerproxy \
     && install -d -m 0700 -o postgres -g postgres /var/lib/rentnerproxy/postgres-data \
     && install -d -m 0710 -o rentnerproxy -g crowdsec /var/lib/rentnerproxy/proxy \
@@ -183,6 +223,7 @@ RUN apt-get update \
     && chmod 00700 /var/run/postgresql \
     && install -d -m 0755 /opt/rentnerproxy/valkey/bin
 
+COPY --from=published-app-glibc /out/ /
 COPY --from=web-runtime /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=web-runtime /app /opt/rentnerproxy/web
 COPY --from=controller-build /out/rentnerproxy-controller /usr/local/bin/rentnerproxy-controller
@@ -234,10 +275,7 @@ RUN chmod 0555 /usr/local/bin/rentnerproxy-production \
     && chmod 0555 /opt/rentnerproxy/valkey/bin/valkey-server /opt/rentnerproxy/valkey/bin/valkey-cli \
     && /opt/rentnerproxy/valkey/bin/valkey-server --version | grep -F 'v=9.2.0 ' \
     && /opt/rentnerproxy/valkey/bin/valkey-cli --version | grep -Fx 'valkey-cli 9.2.0' \
-    && ldd /opt/rentnerproxy/valkey/bin/valkey-server > /tmp/valkey-server-libraries \
-    && ldd /opt/rentnerproxy/valkey/bin/valkey-cli > /tmp/valkey-cli-libraries \
-    && ! grep -F 'not found' /tmp/valkey-server-libraries /tmp/valkey-cli-libraries \
-    && rm /tmp/valkey-server-libraries /tmp/valkey-cli-libraries \
+    && postgres --version | grep -E '^postgres \(PostgreSQL\) 18\.' \
     && install -d -m 0555 -o root -g root /usr/share/rentnerproxy/crowdsec/plugins \
     && find /usr/share/rentnerproxy/crowdsec -type d -exec chmod 0555 {} + \
     && find /usr/share/rentnerproxy/crowdsec -type f -exec chmod 0444 {} + \
@@ -249,7 +287,7 @@ RUN chmod 0555 /usr/local/bin/rentnerproxy-production \
     && /usr/bin/caddy list-modules | grep -Fx http.handlers.rentnerproxy_upstream \
     && /usr/bin/caddy list-modules | grep -Fx admin.api.rentnerproxy \
     && /usr/local/bin/crowdsec -version | grep -F 'version: v1.8.2-3d369d64eb3e9ba770ed39aedc83ffd3170aef4c' \
-    && setcap -r /usr/bin/caddy \
+    && { [ -z "$(getcap /usr/bin/caddy)" ] || setcap -r /usr/bin/caddy; } \
     && test -z "$(getcap /usr/bin/caddy)" \
     && /bin/sh /tmp/verify-platform.sh "$TARGETOS" "$TARGETARCH" \
         /usr/local/bin/bun /usr/local/bin/rentnerproxy-controller /usr/bin/caddy \
@@ -258,10 +296,9 @@ RUN chmod 0555 /usr/local/bin/rentnerproxy-production \
         /usr/lib/postgresql/18/bin/postgres /usr/lib/postgresql/18/bin/initdb \
         /usr/lib/postgresql/18/bin/pg_ctl /usr/lib/postgresql/18/bin/pg_isready \
         /usr/lib/postgresql/18/bin/pg_dump /usr/lib/postgresql/18/bin/pg_restore \
-        /usr/lib/postgresql/18/bin/psql /usr/bin/tini /usr/bin/curl /usr/bin/openssl \
+        /usr/lib/postgresql/18/bin/psql "$(command -v tini)" /usr/bin/curl /usr/bin/openssl \
     && rm /tmp/verify-platform.sh \
-    && apt-get purge -y --auto-remove libcap2-bin \
-    && rm -rf /var/lib/apt/lists/* \
+    && apk del .image-setup \
     && cd /opt/rentnerproxy/web \
     && gosu rentnerproxy-web bun --no-env-file -e "const result = Bun.spawnSync([process.execPath, '--no-env-file', 'fmt', '--no-script', '--no-config', '--no-editorconfig', '--stdin-filepath=default-site.html', '--tab-width=4', '--print-width=100', '--html-whitespace-sensitivity=strict', '--threads=1'], { stdin: Buffer.from('<style>h1{color:red}</style>'), stdout: 'pipe', stderr: 'pipe', timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 262144 }); if (result.exitCode !== 0 || !result.stdout.toString().includes('color: red;')) throw new Error('Runtime HTML formatter failed')"
 
@@ -269,4 +306,4 @@ EXPOSE 3000 8080 8443/tcp 8443/udp
 VOLUME ["/var/lib/rentnerproxy"]
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=12 CMD ["bun", "/opt/rentnerproxy/web/docker/web/healthcheck.ts"]
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/rentnerproxy-production"]
+ENTRYPOINT ["tini", "--", "/usr/local/bin/rentnerproxy-production"]

@@ -3,23 +3,28 @@
 # The controller-build and caddy-build stages (and this frontend) intentionally match
 # docker/production/Dockerfile instruction for instruction: CI builds both images on one
 # BuildKit builder, which then compiles the controller and Caddy only once.
-FROM mirror.gcr.io/library/rust:1.100.0-trixie AS controller-build
+FROM mirror.gcr.io/library/rust:1.100.0-alpine AS controller-build
 
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /build
+RUN apk add --no-cache build-base cmake perl
 COPY core/Cargo.toml core/Cargo.lock ./
 COPY core/src ./src
 ARG RENTNERPROXY_BUILD_VERSION
 RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/registry \
     set -eu; \
     case "$TARGETOS/$TARGETARCH" in \
-        linux/amd64) rust_host=x86_64-unknown-linux-gnu ;; \
-        linux/arm64) rust_host=aarch64-unknown-linux-gnu ;; \
+        linux/amd64) rust_host=x86_64-unknown-linux-musl ;; \
+        linux/arm64) rust_host=aarch64-unknown-linux-musl ;; \
         *) echo 'Unsupported controller platform' >&2; exit 1 ;; \
     esac; \
     test "$(rustc -vV | sed -n 's/^host: //p')" = "$rust_host"; \
     RENTNERPROXY_BUILD_VERSION="${RENTNERPROXY_BUILD_VERSION:-}" cargo build --locked --release; \
+    linkage=$(readelf --wide --program-headers --dynamic target/release/rentnerproxy-controller); \
+    if printf '%s\n' "$linkage" | grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)'; then \
+        echo 'Expected a static musl controller' >&2; exit 1; \
+    fi; \
     install -D -m 0755 target/release/rentnerproxy-controller /out/rentnerproxy-controller; \
     rm -rf target
 
@@ -56,7 +61,7 @@ RUN go test -mod=readonly -race -short -timeout=120s -p=1 \
     github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy \
     github.com/caddyserver/caddy/v2/modules/caddytls
 
-FROM mirror.gcr.io/library/debian:13.7-slim
+FROM mirror.gcr.io/library/alpine:3.24.4
 
 COPY --from=caddy-build /usr/bin/caddy /usr/bin/caddy
 COPY docker/licenses/Caddy-LICENSE /usr/share/licenses/caddy/LICENSE
@@ -64,17 +69,17 @@ COPY docker/licenses/Caddy-LICENSE /usr/share/licenses/caddy-crowdsec-bouncer/LI
 COPY docker/licenses/CaddyCrowdSecBouncer-NOTICE /usr/share/licenses/caddy-crowdsec-bouncer/NOTICE
 
 COPY --from=controller-build /out/rentnerproxy-controller /usr/local/bin/rentnerproxy-controller
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl openssl procps libcap2-bin \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates curl openssl procps-ng \
+    && apk add --no-cache --virtual .image-setup libcap-utils \
     && update-ca-certificates \
     && /usr/bin/caddy list-modules | grep -Fx crowdsec \
     && /usr/bin/caddy list-modules | grep -Fx http.handlers.crowdsec \
     && /usr/bin/caddy list-modules | grep -Fx http.handlers.rentnerproxy_response_cache \
     && /usr/bin/caddy list-modules | grep -Fx http.handlers.rentnerproxy_upstream \
     && /usr/bin/caddy list-modules | grep -Fx admin.api.rentnerproxy \
-    && setcap -r /usr/bin/caddy \
-    && apt-get purge -y --auto-remove libcap2-bin \
-    && rm -rf /var/lib/apt/lists/* \
+    && { [ -z "$(getcap /usr/bin/caddy)" ] || setcap -r /usr/bin/caddy; } \
+    && apk del .image-setup \
     && mkdir -p /var/lib/rentnerproxy/proxy \
     && chown 10001:10001 /var/lib/rentnerproxy/proxy
 USER 10001:10001
