@@ -1,13 +1,14 @@
 use super::*;
 use serde_json::{Value, json};
 use std::{
+    ffi::OsString,
     fs::{self, File},
     io::{self, BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     os::unix::fs::{PermissionsExt, chown},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
@@ -15,15 +16,51 @@ use std::{
 };
 use tokio::process::{Child, Command as Process};
 
+#[path = "published_greeting/portable_backup.rs"]
+mod portable_backup;
+
 const APP_ID: &str = "rentnerproxy.greeting";
 const APP_API_SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
 const APP_UI_SOCKET: &str = "/run/rentnerproxy/app-ui/web.sock";
 const PERSISTED_GREETING: &str = "Gude from the published Greeting fixture!";
 static NEXT_IDEMPOTENCY_KEY: AtomicUsize = AtomicUsize::new(1);
 
+#[derive(Clone, Copy, Debug, Default)]
+enum ArchiveResponse {
+    #[default]
+    Authentic,
+    Interrupted,
+    SameLengthCorruption,
+}
+
+impl ArchiveResponse {
+    fn write(self, mut archive: File, length: u64, stream: &mut impl Write) -> io::Result<u64> {
+        match self {
+            Self::Authentic => io::copy(&mut archive, stream),
+            // Advertise the signed length but close the response halfway through the body.
+            Self::Interrupted => io::copy(&mut archive.take(length / 2), stream),
+            // Keep Content-Length and the on-disk fixture intact. Change a single byte in transit.
+            Self::SameLengthCorruption => {
+                let mut byte = [0];
+                archive.read_exact(&mut byte)?;
+                byte[0] ^= 1;
+                stream.write_all(&byte)?;
+                Ok(1 + io::copy(&mut archive, stream)?)
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct UpdateResponse {
+    mode: ArchiveResponse,
+    payload_lengths: Vec<u64>,
+}
+
 struct PublishedCatalogServer {
     stop: Arc<AtomicBool>,
     task: Option<thread::JoinHandle<()>>,
+    update_response: Arc<Mutex<UpdateResponse>>,
 }
 
 impl PublishedCatalogServer {
@@ -55,6 +92,9 @@ impl PublishedCatalogServer {
         // install request selects 1.0.0 explicitly; the same signed catalog offers 1.0.1.
         let latest = &fixture.snapshots[1];
         let metadata = Arc::new(latest.files.clone());
+        let update_path = url_path(&latest.archive_url);
+        let update_response = Arc::new(Mutex::new(UpdateResponse::default()));
+        let response = Arc::clone(&update_response);
         let mut archives = std::collections::BTreeMap::new();
         for snapshot in &fixture.snapshots {
             let path = url_path(&snapshot.archive_url);
@@ -79,7 +119,7 @@ impl PublishedCatalogServer {
                 let files = Arc::clone(&metadata);
                 let archives = Arc::clone(&archives);
                 let tls = Arc::clone(&tls);
-                if let Err(error) = serve(socket, tls, &files, &archives) {
+                if let Err(error) = serve(socket, tls, &files, &archives, &update_path, &response) {
                     eprintln!("Published catalog fixture request failed: {error}");
                 }
             }
@@ -87,7 +127,26 @@ impl PublishedCatalogServer {
         Self {
             stop,
             task: Some(task),
+            update_response,
         }
+    }
+
+    fn set_update_response(&self, mode: ArchiveResponse) {
+        *self.update_response.lock().unwrap() = UpdateResponse {
+            mode,
+            payload_lengths: Vec::new(),
+        };
+    }
+
+    fn assert_update_response(&self, expected_payload_length: u64) -> u64 {
+        let response = self.update_response.lock().unwrap();
+        assert_eq!(
+            response.payload_lengths,
+            [expected_payload_length],
+            "expected exactly one complete {:?} fixture response",
+            response.mode
+        );
+        response.payload_lengths[0]
     }
 
     fn stop(&mut self) {
@@ -116,6 +175,8 @@ fn serve(
     tls: Arc<rustls::ServerConfig>,
     metadata: &std::collections::BTreeMap<String, Vec<u8>>,
     archives: &std::collections::BTreeMap<String, PathBuf>,
+    update_path: &str,
+    update_response: &Mutex<UpdateResponse>,
 ) -> io::Result<()> {
     socket.set_read_timeout(Some(Duration::from_secs(15)))?;
     socket.set_write_timeout(Some(Duration::from_secs(180)))?;
@@ -148,6 +209,17 @@ fn serve(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
     )?;
+    if request_path == update_path {
+        // Keep the mode and the delivered length synchronized through the TLS flush, so the
+        // test can inspect the response immediately after the manager reports a terminal state.
+        let mut response = update_response.lock().unwrap();
+        let body = File::open(archive.expect("published update archive"))?;
+        let sent = response.mode.write(body, length, &mut stream)?;
+        stream.conn.send_close_notify();
+        stream.flush()?;
+        response.payload_lengths.push(sent);
+        return Ok(());
+    }
     if let Some(bytes) = metadata_body {
         stream.write_all(bytes)?;
     } else if let Some(path) = archive {
@@ -216,13 +288,13 @@ async fn wait_install() -> Value {
     .unwrap()
 }
 
-async fn wait_lifecycle(action: &str) -> Value {
+async fn wait_lifecycle(action: &str, expected_status: &str) -> Value {
     timeout(Duration::from_secs(120), async {
         loop {
             let view = catalog_view().await;
             if view["lifecycle"]["status"] != "pending" {
                 assert_eq!(view["lifecycle"]["action"], action);
-                assert_eq!(view["lifecycle"]["status"], "succeeded", "{view}");
+                assert_eq!(view["lifecycle"]["status"], expected_status, "{view}");
                 return view;
             }
             sleep(Duration::from_millis(100)).await;
@@ -279,6 +351,17 @@ async fn save_greeting(installation_id: &str, generation: u64, greeting: &str) {
     assert_eq!(value["greeting"], greeting);
 }
 
+fn package_store_entries(store: &Path) -> [Vec<OsString>; 2] {
+    ["archives", "packages"].map(|directory| {
+        let mut entries: Vec<_> = fs::read_dir(store.join(directory))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        entries.sort_unstable();
+        entries
+    })
+}
+
 async fn start_manager(
     controller: &Path,
     config: &Path,
@@ -292,11 +375,14 @@ async fn start_manager(
             Ok(())
         });
     }
+    let catalog_ca = config.with_file_name("catalog-ca.pem");
+    if catalog_ca.is_file() {
+        command.env("SSL_CERT_FILE", catalog_ca);
+    }
     let mut child = command
         .arg("--app-manager")
         .arg(config)
         .env(crate::config::CONTROLLER_TOKEN_FILE_ENV, token)
-        .env("SSL_CERT_FILE", config.with_file_name("catalog-ca.pem"))
         .env("NO_PROXY", "github.com,127.0.0.1")
         .env("no_proxy", "github.com,127.0.0.1")
         .kill_on_drop(true)
@@ -373,6 +459,51 @@ fn require_isolated_state() {
     );
 }
 
+struct InstallerFixture {
+    work: tempfile::TempDir,
+    root: PathBuf,
+    config: PathBuf,
+    token: PathBuf,
+    store: PathBuf,
+}
+
+impl InstallerFixture {
+    fn new(root_bytes: &[u8]) -> Self {
+        // Package installer paths are root-verified; keep them off world-writable /tmp.
+        let work = tempfile::tempdir_in("/var/lib/rentnerproxy").unwrap();
+        fs::set_permissions(work.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let store = PathBuf::from("/var/lib/rentnerproxy/published-greeting-store");
+        fs::create_dir(&store).unwrap();
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o711)).unwrap();
+        let root = work.path().join("root.json");
+        fs::write(&root, root_bytes).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o600)).unwrap();
+        let token = work.path().join("controller-token");
+        fs::write(&token, b"local-lifecycle-fixture").unwrap();
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o400)).unwrap();
+        let config = work.path().join("installer.json");
+        fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "storeDirectory": store,
+                "pinnedRoot": root,
+                "repositoryUrl": "https://github.com/RentnerProxy/app-catalog/",
+                "engineCapabilities": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+        Self {
+            work,
+            root,
+            config,
+            token,
+            store,
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires native Linux, root, the published Greeting fixture and isolated PostgreSQL"]
 async fn privileged_published_greeting_lifecycle() {
@@ -388,34 +519,10 @@ async fn privileged_published_greeting_lifecycle() {
     );
     let mut authority = start_authority(&installation_id).await;
 
-    // Package installer paths are root-verified; keep them off world-writable /tmp.
-    let work = tempfile::tempdir_in("/var/lib/rentnerproxy").unwrap();
-    fs::set_permissions(work.path(), fs::Permissions::from_mode(0o700)).unwrap();
-    let store = PathBuf::from("/var/lib/rentnerproxy/published-greeting-store");
-    fs::create_dir(&store).unwrap();
-    fs::set_permissions(&store, fs::Permissions::from_mode(0o711)).unwrap();
-    let root = work.path().join("root.json");
-    fs::write(&root, &fixture.root).unwrap();
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o600)).unwrap();
-    let token = work.path().join("controller-token");
-    fs::write(&token, b"local-lifecycle-fixture").unwrap();
-    fs::set_permissions(&token, fs::Permissions::from_mode(0o400)).unwrap();
-    let config = work.path().join("installer.json");
-    fs::write(
-        &config,
-        serde_json::to_vec(&json!({
-            "storeDirectory": store,
-            "pinnedRoot": root,
-            "repositoryUrl": "https://github.com/RentnerProxy/app-catalog/",
-            "engineCapabilities": [],
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
-
-    let mut catalog = PublishedCatalogServer::start(work.path(), &fixture);
-    let mut manager = start_manager(&controller, &config, &token, None).await;
+    let installer = InstallerFixture::new(&fixture.root);
+    let (config, token) = (&installer.config, &installer.token);
+    let mut catalog = PublishedCatalogServer::start(installer.work.path(), &fixture);
+    let mut manager = start_manager(&controller, config, token, None).await;
     let listing = wait_catalog_state("ready").await;
     let first = &fixture.snapshots[0];
     let second = &fixture.snapshots[1];
@@ -470,8 +577,89 @@ async fn privileged_published_greeting_lifecycle() {
     assert_eq!(offered["version"], second.version);
     assert_eq!(offered["archiveSha256"], second.archive_sha256);
     let update = lifecycle_request("update", before_update, Some(offered));
+
+    let status_before = manager_status().await.unwrap()[&installation_id].clone();
+    assert_eq!(status_before["active"], first.version);
+    assert_eq!(status_before["running"], true);
+    assert_eq!(status_before["recoveryRequired"], false);
+    assert_eq!(status_before.get("candidate"), Some(&Value::Null));
+    let uid = status_before["uid"].as_u64().unwrap();
+    let data_path = PathBuf::from(format!(
+        "/var/lib/rentnerproxy/apps/{uid}/data/greeting.json"
+    ));
+    let saved_data = fs::read(&data_path).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&saved_data).unwrap()["greeting"],
+        PERSISTED_GREETING
+    );
+    let store_before = package_store_entries(&store);
+    let update_archive = store.join("archives").join(&second.archive_sha256);
+    let update_package = store.join("packages").join(&second.archive_sha256);
+    assert!(!update_archive.exists());
+    assert!(!update_package.exists());
+    assert!(second.archive_size_bytes > 1);
+
+    let mut update_failures = Vec::new();
+    for (mode, fault, expected_payload_length) in [
+        (
+            ArchiveResponse::Interrupted,
+            "interrupted-download",
+            second.archive_size_bytes / 2,
+        ),
+        (
+            ArchiveResponse::SameLengthCorruption,
+            "same-length-archive-corruption",
+            second.archive_size_bytes,
+        ),
+    ] {
+        catalog.set_update_response(mode);
+        wait_catalog_state("ready").await;
+        post_lifecycle(&update).await;
+        let failed_view = wait_lifecycle("update", "failed").await;
+        let failed = &failed_view["lifecycle"];
+        assert_eq!(failed["installationId"], installation_id);
+        assert_eq!(failed["expected"], update["expected"]);
+        assert_eq!(failed["target"], update["target"]);
+        assert_eq!(failed["error"], "operationFailed", "{failed}");
+        let sent = catalog.assert_update_response(expected_payload_length);
+
+        let active = running_installation(&failed_view, &installation_id);
+        assert_eq!(active["version"], first.version, "{fault}");
+        assert_eq!(active["archiveSha256"], first.archive_sha256, "{fault}");
+        assert_eq!(active["generation"], first_generation, "{fault}");
+        assert_eq!(
+            manager_status().await.unwrap()[&installation_id],
+            status_before,
+            "{fault} changed the manager installation state",
+        );
+        assert_eq!(package_store_entries(&store), store_before, "{fault}");
+        let greeting = read_greeting(&installation_id, first_generation).await;
+        assert_eq!(greeting, PERSISTED_GREETING, "{fault}");
+        assert_eq!(fs::read(&data_path).unwrap(), saved_data, "{fault}");
+        update_failures.push(json!({
+            "fault": fault,
+            "operation": failed,
+            "response": {
+                "advertisedArchiveBytes": second.archive_size_bytes,
+                "servedArchiveBytes": sent,
+            },
+            "installation": active,
+            "candidateStaged": false,
+            "archiveCommitted": false,
+            "persistedGreeting": greeting,
+        }));
+    }
+
+    catalog.set_update_response(ArchiveResponse::Authentic);
+    wait_catalog_state("ready").await;
     post_lifecycle(&update).await;
-    let updated_view = wait_lifecycle("update").await;
+    let updated_view = wait_lifecycle("update", "succeeded").await;
+    let retry_payload_length = catalog.assert_update_response(second.archive_size_bytes);
+    let archived =
+        marketplace_artifacts::file_identity(&update_archive, second.archive_size_bytes).unwrap();
+    assert_eq!(archived.sha256, second.archive_sha256);
+    assert_eq!(archived.size_bytes, second.archive_size_bytes);
+    assert!(update_package.is_dir());
     let updated = running_installation(&updated_view, &installation_id);
     assert_eq!(updated["version"], second.version);
     assert_eq!(updated["archiveSha256"], second.archive_sha256);
@@ -483,21 +671,41 @@ async fn privileged_published_greeting_lifecycle() {
         read_greeting(&installation_id, updated_generation).await,
         PERSISTED_GREETING
     );
-    let uid = invoke(&controller, &["status"]).await.unwrap()[&installation_id]["uid"]
-        .as_u64()
-        .unwrap();
-    let data_path = PathBuf::from(format!(
-        "/var/lib/rentnerproxy/apps/{uid}/data/greeting.json"
-    ));
     assert_eq!(
         serde_json::from_slice::<Value>(&fs::read(&data_path).unwrap()).unwrap()["greeting"],
         PERSISTED_GREETING
     );
 
+    let after_backup;
+    let before_rollback = if let Some(directory) = std::env::var_os("RP_GREETING_CAPTURE_DIRECTORY")
+    {
+        portable_backup::capture(
+            &controller,
+            &installer,
+            &mut manager,
+            &fixture.snapshots,
+            u32::try_from(uid).unwrap(),
+            Path::new(&directory),
+        )
+        .await;
+        manager = start_manager(&controller, config, token, Some(&installation_id)).await;
+        after_backup = wait_catalog_state("ready").await;
+        let continued = running_installation(&after_backup, &installation_id);
+        assert_eq!(continued["version"], second.version);
+        assert_eq!(continued["archiveSha256"], second.archive_sha256);
+        assert_eq!(continued["generation"], updated_generation + 1);
+        continued
+    } else {
+        updated
+    };
     catalog.stop();
-    let offline_rollback = lifecycle_request("rollback", updated, Some(&updated["previous"]));
+    let offline_rollback = lifecycle_request(
+        "rollback",
+        before_rollback,
+        Some(&before_rollback["previous"]),
+    );
     post_lifecycle(&offline_rollback).await;
-    let rolled_back_view = wait_lifecycle("rollback").await;
+    let rolled_back_view = wait_lifecycle("rollback", "succeeded").await;
     let rolled_back = running_installation(&rolled_back_view, &installation_id);
     assert_eq!(rolled_back["version"], first.version);
     assert_eq!(rolled_back["archiveSha256"], first.archive_sha256);
@@ -507,7 +715,10 @@ async fn privileged_published_greeting_lifecycle() {
         second.archive_sha256
     );
     let rollback_generation = rolled_back["generation"].as_u64().unwrap();
-    assert_eq!(rollback_generation, updated_generation + 1);
+    assert_eq!(
+        rollback_generation,
+        before_rollback["generation"].as_u64().unwrap() + 1
+    );
     assert_eq!(
         read_greeting(&installation_id, rollback_generation).await,
         PERSISTED_GREETING
@@ -518,7 +729,7 @@ async fn privileged_published_greeting_lifecycle() {
     );
 
     halt(&mut manager).await;
-    manager = start_manager(&controller, &config, &token, Some(&installation_id)).await;
+    manager = start_manager(&controller, config, token, Some(&installation_id)).await;
     let after_restart = manager_status().await.unwrap()[&installation_id].clone();
     assert_eq!(after_restart["active"], first.version);
     let restarted_generation = rollback_generation + 1;
@@ -573,6 +784,12 @@ async fn privileged_published_greeting_lifecycle() {
             {"action": "catalog-listing-after-restart", "result": "served-from-checkpoint"},
             {"action": "greeting-after-restart", "result": "visible-and-persisted"},
         ],
+        "updateFailures": update_failures,
+        "authenticatedUpdateRetry": {
+            "operation": updated_view["lifecycle"],
+            "servedArchiveBytes": retry_payload_length,
+            "committedArchiveSha256": archived.sha256,
+        },
         "persistedGreeting": PERSISTED_GREETING,
         "generations": {
             "installed": first_generation,

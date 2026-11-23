@@ -76,6 +76,9 @@ if [[ ${1:-} == --privileged-app-ipc ]]; then
         --entrypoint /bin/bash \
         mirror.gcr.io/library/postgres:18.7@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61 \
         /app-provision.sh
+    # Record the real backup capture, database replay, resume, and offline rollback paths.
+    bash .github/scripts/ci/fixtures/app-greeting-lifecycle.sh \
+        "$profiles/greeting-evidence" "$profiles/ipc-tests" "$profiles/controller" "$profiles/data"
     # The isolated processes can write profiles under a restrictive umask or another UID.
     "${runner[@]}" "$native_fixture_image" \
         find /profiles -maxdepth 1 -type f -name '*.profraw' -exec chmod a+r -- {} +

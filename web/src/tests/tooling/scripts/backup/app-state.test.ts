@@ -9,8 +9,12 @@ import { join } from 'node:path'
 import {
     appStateInstallations,
     appStateName,
+    controllerAllocation,
+    inspectPortableAppStateFile,
     maximumAppStateBytes,
+    portableAppStateName,
     readAppStateMember,
+    validateAppStateMember,
 } from '../../../../../../scripts/backup/app-state.ts'
 import {
     parseBackupMetadata,
@@ -19,7 +23,10 @@ import {
 import * as productionEnvelope from '../../../../../../scripts/backup/offhost/envelope.ts'
 import { publishProductionBackup } from '../../../../../../scripts/backup/publication.ts'
 import { assertBackupAppRows } from '../../../../../../docker/web/validate-backup.ts'
-import { readSnapshotMetadata } from '../../../../../../scripts/backup/restore-snapshot.ts'
+import {
+    readSnapshotMetadata,
+    snapshotProductionRestore,
+} from '../../../../../../scripts/backup/restore-snapshot.ts'
 import { maximumBackupMetadataBytes } from '../../../../../../scripts/backup/validation.ts'
 import { postgresCommand } from '../../../../../../scripts/backup/volume-commands.ts'
 
@@ -77,6 +84,172 @@ test('checks installation identity including the candidate-only case', () => {
             [installation, installation],
         ),
     ).toThrow()
+})
+
+test('streams portable app members and rejects corrupt or ambiguous app state', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'rp-portable-app-backup-'))
+    const staging = join(workspace, 'staging')
+    const published = join(workspace, 'published')
+    const restore = join(workspace, 'restore')
+    const path = join(workspace, portableAppStateName)
+    const archive = join(staging, 'controller-state.tar')
+    const target = join(workspace, 'snapshot')
+    const corruptTarget = join(workspace, 'corrupt-snapshot')
+    const data = Buffer.from('{}')
+    const checkpoint = Buffer.from('{}')
+    const packageBytes = Buffer.alloc(192 * 1024, 0x8a)
+    const database = Buffer.from('PGDMP')
+    const allocationBytes = 4 * 1024 ** 2
+    const header = Buffer.from(
+        JSON.stringify({
+            formatVersion: 2,
+            installations: {
+                [installation.id]: {
+                    appId: installation.appId,
+                    uid: installation.uid,
+                    generation: installation.generation,
+                    authorityRecorded: installation.authorityRecorded,
+                },
+            },
+            members: [
+                { kind: 'data', key: 'files', ...digest(data) },
+                { kind: 'checkpoint', key: 'catalog', ...digest(checkpoint) },
+                { kind: 'package', key: digest(packageBytes).sha256, ...digest(packageBytes) },
+                {
+                    kind: 'database',
+                    key: String(installation.uid),
+                    ...digest(database),
+                    allocationBytes,
+                },
+            ],
+        }),
+    )
+    const prefix = Buffer.alloc(12)
+    prefix.write('RPAPPB2\0')
+    prefix.writeUInt32BE(header.length, 8)
+    const snapshot = Buffer.concat([prefix, header, data, checkpoint, packageBytes, database])
+    const applications = { ...digest(snapshot), installations: [installation] }
+    try {
+        await Promise.all([mkdir(staging), mkdir(restore), writeFile(path, snapshot)])
+        const file = await open(path, 'r')
+        try {
+            let progress = 0
+            expect(await inspectPortableAppStateFile(file, undefined, () => progress++)).toEqual(
+                applications,
+            )
+            expect(progress).toBeGreaterThanOrEqual(6)
+        } finally {
+            await file.close()
+        }
+        const tar = Bun.spawn(['tar', '-cf', archive, '-C', workspace, portableAppStateName], {
+            stdout: 'ignore',
+            stderr: 'pipe',
+        })
+        expect(await tar.exited, await new Response(tar.stderr).text()).toBe(0)
+        const crowdSec = join(staging, 'crowdsec-state.tar')
+        const emptyArchive = Bun.spawn(['tar', '-cf', crowdSec, '-C', restore, '.'], {
+            stdout: 'ignore',
+            stderr: 'pipe',
+        })
+        expect(await emptyArchive.exited, await new Response(emptyArchive.stderr).text()).toBe(0)
+        const key = Buffer.from(Buffer.alloc(32, 0x42).toString('base64'))
+        const dump = Buffer.from('synthetic-main-database')
+        await Promise.all([
+            writeFile(join(staging, 'app-encryption-key'), key),
+            writeFile(join(staging, 'postgres.dump'), dump),
+        ])
+        const base = {
+            format: 'rentnerproxy-production-backup',
+            createdAt: '2026-11-18T00:00:00.000Z',
+            redis: 'excluded',
+            applicationEncryptionKey: { ...digest(key), file: 'app-encryption-key' },
+            postgres: {
+                ...digest(dump),
+                database: 'rentnerproxy',
+                user: 'rentnerproxy',
+                dump: 'postgres.dump',
+            },
+            controllerState: {
+                ...digest(await readFile(archive)),
+                archive: 'controller-state.tar',
+            },
+            crowdSecState: { ...digest(await readFile(crowdSec)), archive: 'crowdsec-state.tar' },
+            deployment: { publicOrigin: 'https://kiri.example.test', trustedProxyCidrs: '' },
+            source: { imageId: 'sha256:' + '0'.repeat(64), revision: null, version: null },
+        }
+        const metadata = parseBackupMetadata({ ...base, version: 6, applications })
+        expect(() =>
+            parseBackupMetadata({
+                ...base,
+                version: 6,
+                applications: { ...applications, bytes: 8 * 1024 ** 3 + 1 },
+            }),
+        ).toThrow()
+        await publishProductionBackup(staging, published, metadata)
+        expect((await filesystem.readdir(published)).toSorted()).toEqual([
+            'app-encryption-key',
+            'controller-state.tar',
+            'crowdsec-state.tar',
+            'metadata.json',
+            'postgres.dump',
+        ])
+        expect((await snapshotProductionRestore(published, restore)).metadata).toEqual(metadata)
+        expect(await readFile(join(restore, portableAppStateName))).toEqual(snapshot)
+        const stateFile = await open(join(restore, 'controller-state.tar'), 'r+')
+        try {
+            const entries = await validateStateArchiveFile(stateFile, 'controller')
+            const [entry] = entries
+            expect(entry?.name).toBe(portableAppStateName)
+            const capacity = await validateAppStateMember(stateFile, entries, metadata, { target })
+            expect(await readFile(target)).toEqual(snapshot)
+            if (process.platform !== 'win32')
+                expect((await filesystem.stat(target)).mode & 0o777).toBe(0o600)
+            expect(controllerAllocation(entries, metadata, capacity).payloadBytes).toBeGreaterThan(
+                snapshot.length + 2 * allocationBytes,
+            )
+            expect(capacity?.nodes).toBeGreaterThan(2 * (4096 * 121 + 1))
+            for (const invalid of [
+                [],
+                [...entries, { ...entry!, name: appStateName }],
+                [{ ...entry!, name: 'nested/' + portableAppStateName }],
+                [{ ...entry!, name: portableAppStateName + '/data' }],
+                [{ ...entry!, name: '.rentnerproxy-app-state-v3' }],
+            ]) {
+                // oxlint-disable-next-line no-await-in-loop -- Each malformed archive must fail independently.
+                await expect(validateAppStateMember(stateFile, invalid, metadata)).rejects.toThrow(
+                    'does not match backup version',
+                )
+            }
+            const legacy = parseBackupMetadata({ ...base, version: 5, applications })
+            await expect(validateAppStateMember(stateFile, entries, legacy)).rejects.toThrow(
+                'does not match backup version',
+            )
+            const plain = parseBackupMetadata({ ...base, version: 4 })
+            await expect(validateAppStateMember(stateFile, entries, plain)).rejects.toThrow(
+                'does not match backup version',
+            )
+            const mismatched = parseBackupMetadata({
+                ...metadata,
+                applications: { ...applications, installations: [{ ...installation, uid: 20001 }] },
+            })
+            await expect(validateAppStateMember(stateFile, entries, mismatched)).rejects.toThrow(
+                'identities differ',
+            )
+            await stateFile.write(Buffer.of(0), 0, 1, entry!.bodyOffset + snapshot.length - 1)
+            await expect(
+                validateAppStateMember(stateFile, entries, metadata, { target: corruptTarget }),
+            ).rejects.toThrow('member checksum mismatch')
+            await expect(filesystem.stat(corruptTarget)).rejects.toThrow()
+            await stateFile.write(Buffer.alloc(4, 0xff), 0, 4, entry!.bodyOffset + 8)
+            await expect(validateAppStateMember(stateFile, entries, metadata)).rejects.toThrow(
+                'header size',
+            )
+        } finally {
+            await stateFile.close()
+        }
+    } finally {
+        await rm(workspace, { recursive: true, force: true })
+    }
 })
 
 test('app snapshot survives publication and encrypted recovery and rejects downgrade, substitution and omission', async () => {

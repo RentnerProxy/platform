@@ -1,11 +1,15 @@
 import {
     APP_AWARE_BACKUP_VERSION,
     CURRENT_COMPATIBILITY_PROFILE,
+    PORTABLE_APP_BACKUP_VERSION,
 } from '../../config/compatibility.config.ts'
+
+export { APP_AWARE_BACKUP_VERSION, PORTABLE_APP_BACKUP_VERSION }
 
 const acceptedVersions = [
     ...CURRENT_COMPATIBILITY_PROFILE.backup.acceptedVersions,
     APP_AWARE_BACKUP_VERSION,
+    PORTABLE_APP_BACKUP_VERSION,
 ]
 
 export function isSupportedBackupVersion(version: unknown): boolean {

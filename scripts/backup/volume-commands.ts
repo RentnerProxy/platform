@@ -1,6 +1,13 @@
 import { postgresShutdownScript } from './postgres-shutdown.ts'
-import { appStateName, rejectAppDatabasesSql, rejectLegacyAppRowsSql } from './app-state.ts'
+import {
+    appBackupCommand,
+    appStateName,
+    portableAppStateName,
+    rejectAppDatabasesSql,
+    rejectLegacyAppRowsSql,
+} from './app-state.ts'
 import { stateArchiveExclusions } from './controller-state-archive.ts'
+import { PORTABLE_APP_BACKUP_VERSION } from '../../web/src/config/compatibility.config.ts'
 
 export function postgresRestoreCommand(validateOnly: boolean, backupDirectory = '/backup'): string {
     if (!/^\/[A-Za-z0-9_./-]+$/u.test(backupDirectory))
@@ -45,7 +52,7 @@ export const controllerMetadataValidationCommand = [
     'compatibility=/opt/rentnerproxy/web/web/src/lib/ApplicationVersion/backupCompatibility.ts',
     'mode=legacy',
     'if [[ -e "$compatibility" ]]; then',
-    `  mode=$(bun --no-env-file -e 'const { isSupportedBackupVersion } = await import(process.argv[1]); console.log(isSupportedBackupVersion(5) ? "native" : isSupportedBackupVersion(4) ? "legacy" : "unsupported")' "$compatibility" </dev/null)`,
+    `  mode=$(bun --no-env-file -e 'const { isSupportedBackupVersion } = await import(process.argv[1]); const version = Number(process.argv[2]); console.log(!isSupportedBackupVersion(version) ? "unsupported" : isSupportedBackupVersion(5) ? "native" : "legacy")' "$compatibility" "$2" </dev/null)`,
     'fi',
     'case "$mode" in',
     'native) exec /usr/local/bin/rentnerproxy-controller --check-backup-state "$1" ;;',
@@ -63,13 +70,31 @@ const legacyDatabaseGuard = [
     'CHECK_APP_INVENTORY',
 ].join('\n')
 
+const checkFreshPortableDatabase = [
+    'if [[ ! -s /var/lib/rentnerproxy/postgres-data/PG_VERSION ]]; then',
+    '    if [[ -e /var/lib/rentnerproxy/postgres-data || -L /var/lib/rentnerproxy/postgres-data ]]; then',
+    '        [[ -d /var/lib/rentnerproxy/postgres-data && ! -L /var/lib/rentnerproxy/postgres-data ]]',
+    '        entry=$(find /var/lib/rentnerproxy/postgres-data -mindepth 1 -maxdepth 1 -print -quit)',
+    '        [[ -z $entry ]]',
+    '    fi',
+    '    exit 0',
+    'fi',
+].join('\n')
+
 export function postgresCommand(
-    validateOnly: boolean | 'inventory',
+    operation: boolean | 'inventory' | 'portable-apps',
     backupDirectory = '/backup',
-    appAware = false,
+    appAware: boolean | typeof PORTABLE_APP_BACKUP_VERSION = false,
     snapshotId?: string,
+    resume = false,
 ): string {
-    if (validateOnly === 'inventory' && appAware && !/^[a-f0-9]{64}$/u.test(snapshotId ?? ''))
+    const validateOnly = operation === true
+    const inventory = operation === 'inventory'
+    const portable = appAware === PORTABLE_APP_BACKUP_VERSION
+    const restoreApps = operation === 'portable-apps'
+    const portablePath = backupDirectory + '/' + portableAppStateName
+    if (restoreApps && !portable) throw new Error('Portable application backup required')
+    if (inventory && appAware && !/^[a-f0-9]{64}$/u.test(snapshotId ?? ''))
         throw new Error('Missing verified app backup identity')
     if (!/^\/[A-Za-z0-9_./-]+$/u.test(backupDirectory) || backupDirectory.split('/').includes('..'))
         throw new Error('Invalid backup snapshot path')
@@ -79,64 +104,110 @@ export function postgresCommand(
         'restore_phase=initialize',
         'trap \'status=$?; printf "RESTORE_PHASE=%s\\n" "$restore_phase" >&2; exit "$status"\' ERR',
         'restore_directory=""; rendered_sql_path=""; restore_sql_path=""',
-        ...(validateOnly === 'inventory'
+        ...(inventory
             ? [
+                  portable
+                      ? appBackupCommand + ' --app-backup verify-portable ' + portablePath
+                      : appAware
+                        ? appBackupCommand +
+                          ' --app-backup verify ' +
+                          backupDirectory +
+                          '/' +
+                          appStateName
+                        : legacyFilesGuard,
                   appAware
-                      ? '/usr/local/bin/rentnerproxy-controller --app-backup verify ' +
-                        backupDirectory +
-                        '/' +
-                        appStateName
-                      : legacyFilesGuard,
-                  appAware
-                      ? 'test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION'
+                      ? portable && !resume
+                          ? checkFreshPortableDatabase
+                          : 'test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION'
                       : '[[ -s /var/lib/rentnerproxy/postgres-data/PG_VERSION ]] || exit 0',
               ]
             : []),
-        validateOnly === true
+        validateOnly
             ? 'data_directory=/tmp/backup-postgres; socket_directory=/tmp/backup-postgres-socket'
             : 'data_directory=/var/lib/rentnerproxy/postgres-data; socket_directory=/var/run/postgresql',
         'install -d -m 0700 -o postgres -g postgres "$socket_directory"',
-        ...(validateOnly === true
+        ...(restoreApps
+            ? [
+                  'test ! -L /run/rentnerproxy && test ! -L /run/rentnerproxy/app-db',
+                  'install -d -m 0711 -o root -g root /run/rentnerproxy',
+                  'install -d -m 0755 -o postgres -g postgres /run/rentnerproxy/app-db',
+              ]
+            : []),
+        ...(validateOnly
             ? [
                   'install -d -m 0700 -o postgres -g postgres "$data_directory"',
                   'gosu postgres initdb --auth=trust --username=postgres -D "$data_directory" >&2',
               ]
             : ['test -s "$data_directory/PG_VERSION"']),
         'gosu postgres postgres -D "$data_directory" -c listen_addresses=' +
-            (validateOnly === true ? '127.0.0.1' : '') +
-            ' -c unix_socket_directories="$socket_directory" >&2 & postgres_pid=$!',
+            (validateOnly ? '127.0.0.1' : '') +
+            ' -c unix_socket_directories="$socket_directory"' +
+            (restoreApps
+                ? ',/run/rentnerproxy/app-db -c port=5432 -c hba_file=/usr/local/etc/rentnerproxy/pg_hba.conf -c ident_file=/usr/local/etc/rentnerproxy/pg_ident.conf'
+                : '') +
+            ' >&2 & postgres_pid=$!',
         postgresShutdownScript(),
         'cleanup() { rm -f -- "$rendered_sql_path" "$restore_sql_path"; rmdir -- "$restore_directory" 2>/dev/null || true; stop_postgres; }',
         'trap cleanup EXIT',
         'ready=false',
         'for attempt in $(seq 1 60); do if gosu postgres pg_isready --host="$socket_directory" --username=postgres >/dev/null 2>&1; then ready=true; break; fi; kill -0 "$postgres_pid" 2>/dev/null || exit 1; sleep 1; done',
         '"$ready"',
-        ...(validateOnly === true
+        ...(validateOnly
             ? ['gosu postgres createdb --host="$socket_directory" --username=postgres rentnerproxy']
             : []),
-        validateOnly === 'inventory'
-            ? appAware
-                ? 'bun --no-env-file /opt/rentnerproxy/web/backup-export.js --check-app-restore-inventory ' +
-                  backupDirectory +
-                  ' ' +
-                  snapshotId
-                : legacyDatabaseGuard
-            : validateOnly
-              ? postgresRestoreCommand(true, backupDirectory)
-              : postgresRestoreCommand(false, backupDirectory).replace(
-                    '--username=postgres --dbname=rentnerproxy',
-                    '--username=rentnerproxy --dbname=rentnerproxy',
-                ),
-        ...(validateOnly === true && !appAware ? [legacyDatabaseGuard] : []),
-        ...(validateOnly === true
-            ? ['bun /opt/rentnerproxy/web/docker/web/validate-backup.ts']
+        ...(inventory
+            ? [
+                  appAware
+                      ? 'bun --no-env-file /opt/rentnerproxy/web/backup-export.js ' +
+                        (portable
+                            ? '--check-portable-app-restore-inventory '
+                            : '--check-app-restore-inventory ') +
+                        backupDirectory +
+                        ' ' +
+                        snapshotId +
+                        (portable ? ' ' + resume : '')
+                      : legacyDatabaseGuard,
+              ]
+            : []),
+        ...(restoreApps
+            ? [
+                  'restore_phase=applications',
+                  appBackupCommand + ' --app-backup restore-portable ' + portablePath,
+              ]
+            : []),
+        ...(validateOnly
+            ? [postgresRestoreCommand(true, backupDirectory)]
+            : operation === false
+              ? [
+                    postgresRestoreCommand(false, backupDirectory).replace(
+                        '--username=postgres --dbname=rentnerproxy',
+                        '--username=rentnerproxy --dbname=rentnerproxy',
+                    ),
+                ]
+              : []),
+        ...(validateOnly && !appAware ? [legacyDatabaseGuard] : []),
+        ...(validateOnly ? ['bun /opt/rentnerproxy/web/docker/web/validate-backup.ts'] : []),
+        ...(validateOnly && portable
+            ? [
+                  'database_bytes=$(du --summarize --bytes "$data_directory" | cut -f1)',
+                  'rendered_sql_bytes=$(stat --format=%s "$rendered_sql_path")',
+                  'restore_sql_bytes=$(stat --format=%s "$restore_sql_path")',
+                  'printf "PORTABLE_RESTORE_CAPACITY=%s,%s\\n" "$database_bytes" "$((rendered_sql_bytes + restore_sql_bytes))"',
+              ]
             : []),
     ].join('\n')
 }
 
-export function controllerRestoreCommand(appAware = false): string {
+export function controllerRestoreCommand(
+    appAware: boolean | typeof PORTABLE_APP_BACKUP_VERSION = false,
+): string {
     const exclusions = (
-        appAware ? [...stateArchiveExclusions, appStateName] : stateArchiveExclusions
+        appAware
+            ? [
+                  ...stateArchiveExclusions,
+                  appAware === PORTABLE_APP_BACKUP_VERSION ? portableAppStateName : appStateName,
+              ]
+            : stateArchiveExclusions
     )
         .map((entry) => '--exclude=' + entry)
         .join(' ')

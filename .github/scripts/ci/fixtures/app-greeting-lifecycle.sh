@@ -12,7 +12,7 @@ stop_postgres() {
     exit "$status"
 }
 
-if [[ ${1:-} == --container ]]; then
+if [[ ${1:-} == --container || ${1:-} == --restore ]]; then
     postgres=/usr/lib/postgresql/18/bin
     database=/tmp/greeting-postgres
     install -d -m 0700 -o postgres -g postgres "$database" /var/run/postgresql
@@ -24,13 +24,33 @@ if [[ ${1:-} == --container ]]; then
     trap 'stop_postgres' EXIT
     gosu postgres "$postgres/pg_ctl" --pgdata="$database" --log="$database/server.log" --wait --timeout=15 \
         --options='-c listen_addresses= -c unix_socket_directories=/var/run/postgresql,/run/rentnerproxy/app-db -c hba_file=/fixture/pg_hba.conf -c ident_file=/fixture/pg_ident.conf' start >/dev/null
-    /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::privileged_published_greeting_lifecycle --nocapture
-    test -s "$RP_GREETING_LIFECYCLE_REPORT"
+    if [[ $1 == --container ]]; then
+        /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::privileged_published_greeting_lifecycle --nocapture
+        test -s "$RP_GREETING_LIFECYCLE_REPORT"
+    else
+        /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::portable_backup::privileged_restore_published_greeting --nocapture
+        test -s "$RP_GREETING_RECOVERY_REPORT"
+    fi
     exit
 fi
 
 output=${1:?Expected an evidence output directory}
 fixture_script=$(realpath "${BASH_SOURCE[0]}")
+coverage_mount=()
+case $# in
+    1) ;;
+    4)
+        # The coverage job already built both instrumented executables.
+        app_tests=$(realpath "$2")
+        controller=$(realpath "$3")
+        profiles=$(realpath "$4")
+        coverage_mount=(
+            --mount "type=bind,source=$profiles,target=/profiles"
+            --env 'LLVM_PROFILE_FILE=/profiles/greeting-%p-%m.profraw'
+        )
+        ;;
+    *) printf 'Expected an output directory and optionally two binaries and a profile directory\n' >&2; exit 1 ;;
+esac
 case "$(uname -s)/$(uname -m)" in
     Linux/x86_64) native=amd64 ;;
     Linux/aarch64) native=arm64 ;;
@@ -42,7 +62,8 @@ mkdir -p "$output"
 output=$(realpath "$output")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
-rm -f -- "$output/greeting-lifecycle.json"
+rm -f -- "$output/greeting-lifecycle.json" "$output/greeting-recovery.json"
+mkdir -m 0700 "$work/portable"
 
 download() {
     curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
@@ -73,29 +94,48 @@ snapshot() {
 snapshot 1.0.0 44557b84bce0a63cb71aadc636f8a9c18efeea22 2 889c8db9e97f1e240ae4488f3b34dd6efb086c3425d6f949a6056a0c06231585
 snapshot 1.0.1 37bcec3118a244ff024e9d6f5d92806aeaa2fa0c 3 9872367ede865ddd204520a2880b506644d6ad22461d70c439de2bfc965797be
 
-artifacts=$(cargo test --locked --manifest-path core/Cargo.toml --lib --no-run --message-format=json-render-diagnostics)
-app_tests=$(jq -er 'select(.reason == "compiler-artifact" and .target.kind == ["lib"] and .profile.test) | .executable // empty' <<< "$artifacts")
-artifacts=$(cargo build --locked --manifest-path core/Cargo.toml --bin rentnerproxy-controller --message-format=json-render-diagnostics)
-controller=$(jq -er 'select(.reason == "compiler-artifact" and .target.name == "rentnerproxy-controller" and .target.kind == ["bin"]) | .executable // empty' <<< "$artifacts")
+if [[ $# == 1 ]]; then
+    artifacts=$(cargo test --locked --manifest-path core/Cargo.toml --lib --no-run --message-format=json-render-diagnostics)
+    app_tests=$(jq -er 'select(.reason == "compiler-artifact" and .target.kind == ["lib"] and .profile.test) | .executable // empty' <<< "$artifacts")
+    artifacts=$(cargo build --locked --manifest-path core/Cargo.toml --bin rentnerproxy-controller --message-format=json-render-diagnostics)
+    controller=$(jq -er 'select(.reason == "compiler-artifact" and .target.name == "rentnerproxy-controller" and .target.kind == ["bin"]) | .executable // empty' <<< "$artifacts")
+fi
 [[ -x $app_tests && -x $controller ]]
 
-# The only catalog transport is a loopback TLS fixture. The app still uses the
-# regular manager, a native sandboxed process and the appliance's PostgreSQL policy.
-docker run --rm --init --no-healthcheck --network none --add-host github.com:127.0.0.1 --read-only --user 0:0 \
-    --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add KILL \
-    --cap-add SETGID --cap-add SETUID --cap-add NET_BIND_SERVICE --security-opt no-new-privileges \
-    --tmpfs '/run:rw,exec,mode=0755,size=128m' \
-    --tmpfs '/tmp:rw,exec,mode=01777,size=1024m' \
-    --tmpfs '/var/lib/rentnerproxy:rw,exec,mode=0711,size=1024m' \
-    --mount "type=bind,source=$app_tests,target=/app-tests,readonly" \
-    --mount "type=bind,source=$controller,target=/controller,readonly" \
+run_fixture() {
+    local mode=$1
+    shift
+    docker run --rm --init --no-healthcheck --network none --add-host github.com:127.0.0.1 --read-only --user 0:0 \
+        --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add KILL \
+        --cap-add SETGID --cap-add SETUID --security-opt no-new-privileges \
+        --tmpfs '/run:rw,exec,mode=0755,size=128m' \
+        --tmpfs '/tmp:rw,exec,mode=01777,size=1024m' \
+        --tmpfs '/var/lib/rentnerproxy:rw,exec,mode=0711,size=1024m' \
+        --mount "type=bind,source=$app_tests,target=/app-tests,readonly" \
+        --mount "type=bind,source=$controller,target=/controller,readonly" \
+        --mount "type=bind,source=$fixture_script,target=/fixture/run.sh,readonly" \
+        --mount "type=bind,source=$PWD/docker/production/apps/pg_hba.conf,target=/fixture/pg_hba.conf,readonly" \
+        --mount "type=bind,source=$PWD/docker/production/apps/pg_ident.conf,target=/fixture/pg_ident.conf,readonly" \
+        --mount "type=bind,source=$output,target=/evidence" \
+        --env RENTNERPROXY_TEST_CONTROLLER=/controller \
+        "${coverage_mount[@]}" \
+        "$@" \
+        --entrypoint /bin/bash \
+        ghcr.io/rentnerproxy/platform@sha256:fe320f29302a2253296b986962de9d3d84fd6f0abb788a414cc325ca424c74e3 \
+        /fixture/run.sh "$mode"
+}
+
+# The source catalog is served over loopback TLS to the regular manager and sandbox.
+run_fixture --container \
+    --cap-add NET_BIND_SERVICE \
     --mount "type=bind,source=$work,target=/greeting,readonly" \
-    --mount "type=bind,source=$fixture_script,target=/fixture/run.sh,readonly" \
-    --mount "type=bind,source=$PWD/docker/production/apps/pg_hba.conf,target=/fixture/pg_hba.conf,readonly" \
-    --mount "type=bind,source=$PWD/docker/production/apps/pg_ident.conf,target=/fixture/pg_ident.conf,readonly" \
-    --mount "type=bind,source=$output,target=/evidence" \
-    --env RENTNERPROXY_TEST_CONTROLLER=/controller --env RP_GREETING_FIXTURE=/greeting \
-    --env RP_GREETING_LIFECYCLE_REPORT=/evidence/greeting-lifecycle.json \
-    --entrypoint /bin/bash \
-    ghcr.io/rentnerproxy/platform@sha256:fe320f29302a2253296b986962de9d3d84fd6f0abb788a414cc325ca424c74e3 \
-    /fixture/run.sh --container
+    --mount "type=bind,source=$work/portable,target=/portable" \
+    --env RP_GREETING_FIXTURE=/greeting \
+    --env RP_GREETING_CAPTURE_DIRECTORY=/portable \
+    --env RP_GREETING_LIFECYCLE_REPORT=/evidence/greeting-lifecycle.json
+
+# A fresh volume and PostgreSQL cluster have only the backup and an independent public pin.
+run_fixture --restore \
+    --mount "type=bind,source=$work/portable,target=/portable,readonly" \
+    --env RP_GREETING_RESTORE_DIRECTORY=/portable \
+    --env RP_GREETING_RECOVERY_REPORT=/evidence/greeting-recovery.json

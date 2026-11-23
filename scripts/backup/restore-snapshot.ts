@@ -1,6 +1,10 @@
 // oxlint-disable no-await-in-loop -- Snapshot each bounded artifact before any target mutation.
 import { createDecipheriv, createHash } from 'node:crypto'
-import { appStateName, controllerAllocation, readAppStateMember } from './app-state.ts'
+import {
+    appStateNameForVersion,
+    controllerAllocation,
+    validateAppStateMember,
+} from './app-state.ts'
 import { constants } from 'node:fs'
 import { maximumBackupMetadataBytes } from './validation.ts'
 import { chmod, open, writeFile } from 'node:fs/promises'
@@ -70,7 +74,7 @@ export async function snapshotProductionRestore(
                 metadata.applicationEncryptionKey.bytes +
                 metadata.controllerState.bytes +
                 metadata.crowdSecState.bytes +
-                (metadata.version === 5 ? metadata.applications.bytes : 0) +
+                (metadata.version === 4 ? 0 : metadata.applications.bytes) +
                 metadataBytes.length,
         },
     ])
@@ -106,10 +110,18 @@ export async function snapshotProductionRestore(
             'controller',
             signal,
         )
-        const appState = await readAppStateMember(controllerFile, controllerEntries, metadata)
-        if (appState)
-            await writeFile(join(snapshot, appStateName), appState, { mode: 0o600, flag: 'wx' })
-        controllerState = controllerAllocation(controllerEntries, metadata)
+        const memberName = appStateNameForVersion(metadata.version)
+        const appAllocation = await validateAppStateMember(
+            controllerFile,
+            controllerEntries,
+            metadata,
+            {
+                signal,
+                target: memberName ? join(snapshot, memberName) : undefined,
+                checkCapacity: backupCapacityGuard([snapshot]),
+            },
+        )
+        controllerState = controllerAllocation(controllerEntries, metadata, appAllocation)
         await validateControllerEncryptionFile(
             controllerFile,
             controllerEntries,
