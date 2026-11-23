@@ -520,7 +520,7 @@ async fn privileged_published_greeting_lifecycle() {
     let mut authority = start_authority(&installation_id).await;
 
     let installer = InstallerFixture::new(&fixture.root);
-    let (config, token) = (&installer.config, &installer.token);
+    let (config, token, store) = (&installer.config, &installer.token, &installer.store);
     let mut catalog = PublishedCatalogServer::start(installer.work.path(), &fixture);
     let mut manager = start_manager(&controller, config, token, None).await;
     let listing = wait_catalog_state("ready").await;
@@ -592,7 +592,7 @@ async fn privileged_published_greeting_lifecycle() {
         serde_json::from_slice::<Value>(&saved_data).unwrap()["greeting"],
         PERSISTED_GREETING
     );
-    let store_before = package_store_entries(&store);
+    let store_before = package_store_entries(store);
     let update_archive = store.join("archives").join(&second.archive_sha256);
     let update_package = store.join("packages").join(&second.archive_sha256);
     assert!(!update_archive.exists());
@@ -632,7 +632,7 @@ async fn privileged_published_greeting_lifecycle() {
             status_before,
             "{fault} changed the manager installation state",
         );
-        assert_eq!(package_store_entries(&store), store_before, "{fault}");
+        assert_eq!(package_store_entries(store), store_before, "{fault}");
         let greeting = read_greeting(&installation_id, first_generation).await;
         assert_eq!(greeting, PERSISTED_GREETING, "{fault}");
         assert_eq!(fs::read(&data_path).unwrap(), saved_data, "{fault}");

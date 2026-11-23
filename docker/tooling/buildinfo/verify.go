@@ -51,7 +51,7 @@ func validate(profile string, info *debug.BuildInfo) error {
 			"github.com/mholt/caddy-l4":                  "v0.1.3-0.20261029145729-f607ccea1b7d",
 		}
 	case "crowdsec":
-		compiler = "go1.27.3"
+		compiler = "go1.27.4"
 		expected = map[string]string{
 			"google.golang.org/grpc": "v1.85.0",
 			"golang.org/x/crypto":    "v0.59.0",

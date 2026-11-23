@@ -79,7 +79,8 @@ fn publish(source: &Path, target: &Path) -> io::Result<()> {
     let target = CString::new(target.as_os_str().as_bytes())?;
     // SAFETY: Both paths are valid, live NUL-terminated strings.
     if unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             source.as_ptr(),
             libc::AT_FDCWD,

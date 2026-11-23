@@ -1,6 +1,7 @@
 use super::{Budget, budget, drain};
 use crate::appliance_supervisor::process::owned_pid;
 use std::{
+    io::{BufRead, BufReader},
     os::unix::process::ExitStatusExt,
     process::{Command, Stdio},
     time::Duration,
@@ -25,7 +26,6 @@ fn preserves_appliance_stop_budgets_and_forced_stop_policy() {
 
 #[test]
 fn forced_stop_fails_backup_and_can_prove_isolated_web_exit() {
-    use std::io::{BufRead, BufReader};
     for forced in [None, Some(Duration::from_secs(1))] {
         let mut child = Command::new("/bin/sh")
             .args(["-c", "trap '' TERM; echo ready; exec sleep 30"])
@@ -51,6 +51,36 @@ fn forced_stop_fails_backup_and_can_prove_isolated_web_exit() {
         );
         assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGKILL));
     }
+}
+
+#[test]
+fn app_drain_waits_until_the_child_catches_sigterm() {
+    let mut child = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "echo starting; sleep 0.25; trap 'exit 0' TERM; while :; do sleep 0.05; done",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut starting = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut starting)
+        .unwrap();
+    assert_eq!(starting.trim(), "starting");
+    let args = [child.id().to_string(), "--".to_owned()];
+    let result = super::drain_children(
+        "apps",
+        &args,
+        std::process::id() as i32,
+        budget("apps").unwrap(),
+    );
+    if result.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait().unwrap();
+    result.unwrap();
+    assert!(status.success());
 }
 
 #[test]

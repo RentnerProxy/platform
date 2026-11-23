@@ -333,6 +333,9 @@ describe('GeoIP release asset download', () => {
     test.each([
         [403, metadataUrl],
         [429, databaseUrl],
+        [502, databaseUrl],
+        [503, metadataUrl],
+        [504, metadataUrl],
     ] as const)(
         'verifies the public release asset when the API replies %i',
         async (status, failed) => {

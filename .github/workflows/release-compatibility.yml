@@ -22,7 +22,7 @@ concurrency:
     cancel-in-progress: ${{ github.event_name == 'push' }}
 
 env:
-    BUN_VERSION: 1.4.4
+    BUN_VERSION: 1.4.5
     RENTNERPROXY_SMOKE_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:

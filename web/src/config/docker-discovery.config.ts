@@ -31,7 +31,7 @@ export const DOCKER_DISCOVERY_COMPOSE_EXAMPLE = `services:
   rentnerproxy:
     networks: [default, proxy, discovery-control]
   docker-api:
-    image: mirror.gcr.io/library/haproxy:3.4.7@sha256:64378482a9ad183747a0416fcaaae7f5f46bd7dac9ddd6805aa5db806a2a83ad
+    image: mirror.gcr.io/library/haproxy:3.4.7
     user: "0:0"
     read_only: true
     cap_drop: [ALL]
@@ -41,7 +41,7 @@ export const DOCKER_DISCOVERY_COMPOSE_EXAMPLE = `services:
       - ./docker/discovery/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks: [discovery-control]
   example-app:
-    image: mirror.gcr.io/oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d
+    image: mirror.gcr.io/oven/bun:1.4.5
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
@@ -63,7 +63,7 @@ networks:
 
 export const DOCKER_DISCOVERY_NATIVE_EXAMPLE = `services:
   example-app:
-    image: mirror.gcr.io/oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d
+    image: mirror.gcr.io/oven/bun:1.4.5
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]

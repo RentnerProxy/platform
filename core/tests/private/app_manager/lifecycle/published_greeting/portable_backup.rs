@@ -299,7 +299,7 @@ async fn privileged_restore_published_greeting() {
         Some(&restored["previous"]),
     ))
     .await;
-    let rollback = wait_lifecycle("rollback").await;
+    let rollback = wait_lifecycle("rollback", "succeeded").await;
     let rolled_back = running_installation(&rollback, &installation_id);
     assert_eq!(rolled_back["version"], first["version"]);
     assert_eq!(rolled_back["archiveSha256"], first["archiveSha256"]);

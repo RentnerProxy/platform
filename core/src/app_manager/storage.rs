@@ -154,7 +154,8 @@ fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
     let to = CString::new(to.as_os_str().as_bytes())?;
     // Both names belong to a verified root-owned parent. Preserve an existing destination.
     if unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             from.as_ptr(),
             libc::AT_FDCWD,

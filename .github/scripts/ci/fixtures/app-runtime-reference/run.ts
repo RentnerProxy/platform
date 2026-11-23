@@ -11,14 +11,14 @@ import { exerciseSockets } from './sockets.ts'
 
 const appliance =
     'ghcr.io/rentnerproxy/platform@sha256:6a9ecb2330c20f366590f4c6c1c32441104a44c8435d7858cbef4d9496e07b46'
-const builder =
-    'mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31'
+const builder = 'mirror.gcr.io/library/rust:1.100.0-trixie'
 const brokerSource = 'core/tests/fixtures/app-runtime-reference'
 const uiSource = 'web/src/tests/fixtures/app-runtime-reference'
 const installed = '/reference-install'
 const bootstrapPath = '/tmp/reference-bootstrap'
 const rootPath = '/tmp/reference-root.pem'
 const installer = '/tmp/reference-catalog.ts'
+// This reference appliance predates the production toolchain update.
 const bunVersion = '1.4.4'
 const applianceGlibc = '2.41'
 

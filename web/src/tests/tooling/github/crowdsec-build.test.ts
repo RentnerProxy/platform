@@ -47,7 +47,7 @@ describe('pinned pristine CrowdSec appliance rebuild', () => {
             'export GOSUMDB=sum.golang.org',
             'export GOFLAGS=-mod=readonly',
             'export CGO_ENABLED=1',
-            'test "$(go env GOVERSION)" = go1.27.3',
+            'test "$(go env GOVERSION)" = go1.27.4',
             'pkg-config --exists re2',
             'test "$(pkg-config --variable=libdir re2)" = /usr/local/lib',
             'test "$(pkg-config --variable=includedir re2)" = /usr/local/include',

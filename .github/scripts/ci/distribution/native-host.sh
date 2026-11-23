@@ -63,7 +63,7 @@ sudo iptables -I FORWARD -i rp-host -s 192.0.2.0/30 -j ACCEPT
 added_outbound=true
 sudo iptables -I FORWARD -o rp-host -d 192.0.2.0/30 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 added_return=true
-docker run --detach --name "$registry" --network=host --env REGISTRY_HTTP_ADDR=192.0.2.1:15000 mirror.gcr.io/library/registry:3@sha256:d4032d4cc323c1731c707931ecada07a53076eac38e3b61ae57533f170f2c6c3 >/dev/null
+docker run --detach --name "$registry" --network=host --env REGISTRY_HTTP_ADDR=192.0.2.1:15000 mirror.gcr.io/library/registry:3.1.0 >/dev/null
 for (( attempt=0; attempt<60; attempt++ )); do
     if curl --fail --silent http://192.0.2.1:15000/v2/ >/dev/null; then break; fi
     (( attempt < 59 )) || exit 1
@@ -80,6 +80,8 @@ mkdir "$rootfs"
 docker export --output "$work/rootfs.tar" "$exported"
 sudo tar --extract --file "$work/rootfs.tar" --directory "$rootfs"
 sudo chown root:root "$rootfs"
+# Ship the workflow's glibc Bun into the Debian and Fedora test guests.
+sudo install -m 0700 -- "$(command -v bun)" "$rootfs/root/bun"
 # HTTP consumer traffic is anonymous. The fixture key and all packages are public test data.
 bun --no-env-file "$SOURCE_DIRECTORY/.github/scripts/ci/distribution/fixture-server.ts" "$DISTRIBUTION_DIRECTORY" > "$work/http.log" 2>&1 & server_pid=$!
 for (( attempt=0; attempt<15; attempt++ )); do

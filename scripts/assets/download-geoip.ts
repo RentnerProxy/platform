@@ -12,7 +12,7 @@ const maximumDatabaseBytes = 64 * 1024 * 1024
 const sha256 = /^sha256:[a-f0-9]{64}$/u
 
 class PublicationTransition extends Error {}
-class PublicApiRestricted extends Error {}
+class PublicApiUnavailable extends Error {}
 
 async function readBounded(
     response: Response,
@@ -76,10 +76,10 @@ async function fetchBytes(
         const message = 'GeoIP ' + label + ' download failed (HTTP ' + response.status + ')'
         if (response.status === 404) throw new PublicationTransition(message)
         if (
-            (response.status === 403 || response.status === 429) &&
+            [403, 429, 502, 503, 504].includes(response.status) &&
             url.startsWith(repositoryApi + '/')
         )
-            throw new PublicApiRestricted(message)
+            throw new PublicApiUnavailable(message)
         throw new Error(message)
     }
     return readBounded(response, label, minimum, maximum)
@@ -233,7 +233,7 @@ export async function downloadGeoip(fetchAsset: DownloadFetch = fetch): Promise<
     try {
         return await verifiedDownload(fetchAsset, latestAsset)
     } catch (error) {
-        if (!(error instanceof PublicApiRestricted)) throw error
+        if (!(error instanceof PublicApiUnavailable)) throw error
         return verifiedDownload(fetchAsset, latestPublishedAsset)
     }
 }

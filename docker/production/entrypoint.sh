@@ -315,6 +315,106 @@ SQL
     fi
 }
 
+verify_postgres_collations() {
+    local database_urls database compatible
+    local psql_local=(timeout --kill-after=1s 15s env 'PGOPTIONS=-c search_path=pg_catalog,pg_temp' gosu postgres psql
+        --no-psqlrc --no-password --host=/var/run/postgresql --username=postgres
+        --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1)
+
+    # Check the existing cluster before migrations or app writers start.
+    # PostgreSQL's libc version omits LC_CTYPE, which also affects stored indexes.
+    compatible=$("${psql_local[@]}" --dbname=postgres <<'SQL'
+        SELECT NOT EXISTS (
+            SELECT FROM pg_database
+            WHERE datname <> 'template0'
+              AND (
+                  NOT datallowconn
+                  OR (datlocprovider = 'c' AND (datcollate NOT IN ('C', 'POSIX') OR datctype NOT IN ('C', 'POSIX')))
+                  OR datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)
+              )
+        );
+SQL
+    ) || fatal 'could not verify PostgreSQL database collations'
+    [[ $compatible == t ]] || fatal 'PostgreSQL database collation is incompatible or a database is unavailable; verify and restore a logical backup with supported collations'
+
+    # Percent-encode every byte so a database name cannot set connection options.
+    database_urls=$("${psql_local[@]}" --dbname=postgres <<'SQL'
+        SELECT 'postgresql:///' || regexp_replace(encode(convert_to(datname, 'UTF8'), 'hex'), '(..)', '%\1', 'g')
+        FROM pg_database WHERE datallowconn ORDER BY oid;
+SQL
+    ) || fatal 'could not enumerate existing PostgreSQL databases'
+    while IFS= read -r database; do
+        compatible=$("${psql_local[@]}" --dbname="$database" <<'SQL'
+            WITH stored_expressions AS (
+                SELECT 'pg_class'::regclass::oid AS classid, indexrelid AS objid,
+                       pg_get_expr(indexprs, indrelid) AS expression FROM pg_index WHERE indexprs IS NOT NULL
+                UNION ALL
+                SELECT 'pg_class'::regclass, indexrelid, pg_get_expr(indpred, indrelid)
+                FROM pg_index WHERE indpred IS NOT NULL
+                UNION ALL
+                SELECT 'pg_attrdef'::regclass, oid, pg_get_expr(adbin, adrelid) FROM pg_attrdef
+                UNION ALL
+                SELECT 'pg_constraint'::regclass, oid, pg_get_expr(conbin, conrelid)
+                FROM pg_constraint WHERE conbin IS NOT NULL
+                UNION ALL
+                SELECT 'pg_class'::regclass, partrelid, pg_get_expr(partexprs, partrelid)
+                FROM pg_partitioned_table WHERE partexprs IS NOT NULL
+            ), stored_comparators AS (
+                SELECT unnest(indclass) AS oid FROM pg_index
+                UNION ALL
+                SELECT unnest(partclass) FROM pg_partitioned_table
+                UNION ALL
+                SELECT rngsubopc FROM pg_range
+                UNION ALL
+                SELECT unnest(conexclop) FROM pg_constraint
+            ), used_collations AS (
+                SELECT refobjid AS oid FROM pg_depend WHERE refclassid = 'pg_collation'::regclass
+                UNION
+                SELECT attcollation FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped
+                UNION
+                SELECT typcollation FROM pg_type
+                UNION
+                SELECT rngcollation FROM pg_range
+                UNION
+                SELECT unnest(indcollation) FROM pg_index
+                UNION
+                SELECT unnest(partcollation) FROM pg_partitioned_table
+                UNION
+                -- PostgreSQL does not record pg_depend rows for the pinned ICU collation.
+                SELECT 'pg_catalog."unicode"'::regcollation::oid FROM stored_expressions AS stored
+                WHERE expression ~* 'COLLATE[[:space:]]+((pg_catalog|"pg_catalog")[.])?(unicode|"unicode")([^[:alnum:]_$]|$)'
+                   OR EXISTS (
+                       -- Custom routines and operators can use ICU indirectly.
+                       -- Only PostgreSQL built-in OIDs are below FirstNormalObjectId (16384).
+                       SELECT FROM pg_depend AS dependency
+                       WHERE dependency.classid = stored.classid
+                         AND dependency.objid = stored.objid
+                         AND dependency.refclassid IN ('pg_proc'::regclass, 'pg_operator'::regclass)
+                         AND dependency.refobjid >= 16384
+                   )
+                UNION
+                -- Built-in wrappers can reach default classes or I/O on nested array elements
+                -- and record fields without a direct dependency from the outer index.
+                SELECT 'pg_catalog."unicode"'::regcollation::oid
+                WHERE EXISTS (SELECT FROM stored_comparators WHERE oid >= 16384)
+                   OR EXISTS (SELECT FROM pg_opclass WHERE opcdefault AND oid >= 16384)
+                   OR EXISTS (SELECT FROM pg_type WHERE typinput::oid >= 16384 OR typoutput::oid >= 16384)
+            )
+            SELECT NOT EXISTS (
+                SELECT FROM pg_collation AS col
+                WHERE col.collprovider IN ('c', 'i')
+                  AND (col.collnamespace <> 'pg_catalog'::regnamespace OR col.oid IN (SELECT oid FROM used_collations))
+                  AND (
+                      (col.collprovider = 'c' AND (col.collcollate NOT IN ('C', 'POSIX') OR col.collctype NOT IN ('C', 'POSIX')))
+                      OR col.collversion IS DISTINCT FROM pg_collation_actual_version(col.oid)
+                  )
+            );
+SQL
+        ) || fatal 'could not verify PostgreSQL object collations'
+        [[ $compatible == t ]] || fatal 'PostgreSQL object collation changed; restore a logical backup with supported collations'
+    done <<< "$database_urls"
+}
+
 start_postgres() {
     start_child postgres gosu postgres postgres \
         -D "$postgres_directory" \
@@ -327,6 +427,9 @@ start_postgres() {
         --host=/var/run/postgresql \
         --username=postgres \
         --dbname=postgres
+    if [[ -f /etc/alpine-release ]]; then
+        verify_postgres_collations
+    fi
     ensure_application_database
 }
 

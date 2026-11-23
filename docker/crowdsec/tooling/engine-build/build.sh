@@ -15,7 +15,7 @@ export GOPROXY=https://proxy.golang.org
 export GOSUMDB=sum.golang.org
 export GOFLAGS=-mod=readonly
 export CGO_ENABLED=1
-test "$(go env GOVERSION)" = go1.27.3
+test "$(go env GOVERSION)" = go1.27.4
 test "$(go env GOOS)" = linux
 
 work_root=$(mktemp -d)
@@ -65,13 +65,13 @@ for binary in crowdsec cscli; do
     case "$binary" in crowdsec) binary_path=cmd/crowdsec/crowdsec ;; cscli) binary_path=cmd/crowdsec-cli/cscli ;; esac
     go version -m "$binary_path" > "$output_root/evidence/$binary.buildinfo.txt"
     "$work_root/verify-buildinfo" crowdsec "$binary_path"
-    # ldd exits nonzero for a static executable; validate that result explicitly.
-    ldd_report=$(ldd "$binary_path" 2>&1 || true)
-    printf '%s\n' "$ldd_report" > "$output_root/evidence/$binary.ldd.txt"
-    case "$ldd_report" in
-        *'not a dynamic executable'*|*'statically linked'*) ;;
-        *) echo "Expected a fully static $binary, got: $ldd_report" >&2; exit 1 ;;
-    esac
+    ldd "$binary_path" > "$output_root/evidence/$binary.ldd.txt" 2>&1 || true
+    # A fully static ELF has neither a program interpreter nor a required shared library.
+    LC_ALL=C readelf --wide --program-headers --dynamic "$binary_path" > "$output_root/evidence/$binary.elf.txt"
+    if grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)' "$output_root/evidence/$binary.elf.txt"; then
+        echo "Expected a fully static $binary" >&2
+        exit 1
+    fi
     cp "$binary_path" "$output_root/bin/$binary"
 done
 cp "$work_root/pins/go.mod" "$work_root/pins/go.sum" \

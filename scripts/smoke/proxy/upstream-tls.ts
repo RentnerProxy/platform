@@ -23,8 +23,7 @@ const poolBackendContainer = network + '-backend-pool'
 const stateVolume = network + '-state'
 const runtimeImage = sharedSmokeImage('proxy-runtime') ?? network + ':runtime'
 const token = randomBytes(32).toString('hex')
-const caddyImage =
-    'mirror.gcr.io/library/caddy:2.11.9@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0'
+const caddyImage = 'mirror.gcr.io/library/caddy:2.11.9'
 const tempDirectory = await mkdtemp(join(tmpdir(), 'rentnerproxy-upstream-tls-smoke-'))
 let assertions = 0
 let httpPort = 0

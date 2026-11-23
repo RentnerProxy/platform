@@ -67,18 +67,12 @@ export async function verifyApplianceStartup(context: ApplianceStartupContext) {
             { published: String(context.httpsPort), target: 8443, protocol: 'udp' },
         ],
     )
-    assert.deepEqual(
-        Object.keys(rendered.volumes ?? {}).toSorted(),
-        [context.volumeName, context.inheritedVolumeName].toSorted(),
-    )
+    assert.deepEqual(Object.keys(rendered.volumes ?? {}), [context.volumeName])
     assert.deepEqual(
         (service.volumes ?? [])
             .map(({ source, target }) => ({ source, target }))
             .toSorted((a, b) => a.target.localeCompare(b.target)),
-        [
-            { source: context.inheritedVolumeName, target: '/var/lib/postgresql' },
-            { source: context.volumeName, target: '/var/lib/rentnerproxy' },
-        ],
+        [{ source: context.volumeName, target: '/var/lib/rentnerproxy' }],
     )
     context.passed('appliance Compose keeps private management and persistent storage')
 
@@ -101,11 +95,6 @@ export async function verifyApplianceStartup(context: ApplianceStartupContext) {
         [
             {
                 Type: 'volume',
-                Name: context.project + '_' + context.inheritedVolumeName,
-                Destination: '/var/lib/postgresql',
-            },
-            {
-                Type: 'volume',
                 Name: context.project + '_' + context.volumeName,
                 Destination: '/var/lib/rentnerproxy',
             },
@@ -121,7 +110,7 @@ export async function verifyApplianceStartup(context: ApplianceStartupContext) {
             '/opt/rentnerproxy/valkey/bin/valkey-server',
             '--version',
         ]),
-        /Valkey server v=9\.1\.3/u,
+        /Valkey server v=9\.2\.0/u,
         'bundled Valkey must match the production image version',
     )
     assert.equal(await context.valkeyCommand(id, ['PING']), 'PONG')

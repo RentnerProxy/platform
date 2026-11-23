@@ -376,7 +376,6 @@ export async function createApplianceSmokeContext() {
     const http3Image = sharedSmokeImage('http3-client') ?? 'rentnerproxy-appliance-http3:' + runId
     const volumeName = project + '-data'
 
-    const inheritedVolumeName = project + '-postgres-base'
     const [httpPort, managementPort, httpsPort] = await Promise.all([
         availableLoopbackPort(),
         availableLoopbackPort(),
@@ -408,12 +407,9 @@ export async function createApplianceSmokeContext() {
             .replace("- '443:8443/udp'", `- '127.0.0.1:${httpsPort}:8443/udp'`)
             .replace(
                 '- rentnerproxy:/var/lib/rentnerproxy',
-                `- ${volumeName}:/var/lib/rentnerproxy\n            - ${inheritedVolumeName}:/var/lib/postgresql`,
+                `- ${volumeName}:/var/lib/rentnerproxy`,
             )
-            .replace(
-                '\nvolumes:\n    rentnerproxy:\n',
-                `\nvolumes:\n    ${volumeName}:\n    ${inheritedVolumeName}:\n`,
-            ),
+            .replace('\nvolumes:\n    rentnerproxy:\n', `\nvolumes:\n    ${volumeName}:\n`),
     )
     assert.notEqual(
         temporaryCompose,
@@ -500,7 +496,6 @@ export async function createApplianceSmokeContext() {
         imageTag,
         http3Image,
         volumeName,
-        inheritedVolumeName,
         httpPort,
         managementPort,
         httpsPort,
