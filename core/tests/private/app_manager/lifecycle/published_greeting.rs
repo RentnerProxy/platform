@@ -384,6 +384,7 @@ struct InstallerFixture {
     root: PathBuf,
     config: PathBuf,
     token: PathBuf,
+    store: PathBuf,
 }
 
 impl InstallerFixture {
@@ -418,6 +419,7 @@ impl InstallerFixture {
             root,
             config,
             token,
+            store,
         }
     }
 }

@@ -143,7 +143,13 @@ fn rejects_bad_framing_and_inconsistent_inventory() {
     reject(&valid[..valid.len() - 1]);
     reject(&[valid.as_slice(), &[0]].concat());
     reject(&[b"UNKNOWN!".as_slice(), &valid[MAGIC.len()..]].concat());
-    reject(&frame(br#"{"formatVersion":2,"formatVersion":2}"#, data()));
+    let encoded = encode(&header);
+    let duplicate = [br#"{"formatVersion":2,"#.as_slice(), &encoded[1..]].concat();
+    fs::write(&input, frame(&duplicate, data())).unwrap();
+    assert_eq!(
+        read(&input, None).err().unwrap().to_string(),
+        "Duplicate JSON member"
+    );
     reject(&frame(&encode(&header), &vec![b' '; data().len()]));
 
     header.format_version = 1;

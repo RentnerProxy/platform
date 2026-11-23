@@ -1,5 +1,6 @@
 use super::*;
 use crate::app_install::tests::published_greeting::PublishedSnapshot;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::{
     fs::OpenOptions,
     io::{Seek, SeekFrom},
@@ -10,6 +11,7 @@ use std::{
 const BUNDLE: &str = "greeting-app-state.bin";
 const ROOT: &str = "test-root.json";
 const EXPECTED: &str = "expected.json";
+const EARLIER_CHECKPOINT: &str = "earlier-checkpoint.json";
 const SENTINEL: &str = "original Greeting app database";
 
 async fn postgres(uid: u32, sql: &str) -> String {
@@ -82,7 +84,8 @@ pub(super) async fn capture(
         &format!(
             "SET ROLE rp_migrate_{uid}; \
              CREATE TABLE app.recovery_sentinel (id integer PRIMARY KEY, note text NOT NULL); \
-             INSERT INTO app.recovery_sentinel VALUES (1, '{SENTINEL}');"
+             INSERT INTO app.recovery_sentinel VALUES (1, '{SENTINEL}'); \
+             CREATE TEXT SEARCH CONFIGURATION app.recovery_english (COPY = pg_catalog.english);"
         ),
     )
     .await;
@@ -108,6 +111,21 @@ pub(super) async fn capture(
 
     // Supply the test's public pin as an independent installer input on the target.
     fs::copy(&fixture.root, directory.join(ROOT)).unwrap();
+    let earlier_files: std::collections::BTreeMap<_, _> = releases[0]
+        .files
+        .iter()
+        .map(|(path, bytes)| (path, STANDARD.encode(bytes)))
+        .collect();
+    fs::write(
+        directory.join(EARLIER_CHECKPOINT),
+        serde_json::to_vec(&json!({
+            "acceptedAt": time::OffsetDateTime::now_utc().unix_timestamp(),
+            "pinSha256": marketplace_artifacts::digest(&fs::read(&fixture.root).unwrap()),
+            "files": earlier_files,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     fs::write(
         directory.join(EXPECTED),
         serde_json::to_vec(&json!({
@@ -156,6 +174,16 @@ async fn assert_database(uid: u32) {
         .await,
         SENTINEL
     );
+    assert_eq!(
+        postgres(
+            uid,
+            &format!(
+                "SET ROLE rp_app_{uid}; SELECT to_tsvector('app.recovery_english', 'running');"
+            )
+        )
+        .await,
+        "'run':1"
+    );
 }
 
 #[tokio::test]
@@ -185,6 +213,10 @@ async fn privileged_restore_published_greeting() {
     assert!(backup_status(&controller, config, "verify-portable", &bundle).await);
     assert!(!Path::new("/var/lib/rentnerproxy/apps").exists());
     assert!(!Path::new("/var/lib/rentnerproxy/app-manager/journal.json").exists());
+    let checkpoint = installer.store.join("catalog-checkpoint.json");
+    let earlier_checkpoint = fs::read(directory.join(EARLIER_CHECKPOINT)).unwrap();
+    fs::write(&checkpoint, &earlier_checkpoint).unwrap();
+    fs::set_permissions(&checkpoint, fs::Permissions::from_mode(0o600)).unwrap();
 
     // Interrupt the database replay after file storage and the recovery marker
     // exist. The control socket stays available to fence the temporary login.
@@ -194,6 +226,7 @@ async fn privileged_restore_published_greeting() {
     let interrupted = backup_status(&controller, config, "restore-portable", &bundle).await;
     fs::set_permissions(app_socket, socket_permissions).unwrap();
     assert!(!interrupted);
+    assert_eq!(fs::read(&checkpoint).unwrap(), earlier_checkpoint);
     let app_root = Path::new("/var/lib/rentnerproxy/apps").join(uid.to_string());
     let staged_credential = app_root.join(format!(
         "{}fixture",
@@ -209,6 +242,7 @@ async fn privileged_restore_published_greeting() {
 
     assert!(backup_status(&controller, config, "restore-portable", &bundle).await);
     assert!(!staged_credential.exists());
+    assert_ne!(fs::read(&checkpoint).unwrap(), earlier_checkpoint);
     assert_database(uid).await;
     // Repeat with the same input before starting the manager, including the
     // completion marker path used if the maintenance caller lost its response.
@@ -312,6 +346,7 @@ async fn privileged_restore_published_greeting() {
         "releases": expected["releases"],
         "corruptBackupRejected": true,
         "interruptedRecoveryResumed": true,
+        "olderCatalogAdvanced": true,
         "retryAccepted": true,
         "restored": {
             "version": second["version"],

@@ -3,17 +3,23 @@ import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { test } from 'bun:test'
+import { portableAppStateName } from '../../../../scripts/backup/app-state.ts'
+import { PORTABLE_APP_BACKUP_VERSION } from '@/config/compatibility.config.ts'
 
 const root = resolve(import.meta.dir, '../../../..')
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const artifact = (bytes: Uint8Array) => ({ bytes: bytes.length, sha256: hash(bytes) })
-function fixtureTar(name = './', contents = '') {
+const portableDatabaseBytes = 1024 ** 3
+const isolatedCapacity = ['5242880', '8388608']
+
+function fixtureTar(name = './', contents: string | Uint8Array = '') {
+    const bytes = typeof contents === 'string' ? Buffer.from(contents) : contents
     const header = Buffer.alloc(512)
     header.write(name)
     header.write('0000700\0', 100)
-    header.write(Buffer.byteLength(contents).toString(8).padStart(11, '0') + '\0', 124)
+    header.write(bytes.length.toString(8).padStart(11, '0') + '\0', 124)
     header.fill(32, 148, 156)
-    header[156] = contents ? 48 : 53
+    header[156] = bytes.length ? 48 : 53
     header.write(
         header
             .reduce((sum, byte) => sum + byte, 0)
@@ -21,9 +27,46 @@ function fixtureTar(name = './', contents = '') {
             .padStart(6, '0') + '\0 ',
         148,
     )
-    const body = Buffer.alloc(Math.ceil(Buffer.byteLength(contents) / 512) * 512)
-    body.write(contents)
+    const body = Buffer.alloc(Math.ceil(bytes.length / 512) * 512)
+    body.set(bytes)
     return Buffer.concat([header, body, Buffer.alloc(1024)])
+}
+
+function portableAppFixture() {
+    const id = 'greeting'
+    const slot = { appId: 'fixture/greeting', uid: 20000, generation: 1, authorityRecorded: true }
+    const files = Buffer.from('{}')
+    const checkpoint = Buffer.from('{}')
+    const pkg = Buffer.from('synthetic signed package')
+    const database = Buffer.from('PGDMP synthetic app database')
+    const header = Buffer.from(
+        JSON.stringify({
+            formatVersion: 2,
+            installations: { [id]: slot },
+            members: [
+                { kind: 'data', key: 'files', ...artifact(files) },
+                { kind: 'checkpoint', key: 'catalog', ...artifact(checkpoint) },
+                { kind: 'package', key: hash(pkg), ...artifact(pkg) },
+                {
+                    kind: 'database',
+                    key: String(slot.uid),
+                    ...artifact(database),
+                    allocationBytes: portableDatabaseBytes,
+                },
+            ],
+        }),
+    )
+    const prefix = Buffer.alloc(12)
+    prefix.write('RPAPPB2\0')
+    prefix.writeUInt32BE(header.length, 8)
+    const member = Buffer.concat([prefix, header, files, checkpoint, pkg, database])
+    return {
+        controller: fixtureTar(portableAppStateName, member),
+        metadata: {
+            version: PORTABLE_APP_BACKUP_VERSION,
+            applications: { ...artifact(member), installations: [{ id, ...slot }] },
+        },
+    }
 }
 
 type RestoreScenario =
@@ -48,6 +91,9 @@ type RestoreScenario =
     | 'prepare-failure'
     | 'replacement-failure'
     | 'off-host-pause-failure'
+    | 'portable-success'
+    | 'portable-missing-capacity'
+    | 'portable-insufficient-capacity'
 
 async function restore(scenario: RestoreScenario) {
     await mkdir(join(root, 'tmp'), { recursive: true })
@@ -66,10 +112,13 @@ async function restore(scenario: RestoreScenario) {
               : scenario === 'null-index'
                 ? 'null'
                 : undefined
-    const controller = index ? fixtureTar('certificates/certificate-metadata.json', index) : tar
+    const portable = scenario.startsWith('portable-') ? portableAppFixture() : undefined
+    const controller =
+        portable?.controller ??
+        (index ? fixtureTar('certificates/certificate-metadata.json', index) : tar)
     const metadata = {
         format: 'rentnerproxy-production-backup',
-        version: 4,
+        ...(portable?.metadata ?? { version: 4 }),
         createdAt: '2026-10-22T00:00:00Z',
         redis: 'excluded',
         postgres: {
@@ -84,8 +133,10 @@ async function restore(scenario: RestoreScenario) {
         deployment: { publicOrigin: 'https://proxy.test', trustedProxyCidrs: '' },
         source: { imageId: 'sha256:' + 'a'.repeat(64), revision: null, version: null },
     }
+    const metadataBytes = JSON.stringify(metadata)
+    const backupId = hash(Buffer.from(metadataBytes))
     await Promise.all([
-        writeFile(join(input, 'metadata.json'), JSON.stringify(metadata)),
+        writeFile(join(input, 'metadata.json'), metadataBytes),
         writeFile(
             join(input, 'postgres.dump'),
             scenario === 'bad-hash' ? Buffer.alloc(dump.length) : dump,
@@ -138,7 +189,10 @@ if (command.includes('config --format=json')) {
     if (scenario === 'resume' || scenario === 'inventory-pending') console.log(process.env.FIXTURE_BACKUP_ID)
     if (scenario === 'wrong-backup') console.log('b'.repeat(64))
 } else if (command.includes('ps --status running --quiet')) {
-    if (['inventory-running', 'inventory-transport-failure', 'inventory-cleanup-failure', 'inventory-pending'].includes(scenario)) console.log('existing-appliance')
+    if (['inventory-running', 'inventory-transport-failure', 'inventory-cleanup-failure', 'inventory-pending', 'portable-insufficient-capacity'].includes(scenario)) console.log('existing-appliance')
+} else if (args.includes('inventory') && scenario.startsWith('portable-')) {
+    if (!args.some(arg => arg.includes('--check-portable-restore-capacity'))) process.exit(77)
+    console.log(scenario === 'portable-insufficient-capacity' ? 'insufficient-capacity' : 'accepted')
 } else if (args.includes('inventory') && args.some(arg => arg.includes('CHECK_APP_INVENTORY'))) {
     if (!args.includes('--rm')) process.exit(78)
     if (scenario === 'inventory-cleanup-failure' || scenario === 'inventory-transport-failure') {
@@ -160,6 +214,13 @@ if (command.includes('config --format=json')) {
     if (scenario === 'prepare-failure') process.exit(9)
 } else if (command.includes('begin-production-restore')) {
     if (scenario === 'off-host-pause-failure') { console.error('do-not-leak SYNTHETIC-BOOTSTRAP-SECRET'); process.exit(9) }
+    if (scenario.startsWith('portable-')) writeFileSync(directory + '/pending-backup', process.env.FIXTURE_BACKUP_ID)
+} else if (args.includes('restore-portable-apps')) {
+    const pending = readFileSync(directory + '/pending-backup', 'utf8')
+    const mount = args[args.indexOf('--volume') + 1]
+    if (args.at(-1) !== pending || !mount.endsWith(':/backup:ro')) process.exit(87)
+    const member = readFileSync(mount.slice(0, -11) + '/${portableAppStateName}')
+    if (createHash('sha256').update(member).digest('hex') !== process.env.FIXTURE_PORTABLE_HASH) process.exit(88)
 } else if (command.includes('pg_restore')) {
     const mount = args[args.indexOf('--volume') + 1]
     if (!mount.endsWith(':/backup:ro')) process.exit(81)
@@ -170,6 +231,11 @@ if (command.includes('config --format=json')) {
     if (readFileSync(0).length !== 0) process.exit(84)
     if (!command.includes('< /backup/postgres.dump') || command.includes('dump_path=')) process.exit(85)
     if (scenario === 'database-failure' || (scenario === 'replacement-failure' && args.includes('RENTNERPROXY_RESTORE_PHASE=database'))) { console.error('do-not-leak RESTORE_PHASE=render ERROR: 23514'); process.exit(9) }
+    if (args.includes('--network=none') && scenario.startsWith('portable-')) {
+        console.log('Backup database and application metadata verified.')
+        if (scenario !== 'portable-missing-capacity' && command.includes('PORTABLE_RESTORE_CAPACITY='))
+            console.log('PORTABLE_RESTORE_CAPACITY=${isolatedCapacity.join(',')}')
+    }
 } else if (args.includes('up') && !args.includes('--force-recreate')) {
     // Model old enabled automation being admitted by a normal pre-restore boot.
     writeFileSync(directory + '/old-worker-started', 'unsafe normal startup')
@@ -200,7 +266,8 @@ if (command.includes('config --format=json')) {
                 FIXTURE_DIRECTORY: directory,
                 FIXTURE_SCENARIO: scenario,
                 FIXTURE_DUMP_HASH: hash(dump),
-                FIXTURE_BACKUP_ID: hash(Buffer.from(JSON.stringify(metadata))),
+                FIXTURE_BACKUP_ID: backupId,
+                FIXTURE_PORTABLE_HASH: portable?.metadata.applications.sha256 ?? '',
                 RENTNERPROXY_COMPOSE_FILE: join(directory, 'compose.yml'),
             },
             stdin: 'ignore',
@@ -226,7 +293,7 @@ if (command.includes('config --format=json')) {
         const oldWorkerStarted = await stat(join(directory, 'old-worker-started'))
             .then(() => true)
             .catch(() => false)
-        return { exit, stdout, stderr, calls, pg, oldWorkerStarted }
+        return { exit, stdout, stderr, calls, pg, oldWorkerStarted, backupId }
     } finally {
         await rm(directory, { recursive: true, force: true })
     }
@@ -243,6 +310,92 @@ test.skipIf(process.platform === 'win32')(
         assert.ok(result.calls.some((args) => args.includes('--force-recreate')))
     },
 )
+
+test.skipIf(process.platform === 'win32')(
+    'portable restore validates capacity and imports the same backup before completion',
+    async () => {
+        const { backupId, calls, exit, pg, stderr } = await restore('portable-success')
+        assert.equal(exit, 0, stderr)
+        assert.equal(pg.length, 2)
+        const inventory = calls.findIndex((args) => args.includes('inventory'))
+        const capacity = calls[inventory]!.slice(calls[inventory]!.indexOf('inventory') + 2)
+        assert.equal(capacity.length, 6)
+        assert.deepEqual(capacity.slice(0, 2), isolatedCapacity)
+        assert.ok(Number(capacity[2]) >= 2 * portableDatabaseBytes)
+        assert.ok(Number(capacity[3]) > 0)
+        assert.deepEqual(capacity.slice(4), ['0', '5'])
+        assert.ok(
+            calls[inventory]!.some((arg) =>
+                arg.includes(
+                    '--check-portable-app-restore-inventory /backup ' + backupId + ' false',
+                ),
+            ),
+        )
+        const importApps = calls.findIndex((args) => args.includes('restore-portable-apps'))
+        const stages = [
+            calls.indexOf(pg[0]!),
+            calls.findIndex((args) => args.includes('stop')),
+            inventory,
+            calls.findIndex((args) => args.includes('--initialize-restore-target')),
+            calls.findIndex((args) => args.includes('begin-production-restore')),
+            calls.indexOf(pg[1]!),
+            calls.findIndex((args) =>
+                args.some((arg) => arg.includes('--exclude=' + portableAppStateName)),
+            ),
+            importApps,
+            calls.findIndex((args) => args.includes('complete-app-key-restore')),
+            calls.findIndex((args) => args.includes('complete-production-restore')),
+            calls.findIndex((args) => args.includes('--force-recreate')),
+        ]
+        assert.ok(
+            stages.every((stage, index) => stage > (stages[index - 1] ?? -1)),
+            stages.join(','),
+        )
+        const worker = calls[importApps]!
+        assert.ok(worker.includes('--entrypoint=bun'))
+        assert.deepEqual(worker.slice(-4), [
+            '--no-env-file',
+            '/opt/rentnerproxy/web/backup-maintenance.js',
+            'restore-portable-apps',
+            backupId,
+        ])
+        assert.equal(worker[worker.indexOf('--volume') + 1], pg[0]![pg[0]!.indexOf('--volume') + 1])
+    },
+)
+
+test.skipIf(process.platform === 'win32').each([
+    ['portable-missing-capacity', /Isolated restore capacity evidence is unavailable/],
+    [
+        'portable-insufficient-capacity',
+        /Portable application restore target lacks verified storage capacity/,
+    ],
+] as const)('%s fails before changing stored state', async (scenario, message) => {
+    const { calls, exit, pg, stderr } = await restore(scenario)
+    assert.equal(exit, 1)
+    assert.match(stderr, message)
+    assert.equal(pg.length, 1)
+    assert.ok(
+        !calls.some((args) =>
+            args.some((arg) =>
+                [
+                    '--initialize-restore-target',
+                    'begin-production-restore',
+                    'begin-app-key-restore',
+                    'restore-portable-apps',
+                    '--force-recreate',
+                ].includes(arg),
+            ),
+        ),
+    )
+    const stop = calls.findIndex((args) => args.includes('stop'))
+    const inventory = calls.findIndex((args) => args.includes('inventory'))
+    const restart = calls.findIndex((args) => args.includes('start'))
+    if (scenario === 'portable-missing-capacity') {
+        assert.deepEqual([stop, inventory, restart], [-1, -1, -1])
+    } else {
+        assert.ok(stop >= 0 && inventory > stop && restart > inventory)
+    }
+})
 
 test
     .skipIf(process.platform === 'win32')

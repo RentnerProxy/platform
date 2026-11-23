@@ -207,6 +207,7 @@ test('streams portable app members and rejects corrupt or ambiguous app state', 
             expect(controllerAllocation(entries, metadata, capacity).payloadBytes).toBeGreaterThan(
                 snapshot.length + 2 * allocationBytes,
             )
+            expect(capacity?.nodes).toBeGreaterThan(2 * (4096 * 121 + 1))
             for (const invalid of [
                 [],
                 [...entries, { ...entry!, name: appStateName }],

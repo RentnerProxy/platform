@@ -53,6 +53,12 @@ SELECT EXISTS (SELECT FROM scope)
         SELECT FROM pg_type t JOIN scope n ON n.oid = t.typnamespace
         WHERE t.typowner <> n.nspowner OR t.typacl IS NOT NULL
    )
+   AND NOT EXISTS (
+        SELECT FROM pg_ts_config c
+        WHERE c.oid >= 16384 AND NOT EXISTS (
+            SELECT FROM scope n WHERE n.oid = c.cfgnamespace AND n.nspowner = c.cfgowner
+        )
+   )
    AND NOT EXISTS (SELECT FROM pg_largeobject_metadata)
    AND NOT EXISTS (SELECT FROM pg_seclabel)
    AND NOT EXISTS (SELECT FROM pg_publication)

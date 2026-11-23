@@ -29,6 +29,8 @@ const portableMagic = Buffer.from('RPAPPB2\0')
 const portablePrefixBytes = portableMagic.length + 4
 const fileDataPayloadLimit = 32 * 1024 ** 2
 const packagePayloadLimit = 256 * 1024 ** 2
+// The native package verifier allows 4096 archive entries and their implicit parent directories.
+const packageNodeLimit = 4096 * 121 + 1
 const packageArchiveLimit = 257 * 1024 ** 2
 const checkpointLimit = 96 * 1024 ** 2
 const kindOrder = { data: 0, checkpoint: 1, package: 2, database: 3 } as const
@@ -235,7 +237,11 @@ async function readPortableAppState(
                     Math.min(data.bytes, fileDataPayloadLimit) +
                     (packages ? (packages + 1) * packagePayloadLimit : 0) +
                     databaseBytes,
-                nodes: 8192 + 2 * installations.length + header.members.length,
+                nodes:
+                    8192 +
+                    2 * installations.length +
+                    header.members.length +
+                    (packages ? (packages + 1) * packageNodeLimit : 0),
             },
         }
     } catch (error) {

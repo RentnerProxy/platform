@@ -1,13 +1,14 @@
 use super::{
     Config, Installer, PackageSource, StagedPackage,
     catalog::{CHECKPOINT, CHECKPOINT_LIMIT},
-    filesystem,
+    catalog_revision, filesystem,
     package::COMPRESSED_LIMIT,
 };
 use crate::app_backup::valid_portable_digest;
 use marketplace_app_catalog::TrustedPackageCatalog;
 use marketplace_artifacts::{copy_file, file_identity, invalid, parse_json};
 use rentnerproxy_app_contracts::Contracts;
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
@@ -32,7 +33,7 @@ pub(crate) struct RecoveryTarget<'a> {
     _directory: tempfile::TempDir,
     staged: Installer,
     catalog: TrustedPackageCatalog,
-    local_catalog: Option<serde_json::Value>,
+    retained_catalog: Option<Value>,
     archives: Vec<String>,
 }
 
@@ -46,6 +47,60 @@ fn checked_checkpoint(installer: &Installer) -> io::Result<Option<TrustedPackage
             Ok(catalog)
         })
         .transpose()
+}
+
+fn select_recovery_catalog(
+    staged: &Installer,
+    archived: TrustedPackageCatalog,
+    destination: Option<TrustedPackageCatalog>,
+) -> io::Result<(TrustedPackageCatalog, Option<Value>)> {
+    let Some(destination) = destination else {
+        return Ok((archived, None));
+    };
+    let archived_document = parse_json(archived.catalog_bytes())?;
+    let destination_document = parse_json(destination.catalog_bytes())?;
+    let archived_revision = catalog_revision(&archived_document)?;
+    let destination_revision = catalog_revision(&destination_document)?;
+    if archived_revision == destination_revision
+        && archived.catalog_bytes() != destination.catalog_bytes()
+    {
+        return Err(invalid(
+            "Recovery catalog reuses a different accepted revision",
+        ));
+    }
+    if archived_revision <= destination_revision {
+        return Ok((archived, Some(destination_document)));
+    }
+
+    // Advance an older checkpoint only when the archived TUF history extends its
+    // root and online role floors and carries every already accepted revocation.
+    let (_, authenticated) = staged
+        .checkpoint_with_floor(Some(&destination))?
+        .ok_or_else(|| invalid("Missing archived catalog checkpoint"))?;
+    preserve_revocations(&destination_document, &archived_document)?;
+    Ok((authenticated, None))
+}
+
+fn preserve_revocations(previous: &Value, next: &Value) -> io::Result<()> {
+    fn key(entry: &Value) -> (Option<&str>, Option<&str>) {
+        (entry["appId"].as_str(), entry["version"].as_str())
+    }
+    let previous = previous["revocations"]
+        .as_array()
+        .ok_or_else(|| invalid("Missing previous catalog revocations"))?;
+    let next = next["revocations"]
+        .as_array()
+        .ok_or_else(|| invalid("Missing recovery catalog revocations"))?;
+    let next: BTreeMap<_, _> = next.iter().map(|entry| (key(entry), entry)).collect();
+    if previous
+        .iter()
+        .any(|entry| next.get(&key(entry)) != Some(&entry))
+    {
+        return Err(invalid(
+            "Recovery catalog removes or changes an accepted revocation",
+        ));
+    }
+    Ok(())
 }
 
 fn recover_recorded(
@@ -98,11 +153,10 @@ impl Installer {
             contracts: Contracts::new().map_err(super::invalid_contract)?,
         };
         materialize(checkpoint, &store.join(CHECKPOINT), CHECKPOINT_LIMIT)?;
-        let catalog = checked_checkpoint(&staged)?
+        let archived = checked_checkpoint(&staged)?
             .ok_or_else(|| invalid("Missing archived catalog checkpoint"))?;
-        let local_catalog = checked_checkpoint(self)?
-            .map(|trusted| parse_json(trusted.catalog_bytes()))
-            .transpose()?;
+        let (catalog, retained_catalog) =
+            select_recovery_catalog(&staged, archived, checked_checkpoint(self)?)?;
         let cache = self.config.store_directory.join("archives");
         match fs::symlink_metadata(&cache) {
             Ok(_) => filesystem::directory(&cache, 0o700)?,
@@ -141,7 +195,7 @@ impl Installer {
             _directory: directory,
             staged,
             catalog,
-            local_catalog,
+            retained_catalog,
             archives: uncached,
         })
     }
@@ -190,7 +244,7 @@ impl RecoveryTarget<'_> {
     pub fn recover(&self, id: &str, version: &str, digest: &str) -> io::Result<StagedPackage> {
         let mut package = recover_recorded(&self.staged, &self.catalog, id, version, digest)?;
         // Preserve any independently observed rollback floor or revocation.
-        if let Some(document) = &self.local_catalog {
+        if let Some(document) = &self.retained_catalog {
             let (local, revision) = self.installer.signed_package(document, id, version)?;
             let archive = self
                 .staged
@@ -223,7 +277,7 @@ impl RecoveryTarget<'_> {
             fs::rename(from, archives.join(digest))?;
         }
         filesystem::sync_directory(&archives)?;
-        if self.local_catalog.is_none() {
+        if self.retained_catalog.is_none() {
             let verified = self.staged.config.store_directory.join(CHECKPOINT);
             // Recovered packages remain tied to a historical checkpoint. Stage
             // and catalog-refresh still evaluate new metadata at the current time.
@@ -232,3 +286,7 @@ impl RecoveryTarget<'_> {
         filesystem::sync_directory(store)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/private/app_install/recovery.rs"]
+mod tests;

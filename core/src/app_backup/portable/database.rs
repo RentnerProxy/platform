@@ -22,7 +22,8 @@ pub(super) const MAX_ARCHIVE: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_LIST: u64 = 16 * 1024 * 1024;
 const MAX_CLIENT_MEMORY: libc::rlim_t = 1024 * 1024 * 1024;
 const CONTROL: Duration = Duration::from_secs(30);
-const TRANSFER: Duration = Duration::from_secs(600);
+// Leave time for setup and fencing within the two-hour maintenance budget.
+const TRANSFER: Duration = Duration::from_secs(110 * 60);
 const TOOLS: &str = "/usr/lib/postgresql/18/bin";
 const ADMIN_SOCKET: &str = "/var/run/postgresql";
 const APP_SOCKET: &str = "/run/rentnerproxy/app-db";
@@ -151,6 +152,8 @@ pub(super) fn restore(uid: u32, input: &Path) -> io::Result<()> {
     verify_scope(&app, true)?;
     let password = native_password(&app)?;
     let temporary = temporary_password()?;
+    // SCRAM expiry limits new logins. The single-transaction restore uses one
+    // authenticated connection, bounded by the transfer deadline and the fence.
     let prepare = format!(
         "{PASSWORD_SQL_SETTINGS}\
         BEGIN;\n\
@@ -342,6 +345,7 @@ fn app_archive_item(item: &str, owner: &str) -> bool {
         "TABLE",
         "TABLE ATTACH",
         "TABLE DATA",
+        "TEXT SEARCH CONFIGURATION",
         "TRIGGER",
         "TYPE",
         "VIEW",

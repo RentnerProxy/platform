@@ -223,10 +223,7 @@ impl Installer {
             .ok_or_else(|| {
                 invalid("App release is revoked, missing, or unavailable for this target")
             })?;
-        let revision = document["revision"]
-            .as_f64()
-            .ok_or_else(|| invalid("Missing catalog revision"))? as u64;
-        Ok((package, revision))
+        Ok((package, catalog_revision(document)?))
     }
 
     fn check_compatibility(&self, manifest: &Value) -> io::Result<()> {
@@ -248,6 +245,13 @@ impl Installer {
             .check_manifest_compatibility(manifest, &environment)
             .map_err(invalid_contract)
     }
+}
+
+fn catalog_revision(document: &Value) -> io::Result<u64> {
+    document["revision"]
+        .as_f64()
+        .map(|revision| revision as u64)
+        .ok_or_else(|| invalid("Missing catalog revision"))
 }
 
 fn requires_grants(manifest: &Value) -> bool {

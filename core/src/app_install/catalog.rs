@@ -54,6 +54,13 @@ fn read(
 
 impl Installer {
     pub(super) fn checkpoint(&self) -> io::Result<Option<(i64, TrustedPackageCatalog)>> {
+        self.checkpoint_with_floor(None)
+    }
+
+    pub(super) fn checkpoint_with_floor(
+        &self,
+        previous: Option<&TrustedPackageCatalog>,
+    ) -> io::Result<Option<(i64, TrustedPackageCatalog)>> {
         let bytes = match read_file(
             &self.config.store_directory.join(CHECKPOINT),
             CHECKPOINT_LIMIT,
@@ -72,7 +79,7 @@ impl Installer {
         }
         let accepted = OffsetDateTime::from_unix_timestamp(checkpoint.accepted_at)
             .map_err(io::Error::other)?;
-        let catalog = checkpoint.verify(&self.pinned_root, accepted, None)?;
+        let catalog = checkpoint.verify(&self.pinned_root, accepted, previous)?;
         Ok(Some((checkpoint.accepted_at, catalog)))
     }
 
