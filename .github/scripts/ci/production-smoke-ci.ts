@@ -340,10 +340,25 @@ async function docker(args: string[]): Promise<string> {
     }
 }
 
+/**
+ * Suites this job runs, so parallel smoke jobs do not report each other's suites as incomplete.
+ * Without a valid selection every suite is reported; cleanup itself never depends on it.
+ */
+export function reportedSuites(selection = process.env.RENTNERPROXY_SMOKE_SUITES): Suite[] {
+    const suites = Object.keys(smokeSuites) as Suite[]
+    const selected = (selection ?? '')
+        .split(',')
+        .map((name) => name.trim())
+        .filter(Boolean)
+    if (selected.length === 0 || selected.some((name) => !Object.hasOwn(smokeSuites, name)))
+        return suites
+    return suites.filter((suite) => selected.includes(suite))
+}
+
 /** Remove only label-scoped resources and report incomplete cleanup alongside saved suite outcomes. */
 async function cleanup(scope: string, root: string): Promise<void> {
     const rows = ['| Smoke | Result | Checks | Duration |', '| --- | --- | ---: | ---: |']
-    for (const suite of Object.keys(smokeSuites) as Suite[]) {
+    for (const suite of reportedSuites()) {
         let result: Result | undefined
         try {
             const value: unknown = JSON.parse(await readFile(join(root, suite + '.json'), 'utf8'))

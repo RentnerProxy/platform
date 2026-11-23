@@ -11,6 +11,7 @@ import type {
 import { createHash } from 'node:crypto'
 import type { FileHandle } from 'node:fs/promises'
 import { readFileRange } from './artifact-file.ts'
+import { isReservedAppStatePath } from './app-state.ts'
 
 export function parseBackupMetadata(value: unknown): BackupMetadata {
     const result = metadataSchema.safeParse(value)
@@ -175,10 +176,17 @@ function* archiveIndex(
                 ? tarString(header.subarray(345, 500))
                 : ''
         const shortName = tarString(header.subarray(0, 100))
-        const name = safeName(longName ?? (prefix ? prefix + '/' + shortName : shortName))
+        const rawName = longName ?? (prefix ? prefix + '/' + shortName : shortName)
+        const name = safeName(rawName)
         longName = null
         if ((!name && !directory) || names.has(name))
             throw new Error('duplicate or invalid state archive entry')
+        if (
+            kind === 'controller' &&
+            isReservedAppStatePath(name) &&
+            (directory || name.includes('/') || (rawName !== name && rawName !== './' + name))
+        )
+            throw new Error('Ambiguous app snapshot archive path')
         if (
             kind === 'crowdsec' &&
             !(directory

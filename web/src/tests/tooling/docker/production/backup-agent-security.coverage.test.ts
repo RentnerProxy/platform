@@ -95,6 +95,28 @@ describe('private backup agent HTTP validation and failure boundaries', () => {
         expect(context.changes).toEqual([])
     })
 
+    test('preserves the offline-only admission error at the restore boundary', async () => {
+        const context = await fixture()
+        const handle = createBackupAgentHandler({
+            ...context.engine,
+            requestMaintenance: () =>
+                Promise.reject(new ManagedBackupError('offline_restore_required')),
+        })
+        const response = await handle(
+            new Request('http://localhost/artifacts/' + actorId + '/restore', {
+                method: 'POST',
+                body: JSON.stringify({
+                    actorId,
+                    actorName: 'Operator',
+                    requestId,
+                    metadataSha256: 'a'.repeat(64),
+                }),
+            }),
+        )
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({ error: 'offline_restore_required' })
+    })
+
     test('rejects missing, oversized, and locked bodies before admitting any operation', async () => {
         const context = await fixture()
         let cancelled = false

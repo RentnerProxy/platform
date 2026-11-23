@@ -1,13 +1,14 @@
 import '@tanstack/react-start/server-only'
 
+import type { z } from 'zod'
 import { APP_CATALOG_INSTALL_RATE_LIMIT } from '@/config/app-catalog.config.ts'
-import { catalogSelectorSchema } from '@/lib/AppCatalog/contract.ts'
+import { catalogLifecycleInputSchema, catalogSelectorSchema } from '@/lib/AppCatalog/contract.ts'
 import { requireOwnerSessionService } from '@/server/Auth/Access/authorization.service.ts'
 import { isAuthDomainError } from '@/server/Auth/Core/errors.server.ts'
 import { getPublicOrigin } from '@/server/env.server.ts'
 import { consumeRateLimit, RateLimitError } from '@/server/Valkey/rate-limiter.service.ts'
 import { appUiEnabled, appUiSignal, readAppUiJson, uiProblems } from '../ui/transport.server.ts'
-import { nativeCatalogInstall } from './transport.server.ts'
+import { nativeCatalogInstall, nativeCatalogLifecycle } from './transport.server.ts'
 
 const defaultDependencies = {
     enabled: appUiEnabled,
@@ -16,10 +17,9 @@ const defaultDependencies = {
     limit: async (identifier: string) => {
         await consumeRateLimit({ ...APP_CATALOG_INSTALL_RATE_LIMIT, identifier })
     },
-    install: nativeCatalogInstall,
 }
 
-function installFailure(error: unknown, headers: Headers) {
+function catalogFailure(error: unknown, headers: Headers) {
     if (isAuthDomainError(error)) {
         if (error.code === 'authentication_required')
             return Response.json({ error: 'forbidden' }, { status: 401, headers })
@@ -39,7 +39,12 @@ function installFailure(error: unknown, headers: Headers) {
     return Response.json({ error: 'unavailable' }, { status: 503, headers })
 }
 
-export function createCatalogInstallHandler(dependencies = defaultDependencies) {
+function createCatalogMutationHandler<Input, Result>(
+    dependencies: typeof defaultDependencies,
+    schema: z.ZodType<Input>,
+    submit: (input: Input, signal: AbortSignal) => Promise<Result>,
+    status: (result: Result) => number,
+) {
     return async (request: Request): Promise<Response> => {
         const headers = new Headers({
             'Cache-Control': 'private, no-store',
@@ -50,25 +55,43 @@ export function createCatalogInstallHandler(dependencies = defaultDependencies) 
             return Response.json({ error: 'forbidden' }, { status: 403, headers })
         try {
             const ownerId = await dependencies.ownerId()
-            if (!dependencies.enabled()) return installFailure(uiProblems.unavailable, headers)
+            if (!dependencies.enabled()) return catalogFailure(uiProblems.unavailable, headers)
             const signal = appUiSignal(request)
-            const input = catalogSelectorSchema.safeParse(
-                await readAppUiJson(request, signal, 1_024),
-            )
-            if (!input.success) return installFailure(uiProblems.invalid, headers)
+            const input = schema.safeParse(await readAppUiJson(request, signal, 1_024))
+            if (!input.success) return catalogFailure(uiProblems.invalid, headers)
             await dependencies.limit(ownerId)
             if ((await dependencies.ownerId()) !== ownerId)
                 return Response.json({ error: 'forbidden' }, { status: 403, headers })
             signal.throwIfAborted()
-            const install = await dependencies.install(input.data, signal)
-            return Response.json(install, {
-                status: install.status === 'installing' ? 202 : 200,
-                headers,
-            })
+            const result = await submit(input.data, signal)
+            return Response.json(result, { status: status(result), headers })
         } catch (error) {
-            return installFailure(error, headers)
+            return catalogFailure(error, headers)
         }
     }
 }
 
+export function createCatalogInstallHandler(
+    dependencies = { ...defaultDependencies, install: nativeCatalogInstall },
+) {
+    return createCatalogMutationHandler(
+        dependencies,
+        catalogSelectorSchema,
+        dependencies.install,
+        (install) => (install.status === 'installing' ? 202 : 200),
+    )
+}
+
+export function createCatalogLifecycleHandler(
+    dependencies = { ...defaultDependencies, lifecycle: nativeCatalogLifecycle },
+) {
+    return createCatalogMutationHandler(
+        dependencies,
+        catalogLifecycleInputSchema,
+        dependencies.lifecycle,
+        () => 202,
+    )
+}
+
 export const handleCatalogInstall = createCatalogInstallHandler()
+export const handleCatalogLifecycle = createCatalogLifecycleHandler()

@@ -15,6 +15,7 @@ const prefix = '/repos/rentnerproxy/rentnerproxy'
 const headSha = 'a'.repeat(40)
 const baseSha = 'b'.repeat(40)
 const bot = { login: 'dependabot[bot]', id: 49699333, type: 'Bot' }
+const head = (number: number) => number.toString(16).padStart(40, '0')
 
 function fixture() {
     const pull = {
@@ -388,6 +389,254 @@ describe('Dependabot merge orchestration', () => {
     })
 })
 
+describe('Dependabot update queue', () => {
+    const now = Date.parse('2026-11-22T12:00:00Z')
+    interface Entry {
+        number: number
+        behind: number
+        login?: string
+        rollup?: string
+        committed?: string
+        /** Advances the clock when this PR's commits are read, as time passes during a run. */
+        inspectedAt?: string
+        major?: boolean
+        refusal?: number
+        /** The GitHub CI query for this PR returns errors. */
+        checksFail?: boolean
+        /** A new head arrives while CI is queried, or just before merging. */
+        moved?: 'during-checks' | 'before-merge'
+    }
+
+    function queue(entries: Entry[]) {
+        const template = fixture()
+        let time = now
+        const clock = () => time
+        const byNumber = new Map(entries.map((entry) => [entry.number, entry]))
+        const byHead = new Map(entries.map((entry) => [head(entry.number), entry]))
+        const calls: { method: string; path: string; body: unknown }[] = []
+        const entry = (path: string) => byNumber.get(Number(/\/pulls\/(\d+)/u.exec(path)?.[1]))!
+        const request: GitHubRequest = async (method, path, body) => {
+            calls.push({ method, path, body })
+            if (path.startsWith(`${prefix}/pulls?`)) {
+                return entries.map(({ number }) => ({ number }))
+            }
+            if (path === `${prefix}/git/ref/heads/main`) return { object: { sha: baseSha } }
+            if (path.startsWith(`${prefix}/compare/`)) {
+                const [compared] = path.slice(`${prefix}/compare/`.length).split('...')
+                return { ahead_by: byHead.get(compared!)!.behind }
+            }
+            if (path === '/graphql') {
+                const selected = byNumber.get(Number(record(record(body).variables).number))!
+                if (selected.checksFail) return { errors: [{ message: 'unavailable' }] }
+                const graph = structuredClone(template.graph)
+                graph.headRefOid =
+                    selected.moved === 'during-checks' ? 'e'.repeat(40) : head(selected.number)
+                graph.commits.nodes[0]!.commit = {
+                    oid: head(selected.number),
+                    statusCheckRollup: { state: selected.rollup ?? 'PENDING' },
+                }
+                return { data: { repository: { pullRequest: graph } } }
+            }
+            const selected = entry(path)
+            if (method === 'PUT') {
+                if (selected.refusal) throw new GitHubRequestError(selected.refusal)
+                return { merged: true }
+            }
+            if (path.includes('/commits?')) {
+                if (selected.inspectedAt) time = Date.parse(selected.inspectedAt)
+                const commit = structuredClone(template.commits[0]!)
+                commit.sha = head(selected.number)
+                Object.assign(commit.commit.committer, {
+                    date: selected.committed ?? '2026-11-22T11:00:00Z',
+                })
+                if (selected.major) {
+                    commit.commit.message = commit.commit.message
+                        .replaceAll('1.2.4', '2.0.0')
+                        .replace('semver-patch', 'semver-major')
+                }
+                return [commit]
+            }
+            if (path.includes('/files?')) return template.files
+            const reads = calls.filter((call) => call.method === 'GET' && call.path === path)
+            const pull = structuredClone(template.pull)
+            pull.number = selected.number
+            pull.head.sha =
+                selected.moved === 'before-merge' && reads.length > 1
+                    ? 'e'.repeat(40)
+                    : head(selected.number)
+            pull.user.login = selected.login ?? bot.login
+            return pull
+        }
+        const run = (dryRun = false) => maintainPullRequests(request, { repository, dryRun, clock })
+        const writes = () =>
+            calls
+                .filter((call) => call.method === 'PUT')
+                .map((call) => call.path.slice(prefix.length))
+        return { run, writes }
+    }
+
+    test('updates only the oldest auto-mergeable Dependabot branch at a time', async () => {
+        const state = queue([
+            { number: 45, behind: 2 },
+            { number: 43, behind: 1 },
+            { number: 44, behind: 3 },
+        ])
+        const results = await state.run()
+        expect(results.map((result) => [result.number, result.action])).toEqual([
+            [45, 'skipped'],
+            [43, 'update-requested'],
+            [44, 'skipped'],
+        ])
+        expect(results[0]?.reason).toContain('one at a time')
+        expect(state.writes()).toEqual(['/pulls/43/update-branch'])
+    })
+
+    test('waits while a current Dependabot update listed later is still in CI', async () => {
+        const state = queue([
+            { number: 50, behind: 1 },
+            { number: 42, behind: 0, rollup: 'PENDING' },
+        ])
+        expect((await state.run()).map((result) => result.action)).toEqual(['skipped', 'skipped'])
+        expect(state.writes()).toEqual([])
+    })
+
+    test.each(['FAILURE', 'ERROR'])(
+        'a %s current update does not hold the queue',
+        async (rollup) => {
+            const state = queue([
+                { number: 42, behind: 0, rollup },
+                { number: 50, behind: 1 },
+            ])
+            await state.run()
+            expect(state.writes()).toEqual(['/pulls/50/update-branch'])
+        },
+    )
+
+    test('an update pending for too long stops holding the queue', async () => {
+        const state = queue([
+            { number: 42, behind: 0, rollup: 'PENDING', committed: '2026-11-22T08:30:00Z' },
+            { number: 50, behind: 1 },
+        ])
+        await state.run()
+        expect(state.writes()).toEqual(['/pulls/50/update-branch'])
+    })
+
+    test('measures head age when the head is inspected, not when maintenance started', async () => {
+        const state = queue([
+            {
+                number: 42,
+                behind: 0,
+                rollup: 'PENDING',
+                committed: '2026-11-22T12:10:00Z',
+                inspectedAt: '2026-11-22T12:10:05Z',
+            },
+            { number: 50, behind: 1 },
+        ])
+        await state.run()
+        expect(state.writes()).toEqual([])
+    })
+
+    test('a head dated beyond the clock-skew allowance does not hold the queue', async () => {
+        const state = queue([
+            { number: 42, behind: 0, rollup: 'PENDING', committed: '2026-11-22T13:00:00Z' },
+            { number: 50, behind: 1 },
+        ])
+        await state.run()
+        expect(state.writes()).toEqual(['/pulls/50/update-branch'])
+    })
+
+    test('a merged update lets the next Dependabot update start in the same run', async () => {
+        const state = queue([
+            { number: 42, behind: 0, rollup: 'SUCCESS' },
+            { number: 50, behind: 1 },
+        ])
+        expect((await state.run()).map((result) => result.action)).toEqual([
+            'merged',
+            'update-requested',
+        ])
+        expect(state.writes()).toEqual(['/pulls/42/merge', '/pulls/50/update-branch'])
+    })
+
+    test('human and manual-review Dependabot branches stay current immediately', async () => {
+        const state = queue([
+            { number: 60, behind: 1, login: 'human' },
+            { number: 61, behind: 1, major: true },
+            { number: 42, behind: 0, rollup: 'PENDING' },
+        ])
+        expect((await state.run()).map((result) => result.action)).toEqual([
+            'update-requested',
+            'update-requested',
+            'skipped',
+        ])
+        expect(state.writes()).toEqual(['/pulls/60/update-branch', '/pulls/61/update-branch'])
+    })
+
+    test('dry runs report only the next queued update', async () => {
+        const state = queue([
+            { number: 43, behind: 1 },
+            { number: 44, behind: 1 },
+        ])
+        expect((await state.run(true)).map((result) => result.action)).toEqual([
+            'would-update',
+            'skipped',
+        ])
+        expect(state.writes()).toEqual([])
+    })
+
+    test('a refused update hands its turn to the next queued update', async () => {
+        const state = queue([
+            { number: 43, behind: 1, refusal: 422 },
+            { number: 44, behind: 1 },
+        ])
+        const results = await state.run()
+        expect(results.map((result) => result.action)).toEqual(['skipped', 'update-requested'])
+        expect(results[0]?.reason).toContain('HTTP 422')
+        expect(state.writes()).toEqual(['/pulls/43/update-branch', '/pulls/44/update-branch'])
+    })
+
+    test('a failed CI query for a recent update keeps the queue closed for this run', async () => {
+        const state = queue([
+            { number: 42, behind: 0, checksFail: true },
+            { number: 50, behind: 1 },
+        ])
+        const results = await state.run()
+        expect(results.map((result) => result.action)).toEqual(['failed', 'skipped'])
+        expect(state.writes()).toEqual([])
+    })
+
+    test.each(['during-checks', 'before-merge'] as const)(
+        'a head that moved %s keeps the queue closed even when the previous head was old',
+        async (moved) => {
+            const state = queue([
+                {
+                    number: 42,
+                    behind: 0,
+                    rollup: 'SUCCESS',
+                    committed: '2026-11-22T08:00:00Z',
+                    moved,
+                },
+                { number: 50, behind: 1 },
+            ])
+            expect((await state.run()).map((result) => result.action)).toEqual([
+                'skipped',
+                'skipped',
+            ])
+            expect(state.writes()).toEqual([])
+        },
+    )
+
+    test('an update request with an unknown outcome stops further queued updates', async () => {
+        const state = queue([
+            { number: 43, behind: 1, refusal: 503 },
+            { number: 44, behind: 1 },
+        ])
+        const results = await state.run()
+        expect(results.map((result) => result.action)).toEqual(['failed', 'skipped'])
+        expect(results[1]?.reason).toContain('one at a time')
+        expect(state.writes()).toEqual(['/pulls/43/update-branch'])
+    })
+})
+
 test('paginates complete API results', async () => {
     const calls: string[] = []
     const request: GitHubRequest = (_method, path) => {
@@ -438,4 +687,27 @@ test('the privileged workflow executes only trusted main with a repository-scope
     for (const step of steps) {
         if (step.uses) expect(step.uses).toMatch(/@[a-f0-9]{40}$/)
     }
+})
+
+test('the workflow skips completions that cannot make a pull request mergeable', async () => {
+    const workflow = YAML.parse(
+        await readFile(
+            new URL('../../../../../.github/workflows/pr-maintenance.yml', import.meta.url),
+            'utf8',
+        ),
+    ) as { on: Record<string, unknown>; jobs: { maintain: { if: string } } }
+    const condition = workflow.jobs.maintain.if
+    expect(condition).toContain("vars.PR_AUTOMATION_CLIENT_ID != ''")
+    expect(condition).toContain("github.event_name != 'workflow_run'")
+    for (const skipped of [
+        "github.event.workflow_run.event != 'push'",
+        "github.event.workflow_run.event != 'schedule'",
+        "github.event.workflow_run.conclusion != 'cancelled'",
+        "github.event.workflow_run.conclusion != 'skipped'",
+    ])
+        expect(condition).toContain(skipped)
+    // Main pushes and the schedule still run maintenance directly.
+    expect(Object.keys(workflow.on)).toEqual(
+        expect.arrayContaining(['push', 'pull_request_target', 'workflow_run', 'schedule']),
+    )
 })

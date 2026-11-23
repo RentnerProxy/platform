@@ -358,6 +358,9 @@ fn agent_response(status: StatusCode, value: serde_json::Value) -> Response {
     match (status, code) {
         (StatusCode::CONFLICT, Some("busy")) => error(status, "busy"),
         (StatusCode::CONFLICT, Some("conflict")) => error(status, "conflict"),
+        (StatusCode::CONFLICT, Some("offline_restore_required")) => {
+            error(status, "offline_restore_required")
+        }
         (StatusCode::BAD_REQUEST, Some("invalid_input")) => error(status, "invalid_input"),
         _ => unavailable(),
     }

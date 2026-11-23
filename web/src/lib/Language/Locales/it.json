@@ -158,15 +158,78 @@
     },
     "appCatalog": {
         "title": "Catalogo delle app",
-        "description": "Installa app dal catalogo firmato di RentnerProxy.",
+        "description": "Gestisci le app installate e scopri nuove app nel catalogo firmato di RentnerProxy.",
         "refresh": "Aggiorna catalogo",
-        "empty": "Il catalogo non contiene app per questo dispositivo.",
+        "empty": "Il catalogo non contiene altre app per questo dispositivo.",
         "release": "{{publisher}} · Versione {{version}}",
         "install": "Installa",
         "retry": "Riprova l’installazione",
         "installing": "Installazione dell’app in corso…",
-        "installed": "Installata",
         "open": "Apri app",
+        "management": {
+            "installed": "App installate",
+            "discover": "Scopri le app",
+            "retained": "Dati delle app conservati",
+            "loading": "Caricamento delle app installate…",
+            "unavailable": "L’elenco locale delle app non è disponibile. Aggiorna per riconnetterti.",
+            "empty": "Non ci sono app installate su questo dispositivo.",
+            "version": "Versione {{version}}",
+            "updateTo": "Aggiorna alla versione {{version}}",
+            "reinstall": "Reinstalla {{version}}",
+            "failed": "Impossibile completare l’operazione.",
+            "states": {
+                "running": "Attiva",
+                "disabled": "Inattiva",
+                "recoveryRequired": "Ripristino necessario",
+                "removing": "Disinstallazione incompleta",
+                "removed": "Dati conservati",
+                "purging": "Eliminazione dei dati incompleta"
+            },
+            "actions": {
+                "update": "Aggiorna",
+                "deactivate": "Disattiva",
+                "reactivate": "Riattiva",
+                "uninstall": "Disinstalla",
+                "recover": "Riprova l’attivazione",
+                "rollback": "Torna alla versione precedente",
+                "purge": "Elimina i dati conservati",
+                "reinstall": "Reinstalla"
+            },
+            "pending": {
+                "update": "Aggiornamento dell’app…",
+                "deactivate": "Disattivazione dell’app…",
+                "reactivate": "Riattivazione dell’app…",
+                "uninstall": "Disinstallazione dell’app…",
+                "recover": "Nuovo tentativo di attivazione…",
+                "rollback": "Ripristino della versione precedente…",
+                "purge": "Eliminazione dei dati conservati…",
+                "reinstall": "Reinstallazione dell’app…"
+            },
+            "succeeded": {
+                "update": "App aggiornata.",
+                "deactivate": "App disattivata.",
+                "reactivate": "App riattivata.",
+                "uninstall": "App disinstallata. I dati sono stati conservati.",
+                "recover": "App attivata.",
+                "rollback": "Versione precedente ripristinata.",
+                "purge": "Dati conservati eliminati.",
+                "reinstall": "App reinstallata."
+            },
+            "confirm": {
+                "uninstall": "Disinstallare {{name}}? L’app verrà rimossa e i suoi dati saranno conservati per una reinstallazione.",
+                "purge": "Eliminare definitivamente i dati conservati di {{name}}? L’operazione è irreversibile.",
+                "rollback": "Tornare alla versione {{version}} di {{name}}? I dati attuali devono essere compatibili con questa versione."
+            },
+            "errors": {
+                "invalid": "L’operazione richiesta non è valida.",
+                "forbidden": "Solo i proprietari del dispositivo possono gestire le app.",
+                "conflict": "L’app è cambiata, è in corso un’altra operazione o una dipendenza blocca questa operazione. Aggiorna e controlla l’app.",
+                "rateLimited": "Troppe richieste. Attendi un momento e riprova.",
+                "unavailable": "Il servizio delle app non è disponibile. Aggiorna e riprova.",
+                "incompatibleData": "La versione selezionata non è compatibile con i dati salvati.",
+                "operationFailed": "Controlla lo stato attuale dell’app prima di riprovare."
+            }
+        },
         "status": {
             "loading": "Caricamento del catalogo delle app…",
             "stale": "Il catalogo non è aggiornato. Aggiornalo prima di installare un’app.",
@@ -190,7 +253,10 @@
         "loading": "Caricamento dell’app…",
         "unavailable": "Questa app non è attualmente disponibile.",
         "confirmTitle": "Conferma l’azione dell’app",
-        "confirmDescription": "{{name}} chiede una conferma per {{dialog}}."
+        "confirmDescription": "{{name}} chiede una conferma per {{dialog}}.",
+        "saved": "Modifiche salvate nell’app.",
+        "saveFailed": "L’app non ha potuto salvare le modifiche. Riprova.",
+        "rows": "righe"
     },
     "quickSearch": {
         "title": "Ricerca rapida",
@@ -863,6 +929,7 @@
                 "execution_failed": "Creazione del backup non riuscita. Controlla lo stato e l’archiviazione dell’appliance, quindi riprova.",
                 "interrupted": "Il backup è stato interrotto. Non è un punto di ripristino confermato; crea un nuovo backup.",
                 "artifact_invalid": "Il file di backup non ha superato la verifica e non può essere usato come punto di ripristino.",
+                "offline_restore_required": "Scarica questo backup e ripristinalo offline su una destinazione senza app installate.",
                 "appliance_required": "Questa è una cronologia dimostrativa locale. Creare o ripristinare backup reali e salvare le pianificazioni richiede il servizio di backup dell’appliance Linux.",
                 "recovery_failed": "L’appliance non ha potuto confermare il ripristino dei servizi dopo la manutenzione per il backup. Controllane lo stato prima di riprovare.",
                 "not_found": "Questo backup non esiste più. Scegli un’altra voce dalla cronologia attuale."

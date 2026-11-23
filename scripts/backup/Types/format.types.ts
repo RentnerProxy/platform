@@ -17,6 +17,13 @@ export type StateArchiveFileEntry = Readonly<{
     size: number
 }>
 
+export type AppStateValidationOptions = Readonly<{
+    target?: string | undefined
+    signal?: AbortSignal | undefined
+    progress?: (() => void) | undefined
+    checkCapacity?: (() => Promise<void>) | undefined
+}>
+
 import type { metadataSchema } from '../validation.ts'
 
 export type BackupMetadata = z.infer<typeof metadataSchema>

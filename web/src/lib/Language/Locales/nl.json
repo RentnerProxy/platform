@@ -137,15 +137,78 @@
     },
     "appCatalog": {
         "title": "Appcatalogus",
-        "description": "Installeer apps uit de ondertekende RentnerProxy-catalogus.",
+        "description": "Beheer geïnstalleerde apps en ontdek nieuwe apps in de ondertekende RentnerProxy-catalogus.",
         "refresh": "Catalogus vernieuwen",
-        "empty": "De catalogus bevat geen apps voor dit apparaat.",
+        "empty": "De catalogus bevat geen andere apps voor dit apparaat.",
         "release": "{{publisher}} · Versie {{version}}",
         "install": "Installeren",
         "retry": "Installatie opnieuw proberen",
         "installing": "App wordt geïnstalleerd…",
-        "installed": "Geïnstalleerd",
         "open": "App openen",
+        "management": {
+            "installed": "Geïnstalleerde apps",
+            "discover": "Apps ontdekken",
+            "retained": "Bewaarde appgegevens",
+            "loading": "Geïnstalleerde apps laden…",
+            "unavailable": "De lokale applijst is niet beschikbaar. Vernieuw om opnieuw te verbinden.",
+            "empty": "Op dit apparaat zijn geen apps geïnstalleerd.",
+            "version": "Versie {{version}}",
+            "updateTo": "Bijwerken naar {{version}}",
+            "reinstall": "{{version}} opnieuw installeren",
+            "failed": "De appactie kon niet worden voltooid.",
+            "states": {
+                "running": "Actief",
+                "disabled": "Inactief",
+                "recoveryRequired": "Herstel nodig",
+                "removing": "Verwijdering onvolledig",
+                "removed": "Gegevens bewaard",
+                "purging": "Gegevensverwijdering onvolledig"
+            },
+            "actions": {
+                "update": "Bijwerken",
+                "deactivate": "Deactiveren",
+                "reactivate": "Opnieuw activeren",
+                "uninstall": "Verwijderen",
+                "recover": "Activering opnieuw proberen",
+                "rollback": "Vorige versie herstellen",
+                "purge": "Bewaarde gegevens wissen",
+                "reinstall": "Opnieuw installeren"
+            },
+            "pending": {
+                "update": "App bijwerken…",
+                "deactivate": "App deactiveren…",
+                "reactivate": "App opnieuw activeren…",
+                "uninstall": "App verwijderen…",
+                "recover": "Activering opnieuw proberen…",
+                "rollback": "Vorige versie herstellen…",
+                "purge": "Bewaarde gegevens wissen…",
+                "reinstall": "App opnieuw installeren…"
+            },
+            "succeeded": {
+                "update": "App bijgewerkt.",
+                "deactivate": "App gedeactiveerd.",
+                "reactivate": "App opnieuw geactiveerd.",
+                "uninstall": "App verwijderd. De gegevens zijn bewaard.",
+                "recover": "App geactiveerd.",
+                "rollback": "Vorige versie hersteld.",
+                "purge": "Bewaarde appgegevens gewist.",
+                "reinstall": "App opnieuw geïnstalleerd."
+            },
+            "confirm": {
+                "uninstall": "{{name}} verwijderen? De app wordt verwijderd en de gegevens blijven bewaard voor een herinstallatie.",
+                "purge": "De bewaarde gegevens van {{name}} definitief wissen? Dit kan niet ongedaan worden gemaakt.",
+                "rollback": "{{name}} terugzetten naar versie {{version}}? De huidige gegevens moeten compatibel zijn met die versie."
+            },
+            "errors": {
+                "invalid": "De gevraagde appactie is ongeldig.",
+                "forbidden": "Alleen eigenaren van het apparaat kunnen apps beheren.",
+                "conflict": "De app is gewijzigd, er loopt een andere actie of een afhankelijkheid houdt deze actie tegen. Vernieuw en controleer de app.",
+                "rateLimited": "Te veel verzoeken. Wacht even en probeer het opnieuw.",
+                "unavailable": "De appservice is niet beschikbaar. Vernieuw en probeer het opnieuw.",
+                "incompatibleData": "De geselecteerde versie is incompatibel met de opgeslagen appgegevens.",
+                "operationFailed": "Controleer de huidige status van de app voordat je het opnieuw probeert."
+            }
+        },
         "status": {
             "loading": "Appcatalogus laden…",
             "stale": "De catalogus is verouderd. Vernieuw deze voordat je een app installeert.",
@@ -169,7 +232,10 @@
         "loading": "App wordt geladen…",
         "unavailable": "Deze app is momenteel niet beschikbaar.",
         "confirmTitle": "App-actie bevestigen",
-        "confirmDescription": "{{name}} vraagt om bevestiging voor {{dialog}}."
+        "confirmDescription": "{{name}} vraagt om bevestiging voor {{dialog}}.",
+        "saved": "Wijzigingen opgeslagen in de app.",
+        "saveFailed": "De app kon de wijzigingen niet opslaan. Probeer het opnieuw.",
+        "rows": "rijen"
     },
     "quickSearch": {
         "title": "Snel zoeken",
@@ -842,6 +908,7 @@
                 "execution_failed": "Het maken van de back-up is mislukt. Controleer de toestand en opslag van de appliance en probeer het daarna opnieuw.",
                 "interrupted": "De back-up is onderbroken. Dit is geen bevestigd herstelpunt; maak een nieuwe back-up.",
                 "artifact_invalid": "Het back-upbestand is niet door de controle gekomen en kan niet als herstelpunt worden gebruikt.",
+                "offline_restore_required": "Download deze back-up en herstel hem offline op een doel zonder geïnstalleerde apps.",
                 "appliance_required": "Dit is lokale demogeschiedenis. Echte back-ups maken of herstellen en planningen opslaan vereist de back-updienst van de Linux-appliance.",
                 "recovery_failed": "De appliance kon het herstel van de diensten na het back-uponderhoud niet bevestigen. Controleer de toestand voordat je het opnieuw probeert.",
                 "not_found": "Deze back-up bestaat niet meer. Kies een andere vermelding uit de huidige geschiedenis."

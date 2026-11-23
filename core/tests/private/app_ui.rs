@@ -21,6 +21,32 @@ const INSTALLATION: &str = "/v1/apps/demo/1";
 const OPERATION: &str = "/v1/apps/demo/1/operations/greeting";
 const REQUEST_BODY: &[u8] = br#"{"resourceId":"fixture","name":"Kevin"}"#;
 
+pub(in crate::app_manager) async fn manager_catalog(
+    action: Option<&Value>,
+    expected_status: u16,
+) -> Value {
+    let client = Client(PathBuf::from(SOCKET));
+    let reply = match action {
+        Some(action) => {
+            client
+                .request(
+                    "POST",
+                    "/v1/catalog/lifecycle",
+                    "Content-Type: application/json\r\n",
+                    &serde_json::to_vec(action).unwrap(),
+                )
+                .await
+        }
+        None => client.get("/v1/catalog").await,
+    };
+    reply.assert(expected_status);
+    if expected_status < 300 {
+        reply.json()
+    } else {
+        Value::Null
+    }
+}
+
 #[test]
 fn generation_path_identity_and_payload_are_unambiguous() {
     assert_eq!(generation_number("1"), Some(1));
@@ -250,6 +276,22 @@ impl Client {
         )
         .await
     }
+}
+
+pub(in crate::app_manager) async fn fixture_request(
+    method: &str,
+    path: &str,
+    headers: &str,
+    body: &[u8],
+) -> (u16, Value) {
+    let client = Client(PathBuf::from(SOCKET));
+    let reply = client.request(method, path, headers, body).await;
+    let value = if reply.body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&reply.body).unwrap()
+    };
+    (reply.status, value)
 }
 
 fn staged_package(root: &Path) -> StagedPackage {
@@ -527,7 +569,7 @@ async fn privileged_web_socket_serves_generation_scoped_ui() {
 
 async fn assert_catalog_requests(
     client: &Client,
-    requests: &mut tokio::sync::mpsc::Receiver<catalog::Selection>,
+    requests: &mut tokio::sync::mpsc::Receiver<catalog::Request>,
     release: catalog::Selection,
 ) {
     const INSTALL: &str = "/v1/catalog/install";
@@ -535,6 +577,8 @@ async fn assert_catalog_requests(
     let initial = client.get("/v1/catalog").await;
     initial.assert(200);
     assert_eq!(initial.json()["state"], "ready");
+    assert_eq!(initial.json()["installations"], value!([]));
+    assert_eq!(initial.json()["lifecycle"], value!(null));
     assert_eq!(
         initial.json()["entries"][0]["appId"],
         "rentnerproxy.greeting"
@@ -548,6 +592,21 @@ async fn assert_catalog_requests(
         .request("POST", INSTALL, JSON, &[b' '; MAX_INSTALL_BYTES + 1])
         .await
         .assert(413);
+    let lifecycle = "/v1/catalog/lifecycle";
+    client
+        .request("POST", lifecycle, JSON, b"{}")
+        .await
+        .assert(400);
+    let lifecycle_body = serde_json::to_vec(&value!({
+        "action": "purge",
+        "installationId": "demo",
+        "expected": { "generation": 1, "version": "1.0.0", "archiveSha256": "a".repeat(64) }
+    }))
+    .unwrap();
+    client
+        .request("POST", lifecycle, JSON, &lifecycle_body)
+        .await
+        .assert(409);
 
     let mut wrong = serde_json::to_value(&release).unwrap();
     wrong["archiveSha256"] = value!("f".repeat(64));
@@ -562,7 +621,10 @@ async fn assert_catalog_requests(
         accepted.assert(202);
         assert_eq!(accepted.json()["status"], "installing");
     }
-    assert_eq!(requests.try_recv().unwrap(), release);
+    assert_eq!(
+        requests.try_recv().unwrap(),
+        catalog::Request::Install(release)
+    );
     assert!(requests.try_recv().is_err());
     let pending = client.get("/v1/catalog").await;
     pending.assert(200);

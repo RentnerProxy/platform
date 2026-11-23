@@ -73,6 +73,7 @@ const items: readonly ApplicationNavigationItem[] = [
     { to: '/proxy-hosts', label: 'Proxy hosts' },
     { to: '/access-policies', label: 'Access policies' },
     { to: '/users', label: 'Users' },
+    { to: '/app-catalog', label: 'App catalog' },
     { to: '/audit-logs', label: 'Audit log' },
 ]
 const persisted = new Map<string, NavigationGroupPreferences>()
@@ -227,6 +228,23 @@ afterAll(() => {
 })
 
 describe('persisted navigation groups', () => {
+    test('opens Apps on a direct catalog visit and restores its saved collapsed state', async () => {
+        await mount({ id: userId }, { path: '/app-catalog' })
+        expect(expanded('apps')).toBeTrue()
+        expect(groupButtons('apps')[0]?.classList.contains('text-brand-300')).toBeTrue()
+
+        await click(groupButtons('apps')[0]!)
+        await settle()
+        const stored = persisted.get(userId)
+        expect(stored).toEqual({ apps: false })
+
+        await act(async () => activeRoot?.unmount())
+        activeRoot = createRoot(container)
+        await render({ id: userId, navigationGroupPreferences: stored! })
+        expect(expanded('apps')).toBeFalse()
+        expect(save).toHaveBeenCalledTimes(1)
+    })
+
     test('keeps existing defaults and does not write while rendering, navigating, or changing language', async () => {
         await mount({ id: userId }, { path: '/audit-logs' })
         expect(expanded('records')).toBeTrue()

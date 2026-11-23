@@ -1,6 +1,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { getRequest, setResponseHeader } from '@tanstack/react-start/server'
 import type { AppUiProblem } from '@/lib/AppUi/contract.ts'
+import type { NativeAppPresentation } from '@/lib/AppUi/native-presentation.ts'
 import { getCurrentSessionService } from '@/server/Auth/Access/sessions.service.ts'
 import { getPublicOrigin } from '@/server/env.server.ts'
 import { AppRuntimeProblem } from '@/server/AppRuntime/problem.ts'
@@ -10,6 +11,10 @@ import {
     listAuthorizedAppUis,
 } from '@/server/AppRuntime/ui/access.server.ts'
 import { appUiFrameSource } from '@/server/AppRuntime/ui/assets.server.ts'
+import {
+    authorizedNativeOperations,
+    resolveNativePresentation,
+} from '@/server/AppRuntime/ui/native-presentation.server.ts'
 import {
     appUiEnabled,
     appUiOpenInput,
@@ -30,7 +35,13 @@ export const listAppUisHandler = createServerFn({ method: 'GET' })
     })
 
 type OpenAppUi =
-    { ok: true; src: string; frameToken: string } | { ok: false; problem: AppUiProblem }
+    | {
+          ok: true
+          src: string
+          frameToken: string
+          native?: { presentation: NativeAppPresentation; operations: string[] }
+      }
+    | { ok: false; problem: AppUiProblem }
 
 export const openAppUiHandler = createServerFn({ method: 'POST' })
     .validator((input: unknown) => appUiOpenInput.parse(input))
@@ -45,10 +56,23 @@ export const openAppUiHandler = createServerFn({ method: 'POST' })
             if (session?.id !== data.sessionId) throw uiProblems.frameRevoked
             const signal = appUiSignal(request)
             const app = await activeAppUi(data, signal)
-            await authorizeAppUi(session.id, app, signal)
+            const permissions = await authorizeAppUi(session.id, app, signal)
+            const presentation = data.native ? resolveNativePresentation(app) : undefined
+            if (data.native && !presentation) throw uiProblems.missing
             return {
                 ok: true,
                 ...(await appUiFrameSource(app, session.id, session.expiresAt, origin)),
+                ...(presentation && {
+                    native: {
+                        presentation,
+                        operations: await authorizedNativeOperations(
+                            app,
+                            presentation,
+                            permissions,
+                            signal,
+                        ),
+                    },
+                }),
             }
         } catch (error) {
             const problem = error instanceof AppRuntimeProblem ? error : uiProblems.unavailable

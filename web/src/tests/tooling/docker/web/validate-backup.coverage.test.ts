@@ -59,6 +59,7 @@ async function fixture(database = true) {
     const backup = join(directory, 'backup')
     const archive = join(directory, 'archive')
     const migrations = join(directory, 'migrations')
+    const controller = join(directory, 'controller')
     await Promise.all([
         mkdir(backup),
         mkdir(join(archive, 'data'), { recursive: true }),
@@ -151,6 +152,7 @@ async function fixture(database = true) {
     const original = await coverageFixtureSource('docker/web/validate-backup.ts')
     const source = original
         .replace(/from\s*(['"])bun\1/gu, "from 'rentnerproxy-coverage-sql-fixture'")
+        .replaceAll('/usr/local/bin/rentnerproxy-controller', controller.replaceAll('\\', '/'))
         .replaceAll('/opt/rentnerproxy/web/web/drizzle', migrations.replaceAll('\\', '/'))
         .replaceAll(
             '../../web/src/lib/ApplicationVersion/backupCompatibility.ts',
@@ -166,6 +168,7 @@ async function fixture(database = true) {
         backup,
         archive,
         migrations,
+        controller,
         pack,
         validate: () =>
             module.validateDatabase(
@@ -175,6 +178,47 @@ async function fixture(database = true) {
                 join(directory, 'no-live-postgres-socket'),
             ),
     }
+}
+
+async function writeAppBackup(
+    context: Awaited<ReturnType<typeof fixture>>,
+    version: 5 | 6,
+    decodable = true,
+) {
+    const app = { id: 'app-greeting', appId: 'rentnerproxy.greeting', uid: 20000 }
+    const name = version === 6 ? '.rentnerproxy-app-state-v2' : '.rentnerproxy-app-state-v1'
+    const action = version === 6 ? 'inspect-portable' : 'inspect'
+    const path = join(context.backup, name)
+    const expected = ['--app-backup', action, path]
+    await Promise.all([
+        writeFile(
+            join(context.backup, 'metadata.json'),
+            JSON.stringify({
+                version,
+                applications: { installations: [{ ...app, generation: 1 }] },
+            }),
+        ),
+        writeFile(path, decodable ? 'valid fixture member' : 'damaged fixture member'),
+        writeFile(
+            context.controller,
+            [
+                '#!/usr/bin/env -S bun --no-env-file',
+                'const actual = process.argv.slice(2)',
+                'if (JSON.stringify(actual) !== ' +
+                    JSON.stringify(JSON.stringify(expected)) +
+                    ') process.exit(2)',
+                "if ((await Bun.file(actual[2]).text()) !== 'valid fixture member') process.exit(1)",
+            ].join('\n'),
+            { mode: 0o700 },
+        ),
+    ])
+    rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [{ present: true }])
+    rows.set('FROM rentnerproxy.app_runtime_installations', [app])
+    rows.set('FROM rentnerproxy.app_runtime_generations', [{ quiet: true }])
+    const credential = encrypted('app-runtime-secret:v1:' + app.id + ':' + id)
+    rows.set('FROM rentnerproxy.app_runtime_secrets', [
+        { installation_id: app.id, id, ciphertext: credential.ciphertext, iv: credential.iv },
+    ])
 }
 
 describe('backup database validation with isolated storage and injected SQL rows', () => {
@@ -196,6 +240,47 @@ describe('backup database validation with isolated storage and injected SQL rows
         await expect(context.validate()).rejects.toThrow('App database identities differ')
         expect(closed).toBe(1)
     })
+
+    test.skipIf(process.platform === 'win32').each([5, 6] as const)(
+        'validates the v%s app snapshot with its decoder and authenticates app database secrets',
+        async (version) => {
+            const context = await fixture(false)
+            await writeAppBackup(context, version)
+            await context.validate()
+            expect(closed).toBe(1)
+        },
+    )
+
+    test.skipIf(process.platform === 'win32')(
+        'rejects a corrupt portable app snapshot before opening the database',
+        async () => {
+            const context = await fixture(false)
+            await writeAppBackup(context, 6, false)
+            await expect(context.validate()).rejects.toThrow('Invalid application file snapshot')
+            expect(closed).toBe(0)
+        },
+    )
+
+    test.skipIf(process.platform === 'win32').each(['live-generation', 'invalid-secret'] as const)(
+        'fails closed while validating a portable backup with %s evidence',
+        async (scenario) => {
+            const context = await fixture(false)
+            await writeAppBackup(context, 6)
+            if (scenario === 'live-generation') {
+                rows.set('FROM rentnerproxy.app_runtime_generations', [{ quiet: false }])
+            } else {
+                rows.set('FROM rentnerproxy.app_runtime_secrets', [
+                    { installation_id: 'app-greeting', id, ciphertext: null, iv: Buffer.alloc(12) },
+                ])
+            }
+            await expect(context.validate()).rejects.toThrow(
+                scenario === 'live-generation'
+                    ? 'App generation has not retired'
+                    : 'Invalid application backup secret',
+            )
+            expect(closed).toBe(1)
+        },
+    )
 
     test('accepts an external-only backup without a managed CrowdSec database', async () => {
         const context = await fixture(false)

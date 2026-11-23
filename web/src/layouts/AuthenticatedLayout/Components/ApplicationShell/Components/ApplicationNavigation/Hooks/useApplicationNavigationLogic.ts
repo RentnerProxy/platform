@@ -3,6 +3,7 @@ import { useRouterState } from '@tanstack/react-router'
 import { useId, useState } from 'react'
 
 import { NAVIGATION_GROUP_IDS } from '@/config/navigation.config.ts'
+import { useAppUiSlot } from '@/features/AppUi/AppUiProvider.tsx'
 import { parseStoredNavigationGroupPreferences } from '@/lib/Navigation/navigationPreferences.ts'
 import type { NavigationGroupId } from '@/config/Types/navigation-config.types.ts'
 
@@ -34,6 +35,10 @@ const navigationGroups = [
         paths: ['/users', '/roles'],
     },
     {
+        id: 'apps',
+        paths: ['/app-catalog'],
+    },
+    {
         id: 'records',
         paths: ['/audit-logs', '/proxy-access-logs', '/backups', '/migration', '/npm-import'],
     },
@@ -49,6 +54,7 @@ export default function useApplicationNavigationLogic(
 ): ApplicationNavigationLogicResult {
     const pathname = useRouterState({ select: (state) => state.location.pathname })
     const instanceId = useId()
+    const apps = useAppUiSlot('navigation')
     const groups = navigationGroups
         .map((group) => ({
             id: group.id,
@@ -56,22 +62,30 @@ export default function useApplicationNavigationLogic(
                 const item = items.find((candidate) => candidate.to === path)
                 return item ? [item] : []
             }),
+            installedApps: group.id === 'apps' ? apps : [],
         }))
-        .filter((group) => group.items.length > 0)
-    const activeGroupId = groups.find((group) =>
-        group.items.some(
-            (item) =>
-                pathname === item.to || (item.to !== '/' && pathname.startsWith(`${item.to}/`)),
-        ),
+        .filter((group) => group.items.length > 0 || group.installedApps.length > 0)
+    const activeGroupId = groups.find(
+        (group) =>
+            group.items.some(
+                (item) =>
+                    pathname === item.to || (item.to !== '/' && pathname.startsWith(`${item.to}/`)),
+            ) ||
+            group.installedApps.some(({ installationId }) => {
+                const basePath = `/apps/${encodeURIComponent(installationId)}`
+                return pathname === basePath || pathname.startsWith(`${basePath}/`)
+            }),
     )?.id
     const [expandedState, setExpandedState] = useState<{
         readonly pathname: string
+        readonly activeGroupId: NavigationGroupId | undefined
         readonly ids: ReadonlySet<NavigationGroupId>
-    }>(() => ({ pathname, ids: new Set([activeGroupId ?? 'operations']) }))
+    }>(() => ({ pathname, activeGroupId, ids: new Set([activeGroupId ?? 'operations']) }))
     const defaultExpandedGroupIds =
-        expandedState.pathname === pathname || !activeGroupId
-            ? expandedState.ids
-            : new Set([...expandedState.ids, activeGroupId])
+        activeGroupId &&
+        (expandedState.pathname !== pathname || expandedState.activeGroupId !== activeGroupId)
+            ? new Set([...expandedState.ids, activeGroupId])
+            : expandedState.ids
     const preferences = parseStoredNavigationGroupPreferences(groupPreferences)
     const expandedGroupIds = new Set(defaultExpandedGroupIds)
     for (const groupId of NAVIGATION_GROUP_IDS) {
@@ -85,7 +99,6 @@ export default function useApplicationNavigationLogic(
             activeGroupId,
             expandedGroupIds,
             instanceId,
-            appCatalog: items.find((item) => item.to === '/app-catalog'),
         },
         handler: {
             toggleGroup(id: NavigationGroupId) {
@@ -95,10 +108,15 @@ export default function useApplicationNavigationLogic(
                 }
                 setExpandedState((current) => {
                     const next = new Set(current.ids)
-                    if (current.pathname !== pathname && activeGroupId) next.add(activeGroupId)
+                    if (
+                        activeGroupId &&
+                        (current.pathname !== pathname || current.activeGroupId !== activeGroupId)
+                    ) {
+                        next.add(activeGroupId)
+                    }
                     if (next.has(id)) next.delete(id)
                     else next.add(id)
-                    return { pathname, ids: next }
+                    return { pathname, activeGroupId, ids: next }
                 })
             },
         },

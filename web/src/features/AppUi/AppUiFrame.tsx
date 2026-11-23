@@ -30,6 +30,7 @@ export default function AppUiFrame({ app, slot, hostId, route, onNavigate }: Fra
 
     if (!sessionId) return null
 
+    // Routing updates the open document through the bridge.
     return (
         <AppUiMount
             key={JSON.stringify([
@@ -38,7 +39,6 @@ export default function AppUiFrame({ app, slot, hostId, route, onNavigate }: Fra
                 app.generation,
                 slot,
                 hostId,
-                current,
                 attempt,
             ])}
             sessionId={sessionId}

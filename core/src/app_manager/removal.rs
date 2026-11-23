@@ -11,7 +11,8 @@ impl Manager {
             Removal::Installed | Removal::Removing => (),
         }
         if slot.provider_dependencies_unknown {
-            return Err(bad(
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
                 "Installed provider dependencies require explicit resolution",
             ));
         }
@@ -45,7 +46,7 @@ impl Manager {
                 storage::finish_unclaim(id, &slot)?;
             }
         }
-        slot.active = None;
+        slot.removed_release = slot.active.take().as_ref().map(Into::into);
         slot.candidate = None;
         slot.previous = None;
         slot.recovery_required = false;
@@ -61,7 +62,14 @@ impl Manager {
             Removal::Removed | Removal::Purging => (),
             _ => return Err(bad("Data purge requires a completed removal")),
         }
-        let _writer = self.writer(slot.uid).await?;
+        if slot.provider_dependencies_unknown {
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                "Installed provider dependencies require explicit resolution",
+            ));
+        }
+        let _writer = self.fence(id).await?;
+        slot = self.journal.slot(id)?.clone();
         slot.removal = Removal::Purging;
         self.journal.save(id, slot.clone())?;
         if slot.generation > 0 {
@@ -74,6 +82,9 @@ impl Manager {
             storage::purge(id, &slot)?;
         }
         slot.written = None;
+        slot.candidate = None;
+        slot.removed_release = None;
+        slot.removed_data_required = None;
         slot.database_provisioned = false;
         slot.storage_claimed = Some(false);
         slot.recovery_required = false;

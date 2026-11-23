@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useRef, type ReactElement } from 'react'
 import type { Root } from 'react-dom/client'
 
 import { TOOLTIP_PROVIDER_PROPS } from '@/config/tooltip.config.ts'
+import { PERMISSIONS } from '@/config/permissions.config.ts'
+import type { AppUiSummary } from '@/lib/AppUi/contract.ts'
 import { withLanguageRoot } from '@/tests/Helpers/withTestLanguage.tsx'
 
 if (!GlobalRegistrator.isRegistered) {
@@ -11,8 +14,33 @@ if (!GlobalRegistrator.isRegistered) {
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
+const navigationApp: AppUiSummary = {
+    appId: 'test.app',
+    installationId: 'test-installation',
+    generation: 1,
+    name: 'Navigation app',
+    slots: ['navigation'],
+    routes: ['overview', 'details'],
+    dialogs: [],
+    events: [],
+    permissionKeys: [],
+}
+await mock.module('@/features/AppUi/middleware.ts', () => ({
+    listAppUisHandler: async () => [
+        navigationApp,
+        {
+            ...navigationApp,
+            appId: 'test.widget',
+            installationId: 'test-widget',
+            name: 'Dashboard widget',
+            slots: ['dashboardWidget'],
+        },
+    ],
+}))
+
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
+const { default: AppUiProvider } = await import('@/features/AppUi/AppUiProvider.tsx')
 const { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterContextProvider } =
     await import('@tanstack/react-router')
 const { default: ApplicationTopbar } =
@@ -34,6 +62,8 @@ function navigationRouter(path: string) {
         '/proxy-hosts',
         '/access-policies',
         '/users',
+        '/app-catalog',
+        '/apps/$installationId/{-$routeId}',
         '/audit-logs',
         '/proxy-access-logs',
         '/migration',
@@ -237,6 +267,58 @@ describe('application topbar', () => {
 })
 
 describe('application navigation groups', () => {
+    test('groups the catalog and authorized navigation apps before Logs & data', async () => {
+        const router = navigationRouter('/apps/test-installation/details')
+        const client = new QueryClient()
+        const user = {
+            id: 'test-user',
+            displayName: 'Viewer',
+            email: 'viewer@example.test',
+            profileImageVersion: null,
+            roles: [],
+            permissions: [PERMISSIONS.APP_ACCESS],
+            language: 'en',
+            themeMode: 'light',
+        } as const
+        await router.load()
+
+        try {
+            const container = await render(
+                <QueryClientProvider client={client}>
+                    <RouterContextProvider router={router}>
+                        <AppUiProvider user={user} sessionId="test-session" theme="light" active>
+                            <ApplicationNavigation
+                                items={[
+                                    { to: '/app-catalog', label: 'App catalog' },
+                                    { to: '/audit-logs', label: 'Audit log' },
+                                ]}
+                            />
+                        </AppUiProvider>
+                    </RouterContextProvider>
+                </QueryClientProvider>,
+            )
+            await act(async () => {
+                await Bun.sleep(10)
+            })
+
+            const buttons = [
+                ...container.querySelectorAll<HTMLButtonElement>('nav section > button'),
+            ]
+            expect(buttons.map((button) => button.textContent)).toEqual(['Apps2', 'Logs & data1'])
+            const panel = document.getElementById(buttons[0]!.getAttribute('aria-controls')!)
+            expect(panel?.hidden).toBeFalse()
+            const links = [...(panel?.querySelectorAll('a') ?? [])]
+            expect(links.map((link) => link.textContent)).toEqual(['App catalog', 'Navigation app'])
+            expect(links[1]?.getAttribute('data-status')).toBe('active')
+            await click(buttons[0]!)
+            expect(panel?.hidden).toBeTrue()
+        } finally {
+            await act(async () => activeRoot?.unmount())
+            activeRoot = null
+            client.clear()
+        }
+    })
+
     test('shows the current section, keeps the final log order, and expands the next active section', async () => {
         const router = navigationRouter('/audit-logs')
         const container = await render(

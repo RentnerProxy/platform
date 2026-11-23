@@ -2,6 +2,8 @@ mod catalog;
 mod control;
 mod gateway;
 mod journal;
+mod lifecycle;
+pub(crate) mod portable_backup;
 mod removal;
 mod runtime;
 mod service;
@@ -295,8 +297,12 @@ impl Manager {
     ) -> io::Result<()> {
         let slot = self.journal.slot(id)?.clone();
         // Historical committed generations predate the explicit storage acknowledgement.
-        let committed_data =
-            slot.active.is_some() && (slot.generation > 0 || slot.storage_claimed == Some(true));
+        let committed_data = slot.active.is_some()
+            && (slot.generation > 0 || slot.storage_claimed == Some(true))
+            || slot.removal == Removal::Removed
+                && slot
+                    .removed_data_required
+                    .unwrap_or(slot.generation > 0 && slot.storage_claimed != Some(false));
         let admit_storage = || {
             if committed_data {
                 storage::require_data(id, &slot)
@@ -332,7 +338,7 @@ impl Manager {
             .await?;
         let data = package.manifest.get("data").map(read_data).transpose()?;
         if !slot.accepts(&release, data.as_ref()) {
-            return Err(bad("Declared data versions require migration or recovery"));
+            return Err(io::Error::other(lifecycle::IncompatibleData));
         }
         let generation = slot
             .generation
@@ -406,6 +412,10 @@ impl Manager {
             runtime::provision(slot.uid, data.is_some(), &writer),
         )
         .await?;
+        if slot.removal == Removal::Removed {
+            // For a reinstall after purge, only completed provisioning creates a data directory.
+            slot.removed_data_required = Some(true);
+        }
         slot.written = data;
         slot.provider_dependencies_unknown |= package.manifest["providers"]
             .as_array()
@@ -430,6 +440,9 @@ impl Manager {
             return Err(bad("App exited during activation"));
         }
         slot.commit_release(release);
+        slot.removal = Removal::Installed;
+        slot.removed_release = None;
+        slot.removed_data_required = None;
         slot.desired_running = true;
         slot.recovery_required = false;
         slot.grants_uncertain = None;
@@ -601,7 +614,12 @@ impl Manager {
                 match slot.removal {
                     Removal::Removing => return self.remove(&id).await,
                     Removal::Purging => return self.purge(&id).await,
-                    Removal::Removed | Removal::Purged => return Ok(()),
+                    Removal::Removed | Removal::Purged => {
+                        if slot.pending_fence {
+                            self.fence(&id).await?;
+                        }
+                        return Ok(());
+                    }
                     Removal::Installed => (),
                 }
                 self.fence(&id).await?;
@@ -641,7 +659,7 @@ impl Manager {
     async fn serve(
         &mut self,
         catalog: &catalog::Endpoint,
-        installations: &mut mpsc::Receiver<catalog::Selection>,
+        requests: &mut mpsc::Receiver<catalog::Request>,
     ) -> io::Result<()> {
         let listener = Arc::new(control::bind()?);
         self.listener = Some(Arc::clone(&listener));
@@ -651,26 +669,37 @@ impl Manager {
         {
             eprintln!("Could not start application catalog refresh: {error}");
         }
-        self.serve_control(&listener, catalog, installations).await
+        self.serve_control(&listener, catalog, requests).await
     }
 
     async fn serve_control(
         &mut self,
         listener: &tokio::net::UnixListener,
         catalog: &catalog::Endpoint,
-        installations: &mut mpsc::Receiver<catalog::Selection>,
+        requests: &mut mpsc::Receiver<catalog::Request>,
     ) -> io::Result<()> {
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
+            catalog.publish(self.local_installations())?;
             tokio::select! {
                 _ = tick.tick() => self.check_exits(None)?,
                 Some(job) = self.drains.join_next_with_id(), if !self.drains.is_empty() => {
                     self.report_exit(job).await?;
                 }
-                Some(selection) = installations.recv() => {
-                    let result = self.install_catalog(&selection).await;
-                    catalog.finish(selection, result)?;
+                Some(request) = requests.recv() => {
+                    match request {
+                        catalog::Request::Install(selection) => {
+                            let result = self.install_catalog(&selection).await;
+                            catalog.publish(self.local_installations())?;
+                            catalog.finish(selection, result)?;
+                        }
+                        catalog::Request::Lifecycle(request) => {
+                            let result = self.manage_lifecycle(&request).await;
+                            catalog.publish(self.local_installations())?;
+                            catalog.finish_lifecycle(request, result)?;
+                        }
+                    }
                     self.journal.writable()?;
                 }
                 connection = listener.accept() => self.reply(connection?.0).await?,
@@ -1021,6 +1050,15 @@ impl Manager {
 
 fn recover(installer: &Installer, app: &str, record: &Release) -> io::Result<StagedPackage> {
     let package = installer.recover(app, &record.version, &record.archive_sha256)?;
+    verify_recovered_release(&package, app, record)?;
+    Ok(package)
+}
+
+fn verify_recovered_release(
+    package: &StagedPackage,
+    app: &str,
+    record: &Release,
+) -> io::Result<()> {
     if package.manifest_sha256 != record.manifest_sha256
         || package.archive_sha256 != record.archive_sha256
         || package.catalog_revision < record.catalog_revision
@@ -1029,11 +1067,12 @@ fn recover(installer: &Installer, app: &str, record: &Release) -> io::Result<Sta
     {
         return Err(bad("Recovered package differs from recorded release"));
     }
-    Ok(package)
+    Ok(())
 }
 
 pub(crate) fn backup_inventory(config: Option<&Path>) -> io::Result<(impl Sized, Value)> {
     let journal = Journal::open(Path::new("/var/lib/rentnerproxy/app-manager"))?;
+    portable_backup::require_ready_to_start()?;
     let mut installer = None;
     let mut writers = Vec::new();
     for slot in journal.slots().values() {
@@ -1125,6 +1164,7 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
         drains: JoinSet::new(),
         draining: HashMap::new(),
     };
+    portable_backup::require_ready_to_start()?;
     let result = tokio::select! {
         biased;
         _ = crate::shutdown::wait_for_shutdown() => Ok(()),

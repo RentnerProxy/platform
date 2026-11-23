@@ -13,7 +13,10 @@ import {
     writeFile,
 } from 'node:fs/promises'
 import { join } from 'node:path'
-import { CURRENT_COMPATIBILITY_PROFILE } from '../../../web/src/config/compatibility.config.ts'
+import {
+    CURRENT_COMPATIBILITY_PROFILE,
+    PORTABLE_APP_BACKUP_VERSION,
+} from '../../../web/src/config/compatibility.config.ts'
 
 import { managedBackupSourceSchema } from '../../../web/src/lib/Backups/validation.ts'
 import { readDeploymentEnvironmentVariable } from '../../../web/src/lib/Environment/deployment-environment.ts'
@@ -27,7 +30,10 @@ import { runMaintenanceProcess } from '../../../scripts/backup/maintenance-proce
 import { assertBackupCapacity, backupCapacityGuard } from '../../../scripts/backup/capacity.ts'
 import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 import { publishProductionBackup } from '../../../scripts/backup/publication.ts'
-import { snapshotProductionRestore } from '../../../scripts/backup/restore-snapshot.ts'
+import {
+    readSnapshotMetadata,
+    snapshotProductionRestore,
+} from '../../../scripts/backup/restore-snapshot.ts'
 import { appBackupCommand, appStateName } from '../../../scripts/backup/app-state.ts'
 import {
     postgresCommand,
@@ -95,6 +101,24 @@ async function validateControllerMetadata(
         maximumOutputBytes: 0,
     })
     if (result.failed || !result.stopped) throw new Error('Invalid controller metadata in backup')
+}
+
+async function restorePortableApps(snapshot: string) {
+    await command([
+        'bash',
+        '-c',
+        postgresCommand('portable-apps', snapshot, PORTABLE_APP_BACKUP_VERSION),
+    ])
+}
+
+async function restorePortableAppsFromCompose(backupId: string) {
+    const snapshot = '/backup'
+    const { metadata } = await readSnapshotMetadata(snapshot, backupId)
+    const result = await command(['bun', '--no-env-file', bootstrap, 'inspect-production-restore'])
+    const pending = Buffer.from(result.stdout).toString('utf8').trim()
+    if (metadata.version !== PORTABLE_APP_BACKUP_VERSION || pending !== backupId)
+        throw new Error('Portable application import requires the matching pending restore')
+    await restorePortableApps(snapshot)
 }
 
 function deployment() {
@@ -286,6 +310,9 @@ async function offlineRestore(options: readonly string[]) {
             validateControllerMetadata,
         )
 
+        const portable = metadata.version === PORTABLE_APP_BACKUP_VERSION
+        const appAware = portable ? PORTABLE_APP_BACKUP_VERSION : metadata.version === 5
+        const resume = options.includes('--resume')
         if (capacity.backupId !== backupId)
             throw new Error('Backup changed after isolated validation')
         assertDeploymentCompatible(
@@ -294,34 +321,30 @@ async function offlineRestore(options: readonly string[]) {
             options.includes('--allow-deployment-change'),
         )
         process.env.RENTNERPROXY_RESTORE_BACKUP_ID = backupId
-        process.env.RENTNERPROXY_RESTORE_RESUME = String(options.includes('--resume'))
+        process.env.RENTNERPROXY_RESTORE_RESUME = String(resume)
         const pending = Buffer.from(
             (await command(['bun', '--no-env-file', bootstrap, 'inspect-production-restore']))
                 .stdout,
         )
             .toString('utf8')
             .trim()
-        if (pending && (!options.includes('--resume') || pending !== backupId))
+        if (pending && (!resume || pending !== backupId))
             throw new Error('Resume requires the same pending backup')
-        if (!pending && options.includes('--resume'))
-            throw new Error('No interrupted restore is pending')
+        if (!pending && resume) throw new Error('No interrupted restore is pending')
         operationSignal.throwIfAborted()
         await assertRestoreCapacity(capacity, stateCapacity)
         operationSignal.throwIfAborted()
         await command([
             'bash',
             '-c',
-            postgresCommand('inventory', snapshot, metadata.version === 5, backupId),
+            postgresCommand('inventory', snapshot, appAware, backupId, resume),
         ])
         if (!pending)
             await command(['/usr/local/bin/rentnerproxy-production', '--initialize-restore-target'])
         await beginProductionRestore()
         await beginAppEncryptionKeyRestore(join(snapshot, 'app-encryption-key'))
         await command(['bash', '-c', postgresCommand(false, snapshot)])
-        for (const script of [
-            controllerRestoreCommand(metadata.version === 5),
-            crowdSecRestoreCommand(),
-        ])
+        for (const script of [controllerRestoreCommand(appAware), crowdSecRestoreCommand()])
             await command(['bash', '-c', script.replaceAll('/backup/', snapshot + '/')])
         if (metadata.version === 5)
             await command([
@@ -330,6 +353,7 @@ async function offlineRestore(options: readonly string[]) {
                 'restore',
                 join(snapshot, appStateName),
             ])
+        if (portable) await restorePortableApps(snapshot)
         await command(['sync', '--file-system', '/var/lib/rentnerproxy'])
         await completeAppEncryptionKeyRestore()
         await completeProductionRestore()
@@ -361,6 +385,8 @@ if (import.meta.main) {
         if (operation === 'backup' && !options.length) await offlineBackup()
         else if (operation === 'validate' && !options.length) await offlineValidate()
         else if (operation === 'restore') await offlineRestore(options)
+        else if (operation === 'restore-portable-apps' && options.length === 1)
+            await restorePortableAppsFromCompose(options[0]!)
         else throw new Error('Invalid offline maintenance operation')
     } catch {
         console.error(

@@ -10,6 +10,7 @@ export type AppUiSummary = {
     dialogs: string[]
     events: string[]
     permissionKeys: string[]
+    native?: true
 }
 
 type AppUiJson = null | boolean | number | string | AppUiJson[] | AppUiPayload

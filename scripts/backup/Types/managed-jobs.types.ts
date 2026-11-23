@@ -26,6 +26,7 @@ export interface ManagedBackupDependencies {
         acknowledge: (receipt: OffHostConfigurationAudit) => Promise<void>
     }
     recoverRestore?: (operation: ManagedBackupMaintenance) => Promise<boolean>
+    admitRestore?: (job: ManagedBackupJob) => Promise<void>
     restore?: (
         job: ManagedBackupJob,
         operation: ManagedBackupMaintenance,
@@ -38,4 +39,5 @@ export type ManagedBackupErrorCode =
     | 'capacity'
     | 'execution_failed'
     | 'artifact_invalid'
+    | 'offline_restore_required'
     | 'recovery_failed'
