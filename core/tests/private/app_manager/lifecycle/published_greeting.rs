@@ -1,13 +1,14 @@
 use super::*;
 use serde_json::{Value, json};
 use std::{
+    ffi::OsString,
     fs::{self, File},
     io::{self, BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     os::unix::fs::{PermissionsExt, chown},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
@@ -21,9 +22,42 @@ const APP_UI_SOCKET: &str = "/run/rentnerproxy/app-ui/web.sock";
 const PERSISTED_GREETING: &str = "Gude from the published Greeting fixture!";
 static NEXT_IDEMPOTENCY_KEY: AtomicUsize = AtomicUsize::new(1);
 
+#[derive(Clone, Copy, Debug, Default)]
+enum ArchiveResponse {
+    #[default]
+    Authentic,
+    Interrupted,
+    SameLengthCorruption,
+}
+
+impl ArchiveResponse {
+    fn write(self, mut archive: File, length: u64, stream: &mut impl Write) -> io::Result<u64> {
+        match self {
+            Self::Authentic => io::copy(&mut archive, stream),
+            // Advertise the signed length but close the response halfway through the body.
+            Self::Interrupted => io::copy(&mut archive.take(length / 2), stream),
+            // Keep Content-Length and the on-disk fixture intact. Change a single byte in transit.
+            Self::SameLengthCorruption => {
+                let mut byte = [0];
+                archive.read_exact(&mut byte)?;
+                byte[0] ^= 1;
+                stream.write_all(&byte)?;
+                Ok(1 + io::copy(&mut archive, stream)?)
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct UpdateResponse {
+    mode: ArchiveResponse,
+    payload_lengths: Vec<u64>,
+}
+
 struct PublishedCatalogServer {
     stop: Arc<AtomicBool>,
     task: Option<thread::JoinHandle<()>>,
+    update_response: Arc<Mutex<UpdateResponse>>,
 }
 
 impl PublishedCatalogServer {
@@ -55,6 +89,9 @@ impl PublishedCatalogServer {
         // install request selects 1.0.0 explicitly; the same signed catalog offers 1.0.1.
         let latest = &fixture.snapshots[1];
         let metadata = Arc::new(latest.files.clone());
+        let update_path = url_path(&latest.archive_url);
+        let update_response = Arc::new(Mutex::new(UpdateResponse::default()));
+        let response = Arc::clone(&update_response);
         let mut archives = std::collections::BTreeMap::new();
         for snapshot in &fixture.snapshots {
             let path = url_path(&snapshot.archive_url);
@@ -79,7 +116,7 @@ impl PublishedCatalogServer {
                 let files = Arc::clone(&metadata);
                 let archives = Arc::clone(&archives);
                 let tls = Arc::clone(&tls);
-                if let Err(error) = serve(socket, tls, &files, &archives) {
+                if let Err(error) = serve(socket, tls, &files, &archives, &update_path, &response) {
                     eprintln!("Published catalog fixture request failed: {error}");
                 }
             }
@@ -87,7 +124,26 @@ impl PublishedCatalogServer {
         Self {
             stop,
             task: Some(task),
+            update_response,
         }
+    }
+
+    fn set_update_response(&self, mode: ArchiveResponse) {
+        *self.update_response.lock().unwrap() = UpdateResponse {
+            mode,
+            payload_lengths: Vec::new(),
+        };
+    }
+
+    fn assert_update_response(&self, expected_payload_length: u64) -> u64 {
+        let response = self.update_response.lock().unwrap();
+        assert_eq!(
+            response.payload_lengths,
+            [expected_payload_length],
+            "expected exactly one complete {:?} fixture response",
+            response.mode
+        );
+        response.payload_lengths[0]
     }
 
     fn stop(&mut self) {
@@ -116,6 +172,8 @@ fn serve(
     tls: Arc<rustls::ServerConfig>,
     metadata: &std::collections::BTreeMap<String, Vec<u8>>,
     archives: &std::collections::BTreeMap<String, PathBuf>,
+    update_path: &str,
+    update_response: &Mutex<UpdateResponse>,
 ) -> io::Result<()> {
     socket.set_read_timeout(Some(Duration::from_secs(15)))?;
     socket.set_write_timeout(Some(Duration::from_secs(180)))?;
@@ -148,6 +206,17 @@ fn serve(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
     )?;
+    if request_path == update_path {
+        // Keep the mode and the delivered length synchronized through the TLS flush, so the
+        // test can inspect the response immediately after the manager reports a terminal state.
+        let mut response = update_response.lock().unwrap();
+        let body = File::open(archive.expect("published update archive"))?;
+        let sent = response.mode.write(body, length, &mut stream)?;
+        stream.conn.send_close_notify();
+        stream.flush()?;
+        response.payload_lengths.push(sent);
+        return Ok(());
+    }
     if let Some(bytes) = metadata_body {
         stream.write_all(bytes)?;
     } else if let Some(path) = archive {
@@ -216,13 +285,13 @@ async fn wait_install() -> Value {
     .unwrap()
 }
 
-async fn wait_lifecycle(action: &str) -> Value {
+async fn wait_lifecycle(action: &str, expected_status: &str) -> Value {
     timeout(Duration::from_secs(120), async {
         loop {
             let view = catalog_view().await;
             if view["lifecycle"]["status"] != "pending" {
                 assert_eq!(view["lifecycle"]["action"], action);
-                assert_eq!(view["lifecycle"]["status"], "succeeded", "{view}");
+                assert_eq!(view["lifecycle"]["status"], expected_status, "{view}");
                 return view;
             }
             sleep(Duration::from_millis(100)).await;
@@ -277,6 +346,17 @@ async fn save_greeting(installation_id: &str, generation: u64, greeting: &str) {
     let (status, value) = send_ui("POST", &save_path, Some(&json!({"greeting": greeting}))).await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["greeting"], greeting);
+}
+
+fn package_store_entries(store: &Path) -> [Vec<OsString>; 2] {
+    ["archives", "packages"].map(|directory| {
+        let mut entries: Vec<_> = fs::read_dir(store.join(directory))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        entries.sort_unstable();
+        entries
+    })
 }
 
 async fn start_manager(
@@ -470,8 +550,89 @@ async fn privileged_published_greeting_lifecycle() {
     assert_eq!(offered["version"], second.version);
     assert_eq!(offered["archiveSha256"], second.archive_sha256);
     let update = lifecycle_request("update", before_update, Some(offered));
+
+    let status_before = manager_status().await.unwrap()[&installation_id].clone();
+    assert_eq!(status_before["active"], first.version);
+    assert_eq!(status_before["running"], true);
+    assert_eq!(status_before["recoveryRequired"], false);
+    assert_eq!(status_before.get("candidate"), Some(&Value::Null));
+    let uid = status_before["uid"].as_u64().unwrap();
+    let data_path = PathBuf::from(format!(
+        "/var/lib/rentnerproxy/apps/{uid}/data/greeting.json"
+    ));
+    let saved_data = fs::read(&data_path).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&saved_data).unwrap()["greeting"],
+        PERSISTED_GREETING
+    );
+    let store_before = package_store_entries(&store);
+    let update_archive = store.join("archives").join(&second.archive_sha256);
+    let update_package = store.join("packages").join(&second.archive_sha256);
+    assert!(!update_archive.exists());
+    assert!(!update_package.exists());
+    assert!(second.archive_size_bytes > 1);
+
+    let mut update_failures = Vec::new();
+    for (mode, fault, expected_payload_length) in [
+        (
+            ArchiveResponse::Interrupted,
+            "interrupted-download",
+            second.archive_size_bytes / 2,
+        ),
+        (
+            ArchiveResponse::SameLengthCorruption,
+            "same-length-archive-corruption",
+            second.archive_size_bytes,
+        ),
+    ] {
+        catalog.set_update_response(mode);
+        wait_catalog_state("ready").await;
+        post_lifecycle(&update).await;
+        let failed_view = wait_lifecycle("update", "failed").await;
+        let failed = &failed_view["lifecycle"];
+        assert_eq!(failed["installationId"], installation_id);
+        assert_eq!(failed["expected"], update["expected"]);
+        assert_eq!(failed["target"], update["target"]);
+        assert_eq!(failed["error"], "operationFailed", "{failed}");
+        let sent = catalog.assert_update_response(expected_payload_length);
+
+        let active = running_installation(&failed_view, &installation_id);
+        assert_eq!(active["version"], first.version, "{fault}");
+        assert_eq!(active["archiveSha256"], first.archive_sha256, "{fault}");
+        assert_eq!(active["generation"], first_generation, "{fault}");
+        assert_eq!(
+            manager_status().await.unwrap()[&installation_id],
+            status_before,
+            "{fault} changed the manager installation state",
+        );
+        assert_eq!(package_store_entries(&store), store_before, "{fault}");
+        let greeting = read_greeting(&installation_id, first_generation).await;
+        assert_eq!(greeting, PERSISTED_GREETING, "{fault}");
+        assert_eq!(fs::read(&data_path).unwrap(), saved_data, "{fault}");
+        update_failures.push(json!({
+            "fault": fault,
+            "operation": failed,
+            "response": {
+                "advertisedArchiveBytes": second.archive_size_bytes,
+                "servedArchiveBytes": sent,
+            },
+            "installation": active,
+            "candidateStaged": false,
+            "archiveCommitted": false,
+            "persistedGreeting": greeting,
+        }));
+    }
+
+    catalog.set_update_response(ArchiveResponse::Authentic);
+    wait_catalog_state("ready").await;
     post_lifecycle(&update).await;
-    let updated_view = wait_lifecycle("update").await;
+    let updated_view = wait_lifecycle("update", "succeeded").await;
+    let retry_payload_length = catalog.assert_update_response(second.archive_size_bytes);
+    let archived =
+        marketplace_artifacts::file_identity(&update_archive, second.archive_size_bytes).unwrap();
+    assert_eq!(archived.sha256, second.archive_sha256);
+    assert_eq!(archived.size_bytes, second.archive_size_bytes);
+    assert!(update_package.is_dir());
     let updated = running_installation(&updated_view, &installation_id);
     assert_eq!(updated["version"], second.version);
     assert_eq!(updated["archiveSha256"], second.archive_sha256);
@@ -483,12 +644,6 @@ async fn privileged_published_greeting_lifecycle() {
         read_greeting(&installation_id, updated_generation).await,
         PERSISTED_GREETING
     );
-    let uid = invoke(&controller, &["status"]).await.unwrap()[&installation_id]["uid"]
-        .as_u64()
-        .unwrap();
-    let data_path = PathBuf::from(format!(
-        "/var/lib/rentnerproxy/apps/{uid}/data/greeting.json"
-    ));
     assert_eq!(
         serde_json::from_slice::<Value>(&fs::read(&data_path).unwrap()).unwrap()["greeting"],
         PERSISTED_GREETING
@@ -497,7 +652,7 @@ async fn privileged_published_greeting_lifecycle() {
     catalog.stop();
     let offline_rollback = lifecycle_request("rollback", updated, Some(&updated["previous"]));
     post_lifecycle(&offline_rollback).await;
-    let rolled_back_view = wait_lifecycle("rollback").await;
+    let rolled_back_view = wait_lifecycle("rollback", "succeeded").await;
     let rolled_back = running_installation(&rolled_back_view, &installation_id);
     assert_eq!(rolled_back["version"], first.version);
     assert_eq!(rolled_back["archiveSha256"], first.archive_sha256);
@@ -573,6 +728,12 @@ async fn privileged_published_greeting_lifecycle() {
             {"action": "catalog-listing-after-restart", "result": "served-from-checkpoint"},
             {"action": "greeting-after-restart", "result": "visible-and-persisted"},
         ],
+        "updateFailures": update_failures,
+        "authenticatedUpdateRetry": {
+            "operation": updated_view["lifecycle"],
+            "servedArchiveBytes": retry_payload_length,
+            "committedArchiveSha256": archived.sha256,
+        },
         "persistedGreeting": PERSISTED_GREETING,
         "generations": {
             "installed": first_generation,
