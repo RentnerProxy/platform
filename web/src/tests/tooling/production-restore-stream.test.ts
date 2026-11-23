@@ -11,6 +11,7 @@ const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('h
 const artifact = (bytes: Uint8Array) => ({ bytes: bytes.length, sha256: hash(bytes) })
 const portableDatabaseBytes = 1024 ** 3
 const isolatedCapacity = ['5242880', '8388608']
+const tarEndBytes = 2 * 512
 
 function fixtureTar(name = './', contents: string | Uint8Array = '') {
     const bytes = typeof contents === 'string' ? Buffer.from(contents) : contents
@@ -29,12 +30,17 @@ function fixtureTar(name = './', contents: string | Uint8Array = '') {
     )
     const body = Buffer.alloc(Math.ceil(bytes.length / 512) * 512)
     body.set(bytes)
-    return Buffer.concat([header, body, Buffer.alloc(1024)])
+    return Buffer.concat([header, body, Buffer.alloc(tarEndBytes)])
 }
 
 function portableAppFixture() {
     const id = 'greeting'
-    const slot = { appId: 'fixture/greeting', uid: 20000, generation: 1, authorityRecorded: true }
+    const slot = {
+        appId: 'rentnerproxy.greeting',
+        uid: 20000,
+        generation: 1,
+        authorityRecorded: true,
+    }
     const files = Buffer.from('{}')
     const checkpoint = Buffer.from('{}')
     const pkg = Buffer.from('synthetic signed package')
@@ -60,8 +66,15 @@ function portableAppFixture() {
     prefix.write('RPAPPB2\0')
     prefix.writeUInt32BE(header.length, 8)
     const member = Buffer.concat([prefix, header, files, checkpoint, pkg, database])
+    const certificates = fixtureTar(
+        'certificates/certificate-metadata.json',
+        '{"certificates":{},"eventJournalVersion":0}',
+    )
     return {
-        controller: fixtureTar(portableAppStateName, member),
+        controller: Buffer.concat([
+            certificates.subarray(0, -tarEndBytes),
+            fixtureTar(portableAppStateName, member),
+        ]),
         metadata: {
             version: PORTABLE_APP_BACKUP_VERSION,
             applications: { ...artifact(member), installations: [{ id, ...slot }] },
@@ -92,6 +105,7 @@ type RestoreScenario =
     | 'replacement-failure'
     | 'off-host-pause-failure'
     | 'portable-success'
+    | 'portable-unsupported-image'
     | 'portable-missing-capacity'
     | 'portable-insufficient-capacity'
 
@@ -147,10 +161,17 @@ async function restore(scenario: RestoreScenario) {
         writeFile(join(directory, 'compose.yml'), 'fixture only; docker is replaced'),
     ])
     const compatibility = join(directory, 'compatibility.ts')
+    const supportedVersions =
+        scenario === 'legacy-image'
+            ? [4]
+            : scenario === 'portable-unsupported-image'
+              ? [4, 5]
+              : [4, 5, PORTABLE_APP_BACKUP_VERSION]
     await writeFile(
         compatibility,
         'export const isSupportedBackupVersion = version => ' +
-            (scenario === 'legacy-image' ? 'version === 4' : 'version === 4 || version === 5'),
+            JSON.stringify(supportedVersions) +
+            '.includes(version)',
     )
     const decoder = join(bin, 'controller')
     await writeFile(
@@ -333,6 +354,11 @@ test.skipIf(process.platform === 'win32')(
         )
         const importApps = calls.findIndex((args) => args.includes('restore-portable-apps'))
         const stages = [
+            calls.findIndex(
+                (args) =>
+                    args.includes('metadata') &&
+                    args.slice(-2).join(' ') === 'certificate-index ' + PORTABLE_APP_BACKUP_VERSION,
+            ),
             calls.indexOf(pg[0]!),
             calls.findIndex((args) => args.includes('stop')),
             inventory,
@@ -360,6 +386,28 @@ test.skipIf(process.platform === 'win32')(
             backupId,
         ])
         assert.equal(worker[worker.indexOf('--volume') + 1], pg[0]![pg[0]!.indexOf('--volume') + 1])
+    },
+)
+
+test.skipIf(process.platform === 'win32')(
+    'rejects a v6 backup before quiescing a target image that supports only v4 and v5',
+    async () => {
+        const { calls, exit, pg, stderr } = await restore('portable-unsupported-image')
+        assert.equal(exit, 1)
+        assert.match(stderr, /validate controller backup metadata/)
+        assert.equal(pg.length, 0)
+        assert.ok(
+            calls.some(
+                (args) =>
+                    args.includes('metadata') &&
+                    args.at(-1) === String(PORTABLE_APP_BACKUP_VERSION),
+            ),
+        )
+        assert.ok(
+            !calls.some(
+                (args) => args.includes('stop') || args.includes('begin-production-restore'),
+            ),
+        )
     },
 )
 
