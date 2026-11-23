@@ -77,6 +77,15 @@ require_incompatible_startup() {
     container=
 }
 
+require_icu_upgrade_rejection() {
+    local setup=$1 cleanup=$2
+    query "$setup $unicode_version;"
+    stop
+    require_incompatible_startup 'PostgreSQL object collation changed'
+    start "$baseline" "$reused"
+    query "$cleanup $restore_unicode;"
+}
+
 start "$baseline" "$reused"
 before=$(measure "$baseline")
 baseline_os=$(docker exec "$container" cat /etc/os-release)
@@ -112,30 +121,32 @@ if grep -qx 'ID=debian' <<< "$baseline_os" && grep -qx 'ID=alpine' <<< "$candida
     unicode_version="UPDATE pg_catalog.pg_collation SET collversion = 'comparison-stale-icu' WHERE oid = 'pg_catalog.\"unicode\"'::regcollation"
     restore_unicode="UPDATE pg_catalog.pg_collation SET collversion = pg_collation_actual_version(oid) WHERE oid = 'pg_catalog.\"unicode\"'::regcollation"
     start "$baseline" "$reused"
-    query "
-        CREATE TABLE image_comparison_text (value text);
-        CREATE INDEX image_comparison_nested ON image_comparison_text ((lower(value COLLATE pg_catalog.\"unicode\") COLLATE \"C\"));
-        $unicode_version;
-    "
-    stop
-    require_incompatible_startup 'PostgreSQL object collation changed'
+    query "CREATE TABLE image_comparison_text (value text); INSERT INTO image_comparison_text VALUES ('z');"
+    require_icu_upgrade_rejection '
+        CREATE INDEX image_comparison_nested ON image_comparison_text ((lower(value COLLATE pg_catalog."unicode") COLLATE "C"));
+    ' 'DROP INDEX image_comparison_nested;'
 
-    start "$baseline" "$reused"
-    query "
-        DROP INDEX image_comparison_nested;
-        $restore_unicode;
+    require_icu_upgrade_rejection "
         CREATE FUNCTION image_comparison_unicode(value text) RETURNS boolean
         LANGUAGE sql IMMUTABLE SET search_path = pg_catalog
         AS \$\$ SELECT value COLLATE pg_catalog.\"unicode\" < 'z' \$\$;
         CREATE INDEX image_comparison_indirect ON image_comparison_text (image_comparison_unicode(value));
-        $unicode_version;
-    "
-    stop
-    require_incompatible_startup 'PostgreSQL object collation changed'
+    " 'DROP INDEX image_comparison_indirect; DROP FUNCTION image_comparison_unicode(text);'
+
+    require_icu_upgrade_rejection '
+        CREATE DOMAIN image_comparison_icu_text AS text COLLATE pg_catalog."unicode" CHECK (length(VALUE) <= 16);
+        CREATE INDEX image_comparison_domain ON image_comparison_text ((lower(value::image_comparison_icu_text) COLLATE "C"));
+    ' 'DROP INDEX image_comparison_domain; DROP DOMAIN image_comparison_icu_text;'
+
+    require_icu_upgrade_rejection "
+        CREATE TYPE image_comparison_icu_range AS RANGE (subtype = text, collation = pg_catalog.\"unicode\");
+        CREATE TABLE image_comparison_ranges (value image_comparison_icu_range);
+        INSERT INTO image_comparison_ranges VALUES ('[a,z)');
+        CREATE INDEX image_comparison_range ON image_comparison_ranges (value);
+    " 'DROP TABLE image_comparison_ranges; DROP TYPE image_comparison_icu_range;'
 
     # The libc version reported for LC_COLLATE=C cannot prove LC_CTYPE compatibility.
-    start "$baseline" "$reused"
-    query "DROP TABLE image_comparison_text; DROP FUNCTION image_comparison_unicode(text); $restore_unicode"
+    query 'DROP TABLE image_comparison_text;'
     query "CREATE DATABASE image_comparison_locale TEMPLATE template0 LOCALE_PROVIDER libc LC_COLLATE 'C' LC_CTYPE 'en_US.utf8'"
     stop
     require_incompatible_startup 'PostgreSQL database collation is incompatible or a database is unavailable'

@@ -355,14 +355,26 @@ SQL
                 SELECT 'pg_attrdef'::regclass, oid, pg_get_expr(adbin, adrelid) FROM pg_attrdef
                 UNION ALL
                 SELECT 'pg_constraint'::regclass, oid, pg_get_expr(conbin, conrelid)
-                FROM pg_constraint WHERE conbin IS NOT NULL AND conrelid <> 0
+                FROM pg_constraint WHERE conbin IS NOT NULL
                 UNION ALL
                 SELECT 'pg_class'::regclass, partrelid, pg_get_expr(partexprs, partrelid)
                 FROM pg_partitioned_table WHERE partexprs IS NOT NULL
+            ), stored_comparators AS (
+                SELECT unnest(indclass) AS oid FROM pg_index
+                UNION ALL
+                SELECT unnest(partclass) FROM pg_partitioned_table
+                UNION ALL
+                SELECT rngsubopc FROM pg_range
+                UNION ALL
+                SELECT unnest(conexclop) FROM pg_constraint
             ), used_collations AS (
                 SELECT refobjid AS oid FROM pg_depend WHERE refclassid = 'pg_collation'::regclass
                 UNION
                 SELECT attcollation FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped
+                UNION
+                SELECT typcollation FROM pg_type
+                UNION
+                SELECT rngcollation FROM pg_range
                 UNION
                 SELECT unnest(indcollation) FROM pg_index
                 UNION
@@ -372,14 +384,21 @@ SQL
                 SELECT 'pg_catalog."unicode"'::regcollation::oid FROM stored_expressions AS stored
                 WHERE expression ~* 'COLLATE[[:space:]]+((pg_catalog|"pg_catalog")[.])?(unicode|"unicode")([^[:alnum:]_$]|$)'
                    OR EXISTS (
-                       -- A user routine or operator can use ICU indirectly or via dynamic SQL.
+                       -- Custom routines, operators, and type I/O can use ICU indirectly.
                        -- Only PostgreSQL built-in OIDs are below FirstNormalObjectId (16384).
                        SELECT FROM pg_depend AS dependency
+                       LEFT JOIN pg_type AS dependent_type
+                         ON dependency.refclassid = 'pg_type'::regclass AND dependent_type.oid = dependency.refobjid
                        WHERE dependency.classid = stored.classid
                          AND dependency.objid = stored.objid
-                         AND dependency.refclassid IN ('pg_proc'::regclass, 'pg_operator'::regclass)
                          AND dependency.refobjid >= 16384
+                         AND (dependency.refclassid IN ('pg_proc'::regclass, 'pg_operator'::regclass)
+                              OR dependent_type.typinput::oid >= 16384 OR dependent_type.typoutput::oid >= 16384)
                    )
+                UNION
+                -- Custom comparator code can use ICU even when the stored key is noncollatable.
+                SELECT 'pg_catalog."unicode"'::regcollation::oid
+                WHERE EXISTS (SELECT FROM stored_comparators WHERE oid >= 16384)
             )
             SELECT NOT EXISTS (
                 SELECT FROM pg_collation AS col
