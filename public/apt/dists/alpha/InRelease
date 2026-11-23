@@ -7,8 +7,8 @@ Suite: alpha
 Codename: alpha
 Architectures: amd64 arm64
 Components: main
-Valid-Until: Mon, 21 Dec 2026 12:51:11 GMT
-Date: Mon, 16 Nov 2026 12:51:11 +0000
+Valid-Until: Mon, 28 Dec 2026 14:46:53 GMT
+Date: Mon, 23 Nov 2026 14:46:53 +0000
 MD5Sum:
  415aa3e3b92397363ac51b2d1715b62e             2669 main/binary-amd64/Packages
  bfbf6cf1a88422666705cb1ea1ce840a             1013 main/binary-amd64/Packages.gz
@@ -31,17 +31,17 @@ SHA512:
  1c8e13c1026c94924636859653eb514d64b86b3fb64b48618c62d3026283a3554f4e4a1da93b3b2ac60551fdc420d367ebd652814e6180d305a00db59a375352             1012 main/binary-arm64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iQIzBAEBCgAdFiEEHDH7A2IKyeXyTyzwjhqMvhtoLLsFAmr6/D8ACgkQjhqMvhto
-LLttrRAAmACrvp0eBXjmBTOIttrMTXDOJV6IfjG8FYpjJJw6UwFPP6LsbSaFakPf
-iTXqxwB9YfLWDvMk6buWQ3ymMwVussxntpnTxpVIjVHSS5EbbLY/K8G597FamGj6
-V8S/iZ0kyaRIdT3XWx+q8cPE6JLMcaIwD/t3fHpTa3LMrB62uUilWEjqBQpXIxxa
-ilPurHpr2+M1hO10AlXAwHKDsfXq7ZStBTUx04f4bVRV/KJzsFpkjJoKAXGPqL/1
-i1GrDQvY1Uh7Sxjn3K7t12XQNy4ZkwQY4+5nA9qgc9iYROqczkRf+141RhS8ogfM
-Zqow+MJWhiccClue3Wf8+DKB+LADpkxYPRv1TRJZIoQs8z8722mS5r8yZHWNR9Vy
-CvRNyMr38add8sHB24sgyiZK07eHbukVacrk+fK+CUzDnUM0FjYx5qIWUN2UdpGx
-6k8kl1xkGCzSZJdcewsYcV+y1HV6pqsls8NnZNOOw8WB8TfWdRTv/fNWgwcsbOPx
-OdTadK87gPQ6JlranGcopdGHmD78omuFMil26N0ZixvymQ9DGjUWNzP0GysK0xz/
-ARjBzDD52jZjNDsbX3Iq7/cdRhnu1lahs9NRpdFLhzjeRsLgRhytFwzqThFR/zxW
-KxKh10Bujty53v+8zTq9cZjcXyRwNUjFF4HF7MZdu2Vceo22STk=
-=7539
+iQIzBAEBCgAdFiEEHDH7A2IKyeXyTyzwjhqMvhtoLLsFAmsEUd0ACgkQjhqMvhto
+LLtl6w//e8gnvlAyC2j8snO0gMsdPKj+E7Mu7aJOA2BqySCSSAr7ta9koJxn8l0H
+vMqmOqYPNJ7aniyzrCkNmwJyaHEAzcBj3PQk8wwtutNa7zZbJXGLw9HoUjXw4b44
+ZNvjjG92BDJj8eomal89kwqZUr5VtKGIfyfXOhzlsg/6IUmkYPUg5k6tkCucdaax
+qSTZVyrRUy41qgAMXUBsNFfDAgBJND/icDMq9bn+9IDGPktaTTQ8yp03Md7LN2YN
+xQbf0x3OBJHCQ2e3UmCk1H/4XaCYZG+5csm0Xxe+Iyx/aQ3IbSd55Xr7xIiO6lP6
+Fhb+GNaDuvPXx9hmt7qWoLboPlbWQQOB4wG4xa/ZQxt6POZUnu7kJRD6ej9Zpj8B
+QiVOunqwNoArokuyT1qw9Iig2new+9jKpkOhYXZ6ifdtydgE8OMWi6iWOI5PC51i
+LCv7drlDv780XEsJipDF2b5twVNFHFIxLHrRlfQcWVxrcXfYm7iEsEmo2+UpdJL+
+vQyBzZi/QUY1KKwWeOlpbcuTHDdcdxUyUH23tDonGDefZtlgeE9/TNvohXbHWKZ2
+69yrqlhdDCUMko+MTuph4sUP1qLE4j/qFwSLp+oFmjSyYi1Z0HbRTk69tyxXxhab
+5+HQMvePkdNw64S4GxfGre2Q80JgvOnPuRJ3LwNnGy8VFLKObgs=
+=SZU6
 -----END PGP SIGNATURE-----

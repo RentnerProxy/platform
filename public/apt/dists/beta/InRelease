@@ -7,8 +7,8 @@ Suite: beta
 Codename: beta
 Architectures: amd64 arm64
 Components: main
-Valid-Until: Mon, 21 Dec 2026 12:51:11 GMT
-Date: Mon, 16 Nov 2026 12:51:11 +0000
+Valid-Until: Mon, 28 Dec 2026 14:46:53 GMT
+Date: Mon, 23 Nov 2026 14:46:54 +0000
 MD5Sum:
  415aa3e3b92397363ac51b2d1715b62e             2669 main/binary-amd64/Packages
  bfbf6cf1a88422666705cb1ea1ce840a             1013 main/binary-amd64/Packages.gz
@@ -31,17 +31,17 @@ SHA512:
  1c8e13c1026c94924636859653eb514d64b86b3fb64b48618c62d3026283a3554f4e4a1da93b3b2ac60551fdc420d367ebd652814e6180d305a00db59a375352             1012 main/binary-arm64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iQIzBAEBCgAdFiEEHDH7A2IKyeXyTyzwjhqMvhtoLLsFAmr6/D8ACgkQjhqMvhto
-LLuPXg//RpYtDAqaFzzJbV+k7u7XnnS0NyW8NdA1EUhAU35Qt9RlYyzjGHLT6E8Z
-BbWiAlXniZOYxuBnx9dw89PxNw5A9BbYSTZzQt4seB8IJDzEgkRwnQJALDth6X0x
-FMgULlRjlIraAISZfvtK6rI6K+0sTB8i2pK/rE5JNWvB+cCDL6eKEiePIeRsCtrr
-zsuSSfnIuFjAAw8IydQ4kpN7i+qlw9PLSPqiapdr37wihJUstdGUFnw4OdnOpyH4
-09VhYMeKLXd99xgOWBiB6JyZfqjrXipuLoXFKS5JqZ/mfPrHA7mQ5PRd3qnfKAxE
-rSsiyqeUjBVhOgFuJv20UAcS19TZd6rTP/TvqbqdMRU/8EcAx7B5vaDyWagMUJSA
-LDQAlxXzDhVA8P15ecV8R2ZtTnYFFcdCcq4ud6kbUV861wj2mnamC4jhS0E3arur
-2/tYY2f1AX1GEMs5Yq4+g5kFWiMOuBz4EswWQ7Q9IfhaRe1vJKDSOYoWYzOa6FZG
-1BwgtCv1gkv/NeK0pp/V5auvxs/OplcjhfbfggE6yPQ6ZGIJzwcePkkdgXnGoSu0
-+SI6IicbYzPW+qtt2YuH7GmAfwcNTw0DfVsZdtaTE+WNQE0rXGRVXGGj/iWiInAN
-2ROClXk7q4Qd852AH1fUMDwaGz0Oc3WuhBVveMF97vk1Yc1ZWgI=
-=Xyr7
+iQIzBAEBCgAdFiEEHDH7A2IKyeXyTyzwjhqMvhtoLLsFAmsEUd4ACgkQjhqMvhto
+LLt7IhAAr0Dn3VCdj086Zdd/JSCsbrMBwyrfgnkCGKlSQuJir6o171hXzGum75Wq
+h1o1nt/nY3ea6nLOku7yqaRpE2qwn/jsuxYC25OQTLgjZHBy2x7s8zd/YcIP1BQD
+OkbWioFDH6QdmOAs5o12/qqKYTebCkdowcILBzg8nWoJGZ82MuYzAd0ZkbO+Yzgh
+gBc8J8QIaSnNH3+yM8ktVQP/ZaijO6en/oYIKEaib/ZgazkXpHbDsHIkkza/gb9E
+LJrbRh/sFwIlL7O8fsejfL51vB6qO9LLNJ20nk9erLfm0yB6Dlthjgo1irlDSU9O
+8x2RZol+rJYTohPKdzH0u4pwlxm+LAlgfmVCQi7p9/VLhaIlj/LnLoRC5RRv4Cv6
+Yg+6T6goshlm/RHhAeHV/wKxKFEpkBsVOzwVFSWclKLYfw8uxeYpj5k2ClCGeZ4A
+wQvvu2AJwfqZ6tMUSst8BuUxSdaVQCrYgFxSiGJ3I4W17xEskIIHCeBUzEsShvMd
+o+JGiR6o3ypBz410jtNJemjym6LNh2DWLzeJ9NifwNFe0NnzxvnlTQvC6vqFJLdw
+4bf3qxbuJOCkqsZSZ+Q+OPXghcrZpGJr438fUXRNM3JeIBtM6knNMkHI5put43EG
+2gr/0JYYOrISOE2/iZOR9kVSuu+ixQUhedCG/BpEtTydvGd2n/Y=
+=k6tu
 -----END PGP SIGNATURE-----
