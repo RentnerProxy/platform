@@ -129,8 +129,6 @@ CONFIGURATION
         if rentnerproxy restore '/root/colon:backup' --confirm-replace; then exit 1; fi
         systemctl is-active --quiet rentnerproxy.service
         rmdir -- '/root/colon:backup'
-        podman cp rentnerproxy:/usr/local/bin/bun /root/bun
-        chmod 0700 /root/bun
         if [[ "$MODE" == package ]]; then consumer; fi
         probe seed
         install -d -m 0700 /root/backups

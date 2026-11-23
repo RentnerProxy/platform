@@ -80,6 +80,8 @@ mkdir "$rootfs"
 docker export --output "$work/rootfs.tar" "$exported"
 sudo tar --extract --file "$work/rootfs.tar" --directory "$rootfs"
 sudo chown root:root "$rootfs"
+# Ship the workflow's glibc Bun into the Debian and Fedora test guests.
+sudo install -m 0700 -- "$(command -v bun)" "$rootfs/root/bun"
 # HTTP consumer traffic is anonymous. The fixture key and all packages are public test data.
 bun --no-env-file "$SOURCE_DIRECTORY/.github/scripts/ci/distribution/fixture-server.ts" "$DISTRIBUTION_DIRECTORY" > "$work/http.log" 2>&1 & server_pid=$!
 for (( attempt=0; attempt<15; attempt++ )); do

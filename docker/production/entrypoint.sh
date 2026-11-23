@@ -346,15 +346,19 @@ SQL
     while IFS= read -r database; do
         compatible=$("${psql_local[@]}" --dbname="$database" <<'SQL'
             WITH stored_expressions AS (
-                SELECT pg_get_expr(indexprs, indrelid) AS expression FROM pg_index WHERE indexprs IS NOT NULL
+                SELECT 'pg_class'::regclass::oid AS classid, indexrelid AS objid,
+                       pg_get_expr(indexprs, indrelid) AS expression FROM pg_index WHERE indexprs IS NOT NULL
                 UNION ALL
-                SELECT pg_get_expr(indpred, indrelid) FROM pg_index WHERE indpred IS NOT NULL
+                SELECT 'pg_class'::regclass, indexrelid, pg_get_expr(indpred, indrelid)
+                FROM pg_index WHERE indpred IS NOT NULL
                 UNION ALL
-                SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef
+                SELECT 'pg_attrdef'::regclass, oid, pg_get_expr(adbin, adrelid) FROM pg_attrdef
                 UNION ALL
-                SELECT pg_get_expr(conbin, conrelid) FROM pg_constraint WHERE conbin IS NOT NULL AND conrelid <> 0
+                SELECT 'pg_constraint'::regclass, oid, pg_get_expr(conbin, conrelid)
+                FROM pg_constraint WHERE conbin IS NOT NULL AND conrelid <> 0
                 UNION ALL
-                SELECT pg_get_expr(partexprs, partrelid) FROM pg_partitioned_table WHERE partexprs IS NOT NULL
+                SELECT 'pg_class'::regclass, partrelid, pg_get_expr(partexprs, partrelid)
+                FROM pg_partitioned_table WHERE partexprs IS NOT NULL
             ), used_collations AS (
                 SELECT refobjid AS oid FROM pg_depend WHERE refclassid = 'pg_collation'::regclass
                 UNION
@@ -365,8 +369,17 @@ SQL
                 SELECT unnest(partcollation) FROM pg_partitioned_table
                 UNION
                 -- PostgreSQL does not record pg_depend rows for the pinned ICU collation.
-                SELECT 'pg_catalog."unicode"'::regcollation::oid FROM stored_expressions
-                WHERE expression ~ 'COLLATE (pg_catalog[.])?"unicode"'
+                SELECT 'pg_catalog."unicode"'::regcollation::oid FROM stored_expressions AS stored
+                WHERE expression ~* 'COLLATE[[:space:]]+((pg_catalog|"pg_catalog")[.])?(unicode|"unicode")([^[:alnum:]_$]|$)'
+                   OR EXISTS (
+                       -- A user routine or operator can use ICU indirectly or via dynamic SQL.
+                       -- Only PostgreSQL built-in OIDs are below FirstNormalObjectId (16384).
+                       SELECT FROM pg_depend AS dependency
+                       WHERE dependency.classid = stored.classid
+                         AND dependency.objid = stored.objid
+                         AND dependency.refclassid IN ('pg_proc'::regclass, 'pg_operator'::regclass)
+                         AND dependency.refobjid >= 16384
+                   )
             )
             SELECT NOT EXISTS (
                 SELECT FROM pg_collation AS col

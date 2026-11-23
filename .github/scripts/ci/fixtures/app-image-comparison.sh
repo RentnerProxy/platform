@@ -53,10 +53,10 @@ stop() {
 
 measure() {
     local image=$1 bytes memory
-    bytes=$(docker image inspect --format '{{.Size}}' "$image")
+    bytes=$(docker image inspect --format '{{.Size}}' "$image") || return 1
     sleep 2
-    memory=$(docker exec "$container" cat /sys/fs/cgroup/memory.current)
-    [[ $bytes =~ ^[0-9]+$ && $memory =~ ^[0-9]+$ ]]
+    memory=$(docker exec "$container" cat /sys/fs/cgroup/memory.current) || return 1
+    [[ $bytes =~ ^[0-9]+$ && $memory =~ ^[0-9]+$ ]] || return 1
     printf '%s | %s | %s' "$bytes" "$readiness_ms" "$memory"
 }
 
@@ -64,6 +64,17 @@ query() {
     docker exec "$container" gosu postgres psql --no-psqlrc --no-password \
         --host=/var/run/postgresql --username=postgres --dbname=rentnerproxy \
         --tuples-only --no-align --quiet --set=ON_ERROR_STOP=1 --command="$1"
+}
+
+require_incompatible_startup() {
+    local reason=$1
+    if start "$candidate" "$reused"; then
+        echo 'The Alpine candidate started with an incompatible collation' >&2
+        exit 1
+    fi
+    docker logs "$container" 2>&1 | grep -F "$reason"
+    docker rm --volumes "$container" >/dev/null
+    container=
 }
 
 start "$baseline" "$reused"
@@ -96,17 +107,38 @@ candidate_os=$(docker exec "$container" cat /etc/os-release)
 stop
 
 if grep -qx 'ID=debian' <<< "$baseline_os" && grep -qx 'ID=alpine' <<< "$candidate_os"; then
+    # Alter only the recorded ICU version in this disposable cluster. This
+    # exercises the upgrade guard even when the two package builds use equal ICU.
+    unicode_version="UPDATE pg_catalog.pg_collation SET collversion = 'comparison-stale-icu' WHERE oid = 'pg_catalog.\"unicode\"'::regcollation"
+    restore_unicode="UPDATE pg_catalog.pg_collation SET collversion = pg_collation_actual_version(oid) WHERE oid = 'pg_catalog.\"unicode\"'::regcollation"
+    start "$baseline" "$reused"
+    query "
+        CREATE TABLE image_comparison_text (value text);
+        CREATE INDEX image_comparison_nested ON image_comparison_text ((lower(value COLLATE pg_catalog.\"unicode\") COLLATE \"C\"));
+        $unicode_version;
+    "
+    stop
+    require_incompatible_startup 'PostgreSQL object collation changed'
+
+    start "$baseline" "$reused"
+    query "
+        DROP INDEX image_comparison_nested;
+        $restore_unicode;
+        CREATE FUNCTION image_comparison_unicode(value text) RETURNS boolean
+        LANGUAGE sql IMMUTABLE SET search_path = pg_catalog
+        AS \$\$ SELECT value COLLATE pg_catalog.\"unicode\" < 'z' \$\$;
+        CREATE INDEX image_comparison_indirect ON image_comparison_text (image_comparison_unicode(value));
+        $unicode_version;
+    "
+    stop
+    require_incompatible_startup 'PostgreSQL object collation changed'
+
     # The libc version reported for LC_COLLATE=C cannot prove LC_CTYPE compatibility.
     start "$baseline" "$reused"
+    query "DROP TABLE image_comparison_text; DROP FUNCTION image_comparison_unicode(text); $restore_unicode"
     query "CREATE DATABASE image_comparison_locale TEMPLATE template0 LOCALE_PROVIDER libc LC_COLLATE 'C' LC_CTYPE 'en_US.utf8'"
     stop
-    if start "$candidate" "$reused"; then
-        echo 'The Alpine candidate started with an incompatible libc locale' >&2
-        exit 1
-    fi
-    docker logs "$container" 2>&1 | grep -F 'PostgreSQL database collation is incompatible or a database is unavailable'
-    docker rm --volumes "$container" >/dev/null
-    container=
+    require_incompatible_startup 'PostgreSQL database collation is incompatible or a database is unavailable'
 fi
 
 {
