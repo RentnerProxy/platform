@@ -68,6 +68,7 @@ query() {
 
 start "$baseline" "$reused"
 before=$(measure "$baseline")
+baseline_os=$(docker exec "$container" cat /etc/os-release)
 system_id=$(query 'SELECT system_identifier FROM pg_control_system()')
 query "
     CREATE ROLE image_comparison_reader NOLOGIN;
@@ -91,7 +92,22 @@ stop
 
 start "$candidate" "$fresh"
 after=$(measure "$candidate")
+candidate_os=$(docker exec "$container" cat /etc/os-release)
 stop
+
+if grep -qx 'ID=debian' <<< "$baseline_os" && grep -qx 'ID=alpine' <<< "$candidate_os"; then
+    # The libc version reported for LC_COLLATE=C cannot prove LC_CTYPE compatibility.
+    start "$baseline" "$reused"
+    query "CREATE DATABASE image_comparison_locale TEMPLATE template0 LOCALE_PROVIDER libc LC_COLLATE 'C' LC_CTYPE 'en_US.utf8'"
+    stop
+    if start "$candidate" "$reused"; then
+        echo 'The Alpine candidate started with an incompatible libc locale' >&2
+        exit 1
+    fi
+    docker logs "$container" 2>&1 | grep -F 'PostgreSQL database collation is incompatible or a database is unavailable'
+    docker rm --volumes "$container" >/dev/null
+    container=
+fi
 
 {
     printf '## Platform appliance comparison (%s)\n\n' "$native"

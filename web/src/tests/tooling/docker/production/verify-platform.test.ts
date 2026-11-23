@@ -20,16 +20,18 @@ for (const scenario of [
     { name: 'ARM64 dynamic executable', architecture: 'arm64', machine: 183, accepted: true },
     {
         name: 'static executable',
-        linkage: 'not a dynamic executable',
+        interpreter: false,
         lddStatus: 1,
         accepted: true,
     },
-    { name: 'static PIE executable', linkage: 'statically linked', accepted: true },
+    { name: 'static PIE executable', interpreter: false, accepted: true },
     { name: 'wrong copied binary architecture', machine: 183 },
     { name: 'AMD64 binary in an ARM64 image', architecture: 'arm64' },
-    { name: 'wrong base image architecture', dpkgArchitecture: 'arm64' },
+    { name: 'wrong base image architecture', kernelMachine: 'aarch64' },
     { name: 'missing runtime library', linkage: 'libfixture.so => not found' },
     { name: 'invalid linkage', linkage: 'invalid ELF', lddStatus: 1 },
+    { name: 'needed library without an interpreter', interpreter: false, neededLibrary: true },
+    { name: 'invalid program headers', readelfStatus: 1 },
     { name: '32-bit executable', elfClass: 1 },
     { name: 'big-endian executable', endianness: 2 },
     { name: 'non-ELF executable', magic: 'nope' },
@@ -40,7 +42,7 @@ for (const scenario of [
         if (!shell) throw new Error('Bash is required for appliance platform verification tests.')
         const options = {
             architecture: 'amd64',
-            dpkgArchitecture: undefined as string | undefined,
+            kernelMachine: undefined as string | undefined,
             os: 'linux',
             machine: 62,
             elfClass: 2,
@@ -48,6 +50,9 @@ for (const scenario of [
             magic: '\x7fELF',
             linkage: 'libc.so.6 => /lib/fixture/libc.so.6',
             lddStatus: 0,
+            interpreter: true,
+            neededLibrary: false,
+            readelfStatus: 0,
             accepted: false,
             ...scenario,
         }
@@ -63,8 +68,13 @@ for (const scenario of [
             await Promise.all([
                 writeFile(join(directory, 'binary'), binary),
                 writeFile(
-                    join(tools, 'dpkg'),
-                    '#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = --print-architecture ] || exit 2\nprintf "%s\\n" "$DPKG_ARCH"\n',
+                    join(tools, 'uname'),
+                    '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo "$KERNEL_MACHINE" ;; *) exit 2 ;; esac\n',
+                    { mode: 0o755 },
+                ),
+                writeFile(
+                    join(tools, 'readelf'),
+                    '#!/bin/sh\nprintf "%s\\n" "$ELF_HEADERS"\nexit "$READELF_STATUS"\n',
                     { mode: 0o755 },
                 ),
                 writeFile(
@@ -89,7 +99,14 @@ for (const scenario of [
                         TEST_BINARY: shellPath(join(directory, 'binary')),
                         TARGET_OS: options.os,
                         TARGET_ARCH: options.architecture,
-                        DPKG_ARCH: options.dpkgArchitecture ?? options.architecture,
+                        KERNEL_MACHINE:
+                            options.kernelMachine ??
+                            (options.architecture === 'arm64' ? 'aarch64' : 'x86_64'),
+                        ELF_HEADERS: [
+                            options.interpreter ? '  INTERP  0x00000100' : '',
+                            options.neededLibrary ? '  0x01 (NEEDED)   libfixture.so' : '',
+                        ].join('\n'),
+                        READELF_STATUS: String(options.readelfStatus),
                         LINKAGE: options.linkage,
                         LDD_STATUS: String(options.lddStatus),
                     },

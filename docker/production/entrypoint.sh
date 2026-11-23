@@ -317,41 +317,69 @@ SQL
 
 verify_postgres_collations() {
     local database_urls database compatible
-    local psql_local=(timeout --kill-after=1s 15s gosu postgres psql
+    local psql_local=(timeout --kill-after=1s 15s env 'PGOPTIONS=-c search_path=pg_catalog,pg_temp' gosu postgres psql
         --no-psqlrc --no-password --host=/var/run/postgresql --username=postgres
-        --tuples-only --no-align --set=ON_ERROR_STOP=1)
+        --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1)
 
-    # Check the existing cluster before migrations or app writers start. The
-    # database may have been initialized under a different libc or ICU version.
-    compatible=$("${psql_local[@]}" --dbname=postgres --command='
+    # Check the existing cluster before migrations or app writers start.
+    # PostgreSQL's libc version omits LC_CTYPE, which also affects stored indexes.
+    compatible=$("${psql_local[@]}" --dbname=postgres <<'SQL'
         SELECT NOT EXISTS (
             SELECT FROM pg_database
-            WHERE datallowconn
-              AND datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)
-        )') || fatal 'could not verify PostgreSQL database collations'
-    [[ $compatible == t ]] || fatal 'PostgreSQL database collation changed; restore a logical backup into a fresh volume'
+            WHERE datname <> 'template0'
+              AND (
+                  NOT datallowconn
+                  OR (datlocprovider = 'c' AND (datcollate NOT IN ('C', 'POSIX') OR datctype NOT IN ('C', 'POSIX')))
+                  OR datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)
+              )
+        );
+SQL
+    ) || fatal 'could not verify PostgreSQL database collations'
+    [[ $compatible == t ]] || fatal 'PostgreSQL database collation is incompatible or a database is unavailable; verify and restore a logical backup with supported collations'
 
     # Percent-encode every byte so a database name cannot set connection options.
-    database_urls=$("${psql_local[@]}" --dbname=postgres --command="
+    database_urls=$("${psql_local[@]}" --dbname=postgres <<'SQL'
         SELECT 'postgresql:///' || regexp_replace(encode(convert_to(datname, 'UTF8'), 'hex'), '(..)', '%\1', 'g')
-        FROM pg_database WHERE datallowconn ORDER BY oid
-    ") || fatal 'could not enumerate existing PostgreSQL databases'
+        FROM pg_database WHERE datallowconn ORDER BY oid;
+SQL
+    ) || fatal 'could not enumerate existing PostgreSQL databases'
     while IFS= read -r database; do
-        compatible=$("${psql_local[@]}" --dbname="$database" --command="
+        compatible=$("${psql_local[@]}" --dbname="$database" <<'SQL'
+            WITH stored_expressions AS (
+                SELECT pg_get_expr(indexprs, indrelid) AS expression FROM pg_index WHERE indexprs IS NOT NULL
+                UNION ALL
+                SELECT pg_get_expr(indpred, indrelid) FROM pg_index WHERE indpred IS NOT NULL
+                UNION ALL
+                SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef
+                UNION ALL
+                SELECT pg_get_expr(conbin, conrelid) FROM pg_constraint WHERE conbin IS NOT NULL AND conrelid <> 0
+                UNION ALL
+                SELECT pg_get_expr(partexprs, partrelid) FROM pg_partitioned_table WHERE partexprs IS NOT NULL
+            ), used_collations AS (
+                SELECT refobjid AS oid FROM pg_depend WHERE refclassid = 'pg_collation'::regclass
+                UNION
+                SELECT attcollation FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped
+                UNION
+                SELECT unnest(indcollation) FROM pg_index
+                UNION
+                SELECT unnest(partcollation) FROM pg_partitioned_table
+                UNION
+                -- PostgreSQL does not record pg_depend rows for the pinned ICU collation.
+                SELECT 'pg_catalog."unicode"'::regcollation::oid FROM stored_expressions
+                WHERE expression ~ 'COLLATE (pg_catalog[.])?"unicode"'
+            )
             SELECT NOT EXISTS (
                 SELECT FROM pg_collation AS col
                 WHERE col.collprovider IN ('c', 'i')
+                  AND (col.collnamespace <> 'pg_catalog'::regnamespace OR col.oid IN (SELECT oid FROM used_collations))
                   AND (
-                      col.collnamespace <> 'pg_catalog'::regnamespace
-                      OR EXISTS (
-                          SELECT FROM pg_depend
-                          WHERE refclassid = 'pg_collation'::regclass AND refobjid = col.oid
-                      )
+                      (col.collprovider = 'c' AND (col.collcollate NOT IN ('C', 'POSIX') OR col.collctype NOT IN ('C', 'POSIX')))
+                      OR col.collversion IS DISTINCT FROM pg_collation_actual_version(col.oid)
                   )
-                  AND col.collversion IS DISTINCT FROM pg_collation_actual_version(col.oid)
-            )
-        ") || fatal 'could not verify PostgreSQL object collations'
-        [[ $compatible == t ]] || fatal 'PostgreSQL object collation changed; restore a logical backup into a fresh volume'
+            );
+SQL
+        ) || fatal 'could not verify PostgreSQL object collations'
+        [[ $compatible == t ]] || fatal 'PostgreSQL object collation changed; restore a logical backup with supported collations'
     done <<< "$database_urls"
 }
 
