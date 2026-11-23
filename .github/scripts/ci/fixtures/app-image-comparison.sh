@@ -95,6 +95,9 @@ query "
     CREATE TABLE image_comparison_fixture (id integer PRIMARY KEY, greeting jsonb);
     INSERT INTO image_comparison_fixture VALUES (1, '{\"message\":\"original\"}');
     GRANT SELECT ON image_comparison_fixture TO image_comparison_reader;
+    CREATE TABLE image_comparison_plain_arrays (value text[] COLLATE \"C\");
+    INSERT INTO image_comparison_plain_arrays VALUES (ARRAY['z']), (ARRAY['a']);
+    CREATE INDEX image_comparison_plain_array ON image_comparison_plain_arrays (value);
 "
 read_rows="SET ROLE image_comparison_reader; SELECT string_agg(greeting->>'message', ',' ORDER BY id) FROM image_comparison_fixture"
 stop
@@ -144,6 +147,26 @@ if grep -qx 'ID=debian' <<< "$baseline_os" && grep -qx 'ID=alpine' <<< "$candida
         INSERT INTO image_comparison_ranges VALUES ('[a,z)');
         CREATE INDEX image_comparison_range ON image_comparison_ranges (value);
     " 'DROP TABLE image_comparison_ranges; DROP TYPE image_comparison_icu_range;'
+
+    # The index has built-in array_ops even though comparisons reach the custom
+    # default class through a record and then a second array.
+    require_icu_upgrade_rejection "
+        CREATE TYPE image_comparison_icu_key AS (value text);
+        CREATE FUNCTION image_comparison_key_cmp(image_comparison_icu_key, image_comparison_icu_key)
+        RETURNS integer LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog AS \$\$
+            SELECT CASE WHEN (\$1).value COLLATE pg_catalog.\"unicode\" < (\$2).value THEN -1
+                        WHEN (\$1).value COLLATE pg_catalog.\"unicode\" > (\$2).value THEN 1
+                        ELSE 0 END
+        \$\$;
+        CREATE OPERATOR CLASS image_comparison_key_ops DEFAULT FOR TYPE image_comparison_icu_key USING btree AS
+            FUNCTION 1 image_comparison_key_cmp(image_comparison_icu_key, image_comparison_icu_key);
+        CREATE TYPE image_comparison_record AS (keys image_comparison_icu_key[]);
+        CREATE TABLE image_comparison_wrappers (value image_comparison_record[]);
+        INSERT INTO image_comparison_wrappers VALUES
+            (ARRAY[ROW(ARRAY[ROW('z')::image_comparison_icu_key])::image_comparison_record]),
+            (ARRAY[ROW(ARRAY[ROW('a')::image_comparison_icu_key])::image_comparison_record]);
+        CREATE INDEX image_comparison_wrapped ON image_comparison_wrappers (value);
+    " 'DROP TABLE image_comparison_wrappers; DROP TYPE image_comparison_record; DROP OPERATOR CLASS image_comparison_key_ops USING btree; DROP FUNCTION image_comparison_key_cmp(image_comparison_icu_key, image_comparison_icu_key); DROP TYPE image_comparison_icu_key;'
 
     # The libc version reported for LC_COLLATE=C cannot prove LC_CTYPE compatibility.
     query 'DROP TABLE image_comparison_text;'

@@ -384,21 +384,21 @@ SQL
                 SELECT 'pg_catalog."unicode"'::regcollation::oid FROM stored_expressions AS stored
                 WHERE expression ~* 'COLLATE[[:space:]]+((pg_catalog|"pg_catalog")[.])?(unicode|"unicode")([^[:alnum:]_$]|$)'
                    OR EXISTS (
-                       -- Custom routines, operators, and type I/O can use ICU indirectly.
+                       -- Custom routines and operators can use ICU indirectly.
                        -- Only PostgreSQL built-in OIDs are below FirstNormalObjectId (16384).
                        SELECT FROM pg_depend AS dependency
-                       LEFT JOIN pg_type AS dependent_type
-                         ON dependency.refclassid = 'pg_type'::regclass AND dependent_type.oid = dependency.refobjid
                        WHERE dependency.classid = stored.classid
                          AND dependency.objid = stored.objid
+                         AND dependency.refclassid IN ('pg_proc'::regclass, 'pg_operator'::regclass)
                          AND dependency.refobjid >= 16384
-                         AND (dependency.refclassid IN ('pg_proc'::regclass, 'pg_operator'::regclass)
-                              OR dependent_type.typinput::oid >= 16384 OR dependent_type.typoutput::oid >= 16384)
                    )
                 UNION
-                -- Custom comparator code can use ICU even when the stored key is noncollatable.
+                -- Built-in wrappers can reach default classes or I/O on nested array elements
+                -- and record fields without a direct dependency from the outer index.
                 SELECT 'pg_catalog."unicode"'::regcollation::oid
                 WHERE EXISTS (SELECT FROM stored_comparators WHERE oid >= 16384)
+                   OR EXISTS (SELECT FROM pg_opclass WHERE opcdefault AND oid >= 16384)
+                   OR EXISTS (SELECT FROM pg_type WHERE typinput::oid >= 16384 OR typoutput::oid >= 16384)
             )
             SELECT NOT EXISTS (
                 SELECT FROM pg_collation AS col
