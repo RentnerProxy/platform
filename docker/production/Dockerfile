@@ -140,7 +140,7 @@ RUN set -eux; \
         /etc/crowdsec/online_api_credentials.yaml; \
     cp -aL /etc/crowdsec/. /opt/rentnerproxy/crowdsec-config/
 
-FROM mirror.gcr.io/valkey/valkey:9.1.3-trixie@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7 AS valkey-runtime
+FROM mirror.gcr.io/valkey/valkey:9.2.0-trixie@sha256:1c2b25b09f354c66fe994733acdf12fcfd4bdf6f3bd92b88a93a70378d884056 AS valkey-runtime
 
 FROM mirror.gcr.io/library/postgres:18.7@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61 AS runtime
 
