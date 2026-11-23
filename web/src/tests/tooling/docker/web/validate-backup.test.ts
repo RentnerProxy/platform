@@ -290,16 +290,17 @@ describe('compatible backup migration prefixes', () => {
 })
 
 describe('backup format version boundary', () => {
-    test('accepts the published beta v4 format', () => {
+    test('accepts legacy and portable application backup formats', () => {
         expect(() => assertSupportedBackupVersion({ version: 4 })).not.toThrow()
         expect(() => assertSupportedBackupVersion({ version: 5 })).not.toThrow()
+        expect(() => assertSupportedBackupVersion({ version: 6 })).not.toThrow()
     })
 
-    test.each([[null], [[]], [{}], [{ version: 3 }], [{ version: 6 }], [{ version: '4' }]])(
+    test.each([[null], [[]], [{}], [{ version: 3 }], [{ version: 7 }], [{ version: '4' }]])(
         'rejects unsupported metadata before database validation %#',
         (metadata) => {
             expect(() => assertSupportedBackupVersion(metadata)).toThrow(
-                'unsupported backup metadata version (supported: v4, v5)',
+                'unsupported backup metadata version (supported: v4, v5, v6)',
             )
         },
     )

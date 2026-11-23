@@ -269,19 +269,10 @@ impl Journal {
             },
             Err(e) => return Err(e),
         };
-        let mut uids = BTreeSet::new();
-        if state.format_version != 1
-            || state.installations.len() > LIMIT
-            || state.installations.iter().any(|(id, s)| {
-                !valid_id(id)
-                    || !(20000..=59999).contains(&s.uid)
-                    || !uids.insert(s.uid)
-                    || s.generation > super::MAX_GENERATION
-                    || s.pending_fence && s.generation == 0
-            })
-        {
-            return Err(bad("Invalid manager journal"));
+        if state.format_version != 1 {
+            return Err(bad("Invalid manager journal version"));
         }
+        validate_installations(&state.installations)?;
         for slot in state.installations.values_mut() {
             slot.authority_recorded.get_or_insert(slot.generation > 0);
         }
@@ -317,6 +308,27 @@ impl Journal {
         self.writable()?;
         let mut next = self.state.as_ref().clone();
         next.installations.insert(id.to_owned(), slot);
+        let bytes = encode_state(&next)?;
+        self.poisoned = true;
+        persist_state(&self.directory, &bytes, || Ok(()))?;
+        self.state = Arc::new(next);
+        self.poisoned = false;
+        Ok(())
+    }
+
+    pub(super) fn restore_installations(
+        &mut self,
+        installations: BTreeMap<String, Slot>,
+    ) -> io::Result<()> {
+        self.writable()?;
+        if !self.slots().is_empty() {
+            return Err(bad("Portable recovery requires an empty manager journal"));
+        }
+        validate_installations(&installations)?;
+        let next = State {
+            format_version: 1,
+            installations,
+        };
         let bytes = encode_state(&next)?;
         self.poisoned = true;
         persist_state(&self.directory, &bytes, || Ok(()))?;
@@ -382,7 +394,40 @@ impl Journal {
     }
 }
 
-fn encode_state(state: &State) -> io::Result<Vec<u8>> {
+fn validate_installations(installations: &BTreeMap<String, Slot>) -> io::Result<()> {
+    let mut uids = BTreeSet::new();
+    if installations.len() > LIMIT
+        || installations.iter().any(|(id, slot)| {
+            !valid_id(id)
+                || !(20_000..=59_999).contains(&slot.uid)
+                || !uids.insert(slot.uid)
+                || slot.generation > super::MAX_GENERATION
+                || slot.pending_fence && slot.generation == 0
+        })
+    {
+        return Err(bad("Invalid manager journal"));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_portable_inventory(
+    installations: &BTreeMap<String, Slot>,
+) -> io::Result<()> {
+    validate_installations(installations)?;
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct StateRef<'a> {
+        format_version: u8,
+        installations: &'a BTreeMap<String, Slot>,
+    }
+    encode_state(&StateRef {
+        format_version: 1,
+        installations,
+    })
+    .map(drop)
+}
+
+fn encode_state(state: &impl Serialize) -> io::Result<Vec<u8>> {
     let bytes = serde_json::to_vec(state)?;
     if bytes.len() as u64 > MAX_BYTES {
         return Err(bad("Manager journal capacity exceeded"));

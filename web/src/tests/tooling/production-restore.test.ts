@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { readFile } from 'node:fs/promises'
 import { postgresCommand } from '../../../../scripts/production-restore.ts'
+import { controllerRestoreCommand } from '../../../../scripts/backup/volume-commands.ts'
+import { PORTABLE_APP_BACKUP_VERSION } from '@/config/compatibility.config.ts'
 import { NOTIFICATION_SETTINGS_KEY, NOTIFICATION_STATE_KEY } from '@/config/notifications.config.ts'
 
 describe('notification restore pause command contract', () => {
@@ -177,4 +179,51 @@ describe('restore target maintenance entrypoint', () => {
             ])
         },
     )
+})
+
+describe('portable application restore commands', () => {
+    test('measures capacity from the existing isolated restore only for the portable format', () => {
+        const isolated = postgresCommand(true, '/backup', PORTABLE_APP_BACKUP_VERSION)
+        const measurement = isolated.indexOf('PORTABLE_RESTORE_CAPACITY=')
+        expect(measurement).toBeGreaterThan(isolated.indexOf('validate-backup.ts'))
+        expect(isolated).toContain('du --summarize --bytes "$data_directory"')
+        expect(isolated).toContain('stat --format=%s "$rendered_sql_path"')
+        expect(isolated).toContain('stat --format=%s "$restore_sql_path"')
+        expect(postgresCommand(true, '/backup', true)).not.toContain('PORTABLE_RESTORE_CAPACITY=')
+        expect(postgresCommand(true)).not.toContain('PORTABLE_RESTORE_CAPACITY=')
+    })
+
+    test('verifies the package before touching the target and passes explicit resume evidence', () => {
+        const backupId = 'a'.repeat(64)
+        const version = PORTABLE_APP_BACKUP_VERSION
+        const preflight = postgresCommand('inventory', '/backup', version, backupId)
+        const resumed = postgresCommand('inventory', '/backup', version, backupId, true)
+        expect(
+            preflight.indexOf('verify-portable /backup/.rentnerproxy-app-state-v2'),
+        ).toBeLessThan(preflight.indexOf('postgres -D'))
+        expect(preflight).toContain(
+            '--check-portable-app-restore-inventory /backup ' + backupId + ' false',
+        )
+        expect(resumed).toContain(
+            '--check-portable-app-restore-inventory /backup ' + backupId + ' true',
+        )
+        expect(resumed).toContain('test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION')
+        expect(preflight).not.toContain('restore-portable')
+        expect(() => postgresCommand('inventory', '/backup', version)).toThrow()
+    })
+
+    test('publishes the app state only with ready, protected PostgreSQL sockets', () => {
+        const version = PORTABLE_APP_BACKUP_VERSION
+        const command = postgresCommand('portable-apps', '/backup', version)
+        expect(command).toContain(
+            'unix_socket_directories="$socket_directory",/run/rentnerproxy/app-db',
+        )
+        expect(command).toContain('hba_file=/usr/local/etc/rentnerproxy/pg_hba.conf')
+        expect(command).toContain('ident_file=/usr/local/etc/rentnerproxy/pg_ident.conf')
+        expect(
+            command.indexOf('restore-portable /backup/.rentnerproxy-app-state-v2'),
+        ).toBeGreaterThan(command.indexOf('"$ready"'))
+        expect(command).not.toContain('postgres.dump')
+        expect(controllerRestoreCommand(version)).toContain('--exclude=.rentnerproxy-app-state-v2')
+    })
 })

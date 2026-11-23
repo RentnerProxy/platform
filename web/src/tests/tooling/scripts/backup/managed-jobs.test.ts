@@ -419,6 +419,26 @@ describe('managed backup maintenance', () => {
         expect(f.removed).toEqual([])
     })
 
+    test('offline-only verification refuses a managed restore before persisting maintenance', async () => {
+        const f = fixture()
+        f.dependencies.execute = async (job) => ({ id: job.id, metadataSha256: digest, bytes: 100 })
+        f.dependencies.admitRestore = () =>
+            Promise.reject(new ManagedBackupError('offline_restore_required'))
+        const engine = await createManagedBackupEngine(f.dependencies)
+        const job = await engine.start(f.request())
+        await engine.tick()
+        const before = f.read()
+        await expect(
+            engine.requestMaintenance(
+                job.id,
+                { ...f.request(), metadataSha256: digest, actorName: 'Kevin' },
+                'restore',
+            ),
+        ).rejects.toMatchObject({ code: 'offline_restore_required' })
+        expect(f.read()).toEqual(before)
+        expect((await engine.status()).maintenance).toBeNull()
+    })
+
     test('interrupted restore is durable and never automatically re-executes on restart', async () => {
         const f = fixture()
         f.dependencies.execute = async (job) => ({ id: job.id, metadataSha256: digest, bytes: 100 })

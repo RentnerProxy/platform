@@ -218,7 +218,7 @@ describe('production backup metadata', () => {
                         deployment,
                         allowChange,
                     ),
-                /unsupported or invalid backup metadata \(supported: v4, v5\)/u,
+                /unsupported or invalid backup metadata \(supported: v4, v5, v6\)/u,
             )
         }
     })
@@ -325,6 +325,26 @@ describe('controller state archive validation', () => {
                 /unsafe state archive path/u,
             )
         }
+    })
+
+    it('accepts only canonical root-file paths for reserved application members', () => {
+        const member = '.rentnerproxy-app-state-v2'
+        assert.equal(
+            validateStateArchive(archive([{ name: './' + member }]), 'controller')[0]?.name,
+            member,
+        )
+        for (const name of [member + '/', member + '/x', 'state/' + member, '././' + member]) {
+            expectArchiveError(
+                archive([{ name, bytes: utf8('x') }]),
+                'controller',
+                /Ambiguous app snapshot archive path/u,
+            )
+        }
+        expectArchiveError(
+            archive([{ name: member, type: '5' }]),
+            'controller',
+            /Ambiguous app snapshot archive path/u,
+        )
     })
 
     it('rejects duplicate names and file-directory path conflicts', () => {

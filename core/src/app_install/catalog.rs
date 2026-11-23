@@ -10,7 +10,8 @@ use super::{Installer, filesystem};
 
 const METADATA_BUDGET: usize = 64 * 1024 * 1024;
 const MAX_FILES: usize = 5300;
-const CHECKPOINT: &str = "catalog-checkpoint.json";
+pub(super) const CHECKPOINT: &str = "catalog-checkpoint.json";
+pub(super) const CHECKPOINT_LIMIT: u64 = 96 * 1024 * 1024;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -53,9 +54,16 @@ fn read(
 
 impl Installer {
     pub(super) fn checkpoint(&self) -> io::Result<Option<(i64, TrustedPackageCatalog)>> {
+        self.checkpoint_with_floor(None)
+    }
+
+    pub(super) fn checkpoint_with_floor(
+        &self,
+        previous: Option<&TrustedPackageCatalog>,
+    ) -> io::Result<Option<(i64, TrustedPackageCatalog)>> {
         let bytes = match read_file(
             &self.config.store_directory.join(CHECKPOINT),
-            96 * 1024 * 1024,
+            CHECKPOINT_LIMIT,
         ) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -71,7 +79,7 @@ impl Installer {
         }
         let accepted = OffsetDateTime::from_unix_timestamp(checkpoint.accepted_at)
             .map_err(io::Error::other)?;
-        let catalog = checkpoint.verify(&self.pinned_root, accepted, None)?;
+        let catalog = checkpoint.verify(&self.pinned_root, accepted, previous)?;
         Ok(Some((checkpoint.accepted_at, catalog)))
     }
 

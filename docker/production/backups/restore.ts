@@ -36,6 +36,7 @@ import { verifyPublishedBackup, syncBackupDirectory } from '../../../scripts/bac
 import { runMaintenanceProcess } from '../../../scripts/backup/maintenance-process.ts'
 import { assertBackupCapacity, backupCapacityGuard } from '../../../scripts/backup/capacity.ts'
 import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
+import { PORTABLE_APP_BACKUP_VERSION } from '../../../web/src/config/compatibility.config.ts'
 import { postgresRestoreCommand } from '../../../scripts/production-restore.ts'
 import { postgresShutdownScript } from '../../../scripts/backup/postgres-shutdown.ts'
 import {
@@ -68,6 +69,12 @@ import type {
 
 export const maintenanceRoot = '/run/rentnerproxy/maintenance'
 const phaseFile = join(controlRoot, 'restore-progress.json')
+
+export class PortableBackupRequiresOfflineRestore extends Error {
+    constructor() {
+        super('Portable application backup requires offline restore to a fresh application target')
+    }
+}
 
 export async function writeMaintenanceProgress(
     operation: ManagedBackupMaintenance | null,
@@ -350,6 +357,8 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
         JSON.stringify(verified.metadata.source) !== JSON.stringify(job.source)
     )
         throw new Error('restore artifact identity mismatch')
+    if (verified.metadata.version === PORTABLE_APP_BACKUP_VERSION)
+        throw new PortableBackupRequiresOfflineRestore()
     assertDeploymentCompatible(
         verified.metadata,
         {

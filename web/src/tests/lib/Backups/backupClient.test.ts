@@ -103,6 +103,13 @@ test('deletion accepts a confirmed absent history entry without requiring a none
     expect(fetchSpy.mock.calls[0]?.[0]).toBe('/api/admin/backups/delete')
     expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))).toEqual(input)
 })
+
+test('restore preserves the offline-only admission error for portable backups', async () => {
+    respond(Response.json({ error: 'offline_restore_required' }, { status: 409 }))
+    await expect(
+        restoreBackup({ jobId: id, requestId: id, metadataSha256: 'c'.repeat(64) }),
+    ).rejects.toMatchObject({ code: 'offline_restore_required' })
+})
 test('mutations require a matching admission receipt or an advanced configuration revision', async () => {
     const fetchSpy = respond(Response.json(status))
     await expect(requestBackup({ requestId: id })).rejects.toMatchObject({

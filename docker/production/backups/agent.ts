@@ -10,7 +10,10 @@ import {
 } from '../../../scripts/backup/managed-jobs.ts'
 import { syncBackupDirectory, verifyPublishedBackup } from '../../../scripts/backup/publication.ts'
 import { parseBackupMetadata } from '../../../scripts/backup/format.ts'
+import { appStateName, portableAppStateName } from '../../../scripts/backup/app-state.ts'
+import { readSnapshotMetadata } from '../../../scripts/backup/restore-snapshot.ts'
 import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
+import { PORTABLE_APP_BACKUP_VERSION } from '../../../web/src/config/compatibility.config.ts'
 import { createBackupDownload } from './download.ts'
 import { writeMaintenanceProgress } from './restore.ts'
 import { hasRestartedRestoreProof } from './restart-recovery.ts'
@@ -79,7 +82,9 @@ async function inspectOwnedArtifactDirectory(directory: string, partial: boolean
     const info = await lstat(directory)
     if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o077) !== 0)
         throw new UnsafeBackupArtifact('invalid backup directory')
-    const allowedNames = partial ? [...artifactNames, '.rentnerproxy-app-state-v1'] : artifactNames
+    const allowedNames = partial
+        ? [...artifactNames, appStateName, portableAppStateName]
+        : artifactNames
     const entries = await boundedDirectoryEntries(directory, allowedNames.length)
     if (
         (!partial && entries.length !== artifactNames.length) ||
@@ -218,6 +223,20 @@ async function artifactFor(job: ManagedBackupJob, root = artifactsRoot) {
     if (JSON.stringify(source) !== JSON.stringify(job.source))
         throw new ManagedBackupError('artifact_invalid')
     return { id: job.id, metadataSha256: verified.metadataSha256, bytes: verified.bytes }
+}
+
+async function assertManagedRestoreSupported(job: ManagedBackupJob) {
+    if (!job.artifact) throw new ManagedBackupError('artifact_invalid')
+    let version
+    try {
+        const directory = await ownedArtifactDirectory(job.id)
+        const { metadata } = await readSnapshotMetadata(directory, job.artifact.metadataSha256)
+        version = metadata.version
+    } catch {
+        throw new ManagedBackupError('artifact_invalid')
+    }
+    if (version === PORTABLE_APP_BACKUP_VERSION)
+        throw new ManagedBackupError('offline_restore_required')
 }
 
 export async function recoverManagedBackupState(
@@ -404,6 +423,12 @@ export function createBackupAgentHandler(
             } else await engine.updateConfiguration(input)
             return Response.json(await status())
         } catch (error) {
+            if (
+                operationPath?.[2] === 'restore' &&
+                error instanceof ManagedBackupError &&
+                error.code === 'offline_restore_required'
+            )
+                return Response.json({ error: error.code }, { status: 409 })
             if (
                 error instanceof ManagedBackupError &&
                 ['busy', 'revision_conflict', 'capacity', 'artifact_invalid'].includes(error.code)
@@ -606,7 +631,9 @@ export async function startBackupAgent() {
                 throw error
             }
         },
-        restore: async (_job, operation, progress) => {
+        admitRestore: assertManagedRestoreSupported,
+        restore: async (job, operation, progress) => {
+            await assertManagedRestoreSupported(job)
             await offHost.pause()
             await writeMaintenanceProgress(operation)
             try {

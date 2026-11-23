@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use super::filesystem;
 
-const COMPRESSED_LIMIT: u64 = 257 * 1024 * 1024;
+pub(super) const COMPRESSED_LIMIT: u64 = 257 * 1024 * 1024;
 const RECEIPT_LIMIT: u64 = 64 * 1024 * 1024;
 const DOWNLOAD_WORKSPACE: &str = ".download-";
 const PACKAGE_WORKSPACE: &str = ".stage-";
