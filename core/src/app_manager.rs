@@ -3,6 +3,7 @@ mod control;
 mod gateway;
 mod journal;
 mod lifecycle;
+pub(crate) mod portable_backup;
 mod removal;
 mod runtime;
 mod service;
@@ -1049,6 +1050,15 @@ impl Manager {
 
 fn recover(installer: &Installer, app: &str, record: &Release) -> io::Result<StagedPackage> {
     let package = installer.recover(app, &record.version, &record.archive_sha256)?;
+    verify_recovered_release(&package, app, record)?;
+    Ok(package)
+}
+
+fn verify_recovered_release(
+    package: &StagedPackage,
+    app: &str,
+    record: &Release,
+) -> io::Result<()> {
     if package.manifest_sha256 != record.manifest_sha256
         || package.archive_sha256 != record.archive_sha256
         || package.catalog_revision < record.catalog_revision
@@ -1057,11 +1067,12 @@ fn recover(installer: &Installer, app: &str, record: &Release) -> io::Result<Sta
     {
         return Err(bad("Recovered package differs from recorded release"));
     }
-    Ok(package)
+    Ok(())
 }
 
 pub(crate) fn backup_inventory(config: Option<&Path>) -> io::Result<(impl Sized, Value)> {
     let journal = Journal::open(Path::new("/var/lib/rentnerproxy/app-manager"))?;
+    portable_backup::require_ready_to_start()?;
     let mut installer = None;
     let mut writers = Vec::new();
     for slot in journal.slots().values() {
@@ -1153,6 +1164,7 @@ async fn boot(mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
         drains: JoinSet::new(),
         draining: HashMap::new(),
     };
+    portable_backup::require_ready_to_start()?;
     let result = tokio::select! {
         biased;
         _ = crate::shutdown::wait_for_shutdown() => Ok(()),

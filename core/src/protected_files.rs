@@ -19,6 +19,8 @@ pub(crate) enum Publication {
     Replace,
 }
 
+pub(crate) const PRIVATE_STAGING_PREFIX: &str = ".rentnerproxy-private-";
+
 /// Called with an already admitted staging directory and destination parent.
 pub(crate) fn publish(
     staging_directory: &Path,
@@ -32,7 +34,7 @@ pub(crate) fn publish(
     })?;
     let parent = open_directory(directory)?;
     let mut temporary = tempfile::Builder::new()
-        .prefix(".rentnerproxy-private-")
+        .prefix(PRIVATE_STAGING_PREFIX)
         .tempfile_in(staging_directory)?;
     temporary.write_all(contents)?;
     fchown(

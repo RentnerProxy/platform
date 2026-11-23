@@ -374,6 +374,7 @@ export async function createManagedBackupEngine(dependencies: ManagedBackupDepen
                     (job.state !== 'succeeded' || !job.retained || job.artifact?.id !== id))
             )
                 throw new ManagedBackupError('artifact_invalid')
+            if (operation === 'restore') await dependencies.admitRestore?.(job)
             if (!hasAuditRoom(draft, 4)) throw new ManagedBackupError('capacity')
             const history = compactMaintenanceJournal(draft.maintenanceRequests ?? [])
             const receipt: ManagedBackupMaintenance = {

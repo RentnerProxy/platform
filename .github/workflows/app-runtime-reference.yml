@@ -7,6 +7,8 @@ on:
             - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
             - .github/scripts/ci/fixtures/app-greeting-native.sh
             - '.github/scripts/ci/fixtures/app-runtime-reference/**'
+            - 'core/src/app_backup.rs'
+            - 'core/src/app_backup/**'
             - 'core/src/app_install.rs'
             - 'core/src/app_install/**'
             - 'core/src/app_ipc.rs'
@@ -39,6 +41,8 @@ on:
             - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
             - .github/scripts/ci/fixtures/app-greeting-native.sh
             - '.github/scripts/ci/fixtures/app-runtime-reference/**'
+            - 'core/src/app_backup.rs'
+            - 'core/src/app_backup/**'
             - 'core/src/app_install.rs'
             - 'core/src/app_install/**'
             - 'core/src/app_ipc.rs'
@@ -148,7 +152,7 @@ jobs:
                   bun install --no-env-file --frozen-lockfile --ignore-scripts
                   bash .github/scripts/ci/fixtures/app-greeting-native.sh "$RUNNER_TEMP/app-runtime-reference" "$REPOSITORY_ID"
 
-            - name: Verify published Greeting install, update and offline rollback
+            - name: Verify published Greeting lifecycle and portable offline recovery
               shell: bash
               run: bash .github/scripts/ci/fixtures/app-greeting-lifecycle.sh "$RUNNER_TEMP/app-runtime-reference"
 
@@ -164,3 +168,4 @@ jobs:
                       ${{ runner.temp }}/app-runtime-reference/greeting.json
                       ${{ runner.temp }}/app-runtime-reference/greeting-browser.json
                       ${{ runner.temp }}/app-runtime-reference/greeting-lifecycle.json
+                      ${{ runner.temp }}/app-runtime-reference/greeting-recovery.json

@@ -1,16 +1,15 @@
-import { chmod, lstat, mkdir, open, readFile, readdir, rm } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, readdir, rm } from 'node:fs/promises'
 import {
     appBackupCommand,
     hasNativeAppStorage,
-    appStateName,
-    maximumAppStateBytes,
-    appStateInstallations,
+    portableAppStateName,
+    inspectPortableAppStateFile,
 } from '../../../scripts/backup/app-state.ts'
 import { checkLiveAppDatabase } from './app-database.ts'
 import { readSnapshotMetadata } from '../../../scripts/backup/restore-snapshot.ts'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { APP_AWARE_BACKUP_VERSION } from '../../../web/src/config/compatibility.config.ts'
+import { PORTABLE_APP_BACKUP_VERSION } from '../../../web/src/config/compatibility.config.ts'
 import { readDeploymentEnvironmentVariable } from '../../../web/src/lib/Environment/deployment-environment.ts'
 import { managedBackupStateSchema } from '../../../web/src/lib/Backups/validation.ts'
 import { deploymentSchema } from '../../../scripts/backup/validation.ts'
@@ -32,7 +31,12 @@ import {
     writePrivateJson,
 } from './storage.ts'
 import type { BackupMetadata } from '../../../scripts/backup/Types/format.types.ts'
-import { restoreManagedBackup, validateRestoreDatabase } from './restore.ts'
+import {
+    assertRestoreCapacity,
+    PortableBackupRequiresOfflineRestore,
+    restoreManagedBackup,
+    validateRestoreDatabase,
+} from './restore.ts'
 
 class IncompleteBackupCleanup extends Error {}
 
@@ -89,22 +93,31 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
             128,
             signal,
         )
-        const appFile = join(stagingPath, appStateName)
+        const appFile = join(stagingPath, portableAppStateName)
         const appBytes = (await hasNativeAppStorage())
             ? await capture(
-                  [appBackupCommand, '--app-backup', 'capture'],
+                  [appBackupCommand, '--app-backup', 'capture-portable'],
                   appFile,
-                  maximumAppStateBytes,
+                  BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
                   signal,
               )
             : undefined
-        const applications = !appBytes?.bytes
-            ? undefined
-            : {
-                  ...appBytes,
-                  installations: appStateInstallations(await readFile(appFile)),
-              }
-        await checkLiveAppDatabase(applications?.installations ?? [], signal)
+        let applications
+        if (appBytes?.bytes) {
+            const file = await open(appFile, 'r')
+            try {
+                applications = await inspectPortableAppStateFile(file, signal)
+            } finally {
+                await file.close()
+            }
+            if (applications.bytes !== appBytes.bytes || applications.sha256 !== appBytes.sha256)
+                throw new Error('Captured application state changed before publication')
+        }
+        await checkLiveAppDatabase(
+            applications?.installations ?? [],
+            signal,
+            applications ? 'portable' : 'legacy',
+        )
         const dump = await capture(
             [
                 'gosu',
@@ -135,7 +148,7 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
                 '--directory=/var/lib/rentnerproxy/proxy',
                 ...stateArchiveExclusions.map((entry) => '--exclude=' + entry),
                 '.',
-                ...(applications ? ['--directory=' + stagingPath, appStateName] : []),
+                ...(applications ? ['--directory=' + stagingPath, portableAppStateName] : []),
             ],
             join(stagingPath, 'controller-state.tar'),
             undefined,
@@ -176,7 +189,7 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
             },
             redis: 'excluded',
             ...(applications
-                ? { version: APP_AWARE_BACKUP_VERSION, applications }
+                ? { version: PORTABLE_APP_BACKUP_VERSION, applications }
                 : { version: 4 }),
         }
         await chmod(stagingPath, 0o700)
@@ -260,6 +273,45 @@ if (import.meta.main) {
                 metadata.version === 5 ? metadata.applications.installations : [],
                 controller.signal,
             )
+        } else if (args.length === 4 && args[0] === '--check-portable-app-restore-inventory') {
+            const path = args[1]!
+            if (!/^\/(?:backup|tmp\/rentnerproxy-offline-[A-Za-z0-9_-]+)$/u.test(path))
+                throw new Error('Invalid snapshot path')
+            const { metadata } = await readSnapshotMetadata(
+                path,
+                z
+                    .string()
+                    .regex(/^[a-f0-9]{64}$/u)
+                    .parse(args[2]),
+            )
+            if (metadata.version !== PORTABLE_APP_BACKUP_VERSION)
+                throw new Error('Portable application backup required')
+            const resume = z.enum(['true', 'false']).parse(args[3]) === 'true'
+            await checkLiveAppDatabase(
+                resume ? metadata.applications.installations : [],
+                controller.signal,
+                resume ? 'portable-resume' : 'portable-fresh',
+            )
+        } else if (args.length === 7 && args[0] === '--check-portable-restore-capacity') {
+            const positive = z.coerce.number().int().safe().positive()
+            const nonnegative = z.coerce.number().int().safe().nonnegative()
+            const [
+                databaseBytes,
+                sqlBytes,
+                controllerBytes,
+                controllerNodes,
+                crowdSecBytes,
+                crowdSecNodes,
+            ] = z
+                .tuple([positive, positive, nonnegative, nonnegative, nonnegative, nonnegative])
+                .parse(args.slice(1))
+            await assertRestoreCapacity(
+                { databaseBytes, sqlBytes },
+                {
+                    controllerState: { payloadBytes: controllerBytes, nodes: controllerNodes },
+                    crowdSecState: { payloadBytes: crowdSecBytes, nodes: crowdSecNodes },
+                },
+            )
         } else if (args.length === 2 && args[0] === '--run') {
             await exportManagedBackup(z.uuid().parse(args[1]), controller.signal)
         } else if (args.length === 2 && args[0] === '--restore') {
@@ -276,7 +328,11 @@ if (import.meta.main) {
             await validateRestoreDatabase(args[1]!, args[2]!)
         } else throw new Error('invalid operation')
     } catch (error) {
-        console.error('[backups] Artifact creation failed')
+        console.error(
+            error instanceof PortableBackupRequiresOfflineRestore
+                ? '[backups] ' + error.message
+                : '[backups] Artifact creation failed',
+        )
         process.exitCode = error instanceof IncompleteBackupCleanup ? 2 : 1
     } finally {
         process.removeListener('SIGTERM', abort)

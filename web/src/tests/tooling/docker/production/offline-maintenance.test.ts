@@ -1,8 +1,11 @@
 // oxlint-disable no-await-in-loop -- Verify malformed proof records against one private fixture file.
 import { expect, test } from 'bun:test'
-import { chmod, chown, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { chmod, chown, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { copyCoverageFixtureModules } from '@/tests/Helpers/coverageFixture.ts'
+import { PORTABLE_APP_BACKUP_VERSION } from '@/config/compatibility.config.ts'
 import {
     readIsolatedValidationProof,
     readIsolatedValidationCapacity,
@@ -106,3 +109,131 @@ test.skipIf(process.platform !== 'linux')(
     },
     10000,
 )
+
+test
+    .skipIf(process.platform !== 'linux' || process.getuid?.() !== 0)
+    .each([
+        'matching-journal',
+        'wrong-journal',
+        'wrong-backup-id',
+        'malformed-metadata',
+        'legacy-metadata',
+        'worker-failure',
+    ] as const)('Compose portable app recovery dispatch handles %s', async (scenario) => {
+    const root = await mkdtemp(join(tmpdir(), 'rp-compose-portable-apps-'))
+    const code = join(root, 'code')
+    const snapshot = join(root, 'snapshot')
+    const state = join(root, 'state')
+    const bin = join(root, 'bin')
+    const bootstrap = join(root, 'bootstrap.ts')
+    const calls = join(root, 'calls')
+    const module = 'docker/production/backups/maintenance.ts'
+    const proof = { bytes: 1, sha256: 'a'.repeat(64) }
+    const version =
+        scenario === 'legacy-metadata'
+            ? { version: 4 }
+            : {
+                  version: PORTABLE_APP_BACKUP_VERSION,
+                  applications: {
+                      ...proof,
+                      installations: [
+                          { id: 'greeting', appId: 'fixture/greeting', uid: 20000, generation: 1 },
+                      ],
+                  },
+              }
+    const metadata =
+        scenario === 'malformed-metadata'
+            ? '{'
+            : JSON.stringify({
+                  ...version,
+                  format: 'rentnerproxy-production-backup',
+                  redis: 'excluded',
+                  createdAt: '2026-10-22T00:00:00Z',
+                  postgres: {
+                      ...proof,
+                      dump: 'postgres.dump',
+                      database: 'rentnerproxy',
+                      user: 'rentnerproxy',
+                  },
+                  applicationEncryptionKey: { ...proof, file: 'app-encryption-key' },
+                  controllerState: { ...proof, archive: 'controller-state.tar' },
+                  crowdSecState: { ...proof, archive: 'crowdsec-state.tar' },
+                  deployment: { publicOrigin: 'https://proxy.test', trustedProxyCidrs: '' },
+                  source: { imageId: 'sha256:' + proof.sha256, revision: null, version: null },
+              })
+    const id = createHash('sha256').update(metadata).digest('hex')
+    try {
+        await Promise.all([mkdir(snapshot), mkdir(state), mkdir(bin)])
+        await copyCoverageFixtureModules(code, [module], {
+            "'/backup'": JSON.stringify(snapshot),
+            '"/backup"': JSON.stringify(snapshot),
+            '/var/lib/rentnerproxy': state,
+            '/opt/rentnerproxy/web/docker/web/bootstrap-secrets.ts': bootstrap,
+            '/usr/lib/postgresql/18/bin:/usr/local/bin:/usr/bin:/bin': [
+                bin,
+                dirname(process.execPath),
+                '/usr/local/bin',
+                '/usr/bin',
+                '/bin',
+            ].join(':'),
+        })
+        await Promise.all([
+            writeFile(join(snapshot, 'metadata.json'), metadata),
+            writeFile(
+                bootstrap,
+                `
+                    import { appendFileSync } from 'node:fs'
+                    if (process.argv[2] !== 'inspect-production-restore') process.exit(95)
+                    appendFileSync(${JSON.stringify(calls)}, 'inspect journal\\n')
+                    console.log(${JSON.stringify(scenario === 'wrong-journal' ? 'b'.repeat(64) : id)})
+                `,
+            ),
+            writeFile(
+                join(bin, 'bash'),
+                `#!/usr/bin/env -S bun --no-env-file
+                    import { appendFileSync } from 'node:fs'
+                    if (process.argv[2] !== '-c') process.exit(96)
+                    appendFileSync(${JSON.stringify(calls)}, 'restore worker\\n' + process.argv[3])
+                    process.exit(${scenario === 'worker-failure' ? 9 : 0})
+                `,
+                { mode: 0o755 },
+            ),
+        ])
+        const result = Bun.spawn(
+            [
+                process.execPath,
+                '--no-env-file',
+                join(code, module),
+                'restore-portable-apps',
+                scenario === 'wrong-backup-id' ? 'c'.repeat(64) : id,
+            ],
+            { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
+        )
+        const [exit, stdout, stderr] = await Promise.all([
+            result.exited,
+            new Response(result.stdout).text(),
+            new Response(result.stderr).text(),
+        ])
+        expect(stdout).toBe('')
+        if (scenario === 'matching-journal') {
+            expect(exit, stderr).toBe(0)
+            expect(stderr).toBe('')
+        } else {
+            expect(exit).toBe(1)
+            expect(stderr).toContain('Offline maintenance failed.')
+        }
+        const invoked = await readFile(calls, 'utf8').catch(() => '')
+        if (scenario === 'matching-journal' || scenario === 'worker-failure') {
+            expect(invoked.startsWith('inspect journal\nrestore worker\n')).toBe(true)
+            expect(invoked).toContain(
+                '--app-backup restore-portable ' + snapshot + '/.rentnerproxy-app-state-v2',
+            )
+        } else if (scenario === 'wrong-journal' || scenario === 'legacy-metadata') {
+            expect(invoked).toBe('inspect journal\n')
+        } else {
+            expect(invoked).toBe('')
+        }
+    } finally {
+        await rm(root, { recursive: true, force: true })
+    }
+})

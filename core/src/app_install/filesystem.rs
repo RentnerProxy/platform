@@ -126,7 +126,7 @@ pub(super) fn sync_file(path: &Path) -> io::Result<()> {
     OpenOptions::new().write(true).open(path)?.sync_all()
 }
 
-pub(super) fn private_workspace(parent: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {
+pub(crate) fn private_workspace(parent: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
     builder.prefix(prefix);
     #[cfg(unix)]
@@ -137,8 +137,8 @@ pub(super) fn private_workspace(parent: &Path, prefix: &str) -> io::Result<tempf
     builder.tempdir_in(parent)
 }
 
-/// The caller holds the store lock, and only the installer can create these workspaces.
-pub(super) fn clean_workspaces(parent: &Path, prefix: &str) -> io::Result<()> {
+/// The caller holds the exclusive lock for the protected parent and workspace prefix.
+pub(crate) fn clean_workspaces(parent: &Path, prefix: &str) -> io::Result<()> {
     let mut removed = false;
     for entry in fs::read_dir(parent)? {
         let entry = entry?;
