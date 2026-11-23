@@ -15,7 +15,7 @@ export GOPROXY=https://proxy.golang.org
 export GOSUMDB=sum.golang.org
 export GOFLAGS=-mod=readonly
 export CGO_ENABLED=1
-test "$(go env GOVERSION)" = go1.27.3
+test "$(go env GOVERSION)" = go1.27.4
 test "$(go env GOOS)" = linux
 
 work_root=$(mktemp -d)

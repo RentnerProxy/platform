@@ -38,7 +38,7 @@ concurrency:
     cancel-in-progress: false
 
 env:
-    BUN_VERSION: 1.4.4
+    BUN_VERSION: 1.4.5
 
 jobs:
     signing-configuration:

@@ -18,7 +18,7 @@ concurrency:
     cancel-in-progress: true
 env:
     RENTNERPROXY_SMOKE_REUSE_IMAGES: '1'
-    BUN_VERSION: 1.4.4
+    BUN_VERSION: 1.4.5
     DOCKER_BUILD_SUMMARY: 'false'
     DOCKER_BUILD_RECORD_UPLOAD: 'false'
     RENTNERPROXY_SMOKE_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -245,7 +245,7 @@ jobs:
               if: needs.changes.outputs.runtime == 'true'
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
-                  bun-version: 1.4.4
+                  bun-version: 1.4.5
             - name: Download exact production OCI artifact
               if: needs.changes.outputs.runtime == 'true'
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

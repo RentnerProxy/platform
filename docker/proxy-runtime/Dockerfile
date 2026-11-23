@@ -1,9 +1,9 @@
-# syntax=mirror.gcr.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+# syntax=mirror.gcr.io/docker/dockerfile:1.24.0
 
 # The controller-build and caddy-build stages (and this frontend) intentionally match
 # docker/production/Dockerfile instruction for instruction: CI builds both images on one
 # BuildKit builder, which then compiles the controller and Caddy only once.
-FROM mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31 AS controller-build
+FROM mirror.gcr.io/library/rust:1.100.0-trixie AS controller-build
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -23,12 +23,12 @@ RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/re
     install -D -m 0755 target/release/rentnerproxy-controller /out/rentnerproxy-controller; \
     rm -rf target
 
-FROM mirror.gcr.io/library/golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS caddy-go-toolchain
+FROM mirror.gcr.io/library/golang:1.27.4-alpine AS caddy-go-toolchain
 
 # The builder supplies CADDY_VERSION so image updates also update the compiled binary.
 # Apply the reviewed reload-lifecycle backport to a verified upstream copy.
 # Their optional AppSec and Layer 4 modules remain unconfigured.
-FROM mirror.gcr.io/library/caddy:2.11.9-builder@sha256:f9beaa5ddbe7df6f26ebbcf9cbf44e05a1917b9bba464f0c3229038d7e2e6e13 AS caddy-build
+FROM mirror.gcr.io/library/caddy:2.11.9-builder-alpine AS caddy-build
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -56,7 +56,7 @@ RUN go test -mod=readonly -race -short -timeout=120s -p=1 \
     github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy \
     github.com/caddyserver/caddy/v2/modules/caddytls
 
-FROM mirror.gcr.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+FROM mirror.gcr.io/library/debian:13.7-slim
 
 COPY --from=caddy-build /usr/bin/caddy /usr/bin/caddy
 COPY docker/licenses/Caddy-LICENSE /usr/share/licenses/caddy/LICENSE

@@ -57,7 +57,7 @@ describe('upstream Caddy binary security metadata', () => {
         for (const image of images)
             expect(
                 image.match(
-                    /^FROM mirror\.gcr\.io\/library\/caddy:(\d+\.\d+\.\d+)-builder@/mu,
+                    /^FROM mirror\.gcr\.io\/library\/caddy:(\d+\.\d+\.\d+)-builder-alpine AS caddy-build$/mu,
                 )?.[1],
             ).toBe(reviewedVersion?.slice(1))
     })
@@ -74,7 +74,7 @@ describe('upstream Caddy binary security metadata', () => {
         const caddyBuilders = images.map(
             (image) =>
                 image.match(
-                    /^FROM (mirror\.gcr\.io\/library\/caddy:\d+\.\d+\.\d+-builder@sha256:[a-f0-9]{64}) AS caddy-build$/mu,
+                    /^FROM (mirror\.gcr\.io\/library\/caddy:\d+\.\d+\.\d+-builder-alpine) AS caddy-build$/mu,
                 )?.[1],
         )
         expect(caddyBuilders[0]).toBeDefined()
@@ -106,9 +106,7 @@ describe('upstream Caddy binary security metadata', () => {
             expect(image).toContain(
                 'docker/licenses/CaddyCrowdSecBouncer-NOTICE /usr/share/licenses/caddy-crowdsec-bouncer/NOTICE',
             )
-            expect(image).toContain(
-                'golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf',
-            )
+            expect(image).toContain('golang:1.27.4-alpine AS caddy-go-toolchain')
         }
         for (const contract of [
             'test "$(go env GOVERSION)" = go1.27.4',

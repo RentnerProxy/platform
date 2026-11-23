@@ -1,6 +1,6 @@
-# syntax=mirror.gcr.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+# syntax=mirror.gcr.io/docker/dockerfile:1.24.0
 
-FROM mirror.gcr.io/oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS web-dependencies
+FROM mirror.gcr.io/oven/bun:1.4.5 AS web-dependencies
 
 WORKDIR /app
 COPY package.json bun.lock ./
@@ -19,7 +19,7 @@ RUN RENTNERPROXY_BUILD_VERSION="$RENTNERPROXY_BUILD_VERSION" bun run build:web \
     && bun build docker/production/backups/build-identity.ts --target=bun --outfile=/build/backup-build-identity.js \
     && bun docker/web/package-migrations.ts ./web/drizzle /build/migrations
 
-FROM mirror.gcr.io/oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS web-runtime
+FROM mirror.gcr.io/oven/bun:1.4.5 AS web-runtime
 
 WORKDIR /app
 COPY package.json bun.lock ./
@@ -44,7 +44,7 @@ COPY --from=web-build /app/docker/web/static-assets.ts ./docker/web/static-asset
 COPY --from=web-build /app/docker/web/serve.ts ./docker/web/serve.ts
 COPY --from=web-build /app/docker/web/healthcheck.ts ./docker/web/healthcheck.ts
 
-FROM mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31 AS controller-build
+FROM mirror.gcr.io/library/rust:1.100.0-trixie AS controller-build
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -67,12 +67,12 @@ RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/re
     install -D -m 0755 target/release/rentnerproxy-controller /out/rentnerproxy-controller; \
     rm -rf target
 
-FROM mirror.gcr.io/library/golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS caddy-go-toolchain
+FROM mirror.gcr.io/library/golang:1.27.4-alpine AS caddy-go-toolchain
 
 # The builder supplies CADDY_VERSION so image updates also update the compiled binary.
 # Apply the reviewed reload-lifecycle backport to a verified upstream copy.
 # Their optional AppSec and Layer 4 modules remain unconfigured.
-FROM mirror.gcr.io/library/caddy:2.11.9-builder@sha256:f9beaa5ddbe7df6f26ebbcf9cbf44e05a1917b9bba464f0c3229038d7e2e6e13 AS caddy-build
+FROM mirror.gcr.io/library/caddy:2.11.9-builder-alpine AS caddy-build
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -90,13 +90,13 @@ WORKDIR /tmp/rentnerproxy-caddy
 RUN test "$(go env GOOS)/$(go env GOARCH)" = "$TARGETOS/$TARGETARCH" \
     && /bin/sh /tmp/build-caddy.sh
 
-FROM mirror.gcr.io/oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS geoip-assets
+FROM mirror.gcr.io/oven/bun:1.4.5-alpine AS geoip-assets
 COPY scripts/assets/download-geoip.ts /tmp/download-geoip.ts
 RUN bun --no-env-file /tmp/download-geoip.ts
 
 # Build pristine upstream CrowdSec with the managed SQLite backend and pinned
 # security dependencies; exclude its unused legacy PostgreSQL backend.
-FROM mirror.gcr.io/library/golang:1.27.3-trixie@sha256:af1bfc2614ebb1dbd31af514b78740fd678850e76498762b425ecee4c5c6ea80 AS crowdsec-build
+FROM mirror.gcr.io/library/golang:1.27.4-trixie AS crowdsec-build
 ARG TARGETOS
 ARG TARGETARCH
 RUN apt-get update \
@@ -107,14 +107,15 @@ COPY docker/tooling/buildinfo/verify.go /opt/verify-buildinfo.go
 RUN test "$(go env GOOS)/$(go env GOARCH)" = "$TARGETOS/$TARGETARCH" \
     && /bin/sh /opt/crowdsec-build/build.sh /out
 
-FROM mirror.gcr.io/library/golang:1.27.3-trixie@sha256:af1bfc2614ebb1dbd31af514b78740fd678850e76498762b425ecee4c5c6ea80 AS gosu-build
+FROM mirror.gcr.io/library/golang:1.27.4-alpine AS gosu-build
 ARG TARGETOS
 ARG TARGETARCH
+RUN apk add --no-cache coreutils curl
 COPY docker/gosu/tooling/ /opt/gosu-build/
 RUN test "$(go env GOOS)/$(go env GOARCH)" = "$TARGETOS/$TARGETARCH" \
     && /bin/sh /opt/gosu-build/build.sh /out
 
-FROM ghcr.io/crowdsecurity/crowdsec:v1.8.2-debian@sha256:a5642c72127ee93aaac830e9f66891573fa7851b2c721987d9fef13d7d05fdfe AS crowdsec-assets
+FROM ghcr.io/crowdsecurity/crowdsec:v1.8.2-debian AS crowdsec-assets
 
 COPY docker/crowdsec/hub/data.sha256 /tmp/rentnerproxy-crowdsec-hub-data.sha256
 # The pinned Hub scenario fetches a moving upstream list. Use the revision selected by the manifest.
@@ -140,9 +141,9 @@ RUN set -eux; \
         /etc/crowdsec/online_api_credentials.yaml; \
     cp -aL /etc/crowdsec/. /opt/rentnerproxy/crowdsec-config/
 
-FROM mirror.gcr.io/valkey/valkey:9.1.3-trixie@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7 AS valkey-runtime
+FROM mirror.gcr.io/valkey/valkey:9.2.0-trixie AS valkey-runtime
 
-FROM mirror.gcr.io/library/postgres:18.7@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61 AS runtime
+FROM mirror.gcr.io/library/postgres:18.7-trixie AS runtime
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -231,8 +232,8 @@ RUN chmod 0555 /usr/local/bin/rentnerproxy-production \
     && chmod 0555 /usr/local/bin/crowdsec /usr/local/bin/cscli \
     && chmod 0555 /usr/local/bin/bun \
     && chmod 0555 /opt/rentnerproxy/valkey/bin/valkey-server /opt/rentnerproxy/valkey/bin/valkey-cli \
-    && /opt/rentnerproxy/valkey/bin/valkey-server --version | grep -F 'v=9.1.3 ' \
-    && /opt/rentnerproxy/valkey/bin/valkey-cli --version | grep -Fx 'valkey-cli 9.1.3' \
+    && /opt/rentnerproxy/valkey/bin/valkey-server --version | grep -F 'v=9.2.0 ' \
+    && /opt/rentnerproxy/valkey/bin/valkey-cli --version | grep -Fx 'valkey-cli 9.2.0' \
     && ldd /opt/rentnerproxy/valkey/bin/valkey-server > /tmp/valkey-server-libraries \
     && ldd /opt/rentnerproxy/valkey/bin/valkey-cli > /tmp/valkey-cli-libraries \
     && ! grep -F 'not found' /tmp/valkey-server-libraries /tmp/valkey-cli-libraries \

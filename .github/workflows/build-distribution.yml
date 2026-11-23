@@ -47,7 +47,7 @@ jobs:
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
-                  bun-version: 1.4.4
+                  bun-version: 1.4.5
             - name: Install locked source dependencies without publication credentials
               working-directory: source
               run: bun --no-env-file install --frozen-lockfile
@@ -113,7 +113,7 @@ jobs:
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
-                  bun-version: 1.4.4
+                  bun-version: 1.4.5
             - name: Install disposable target host tools
               run: |
                   sudo apt-get update

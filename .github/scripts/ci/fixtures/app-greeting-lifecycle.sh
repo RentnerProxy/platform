@@ -58,6 +58,15 @@ case "$(uname -s)/$(uname -m)" in
 esac
 test "$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" = "linux/$native"
 
+if [[ ${GREETING_APPLIANCE_IMAGE_ID+x} ]]; then
+    appliance=$GREETING_APPLIANCE_IMAGE_ID
+    [[ $appliance =~ ^sha256:[a-f0-9]{64}$ ]]
+    test "$(docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$appliance")" = "$appliance linux/$native"
+else
+    # Coverage runs bind prebuilt test executables to the historical fixture image.
+    appliance=ghcr.io/rentnerproxy/platform@sha256:fe320f29302a2253296b986962de9d3d84fd6f0abb788a414cc325ca424c74e3
+fi
+
 mkdir -p "$output"
 output=$(realpath "$output")
 work=$(mktemp -d)
@@ -121,7 +130,7 @@ run_fixture() {
         "${coverage_mount[@]}" \
         "$@" \
         --entrypoint /bin/bash \
-        ghcr.io/rentnerproxy/platform@sha256:fe320f29302a2253296b986962de9d3d84fd6f0abb788a414cc325ca424c74e3 \
+        "$appliance" \
         /fixture/run.sh "$mode"
 }
 

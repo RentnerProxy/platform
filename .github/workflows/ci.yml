@@ -15,7 +15,7 @@ concurrency:
     cancel-in-progress: true
 
 env:
-    BUN_VERSION: 1.4.4
+    BUN_VERSION: 1.4.5
     RUST_VERSION: 1.99.1
 
 jobs:
@@ -45,7 +45,7 @@ jobs:
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
-                  bun-version: '1.4.4'
+                  bun-version: '1.4.5'
 
             - name: 'Select affected verification'
               id: changes
@@ -181,7 +181,7 @@ jobs:
         timeout-minutes: 20
         services:
             postgres:
-                image: ${{ needs.changes.outputs.web == 'true' && 'mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d8f867cd4d520021545a9a50c120eae3b' || '' }}
+                image: ${{ needs.changes.outputs.web == 'true' && 'mirror.gcr.io/library/postgres:18.7-trixie' || '' }}
                 env:
                     POSTGRES_USER: rentnerproxy
                     POSTGRES_PASSWORD: rentnerproxy
@@ -191,7 +191,7 @@ jobs:
                 options: >-
                     --health-cmd "pg_isready -U rentnerproxy -d rentnerproxy_upstream_test" --health-interval 5s --health-timeout 5s --health-retries 10
             valkey:
-                image: ${{ needs.changes.outputs.web == 'true' && 'mirror.gcr.io/valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b' || '' }}
+                image: ${{ needs.changes.outputs.web == 'true' && 'mirror.gcr.io/valkey/valkey:9.2.0-alpine' || '' }}
                 ports:
                     - 6379:6379
                 options: >-
@@ -587,7 +587,7 @@ jobs:
                     --mount "type=bind,source=$GITHUB_WORKSPACE/.cache/caddy-go/build,target=/root/.cache/go-build" \
                     --env GOMODCACHE=/go/pkg/mod --env GOCACHE=/root/.cache/go-build \
                     --env GOTOOLCHAIN=local --env CGO_ENABLED=1 \
-                    mirror.gcr.io/library/golang:1.27.3-trixie@sha256:c65ecfe613b539ac74c62a4c3b2c27e8f8a6076384c8f27e8a3c0f3be17cc385 \
+                    mirror.gcr.io/library/golang:1.27.4-trixie \
                     /bin/sh /workspace/.github/scripts/ci/go-coverage.sh
               if: "${{ needs.changes.outputs.go == 'true' }}"
 

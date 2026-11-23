@@ -1,8 +1,8 @@
-# syntax=mirror.gcr.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+# syntax=mirror.gcr.io/docker/dockerfile:1.24.0
 
-FROM mirror.gcr.io/oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS bun
+FROM mirror.gcr.io/oven/bun:1.4.5 AS bun
 
-FROM mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31 AS controller
+FROM mirror.gcr.io/library/rust:1.100.0-trixie AS controller
 WORKDIR /build
 COPY core/Cargo.toml core/Cargo.lock ./
 COPY core/src ./src
@@ -12,7 +12,7 @@ RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/re
     && install -D -m 0755 target/debug/rentnerproxy-controller /out/rentnerproxy-controller \
     && rm -rf target
 
-FROM mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d8f867cd4d520021545a9a50c120eae3b AS tooling
+FROM mirror.gcr.io/library/postgres:18.7-trixie AS tooling
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
 RUN apt-get update \

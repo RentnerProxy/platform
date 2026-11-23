@@ -37,7 +37,7 @@ concurrency:
     cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 env:
-    BUN_VERSION: 1.4.4
+    BUN_VERSION: 1.4.5
     DOCKER_BUILD_SUMMARY: 'false'
     DOCKER_BUILD_RECORD_UPLOAD: 'false'
     RENTNERPROXY_SMOKE_RUN: ${{ github.run_id }}-${{ github.run_attempt }}

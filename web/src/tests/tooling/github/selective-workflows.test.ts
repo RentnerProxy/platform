@@ -80,7 +80,7 @@ test.each([
         for (const service of Object.values(jobs[id!]!.services!)) {
             expect(service.image).toContain(selection!)
             expect(service.image).toContain("|| ''")
-            expect(service.image).toContain('@sha256:')
+            expect(service.image).toMatch(/'mirror\.gcr\.io\/[\w/]+:\d+\.\d+(?:\.\d+)?-(?:alpine|trixie)'/u)
         }
     },
 )

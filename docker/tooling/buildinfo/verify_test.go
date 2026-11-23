@@ -48,8 +48,8 @@ func TestCompilerPolicy(t *testing.T) {
 	}{
 		{"caddy", "go1.27.4", true},
 		{"caddy", "go1.27.3", false},
-		{"crowdsec", "go1.27.3", true},
-		{"crowdsec", "go1.27.4", false},
+		{"crowdsec", "go1.27.4", true},
+		{"crowdsec", "go1.27.3", false},
 	} {
 		t.Run(tc.profile+"/"+tc.version, func(t *testing.T) {
 			info := fixture(tc.profile)

@@ -38,7 +38,7 @@ docker run --rm --network none --read-only --user 0:0 \
     --mount "type=bind,source=$app_tests,target=/app-tests,readonly" \
     --mount "type=bind,source=$work/packages,target=/packages,readonly" \
     --env RENTNERPROXY_TEST_GREETING_PACKAGES=/packages \
-    mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31 \
+    mirror.gcr.io/library/rust:1.100.0-trixie \
     /app-tests --ignored --exact app_install::tests::greeting::privileged_signed_greeting_package --nocapture \
     | tee "$work/result.log"
 

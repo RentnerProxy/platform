@@ -36,7 +36,7 @@ test('proxy-runtime reuses the production controller and Caddy stages instructio
     ])
     // One BuildKit builder builds both images in CI; identical stages compile only once.
     expect(proxy.split(/\r?\n/u)[0]).toBe(production.split(/\r?\n/u)[0])
-    expect(proxy.split(/\r?\n/u)[0]).toMatch(/^# syntax=\S+@sha256:[a-f0-9]{64}$/u)
+    expect(proxy.split(/\r?\n/u)[0]).toMatch(/^# syntax=mirror\.gcr\.io\/docker\/dockerfile:\d+\.\d+\.\d+$/u)
     for (const stage of ['controller-build', 'caddy-build']) {
         const expected = stages(production).get(stage)
         expect(expected, stage).toBeDefined()

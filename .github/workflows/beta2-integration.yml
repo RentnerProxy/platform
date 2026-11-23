@@ -25,7 +25,7 @@ jobs:
         timeout-minutes: 15
         services:
             postgres:
-                image: ${{ needs.changes.outputs.runtime != 'false' && 'mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d8f867cd4d520021545a9a50c120eae3b' || '' }}
+                image: ${{ needs.changes.outputs.runtime != 'false' && 'mirror.gcr.io/library/postgres:18.7-trixie' || '' }}
                 env:
                     POSTGRES_USER: rentnerproxy
                     POSTGRES_PASSWORD: rentnerproxy
@@ -37,7 +37,7 @@ jobs:
                     --health-timeout 5s
                     --health-retries 10
             valkey:
-                image: ${{ needs.changes.outputs.runtime != 'false' && 'mirror.gcr.io/valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b' || '' }}
+                image: ${{ needs.changes.outputs.runtime != 'false' && 'mirror.gcr.io/valkey/valkey:9.2.0-alpine' || '' }}
                 ports: [6379:6379]
                 options: >-
                     --health-cmd "valkey-cli ping"
@@ -46,7 +46,7 @@ jobs:
                     --health-retries 10
         env:
             RUN_CHECK: ${{ needs.changes.outputs.runtime != 'false' }}
-            BUN_VERSION: 1.4.4
+            BUN_VERSION: 1.4.5
             RUST_VERSION: 1.99.1
             DATABASE_URL: postgresql://rentnerproxy:rentnerproxy@127.0.0.1:5432/rentnerproxy_beta2_test
             VALKEY_URL: redis://127.0.0.1:6379

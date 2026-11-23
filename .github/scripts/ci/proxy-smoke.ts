@@ -21,7 +21,7 @@ function basicHeader(username: string, password: string): string {
 }
 
 const POSTGRES_IMAGE =
-    'mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d8f867cd4d520021545a9a50c120eae3b'
+    'mirror.gcr.io/library/postgres:18.7-trixie'
 const repositoryRoot = fileURLToPath(new URL('../../..', import.meta.url))
 const runId = randomUUID().replaceAll('-', '').slice(0, 12)
 const project = 'rentnerproxy-smoke-' + runId
@@ -539,10 +539,10 @@ async function runSmoke(): Promise<void> {
             'utf8',
         )
         const caddyVersion =
-            /^FROM mirror\.gcr\.io\/library\/caddy:(\d+\.\d+\.\d+)-builder@sha256:[a-f0-9]{64} AS caddy-build\r?$/mu.exec(
+            /^FROM mirror\.gcr\.io\/library\/caddy:(\d+\.\d+\.\d+)-builder-alpine AS caddy-build\r?$/mu.exec(
                 caddyBuilder,
             )
-        assert.ok(caddyVersion, 'The Caddy builder uses an exact version and digest')
+        assert.ok(caddyVersion, 'The Caddy builder uses an exact release tag')
         assert.equal(version.split(/\s/u)[0], 'v' + caddyVersion[1])
         console.log(version)
         passed('Caddy runtime and two real Bun backends started')

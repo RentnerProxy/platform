@@ -37,10 +37,10 @@ if [[ ${1:-} == --privileged-app-ipc ]]; then
         --env RENTNERPROXY_TEST_CONTROLLER=/controller
     )
     "${runner[@]}" \
-        mirror.gcr.io/library/ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8 \
+        mirror.gcr.io/library/ubuntu:24.04 \
         /ipc-tests --test-threads=1 --ignored app_ipc::tests::privileged_
     # The application verifier cross-checks ELF linkage with the image's readelf.
-    native_fixture_image=mirror.gcr.io/library/rust:1.100-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31
+    native_fixture_image=mirror.gcr.io/library/rust:1.100.0-trixie
     "${runner[@]}" \
         --tmpfs /root:rw,mode=0700,size=64m \
         --tmpfs /tmp:rw,mode=01777,size=128m \
@@ -74,7 +74,7 @@ if [[ ${1:-} == --privileged-app-ipc ]]; then
         --tmpfs /tmp:rw,mode=01777,size=128m \
         --mount "type=bind,source=$PWD/docker/production/tests/app-provision.sh,target=/app-provision.sh,readonly" \
         --entrypoint /bin/bash \
-        mirror.gcr.io/library/postgres:18.7@sha256:e754b839f447639b7004895f4d8a4bfcb4e9dbe3a1bc035f27f646562a16fd61 \
+        mirror.gcr.io/library/postgres:18.7-trixie \
         /app-provision.sh
     # Record the real backup capture, database replay, resume, and offline rollback paths.
     bash .github/scripts/ci/fixtures/app-greeting-lifecycle.sh \

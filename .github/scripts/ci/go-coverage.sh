@@ -8,7 +8,7 @@ mkdir -p "$report"
 report=$(CDPATH='' cd -- "$report" && pwd)
 rm -f "$report/summary.json"
 export GOTOOLCHAIN=local GOWORK=off CGO_ENABLED=1
-[ "$(go env GOVERSION)" = go1.27.3 ] || { echo 'Go coverage requires the pinned Go 1.27.3 toolchain' >&2; exit 2; }
+[ "$(go env GOVERSION)" = go1.27.4 ] || { echo 'Go coverage requires the pinned Go 1.27.4 toolchain' >&2; exit 2; }
 
 cd "$root"
 go test -race -count=1 -covermode=atomic -coverprofile="$report/checker.out" .github/scripts/ci/*.go

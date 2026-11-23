@@ -24,6 +24,7 @@ on:
             - 'core/tests/private/app_manager/lifecycle/**'
             - core/tests/private/app_ui.rs
             - 'core/tests/fixtures/app-runtime-reference/**'
+            - docker/production/Dockerfile
             - docker/production/apps/catalog/root.json
             - docker/production/apps/pg_hba.conf
             - docker/production/apps/pg_ident.conf
@@ -58,6 +59,7 @@ on:
             - 'core/tests/private/app_manager/lifecycle/**'
             - core/tests/private/app_ui.rs
             - 'core/tests/fixtures/app-runtime-reference/**'
+            - docker/production/Dockerfile
             - docker/production/apps/catalog/root.json
             - docker/production/apps/pg_hba.conf
             - docker/production/apps/pg_ident.conf
@@ -81,7 +83,7 @@ jobs:
     native:
         name: Native app runtime reference (${{ matrix.architecture }})
         runs-on: ${{ matrix.runner }}
-        timeout-minutes: 25
+        timeout-minutes: 45
         strategy:
             fail-fast: false
             matrix:
@@ -112,7 +114,7 @@ jobs:
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
-                  bun-version: 1.4.4
+                  bun-version: 1.4.5
 
             - name: Install locked browser fixture dependencies and Chromium
               shell: bash
@@ -152,8 +154,29 @@ jobs:
                   bun install --no-env-file --frozen-lockfile --ignore-scripts
                   bash .github/scripts/ci/fixtures/app-greeting-native.sh "$RUNNER_TEMP/app-runtime-reference" "$REPOSITORY_ID"
 
+            - name: Set up Buildx for the native appliance
+              uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+            - name: Build the production appliance from this revision
+              id: appliance
+              uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+              env:
+                  DOCKER_BUILD_SUMMARY: 'false'
+                  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+              with:
+                  context: .
+                  file: docker/production/Dockerfile
+                  platforms: linux/${{ matrix.architecture }}
+                  push: false
+                  load: true
+                  tags: rentnerproxy-app-runtime-reference:ci
+                  cache-from: |
+                      type=gha,version=2,scope=dependency-audit-appliance-${{ matrix.architecture }}-v1,timeout=2m
+
             - name: Verify published Greeting lifecycle and portable offline recovery
               shell: bash
+              env:
+                  GREETING_APPLIANCE_IMAGE_ID: ${{ steps.appliance.outputs.imageid }}
               run: bash .github/scripts/ci/fixtures/app-greeting-lifecycle.sh "$RUNNER_TEMP/app-runtime-reference"
 
             - name: Upload native and browser evidence

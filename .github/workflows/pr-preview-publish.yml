@@ -10,7 +10,7 @@ on:
 permissions: {}
 
 env:
-    BUN_VERSION: 1.4.4
+    BUN_VERSION: 1.4.5
     GATE_TIMEOUT_SECONDS: 1500
     POLL_INTERVAL_SECONDS: 20
 
