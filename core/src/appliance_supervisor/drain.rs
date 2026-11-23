@@ -1,6 +1,6 @@
 use super::process::{owned_pid, pid, signal_task};
 use std::{
-    io,
+    fs, io,
     os::fd::{AsRawFd, OwnedFd},
     time::{Duration, Instant},
 };
@@ -40,6 +40,53 @@ pub(super) fn exited(task: &OwnedFd) -> io::Result<bool> {
     Ok(descriptor.revents & (libc::POLLIN | libc::POLLHUP) != 0)
 }
 
+fn require_critical_children(critical: &[OwnedFd]) -> io::Result<()> {
+    for task in critical {
+        if exited(task)? {
+            return Err(io::Error::other(
+                "Critical appliance child exited during drain",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn wait_for_app_shutdown_handler(
+    pid: i32,
+    task: &OwnedFd,
+    critical: &[OwnedFd],
+    deadline: Instant,
+) -> io::Result<()> {
+    const SIGTERM_MASK: u64 = 1 << (libc::SIGTERM - 1);
+    let path = format!("/proc/{pid}/status");
+    loop {
+        require_critical_children(critical)?;
+        if exited(task)? {
+            return Ok(());
+        }
+        let status = match fs::read_to_string(&path) {
+            Ok(status) => status,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && exited(task)? => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let caught = status
+            .lines()
+            .find_map(|line| line.strip_prefix("SigCgt:"))
+            .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
+            .ok_or_else(|| io::Error::other("Could not read app manager signal handlers"))?;
+        if caught & SIGTERM_MASK != 0 {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::other(
+                "App manager shutdown handler did not become ready",
+            ));
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(25)));
+    }
+}
+
 fn wait_for_exit(
     targets: &[OwnedFd],
     critical: &[OwnedFd],
@@ -50,13 +97,7 @@ fn wait_for_exit(
         let done = targets
             .iter()
             .try_fold(true, |done, task| exited(task).map(|exited| done && exited))?;
-        for task in critical {
-            if exited(task)? {
-                return Err(io::Error::other(
-                    "Critical appliance child exited during drain",
-                ));
-            }
-        }
+        require_critical_children(critical)?;
         if done {
             return Ok(true);
         }
@@ -119,6 +160,11 @@ fn drain_children(phase: &str, args: &[String], parent: i32, budget: Budget) -> 
             .position(|arg| arg == "--")
             .ok_or_else(|| io::Error::other("Missing critical child boundary"))?,
     );
+    let critical = critical[1..]
+        .iter()
+        .map(|value| owned_pid(pid(value)?, parent, None))
+        .collect::<io::Result<Vec<_>>>()?;
+    let deadline = Instant::now() + budget.term;
     let mut pinned = Vec::new();
     for target in targets {
         let (target, ticks) = match target.split_once(':') {
@@ -129,16 +175,27 @@ fn drain_children(phase: &str, args: &[String], parent: i32, budget: Budget) -> 
             None if phase != "web-recovery" => (target.as_str(), None),
             _ => return Err(io::Error::other("Missing web start time")),
         };
-        match owned_pid(pid(target)?, parent, ticks) {
-            Ok(task) => pinned.push(task),
+        let target = pid(target)?;
+        match owned_pid(target, parent, ticks) {
+            Ok(task) => {
+                // Catch-up maintenance can arrive while the app manager is still starting.
+                if phase == "apps" {
+                    wait_for_app_shutdown_handler(target, &task, &critical, deadline)?;
+                }
+                pinned.push(task);
+            }
             Err(error) if matches!(error.raw_os_error(), Some(libc::ESRCH | libc::ENOENT)) => {}
             Err(error) => return Err(error),
         }
     }
-    let critical = critical[1..]
-        .iter()
-        .map(|value| owned_pid(pid(value)?, parent, None))
-        .collect::<io::Result<Vec<_>>>()?;
+    let budget = if phase == "apps" {
+        Budget {
+            term: deadline.saturating_duration_since(Instant::now()),
+            ..budget
+        }
+    } else {
+        budget
+    };
     drain(&pinned, &critical, budget)
 }
 
