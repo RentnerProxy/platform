@@ -21,10 +21,9 @@ trap cleanup EXIT
 docker volume create "$reused" >/dev/null
 docker volume create "$fresh" >/dev/null
 
-start() {
-    local image=$1 data=$2 start_ms deadline
+launch() {
+    local image=$1 data=$2
     container="$scope-appliance"
-    start_ms=$(date +%s%3N)
     docker run --detach --pull=never --name "$container" --network none \
         --mount "type=volume,source=$data,target=/var/lib/rentnerproxy" \
         --env RENTNERPROXY_PUBLIC_ORIGIN=https://fixture.invalid \
@@ -32,6 +31,12 @@ start() {
         --env SMTP_PORT=2525 --env SMTP_SECURE=false \
         --env SMTP_USER=fixture --env SMTP_PASSWORD=synthetic-fixture \
         "$image" >/dev/null
+}
+
+start() {
+    local image=$1 data=$2 start_ms deadline
+    start_ms=$(date +%s%3N)
+    launch "$image" "$data"
     deadline=$((SECONDS + 120))
     until docker exec "$container" curl --fail --silent --max-time 2 \
         http://127.0.0.1:3000/health/ready >/dev/null 2>&1; do
@@ -42,6 +47,36 @@ start() {
         sleep 0.25
     done
     readiness_ms=$(( $(date +%s%3N) - start_ms ))
+}
+
+# The newest migration an image ships, as the startup guard compares it with the database.
+latest_migration() {
+    docker run --rm --pull=never --network none --entrypoint cat "$1" \
+        /opt/rentnerproxy/web/web/drizzle/meta/_journal.json \
+        | grep -oE '"when"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' | sort -n | tail -n 1
+}
+
+# An older image on a database a newer one migrated must keep it unchanged: the startup guard
+# serves only the retained proxy snapshot, with PostgreSQL running and web stopped.
+start_proxy_only() {
+    local image=$1 data=$2 deadline
+    launch "$image" "$data"
+    deadline=$((SECONDS + 120))
+    until docker logs "$container" 2>&1 \
+        | grep -qF 'database is newer than this image; serving the retained proxy snapshot only'; do
+        if (( SECONDS >= deadline )) || [[ $(docker inspect --format '{{.State.Running}}' "$container") != true ]]; then
+            docker logs --tail 35 "$container" >&2
+            return 1
+        fi
+        sleep 0.25
+    done
+    sleep 2
+    [[ $(docker inspect --format '{{.State.Running}}' "$container") == true ]]
+    if docker exec "$container" curl --fail --silent --max-time 2 \
+        http://127.0.0.1:3000/health/ready >/dev/null 2>&1; then
+        echo 'The older image started web on a newer database' >&2
+        return 1
+    fi
 }
 
 stop() {
@@ -108,7 +143,15 @@ start "$candidate" "$reused"
 query "INSERT INTO image_comparison_fixture VALUES (2, '{\"message\":\"upgraded\"}')"
 stop
 
-start "$baseline" "$reused"
+baseline_migration=$(latest_migration "$baseline")
+candidate_migration=$(latest_migration "$candidate")
+[[ $baseline_migration =~ ^[0-9]+$ && $candidate_migration =~ ^[0-9]+$ ]]
+if (( candidate_migration > baseline_migration )); then
+    # A candidate with new migrations is a one-way upgrade; the rollback must not touch the data.
+    start_proxy_only "$baseline" "$reused"
+else
+    start "$baseline" "$reused"
+fi
 [[ $(query 'SELECT system_identifier FROM pg_control_system()') == "$system_id" ]]
 [[ $(query "$read_rows") == original,upgraded ]]
 stop
