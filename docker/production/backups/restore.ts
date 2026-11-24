@@ -509,6 +509,14 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
                 [appBackupCommand, '--app-backup', 'restore', join(snapshot, appStateName)],
                 signal,
             )
+        // The appliance must not start with app rows that disagree with the installation journal.
+        // Failing here keeps the restore journal pending, which blocks startup.
+        await checkLiveAppDatabase(
+            metadata.version === 5 ? metadata.applications.installations : [],
+            signal,
+            'legacy',
+            'journal',
+        )
         await phase('secrets', 85)
         await completeAppEncryptionKeyRestore()
         await completeProductionRestore(operation.metadataSha256!)

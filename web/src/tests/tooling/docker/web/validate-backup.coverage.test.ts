@@ -11,20 +11,19 @@ const prefix = join(tmpdir(), 'rentnerproxy-validate-backup-coverage-')
 const directories: string[] = []
 const rows = new Map<string, unknown[]>()
 let closed = 0
+function fixtureRows(query: string) {
+    const entry = [...rows.entries()].find(([table]) => query.includes(table))
+    if (!entry) throw new Error('Unexpected fixture SQL query.')
+    return entry[1]
+}
 await mock.module('rentnerproxy-coverage-sql-fixture', () => ({
     SQL: function () {
-        return Object.assign(
-            async (query: TemplateStringsArray) => {
-                const entry = [...rows.entries()].find(([table]) => query.join('').includes(table))
-                if (!entry) throw new Error('Unexpected fixture SQL query.')
-                return entry[1]
+        return Object.assign(async (query: TemplateStringsArray) => fixtureRows(query.join('')), {
+            unsafe: async (query: string) => fixtureRows(query),
+            close: async () => {
+                closed += 1
             },
-            {
-                close: async () => {
-                    closed += 1
-                },
-            },
-        )
+        })
     },
 }))
 afterEach(async () => {
@@ -39,16 +38,53 @@ afterEach(async () => {
 
 const id = '0198d98a-0000-7000-8000-000000000881'
 const key = Buffer.alloc(32, 6)
-function encrypted(context: string) {
+function encrypted(context: string, plaintext = 'synthetic fixture secret') {
     const iv = Buffer.alloc(12, 7)
     const cipher = createCipheriv('aes-256-gcm', key, iv)
     cipher.setAAD(Buffer.from(context))
     const ciphertext = Buffer.concat([
-        cipher.update('synthetic fixture secret'),
+        cipher.update(plaintext),
         cipher.final(),
         cipher.getAuthTag(),
     ])
     return { iv, ciphertext }
+}
+
+function handoffPart(domain: string, installation: string, sequence: number) {
+    const plaintext = JSON.stringify({ synthetic: domain, sequence })
+    const sha256 = createHash('sha256').update(plaintext).digest('hex')
+    const context = `legacy-feature-handoff:v1:${domain}:${installation}:${sequence}:${sha256}`
+    return {
+        domain,
+        sequence,
+        sha256,
+        installation_id: installation,
+        ...encrypted(context, plaintext),
+    }
+}
+
+const app = { id: 'app-greeting', appId: 'rentnerproxy.greeting', uid: 20000 }
+
+function handoffParts(count: number, first = 0) {
+    return [{ domain: 'dns', count, distinct: count, first, last: first + count - 1 }]
+}
+
+function appEvidence(
+    installations: readonly { id: string; appId: string; uid: number }[],
+    generation = 1,
+) {
+    return [
+        {
+            evidence: JSON.stringify({
+                installations,
+                references: installations.map((installation) => installation.id),
+                generations: installations.map((installation) => ({
+                    installationId: installation.id,
+                    generation,
+                })),
+            }),
+        },
+    ]
 }
 
 async function fixture(database = true) {
@@ -109,7 +145,9 @@ async function fixture(database = true) {
     rows.set('drizzle.__drizzle_migrations', [
         { hash: createHash('sha256').update(migration).digest('hex'), created_at: 1 },
     ])
-    rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [{ present: false }])
+    rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [
+        { present: false, handoffs: false, parts: false },
+    ])
     rows.set('rentnerproxy.user_totp_factors', [
         { user_id: id, secret_ciphertext: totp.ciphertext, secret_iv: totp.iv },
     ])
@@ -185,7 +223,6 @@ async function writeAppBackup(
     version: 5 | 6,
     decodable = true,
 ) {
-    const app = { id: 'app-greeting', appId: 'rentnerproxy.greeting', uid: 20000 }
     const name = version === 6 ? '.rentnerproxy-app-state-v2' : '.rentnerproxy-app-state-v1'
     const action = version === 6 ? 'inspect-portable' : 'inspect'
     const path = join(context.backup, name)
@@ -212,13 +249,22 @@ async function writeAppBackup(
             { mode: 0o700 },
         ),
     ])
-    rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [{ present: true }])
-    rows.set('FROM rentnerproxy.app_runtime_installations', [app])
+    rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [
+        { present: true, handoffs: true, parts: true },
+    ])
+    rows.set('json_build_object', appEvidence([app]))
     rows.set('FROM rentnerproxy.app_runtime_generations', [{ quiet: true }])
     const credential = encrypted('app-runtime-secret:v1:' + app.id + ':' + id)
     rows.set('FROM rentnerproxy.app_runtime_secrets', [
         { installation_id: app.id, id, ciphertext: credential.ciphertext, iv: credential.iv },
     ])
+    rows.set('FROM rentnerproxy.legacy_feature_handoffs ORDER BY', [
+        { domain: 'dns', installation_id: app.id, state: 'exported', part_count: 1 },
+        { domain: 'oidc', installation_id: app.id, state: 'committed', part_count: 2 },
+    ])
+    rows.set('GROUP BY domain', [{ domain: 'dns', count: 1, distinct: 1, first: 0, last: 0 }])
+    rows.set('legacy_feature_handoff_parts stored', [handoffPart('dns', app.id, 0)])
+    return app
 }
 
 describe('backup database validation with isolated storage and injected SQL rows', () => {
@@ -233,11 +279,55 @@ describe('backup database validation with isolated storage and injected SQL rows
 
     test('rejects a legacy snapshot whose database contains a native installation', async () => {
         const context = await fixture(false)
-        rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [{ present: true }])
-        rows.set('FROM rentnerproxy.app_runtime_installations', [
-            { id: 'kiri', appId: 'dev.kiri', uid: 20000 },
+        rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [
+            { present: true, handoffs: false, parts: false },
         ])
+        rows.set('json_build_object', appEvidence([{ id: 'kiri', appId: 'dev.kiri', uid: 20000 }]))
         await expect(context.validate()).rejects.toThrow('App database identities differ')
+        expect(closed).toBe(1)
+    })
+
+    test('accepts a legacy snapshot whose app tables, handoff journal included, are empty', async () => {
+        const context = await fixture(false)
+        rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [
+            { present: true, handoffs: true, parts: true },
+        ])
+        rows.set('json_build_object', appEvidence([]))
+        rows.set('FROM rentnerproxy.legacy_feature_handoffs ORDER BY', [])
+        rows.set('GROUP BY domain', [])
+        rows.set('legacy_feature_handoff_parts stored', [])
+        await context.validate()
+        expect(closed).toBe(1)
+    })
+
+    test.each([
+        { present: false, handoffs: true, parts: true },
+        { present: true, handoffs: true, parts: false },
+        { present: true, handoffs: null, parts: null },
+    ])('rejects inconsistent app schema evidence %#', async (schema) => {
+        const context = await fixture(false)
+        rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [schema])
+        await expect(context.validate()).rejects.toThrow('Invalid application schema evidence')
+        expect(closed).toBe(1)
+    })
+
+    test('rejects a legacy snapshot with app rows outside any installation', async () => {
+        const context = await fixture(false)
+        rows.set("to_regclass('rentnerproxy.app_runtime_installations')", [
+            { present: true, handoffs: false, parts: false },
+        ])
+        rows.set('json_build_object', [
+            {
+                evidence: JSON.stringify({
+                    installations: [],
+                    references: ['kiri'],
+                    generations: [],
+                }),
+            },
+        ])
+        await expect(context.validate()).rejects.toThrow(
+            'App database rows reference installations outside the backup inventory',
+        )
         expect(closed).toBe(1)
     })
 
@@ -261,23 +351,115 @@ describe('backup database validation with isolated storage and injected SQL rows
         },
     )
 
-    test.skipIf(process.platform === 'win32').each(['live-generation', 'invalid-secret'] as const)(
+    test.skipIf(process.platform === 'win32').each([
+        [
+            'live-generation',
+            () => rows.set('FROM rentnerproxy.app_runtime_generations', [{ quiet: false }]),
+            'App generation has not retired',
+        ],
+        [
+            'invalid-secret',
+            () =>
+                rows.set('FROM rentnerproxy.app_runtime_secrets', [
+                    { installation_id: app.id, id, ciphertext: null, iv: Buffer.alloc(12) },
+                ]),
+            'Invalid application backup secret',
+        ],
+        [
+            'foreign-grant',
+            () =>
+                rows.set('json_build_object', [
+                    {
+                        evidence: JSON.stringify({
+                            installations: [app],
+                            references: [app.id, 'removed-app'],
+                            generations: [{ installationId: app.id, generation: 1 }],
+                        }),
+                    },
+                ]),
+            'App database rows reference installations outside the backup inventory',
+        ],
+        [
+            'generation-ahead',
+            () => rows.set('json_build_object', appEvidence([app], 2)),
+            'App database generation is ahead of the native installation journal',
+        ],
+        [
+            'malformed-evidence',
+            () => rows.set('json_build_object', [{ evidence: '{' }]),
+            'Invalid application schema evidence',
+        ],
+        [
+            'missing-handoff-part',
+            () => rows.set('GROUP BY domain', []),
+            'Invalid legacy feature handoff parts',
+        ],
+        [
+            'handoff-sequence-gap',
+            () => rows.set('GROUP BY domain', handoffParts(1, 1)),
+            'Invalid legacy feature handoff parts',
+        ],
+        [
+            'committed-handoff-parts',
+            () =>
+                rows.set('GROUP BY domain', [
+                    ...handoffParts(1),
+                    { domain: 'oidc', count: 2, distinct: 2, first: 0, last: 1 },
+                ]),
+            'Invalid legacy feature handoff parts',
+        ],
+        [
+            'oversized-handoff-part',
+            () =>
+                rows.set('legacy_feature_handoff_parts stored', [
+                    { ...handoffPart('dns', app.id, 0), ciphertext: null },
+                ]),
+            'Invalid legacy feature handoff parts',
+        ],
+        [
+            'foreign-handoff-part',
+            () =>
+                rows.set('legacy_feature_handoff_parts stored', [
+                    { ...handoffPart('dns', 'other-app', 0), installation_id: app.id },
+                ]),
+            'backup application key cannot decrypt persisted secrets',
+        ],
+        [
+            'changed-handoff-content',
+            () =>
+                rows.set('legacy_feature_handoff_parts stored', [
+                    { ...handoffPart('dns', app.id, 0), sha256: 'f'.repeat(64) },
+                ]),
+            'backup application key cannot decrypt persisted secrets',
+        ],
+    ] as const)(
         'fails closed while validating a portable backup with %s evidence',
-        async (scenario) => {
+        async (_scenario, mutate, message) => {
             const context = await fixture(false)
             await writeAppBackup(context, 6)
-            if (scenario === 'live-generation') {
-                rows.set('FROM rentnerproxy.app_runtime_generations', [{ quiet: false }])
-            } else {
-                rows.set('FROM rentnerproxy.app_runtime_secrets', [
-                    { installation_id: 'app-greeting', id, ciphertext: null, iv: Buffer.alloc(12) },
-                ])
-            }
-            await expect(context.validate()).rejects.toThrow(
-                scenario === 'live-generation'
-                    ? 'App generation has not retired'
-                    : 'Invalid application backup secret',
-            )
+            mutate()
+            await expect(context.validate()).rejects.toThrow(message)
+            expect(closed).toBe(1)
+        },
+    )
+
+    test.skipIf(process.platform === 'win32')(
+        'rejects a handoff part whose authenticated content differs from its recorded digest',
+        async () => {
+            const context = await fixture(false)
+            await writeAppBackup(context, 6)
+            const sha256 = 'e'.repeat(64)
+            const additionalData = `legacy-feature-handoff:v1:dns:${app.id}:0:${sha256}`
+            rows.set('legacy_feature_handoff_parts stored', [
+                {
+                    domain: 'dns',
+                    sequence: 0,
+                    sha256,
+                    installation_id: app.id,
+                    ...encrypted(additionalData, '{"synthetic":"tampered"}'),
+                },
+            ])
+            await expect(context.validate()).rejects.toThrow('Invalid legacy feature handoff parts')
             expect(closed).toBe(1)
         },
     )

@@ -38,6 +38,7 @@ function fixture(
         | 'wrong-owner'
         | 'rm-failure'
         | 'verification-failure',
+    validation = 'application_key',
 ) {
     const calls: Array<{ args: string[]; options: MaintenanceProcessOptions }> = []
     let name = '',
@@ -54,7 +55,9 @@ function fixture(
                 exitCode: mode === 'absent-failure' ? 7 : 0,
                 failed: true,
                 timedOut: mode !== 'absent-failure',
-                stderr: 'secret must not leak RESTORE_PHASE=execute ERROR: 23514 BACKUP_VALIDATION=application_key',
+                stderr:
+                    'secret must not leak RESTORE_PHASE=execute ERROR: 23514 BACKUP_VALIDATION=' +
+                    validation,
             })
         }
         if (args[1] === 'container' && args[2] === 'ls') {
@@ -306,6 +309,27 @@ describe('owned maintenance commands', () => {
             )
             expect((error as Error).message).not.toContain('secret must not leak')
         }
+    })
+
+    test.each([
+        ['application_state', 'Backup validation: application_state; '],
+        ['private_reason', 'production restore operation failed: restore PostgreSQL. Restore'],
+    ])('reports only fixed validation reasons such as %s', async (validation, expected) => {
+        const { runner } = fixture('absent-failure', validation)
+        const commands = createMaintenanceCommands({
+            cwd: '/fixture',
+            operation: 'restore',
+            process: runner,
+        })
+        const failure = await commands
+            .input(['docker', 'run', '--rm', 'fixture'], new Uint8Array(), 'restore PostgreSQL')
+            .then(
+                () => undefined,
+                (error: unknown) => error,
+            )
+        expect(failure).toBeInstanceOf(Error)
+        expect((failure as Error).message).toContain(expected)
+        expect((failure as Error).message).not.toContain('private_reason')
     })
 
     test('keeps smoke labels on direct runs and identifies Compose run after project/file options', async () => {

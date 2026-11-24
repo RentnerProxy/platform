@@ -227,3 +227,33 @@ describe('portable application restore commands', () => {
         expect(controllerRestoreCommand(version)).toContain('--exclude=.rentnerproxy-app-state-v2')
     })
 })
+
+describe('restored application state check', () => {
+    test.each([false, true, PORTABLE_APP_BACKUP_VERSION] as const)(
+        'compares the applied database with the verified backup (app-aware: %s)',
+        (appAware) => {
+            const backupId = 'c'.repeat(64)
+            const command = postgresCommand('restored', '/backup', appAware, backupId)
+            const ready = command.indexOf('"$ready"')
+            const check = command.indexOf(
+                'backup-export.js --check-restored-app-inventory /backup ' + backupId,
+            )
+            expect(ready).toBeGreaterThan(command.indexOf('test -s "$data_directory/PG_VERSION"'))
+            expect(check).toBeGreaterThan(ready)
+            expect(command).toContain('data_directory=/var/lib/rentnerproxy/postgres-data')
+            expect(command).not.toContain('pg_restore')
+            expect(command).not.toContain('createdb')
+            expect(command).not.toContain('--app-backup')
+            expect(command).not.toContain('validate-backup.ts')
+        },
+    )
+
+    test('requires the verified backup identity', () => {
+        expect(() => postgresCommand('restored', '/backup', true)).toThrow(
+            'Missing verified app backup identity',
+        )
+        expect(() => postgresCommand('restored', '/backup', false, 'not-a-digest')).toThrow(
+            'Missing verified app backup identity',
+        )
+    })
+})

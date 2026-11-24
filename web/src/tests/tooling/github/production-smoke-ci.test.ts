@@ -173,6 +173,15 @@ describe('production smoke CI output boundary', () => {
         expect(
             restoreSmokeDiagnostic(output.replace('application_key', 'private-value')),
         ).not.toContain('private-value')
+        const appState = restoreSmokeDiagnostic(
+            output.replace('application_key', 'application_state'),
+        )
+        expect(appState).toBe(
+            'Restore failed: restore PostgreSQL (execute) [validation: application_state]',
+        )
+        const appProgress = smokeProgress('production')
+        appProgress.consume(appState!)
+        expect(appProgress.result(1).diagnostic).toBe(appState!)
     })
 
     test('keeps restore phases and appliance smoke locations without forwarding raw errors', () => {
