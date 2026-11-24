@@ -479,6 +479,29 @@ run_migrations() {
     )
 }
 
+# Matches DATABASE_NEWER_THAN_IMAGE_EXIT_CODE in web/src/db/migrate.ts.
+database_newer_than_image_status=78
+
+# An older image met a database migrated by a newer one. Keep the retained proxy snapshot
+# serving, but start nothing that reads or writes data this image does not understand.
+hold_proxy_only() {
+    log 'database is newer than this image; serving the retained proxy snapshot only'
+    log 'web, background workers and app management stay stopped; start the matching or a newer image'
+    supervisor_phase=proxy-only
+    while :; do
+        assert_children_running
+        sleep 1
+    done
+}
+
+migrate_or_hold_proxy() {
+    local status=0
+    run_migrations || status=$?
+    ((status == 0)) && return
+    ((status == database_newer_than_image_status)) && hold_proxy_only
+    fatal "database migrations failed with status $status"
+}
+
 run_web() {
     export SMTP_USER SMTP_PASSWORD
     exec env \
@@ -578,7 +601,7 @@ start_controller
 initialize_postgres_data_directory
 start_postgres
 start_valkey
-run_migrations
+migrate_or_hold_proxy
 start_web
 # A persisted schedule may already be queued. Let web finish installing its
 # shutdown handlers before the maintenance loop is allowed to signal it.

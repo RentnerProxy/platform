@@ -292,6 +292,10 @@ test_startup_admission() (
         load_function "$entrypoint" wait_for_web_readiness
         load_function "$entrypoint" monitor_children
         load_function "$entrypoint" assert_children_running
+        # The dispatcher runs the real startup guard around the stubbed migration step.
+        load_function "$entrypoint" migrate_or_hold_proxy
+        load_function "$entrypoint" hold_proxy_only
+        source /dev/stdin <<< "$(grep -E '^database_newer_than_image_status=[0-9]+$' "$entrypoint")"
         require_public_origin() { :; }
         initialize_layout() { :; }
         initialize_secrets() { :; }

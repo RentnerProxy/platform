@@ -15,6 +15,7 @@ import {
 import { startRealtimeValkey } from '@/server/WebSockets/realtimeValkey.service.ts'
 import { startWorkerLifecycle } from '@/server/Foundation/worker-lifecycle.server.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
+import type { LegacyFeatureDomain } from '@/server/LegacyHandoff/Types/legacy-handoff.types.ts'
 import {
     applyAdminUiSecurityHeaders,
     createCspNonce,
@@ -29,6 +30,17 @@ if (typeof window === 'undefined') validateProductionEnvironmentAtStartup()
 
 const startRealtimeEvents = createServerOnlyFn(startRealtimeValkey)
 if (typeof window === 'undefined') startRealtimeEvents()
+
+/** Start a built-in feature worker only while the handoff journal leaves its domain to platform. */
+function whilePlatformOwns(domain: LegacyFeatureDomain) {
+    return {
+        admit: async () => {
+            const { isLegacyFeaturePlatformOwned } =
+                await import('@/server/LegacyHandoff/worker-admission.server.ts')
+            return isLegacyFeaturePlatformOwned(domain)
+        },
+    }
+}
 
 const startAppRuntimeLifecycle = createServerOnlyFn(async () => {
     if (process.env.RENTNERPROXY_APP_RUNTIME !== '1') return
@@ -58,21 +70,25 @@ if (typeof window === 'undefined')
     )
 
 const startDockerDiscoveryLifecycle = createServerOnlyFn(() =>
-    startWorkerLifecycle(async () => {
-        const { dockerDiscoveryWorker } =
-            await import('@/server/Admin/DockerDiscovery/discovery-worker.ts')
-        return {
-            // Reconciliation is admitted work, not startup: its SQL/controller budget exceeds startup's deadline.
-            start: () => {
-                runDetachedTask(
-                    () => dockerDiscoveryWorker.start(),
-                    () => console.error('[startup] Background operation failed'),
-                )
-            },
-            // The worker retains its initial flight, so maintenance still drains every admitted write.
-            stop: () => dockerDiscoveryWorker.stop(),
-        }
-    }, 'docker_discovery'),
+    startWorkerLifecycle(
+        async () => {
+            const { dockerDiscoveryWorker } =
+                await import('@/server/Admin/DockerDiscovery/discovery-worker.ts')
+            return {
+                // Reconciliation is admitted work, not startup: its SQL/controller budget exceeds startup's deadline.
+                start: () => {
+                    runDetachedTask(
+                        () => dockerDiscoveryWorker.start(),
+                        () => console.error('[startup] Background operation failed'),
+                    )
+                },
+                // The worker retains its initial flight, so maintenance still drains every admitted write.
+                stop: () => dockerDiscoveryWorker.stop(),
+            }
+        },
+        'docker_discovery',
+        whilePlatformOwns('docker-discovery'),
+    ),
 )
 if (typeof window === 'undefined')
     runDetachedTask(
@@ -81,11 +97,15 @@ if (typeof window === 'undefined')
     )
 
 const startCrowdSecRuntimeLifecycle = createServerOnlyFn(() =>
-    startWorkerLifecycle(async () => {
-        const { reconcileCrowdSecConfiguration } =
-            await import('@/server/Admin/CrowdSec/crowdsec.service.ts')
-        return reconcileCrowdSecConfiguration
-    }, 'crowdsec_reconciliation'),
+    startWorkerLifecycle(
+        async () => {
+            const { reconcileCrowdSecConfiguration } =
+                await import('@/server/Admin/CrowdSec/crowdsec.service.ts')
+            return reconcileCrowdSecConfiguration
+        },
+        'crowdsec_reconciliation',
+        whilePlatformOwns('crowdsec'),
+    ),
 )
 
 if (typeof window === 'undefined')
@@ -152,11 +172,15 @@ if (typeof window === 'undefined')
     )
 
 const startHostMonitoringLifecycle = createServerOnlyFn(() =>
-    startWorkerLifecycle(async () => {
-        const { hostMonitoringWorker } =
-            await import('@/server/HostMonitoring/host-monitoring.worker.server.ts')
-        return hostMonitoringWorker
-    }, 'host_monitoring'),
+    startWorkerLifecycle(
+        async () => {
+            const { hostMonitoringWorker } =
+                await import('@/server/HostMonitoring/host-monitoring.worker.server.ts')
+            return hostMonitoringWorker
+        },
+        'host_monitoring',
+        whilePlatformOwns('monitoring'),
+    ),
 )
 if (typeof window === 'undefined')
     runDetachedTask(

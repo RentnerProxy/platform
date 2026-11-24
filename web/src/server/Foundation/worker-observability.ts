@@ -23,6 +23,7 @@ const countEvents = new Set<WorkerCountEvent>([
 ])
 const protectedStates = new Set<BackgroundWorkerState>([
     'maintenance_paused',
+    'handed_off',
     'stopping',
     'stopped',
     'failed',
