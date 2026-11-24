@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
 import { appRecordId } from '@/lib/AppUi/identifiers.ts'
 
 export { appIdSchema, appRecordId } from '@/lib/AppUi/identifiers.ts'
@@ -112,6 +113,16 @@ export const appNotification = z.strictObject({
     title: z.string().regex(/^[^\p{Cc}\p{Cs}]{1,80}$/u),
     message: z.string().regex(/^[^\p{Cc}\p{Cs}]{1,400}$/u),
 })
+const appLegacyHandoffDigest = z.string().regex(/^[a-f0-9]{64}$/u)
+export const appLegacyHandoffPartRequest = z.strictObject({
+    digest: appLegacyHandoffDigest,
+    sequence: z
+        .number()
+        .int()
+        .min(0)
+        .max(LEGACY_HANDOFF_LIMITS.maximumParts - 1),
+})
+export const appLegacyHandoffCommit = z.strictObject({ digest: appLegacyHandoffDigest })
 export const appAuditEvent = z.strictObject({
     action: appRecordId,
     outcome: z.enum(['succeeded', 'rejected', 'failed']),

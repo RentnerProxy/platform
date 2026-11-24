@@ -7,6 +7,12 @@ import type { z } from 'zod'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import {
+    executeLegacyHandoffInTransaction,
+    parseLegacyHandoffRequest,
+} from '@/server/LegacyHandoff/app-api.server.ts'
+import { legacyFeatureHandoffSources } from '@/server/LegacyHandoff/sources.server.ts'
+import type { LegacyFeatureHandoffSources } from '@/server/LegacyHandoff/Types/legacy-handoff-api.types.ts'
+import {
     isAppRuntimeAuthorized,
     readAppRuntimeContextInTransaction,
     readAppRuntimeProviderInTransaction,
@@ -73,6 +79,7 @@ export async function withAppRuntimeErrors<T>(run: () => Promise<T>): Promise<T>
 export function appRuntimeTransaction<T>(
     signal: AbortSignal,
     run: (transaction: AuthTransaction) => Promise<T>,
+    options?: Parameters<ReturnType<typeof getAuthDatabase>['transaction']>[1],
 ): Promise<T> {
     signal.throwIfAborted()
     return getAuthDatabase().transaction(async (transaction) => {
@@ -85,7 +92,7 @@ export function appRuntimeTransaction<T>(
         const result = await run(transaction)
         signal.throwIfAborted()
         return result
-    })
+    }, options)
 }
 
 function json(body: unknown, status = 200): Response {
@@ -168,7 +175,10 @@ async function subscribe(call: AppRuntimeCall): Promise<Response> {
     })
 }
 
-export function executeAppRuntimeCall(call: AppRuntimeCall): Promise<Response> {
+export function executeAppRuntimeCall(
+    call: AppRuntimeCall,
+    handoffSources: LegacyFeatureHandoffSources = legacyFeatureHandoffSources,
+): Promise<Response> {
     const { credentials, body, resourceId, idempotencyKey, signal, requestId } = call
     const transact = <T>(run: (transaction: AuthTransaction) => Promise<T>) =>
         appRuntimeTransaction(signal, run)
@@ -287,6 +297,30 @@ export function executeAppRuntimeCall(call: AppRuntimeCall): Promise<Response> {
                 )
             case 'events':
                 return subscribe(call)
+            case 'getLegacyHandoff':
+            case 'beginLegacyHandoff':
+            case 'readLegacyHandoffPart':
+            case 'commitLegacyHandoff': {
+                const request = parseLegacyHandoffRequest(
+                    call.operation,
+                    resourceId,
+                    body,
+                    idempotencyKey,
+                )
+                return json(
+                    await appRuntimeTransaction(
+                        signal,
+                        (transaction) =>
+                            executeLegacyHandoffInTransaction(
+                                transaction,
+                                credentials,
+                                request,
+                                handoffSources,
+                            ),
+                        { isolationLevel: 'read committed' },
+                    ),
+                )
+            }
         }
     })
 }
