@@ -136,10 +136,17 @@ describe('private app gateway', () => {
 
         expect((await send('GET', 'monitoring')).status).toBe(204)
         expect((await send('POST', 'dns/begin', { key: 'begin-1' })).status).toBe(204)
-        expect((await send('POST', 'oidc/parts', { body: `{"digest":"${digest}","sequence":2}` })).status).toBe(204)
         expect(
-            (await send('POST', 'crowdsec/commit', { key: 'commit-1', body: `{"digest":"${digest}"}` }))
+            (await send('POST', 'oidc/parts', { body: `{"digest":"${digest}","sequence":2}` }))
                 .status,
+        ).toBe(204)
+        expect(
+            (
+                await send('POST', 'crowdsec/commit', {
+                    key: 'commit-1',
+                    body: `{"digest":"${digest}"}`,
+                })
+            ).status,
         ).toBe(204)
         expect(
             calls.map(({ operation, resourceId, idempotencyKey, body }) => ({
@@ -180,7 +187,10 @@ describe('private app gateway', () => {
             send('GET', 'monitoring', { key: 'read-1' }),
             send('POST', 'dns/begin'),
             send('POST', 'dns/begin', { key: 'begin-1', body: '{}' }),
-            send('POST', 'oidc/parts', { key: 'part-1', body: `{"digest":"${digest}","sequence":2}` }),
+            send('POST', 'oidc/parts', {
+                key: 'part-1',
+                body: `{"digest":"${digest}","sequence":2}`,
+            }),
             send('POST', 'oidc/parts'),
             send('POST', 'crowdsec/commit', { body: `{"digest":"${digest}"}` }),
             send('GET', 'Monitoring'),

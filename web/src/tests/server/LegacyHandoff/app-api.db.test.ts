@@ -37,8 +37,7 @@ function featureSource(domain: LegacyFeatureDomain, records: AppRuntimeJsonValue
     const state = { exports: 0, retirements: 0, records }
     const source: LegacyFeatureHandoffSource = {
         domain,
-        inspect: () =>
-            Promise.resolve({ configured: true, references: state.records.length }),
+        inspect: () => Promise.resolve({ configured: true, references: state.records.length }),
         export: async (_transaction, emit) => {
             state.exports += 1
             for (const record of state.records) {
@@ -75,7 +74,8 @@ async function createHarness(domains: readonly LegacyFeatureDomain[], encryption
         .select({ domain: legacyFeatureHandoffs.domain })
         .from(legacyFeatureHandoffs)
         .where(inArray(legacyFeatureHandoffs.domain, [...domains]))
-    if (held.length > 0) throw new Error('Another handoff holds a test domain; use an isolated database.')
+    if (held.length > 0)
+        throw new Error('Another handoff holds a test domain; use an isolated database.')
 
     const originalKey = process.env.APP_ENCRYPTION_KEY
     process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, encryptionFill).toString('base64')
@@ -95,7 +95,11 @@ async function createHarness(domains: readonly LegacyFeatureDomain[], encryption
         gateway: ReturnType<typeof gatewayFor>,
         target: Identity,
         path: string,
-        { body, key, method = body === undefined ? 'GET' : 'POST' }: {
+        {
+            body,
+            key,
+            method = body === undefined ? 'GET' : 'POST',
+        }: {
             body?: unknown
             key?: string
             method?: 'GET' | 'POST'
@@ -165,9 +169,7 @@ async function createHarness(domains: readonly LegacyFeatureDomain[], encryption
         return identity
     }
     const activate = async (identity: Identity) =>
-        expect(await control('activate', identity, { leaseExpiresAt: leaseExpiresAt() })).toBe(
-            204,
-        )
+        expect(await control('activate', identity, { leaseExpiresAt: leaseExpiresAt() })).toBe(204)
 
     const journalRows = () =>
         db
@@ -373,9 +375,7 @@ integrationTest(
             // A platform version without the source still answers the recorded ownership.
             const unsourced = harness.handoffApi({})
             expect((await unsourced.begin(app, 'dns', 'begin-4')).body).toEqual(committed)
-            expect((await unsourced.commit(app, 'dns', digest, 'commit-3')).body).toEqual(
-                committed,
-            )
+            expect((await unsourced.commit(app, 'dns', digest, 'commit-3')).body).toEqual(committed)
             expect((await unsourced.commit(app, 'dns', 'b'.repeat(64))).status).toBe(409)
             expect((await unsourced.commit(rival, 'dns', digest)).status).toBe(409)
             expect(dns.state.retirements).toBe(1)
@@ -453,9 +453,8 @@ integrationTest(
     async () => {
         const harness = await createHarness(['load-balancer', 'oidc'], 83)
         const { db, install, activate, control, journalRows, partCount } = harness
-        const { withPlatformOwnedLegacyFeature } = await import(
-            '@/server/LegacyHandoff/ownership.server.ts'
-        )
+        const { withPlatformOwnedLegacyFeature } =
+            await import('@/server/LegacyHandoff/ownership.server.ts')
         try {
             const balancer = featureSource('load-balancer', [{ pool: 'web' }, { pool: 'api' }])
             const oidcRecords: AppRuntimeJsonValue[] = [{ issuer: 'https://id.example.test' }]
