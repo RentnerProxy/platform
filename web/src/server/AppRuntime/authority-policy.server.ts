@@ -2,7 +2,7 @@ import '@tanstack/react-start/server-only'
 
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import type { PermissionKey } from '@/config/Types/permissions-config.types.ts'
-import { appCapabilitySchema, appRecordId } from './contract.ts'
+import { appCapabilitySchema, appProviderProfileSchema, appRecordId } from './contract.ts'
 import {
     AppRuntimeAuthorityError,
     type AppRuntimeCapability,
@@ -19,6 +19,7 @@ export const APP_RUNTIME_SUPPORT_CAPABILITIES = {
     audit: { id: 'app.audit.record', scope: 'installation' },
     secret: { id: 'app.secret.read', scope: 'secretReferences' },
     events: { id: 'app.events.subscribe', scope: 'installation' },
+    provider: { id: 'app.provider.register', scope: 'providerProfiles' },
 } as const satisfies Record<string, AppRuntimeCapability>
 
 const platformPermissions: Readonly<Partial<Record<string, readonly PermissionKey[]>>> = {
@@ -36,6 +37,7 @@ const platformPermissions: Readonly<Partial<Record<string, readonly PermissionKe
     'access.logs.read.v1': [PERMISSIONS.PROXY_ACCESS_LOGS_VIEW],
     'app.audit.record': [PERMISSIONS.APP_ACCESS],
     'app.events.subscribe': [PERMISSIONS.APP_ACCESS],
+    'app.provider.register': [PERMISSIONS.APP_ACCESS],
 }
 
 export function sameAppRuntimeCapability(
@@ -59,6 +61,8 @@ export function isAppRuntimeGrantTarget(
     return (
         appRecordId.safeParse(resourceId).success &&
         (capability.scope !== 'installation' || resourceId === installationId) &&
+        (!sameAppRuntimeCapability(capability, APP_RUNTIME_SUPPORT_CAPABILITIES.provider) ||
+            appProviderProfileSchema.safeParse(resourceId).success) &&
         (isAppRuntimeSupportCapability(capability) ||
             appCapabilitySchema.safeParse(capability).success)
     )

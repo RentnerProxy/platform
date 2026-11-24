@@ -15,6 +15,8 @@ interface Bootstrap {
 }
 
 const notifyCapability = { id: 'notifications.publish.v1', scope: 'installation' }
+const providerCapability = { id: 'app.provider.register', scope: 'providerProfiles' }
+const providerRegistration = { id: 'fixture-monitor', profile: 'monitoring', version: '1.0.0' }
 const identity = {
     appId: 'rentnerproxy.runtime-check',
     installationId: 'production-app-check',
@@ -25,11 +27,12 @@ const installationDirectory = '/var/lib/rentnerproxy/apps/20991'
 const dataDirectory = installationDirectory + '/data'
 const databaseUrlFile = dataDirectory + '/database-url'
 const progressFile = dataDirectory + '/fixture-progress'
+const commandFile = dataDirectory + '/fixture-command'
 const controllerTokenFile = '/run/rentnerproxy/controller-token/value'
 const managerProgressFile = '/run/rentnerproxy-app-fixture-progress'
 
-async function waitFor<T>(probe: () => Promise<T | undefined>): Promise<T> {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+async function waitFor<T>(probe: () => Promise<T | undefined>, attempts = 100): Promise<T> {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
         // oxlint-disable-next-line no-await-in-loop -- A failed probe can be retried within the fixture budget.
         const result = await probe()
         if (result !== undefined) return result
@@ -99,6 +102,11 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
             },
             ...(input !== undefined && { body: JSON.stringify(input) }),
         })
+    const provider = (id: string) => request('providers/' + id)
+    const awaitProviderStatus = (status: number) =>
+        waitFor(async () =>
+            (await provider(providerRegistration.id)).status === status ? true : undefined,
+        )
     let stage = 'preparation'
     try {
         assert.equal(process.getuid?.(), identity.uid)
@@ -108,13 +116,15 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
         assert.deepEqual(contextResult, {
             appId: identity.appId,
             installationId: identity.installationId,
-            generation: 1,
+            generation: bootstrap.generation,
             runtimeProfile: 'rentnerproxy-linux-v1',
             versions: { appProtocol: '1.0.0', platformApi: '1.0.0' },
             capabilities: [notifyCapability],
         })
         const authorization = { capability: notifyCapability, resourceId: identity.installationId }
         assert.equal((await request('authorization', authorization)).status, 401)
+        // A preparing generation cannot read a provider registration, including its own.
+        assert.equal((await provider(providerRegistration.id)).status, 401)
 
         Bun.serve({
             unix: bootstrap.appSocket,
@@ -127,7 +137,11 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
                     return new Response(null, { status: 401 })
                 return new URL(incoming.url).pathname === '/app/v1/health'
                     ? Response.json({ healthy: true })
-                    : Response.json({ ready: true, protocolVersion: '1.0.0', providers: [] })
+                    : Response.json({
+                          ready: true,
+                          protocolVersion: '1.0.0',
+                          providers: [providerRegistration],
+                      })
             },
         })
 
@@ -139,6 +153,20 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
             assert.deepEqual(result, { allowed: true })
             return true
         })
+
+        stage = 'provider'
+        const live = await provider(providerRegistration.id)
+        assert.equal(live.status, 200)
+        assert.deepEqual(await live.json(), providerRegistration)
+        assert.equal((await provider('fixture-unregistered')).status, 404)
+
+        if (bootstrap.generation !== 1) {
+            await Bun.write(progressFile, 'ready-' + bootstrap.generation)
+            stage = 'failure'
+            await awaitCommand('crash')
+            // Simulate an app crash after activation. Platform must stay reachable.
+            process.exit(1)
+        }
 
         stage = 'database'
         assert.equal(process.env.RENTNERPROXY_APP_DATABASE_URL_FILE, databaseUrlFile)
@@ -181,11 +209,58 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
             409,
         )
         await verifyNotificationStream(await request('events'), notification.message)
-        await Bun.write(progressFile, 'ready')
+        await Bun.write(progressFile, 'ready-1')
+
+        stage = 'grant revocation'
+        await awaitCommand('revoke-grant')
+        await awaitProviderStatus(404)
+        await Bun.write(progressFile, 'grant-revoked')
+
+        stage = 'grant restoration'
+        await awaitCommand('restore-grant')
+        await awaitProviderStatus(200)
+        await Bun.write(progressFile, 'grant-restored')
     } catch {
         await Bun.write(progressFile, 'failed at ' + stage)
         process.exit(1)
     }
+}
+
+function readProgress(): Promise<string> {
+    return Bun.file(progressFile)
+        .text()
+        .catch(() => '')
+}
+
+function awaitProgress(target: string): Promise<boolean> {
+    return waitFor(async () => {
+        const current = await readProgress()
+        if (current.startsWith('failed at ')) throw new Error(current)
+        return current === target ? true : undefined
+    })
+}
+
+function awaitCommand(command: string): Promise<boolean> {
+    return waitFor(async () => {
+        const current = await Bun.file(commandFile)
+            .text()
+            .catch(() => '')
+        return current === command ? true : undefined
+    }, 300)
+}
+
+/** An app failure must leave management readiness and the proxy listener available. */
+async function verifyPlatformReachable(): Promise<void> {
+    const ready = await fetch('http://127.0.0.1:3000/health/ready', {
+        signal: AbortSignal.timeout(4_000),
+    })
+    assert.equal(ready.status, 200)
+    assert.deepEqual(await ready.json(), { status: 'ready' })
+    const proxy = await fetch('http://127.0.0.1:8080/', {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(4_000),
+    })
+    assert.ok(proxy.status >= 200 && proxy.status < 500, 'Proxy listener is unavailable')
 }
 
 function setManagerStage(stage: string): Promise<number> {
@@ -211,11 +286,9 @@ async function verifyManager() {
         const response = await controlRequest(action, body)
         assert.equal(response.status, 204, 'App manager control rejected ' + action)
     }
-    await setManagerStage('registration')
-    const lease = { identity, leaseExpiresAt: new Date(Date.now() + 120_000).toISOString() }
-    await control('register', { ...lease, capabilities: [notifyCapability] })
-    await control('grants', {
-        identity,
+    const generationIdentity = (generation: number) => ({ ...identity, generation })
+    const grants = (generation: number, provider: boolean) => ({
+        identity: generationIdentity(generation),
         grants: [
             {
                 capability: notifyCapability,
@@ -227,8 +300,32 @@ async function verifyManager() {
                 resourceId: identity.installationId,
                 allowService: true,
             },
+            ...(provider
+                ? [
+                      {
+                          capability: providerCapability,
+                          resourceId: providerRegistration.profile,
+                          allowService: true,
+                      },
+                  ]
+                : []),
         ],
     })
+    const register = async (generation: number) => {
+        const lease = {
+            identity: generationIdentity(generation),
+            leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+        }
+        await control('register', {
+            ...lease,
+            capabilities: [notifyCapability],
+            providerProfiles: [providerRegistration.profile],
+        })
+        await control('grants', grants(generation, true))
+        return lease
+    }
+    await setManagerStage('registration')
+    const lease = await register(1)
 
     await setManagerStage('provisioning')
     const provision = (storage: 'files' | 'database') =>
@@ -242,52 +339,88 @@ async function verifyManager() {
         mode: 0o600,
     })
     assert.equal(await provision('database'), 0, 'Could not provision the isolated app database')
-    await setManagerStage('launch')
-    const broker = Bun.spawn(['/usr/local/bin/rentnerproxy-controller', '--app-ipc'], {
-        stdin: 'pipe',
-        stdout: 'pipe',
-        stderr: 'ignore',
-        env: { RENTNERPROXY_CONTROLLER_TOKEN_FILE: controllerTokenFile },
-    })
-    const ready = broker.stdout.getReader()
+    const brokers: Bun.Subprocess<'pipe', 'pipe', 'ignore'>[] = []
+    const launch = async (generation: number) => {
+        const broker = Bun.spawn(['/usr/local/bin/rentnerproxy-controller', '--app-ipc'], {
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'ignore',
+            env: { RENTNERPROXY_CONTROLLER_TOKEN_FILE: controllerTokenFile },
+        })
+        brokers.push(broker)
+        const ready = broker.stdout.getReader()
+        try {
+            await broker.stdin.write(
+                JSON.stringify({
+                    ...generationIdentity(generation),
+                    gid: identity.uid,
+                    executable: '/usr/local/lib/rentnerproxy-app-runtime-fixture.ts',
+                    dataDirectory,
+                    databaseUrlFile,
+                    runtimeProfile: 'rentnerproxy-linux-v1',
+                    appProtocol: '>=1.0.0 <2.0.0',
+                    platformApi: '>=1.0.0 <2.0.0',
+                    providers: [providerRegistration.profile],
+                }) + '\n',
+            )
+            await broker.stdin.flush()
+            const readiness = await ready.read()
+            assert.equal(new TextDecoder().decode(readiness.value), 'ready\n', await readProgress())
+        } finally {
+            ready.releaseLock()
+        }
+        return broker
+    }
     try {
-        await broker.stdin.write(
-            JSON.stringify({
-                ...identity,
-                gid: identity.uid,
-                executable: '/usr/local/lib/rentnerproxy-app-runtime-fixture.ts',
-                dataDirectory,
-                databaseUrlFile,
-                runtimeProfile: 'rentnerproxy-linux-v1',
-                appProtocol: '>=1.0.0 <2.0.0',
-                platformApi: '>=1.0.0 <2.0.0',
-            }) + '\n',
-        )
-        await broker.stdin.flush()
-        const readiness = await ready.read()
-        const progress = () =>
-            Bun.file(progressFile)
-                .text()
-                .catch(() => '')
-        assert.equal(new TextDecoder().decode(readiness.value), 'ready\n', await progress())
+        await setManagerStage('launch')
+        const first = await launch(1)
         await setManagerStage('activation')
         await control('activate', lease)
-        const awaitProgress = (target: string) =>
-            waitFor(async () => {
-                const current = await progress()
-                if (current.startsWith('failed at ')) throw new Error(current)
-                return current === target ? true : undefined
-            })
         await setManagerStage('app checks')
-        await awaitProgress('ready')
-        await setManagerStage('revocation')
-        await control('revoke', { identity })
+        await awaitProgress('ready-1')
+
+        await setManagerStage('grant revocation')
+        await control('grants', grants(1, false))
+        await writeFile(commandFile, 'revoke-grant')
+        await awaitProgress('grant-revoked')
+        await setManagerStage('grant restoration')
+        await control('grants', grants(1, true))
+        await writeFile(commandFile, 'restore-grant')
+        await awaitProgress('grant-restored')
+
+        // The app manager fences the running generation before it launches an update.
+        await setManagerStage('retirement')
+        await control('retire', { identity })
         assert.equal((await controlRequest('lease', { identity })).status, 401)
-        assert.equal(await broker.exited, 0, 'Lease revocation did not stop the broker')
+        assert.equal(await first.exited, 0, 'Lease revocation did not stop the broker')
+        const staleProviders = { identity, providers: [providerRegistration] }
+        assert.equal((await controlRequest('providers', staleProviders)).status, 409)
+
+        await setManagerStage('update')
+        await rm(commandFile, { force: true })
+        await rm(progressFile, { force: true })
+        const updateLease = await register(2)
+        const second = await launch(2)
+        await control('activate', updateLease)
+        await awaitProgress('ready-2')
+        assert.equal((await controlRequest('lease', { identity })).status, 401)
+        assert.equal((await controlRequest('providers', staleProviders)).status, 409)
+
+        await setManagerStage('failure')
+        await verifyPlatformReachable()
+        await writeFile(commandFile, 'crash')
+        assert.notEqual(await second.exited, 0, 'The broker did not report the app crash')
+        await verifyPlatformReachable()
+        await control('retire', { identity: generationIdentity(2) })
+        const retired = { identity: generationIdentity(2) }
+        assert.equal((await controlRequest('lease', retired)).status, 401)
     } finally {
-        ready.releaseLock()
-        await Promise.resolve(broker.stdin.end()).catch(() => undefined)
-        assert.equal(await broker.exited, 0, 'App broker failed')
+        await Promise.all(
+            brokers.map(async (broker) => {
+                await Promise.resolve(broker.stdin.end()).catch(() => undefined)
+                await broker.exited
+            }),
+        )
     }
     await setManagerStage('cleanup')
     const cleanup = Bun.spawn(

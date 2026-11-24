@@ -39,7 +39,7 @@ fn main() {
         let body = if health {
             r#"{"healthy":true}"#
         } else {
-            r#"{"ready":true,"protocolVersion":"1.0.0","providers":[]}"#
+            r#"{"ready":true,"protocolVersion":"1.0.0","providers":[{"id":"fixture-monitor","profile":"monitoring","version":"1.0.0"}]}"#
         };
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
     }

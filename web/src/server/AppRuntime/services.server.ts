@@ -9,6 +9,7 @@ import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts
 import {
     isAppRuntimeAuthorized,
     readAppRuntimeContextInTransaction,
+    readAppRuntimeProviderInTransaction,
     readAppRuntimeSecretInTransaction,
     resolveAppRuntimePrincipalInTransaction,
 } from './authority.server.ts'
@@ -258,10 +259,19 @@ export function executeAppRuntimeCall(call: AppRuntimeCall): Promise<Response> {
                     )
                 })
             case 'provider':
-                await transact((transaction) =>
-                    resolveAppRuntimePrincipalInTransaction(transaction, credentials),
-                )
-                throw authorityProblems.not_found
+                return transact(async (transaction) => {
+                    const principal = await resolveAppRuntimePrincipalInTransaction(
+                        transaction,
+                        credentials,
+                    )
+                    return json(
+                        await readAppRuntimeProviderInTransaction(
+                            transaction,
+                            principal,
+                            required(resourceId),
+                        ),
+                    )
+                })
             case 'operation':
                 return json(await getAppOperation(credentials, required(resourceId), signal))
             case 'cancelOperation':

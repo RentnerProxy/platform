@@ -273,6 +273,7 @@ pub(crate) fn lifecycle_packages(
         m["version"] = version.into();
         m["target"] = target.into();
         m["resources"]["startupTimeoutMs"] = 2000.into();
+        m["providers"] = json!(["monitoring"]);
         let work = root.join(version);
         fs::create_dir(&work).unwrap();
         let binary = if version == versions[2] {
