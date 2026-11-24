@@ -9,6 +9,11 @@ export interface WorkerLifecycleOptions {
     startupTimeoutMs?: number
     drainTimeoutMs?: number
     classifyFailure?: (error: unknown) => 'retryable' | 'terminal'
+    /**
+     * Decide right before the first start whether platform may run this worker at all. A false
+     * result leaves the loaded worker unstarted in `handed_off`; a rejection retries like a failed load.
+     */
+    admit?: () => Promise<boolean>
 }
 
 /** A deadline bounds shutdown waiting, while drained retains ownership of the actual execution. */

@@ -15,6 +15,7 @@ import {
 import { startRealtimeValkey } from '@/server/WebSockets/realtimeValkey.service.ts'
 import { startWorkerLifecycle } from '@/server/Foundation/worker-lifecycle.server.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
+import type { LegacyFeatureDomain } from '@/server/LegacyHandoff/Types/legacy-handoff.types.ts'
 import {
     applyAdminUiSecurityHeaders,
     createCspNonce,
@@ -29,6 +30,17 @@ if (typeof window === 'undefined') validateProductionEnvironmentAtStartup()
 
 const startRealtimeEvents = createServerOnlyFn(startRealtimeValkey)
 if (typeof window === 'undefined') startRealtimeEvents()
+
+/** Start a built-in feature worker only while the handoff journal leaves its domain to platform. */
+function whilePlatformOwns(domain: LegacyFeatureDomain) {
+    return {
+        admit: async () => {
+            const { isLegacyFeaturePlatformOwned } =
+                await import('@/server/LegacyHandoff/worker-admission.server.ts')
+            return isLegacyFeaturePlatformOwned(domain)
+        },
+    }
+}
 
 const startAppRuntimeLifecycle = createServerOnlyFn(async () => {
     if (process.env.RENTNERPROXY_APP_RUNTIME !== '1') return
@@ -72,7 +84,7 @@ const startDockerDiscoveryLifecycle = createServerOnlyFn(() =>
             // The worker retains its initial flight, so maintenance still drains every admitted write.
             stop: () => dockerDiscoveryWorker.stop(),
         }
-    }, 'docker_discovery'),
+    }, 'docker_discovery', whilePlatformOwns('docker-discovery')),
 )
 if (typeof window === 'undefined')
     runDetachedTask(
@@ -85,7 +97,7 @@ const startCrowdSecRuntimeLifecycle = createServerOnlyFn(() =>
         const { reconcileCrowdSecConfiguration } =
             await import('@/server/Admin/CrowdSec/crowdsec.service.ts')
         return reconcileCrowdSecConfiguration
-    }, 'crowdsec_reconciliation'),
+    }, 'crowdsec_reconciliation', whilePlatformOwns('crowdsec')),
 )
 
 if (typeof window === 'undefined')
@@ -156,7 +168,7 @@ const startHostMonitoringLifecycle = createServerOnlyFn(() =>
         const { hostMonitoringWorker } =
             await import('@/server/HostMonitoring/host-monitoring.worker.server.ts')
         return hostMonitoringWorker
-    }, 'host_monitoring'),
+    }, 'host_monitoring', whilePlatformOwns('monitoring')),
 )
 if (typeof window === 'undefined')
     runDetachedTask(
