@@ -47,7 +47,7 @@ jobs:
         env:
             RUN_CHECK: ${{ needs.changes.outputs.runtime != 'false' }}
             BUN_VERSION: 1.4.5
-            RUST_VERSION: 1.99.1
+            RUST_VERSION: 1.100.0
             DATABASE_URL: postgresql://rentnerproxy:rentnerproxy@127.0.0.1:5432/rentnerproxy_beta2_test
             VALKEY_URL: redis://127.0.0.1:6379
             RENTNERPROXY_BETA2_INTEGRATION: '1'
@@ -113,7 +113,7 @@ jobs:
                   cache-from: |
                       type=gha,version=2,scope=beta2-caddy-build-v1,timeout=2m
                       type=gha,version=2,scope=ci-caddy-build-v1,timeout=2m
-                      type=gha,version=2,scope=production-smokes-proxy-runtime-v1,timeout=2m
+                      type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-amd64
                   cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,version=2,scope=beta2-caddy-build-v1,mode=max,timeout=2m,ignore-error=true' || '' }}
             - name: Build and extract production Caddy fixture binary
               if: env.RUN_CHECK == 'true'

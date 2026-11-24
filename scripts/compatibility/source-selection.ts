@@ -369,6 +369,7 @@ export function requestedCompatibilitySources(
     if (
         event === 'push' ||
         event === 'pull_request' ||
+        event === 'merge_group' ||
         (event === 'workflow_dispatch' && requested === 'all')
     )
         return [...sources]

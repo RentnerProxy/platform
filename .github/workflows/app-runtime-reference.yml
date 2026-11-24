@@ -125,9 +125,15 @@ jobs:
             - name: Install locked browser fixture dependencies and Chromium
               shell: bash
               working-directory: web/src/tests/fixtures/app-runtime-reference
+              # Hosted AMD64 runners already ship Chromium's system libraries, but refreshing their many
+              # apt sources regularly takes minutes. Install system packages only when one is missing.
               run: |
                   bun install --no-env-file --frozen-lockfile
-                  node node_modules/@playwright/test/cli.js install --with-deps --only-shell chromium
+                  node node_modules/@playwright/test/cli.js install --only-shell chromium
+                  shell=$(find "$HOME/.cache/ms-playwright" -type f \( -name chrome-headless-shell -o -name headless_shell \) -print -quit)
+                  if [ -z "$shell" ] || ldd "$shell" | grep -q 'not found'; then
+                      node node_modules/@playwright/test/cli.js install-deps chromium
+                  fi
 
             - name: Verify the native app runtime reference
               shell: bash
@@ -139,8 +145,8 @@ jobs:
             - name: Set up the controller Rust toolchain
               shell: bash
               run: |
-                  rustup toolchain install 1.99.1 --profile minimal
-                  rustup override set 1.99.1
+                  rustup toolchain install 1.100.0 --profile minimal
+                  rustup override set 1.100.0
 
             - name: Restore Cargo dependency cache
               uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -150,7 +156,7 @@ jobs:
                       ~/.cargo/registry/cache
                       ~/.cargo/registry/src
                       ~/.cargo/git/db
-                  key: ${{ runner.os }}-cargo-1.99.1-${{ hashFiles('core/Cargo.lock') }}
+                  key: ${{ runner.os }}-cargo-1.100.0-${{ hashFiles('core/Cargo.lock') }}
 
             - name: Verify synthetic Greeting packages and browser fixture
               shell: bash
@@ -177,6 +183,7 @@ jobs:
                   load: true
                   tags: rentnerproxy-app-runtime-reference:ci
                   cache-from: |
+                      type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-${{ matrix.architecture }}
                       type=gha,version=2,scope=dependency-audit-appliance-${{ matrix.architecture }}-v1,timeout=2m
 
             - name: Verify published Greeting lifecycle and portable offline recovery
@@ -208,6 +215,7 @@ jobs:
                   load: true
                   tags: rentnerproxy-app-runtime-reference:base
                   cache-from: |
+                      type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-${{ matrix.architecture }}
                       type=gha,version=2,scope=dependency-audit-appliance-${{ matrix.architecture }}-v1,timeout=2m
 
             - name: Compare the images and verify the same-volume upgrade and rollback

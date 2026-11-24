@@ -156,11 +156,9 @@ impl HttpClient for AcmeHttpClient {
                 ));
             }
 
-            let body = body
-                .collect()
-                .await
-                .map_err(|error| Error::Other(Box::new(error)))?
-                .to_bytes();
+            // Collecting the in-memory request body cannot fail; its error type is uninhabited.
+            let Ok(collected) = body.collect().await;
+            let body = collected.to_bytes();
             if body.len() > MAX_ACME_REQUEST_BODY_BYTES {
                 return Err(other_error("ACME request body is too large"));
             }

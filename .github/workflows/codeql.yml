@@ -2,6 +2,7 @@ name: CodeQL
 
 on:
     pull_request:
+    merge_group:
     push:
         branches:
             - main
@@ -63,8 +64,8 @@ jobs:
             - name: Set up Rust
               if: ${{ env.RUN_CHECK == 'true' && (matrix.language == 'rust') }}
               run: |
-                  rustup toolchain install 1.99.1 --profile minimal
-                  rustup override set 1.99.1
+                  rustup toolchain install 1.100.0 --profile minimal
+                  rustup override set 1.100.0
 
             - name: Initialize CodeQL
               if: env.RUN_CHECK == 'true'

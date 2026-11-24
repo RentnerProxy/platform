@@ -5,7 +5,7 @@ import {
     assertMatchingPreviewDigests,
 } from './validation.ts'
 import { evaluatePullRequest } from './checks.ts'
-import { GitHubApi } from './github-api.ts'
+import { GitHubApi, fetchPullRequestLabels } from './github-api.ts'
 import { previewGateLifecycle, verifyGate } from './gate.ts'
 import {
     resolvePreviewSource,
@@ -27,6 +27,9 @@ import {
     writeOutputs,
     previewOutputs,
 } from './runtime.ts'
+
+/** Previews are built on request only, so ordinary and Dependabot PRs neither wait nor build. */
+export const PREVIEW_LABEL = 'preview'
 
 async function commandGate(): Promise<void> {
     const repository = normalizeRepository(environment('REPOSITORY'))
@@ -50,6 +53,17 @@ async function commandGate(): Promise<void> {
         await writeOutputs({
             ...previewOutputs(identity, expected),
             lifecycle: initialEvaluation.state,
+            trigger_run_id: workflowRun.id,
+        })
+        return
+    }
+    if (!(await fetchPullRequestLabels(api, expected.number)).includes(PREVIEW_LABEL)) {
+        console.log(
+            `Add the "${PREVIEW_LABEL}" label to build a preview image for this pull request.`,
+        )
+        await writeOutputs({
+            ...previewOutputs(identity, expected),
+            lifecycle: 'not-requested',
             trigger_run_id: workflowRun.id,
         })
         return

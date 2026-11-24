@@ -1,6 +1,12 @@
 name: 'Detect affected checks'
 'on':
     workflow_call:
+        inputs:
+            defer_runtime:
+                description: 'Hand affected pull request runtime verification to the merge queue'
+                type: boolean
+                required: false
+                default: false
         outputs:
             web:
                 description: 'web checks are affected'
@@ -35,6 +41,9 @@ name: 'Detect affected checks'
             full:
                 description: 'full checks are affected'
                 value: '${{ jobs.detect.outputs.full }}'
+            runtime_deferred:
+                description: 'affected runtime checks run in the merge queue instead'
+                value: '${{ jobs.detect.outputs.runtime_deferred }}'
 permissions:
     contents: 'read'
 jobs:
@@ -54,12 +63,14 @@ jobs:
             dependencies: '${{ steps.changes.outputs.dependencies }}'
             actions: '${{ steps.changes.outputs.actions }}'
             full: '${{ steps.changes.outputs.full }}'
+            runtime_deferred: '${{ steps.changes.outputs.runtime_deferred }}'
         steps:
             - name: 'Check out complete comparison history'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
                   fetch-depth: 0
+                  filter: blob:none
             - name: 'Set up Bun'
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
@@ -67,6 +78,7 @@ jobs:
             - name: 'Select affected verification'
               id: 'changes'
               env:
-                  CI_BASE_SHA: '${{ github.event.pull_request.base.sha || github.event.before }}'
-                  CI_HEAD_SHA: '${{ github.event.pull_request.head.sha || github.sha }}'
+                  CI_BASE_SHA: '${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}'
+                  CI_HEAD_SHA: '${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}'
+                  CI_DEFER_RUNTIME: '${{ inputs.defer_runtime }}'
               run: 'bun --no-env-file .github/scripts/ci/changes.ts'
