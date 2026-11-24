@@ -425,6 +425,199 @@ async fn authenticates_every_request_and_rebuilds_the_bridge_request() {
     task.abort();
 }
 
+const HANDOFFS: &str = "/platform/v1/legacy-handoffs/";
+
+fn handoff_request(
+    method: Method,
+    route: &str,
+    key: Option<&str>,
+    body: Option<&'static [u8]>,
+) -> Request<Full<Bytes>> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(format!("{HANDOFFS}{route}"))
+        .header("host", "localhost")
+        .header("authorization", CREDENTIAL)
+        .header("x-app-installation", "installation")
+        .header("x-app-generation", "9");
+    if let Some(key) = key {
+        builder = builder.header("idempotency-key", key);
+    }
+    if body.is_some() {
+        builder = builder.header("content-type", "application/json");
+    }
+    builder
+        .body(Full::new(body.map_or_else(Bytes::new, Bytes::from_static)))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn legacy_handoff_routes_reach_the_platform_bridge_with_their_keys_and_bodies() {
+    if env::var_os("RENTNERPROXY_APP_BOOTSTRAP_FD").is_some() {
+        return;
+    }
+    let scratch = Scratch::create(&env::temp_dir());
+    let backend = scratch.path("gateway.sock");
+    let listener = UnixListener::bind(&backend).unwrap();
+    let (forwarded, mut received) = mpsc::channel(8);
+    let backend_task = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let forwarded = forwarded.clone();
+            tokio::spawn(async move {
+                let handler = service_fn(move |request: Request<hyper::body::Incoming>| {
+                    let forwarded = forwarded.clone();
+                    async move {
+                        let (parts, body) = request.into_parts();
+                        // Platform refuses begin for a domain without a source; relay it as is.
+                        let refused = parts.uri.path().ends_with("/begin");
+                        forwarded
+                            .send((parts, body.collect().await.unwrap().to_bytes()))
+                            .await
+                            .unwrap();
+                        let (status, media) = if refused {
+                            (StatusCode::NOT_FOUND, "application/problem+json")
+                        } else {
+                            (StatusCode::OK, "application/json")
+                        };
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(status)
+                                .header("content-type", media)
+                                .body(Full::new(Bytes::from_static(br#"{"state":"platform"}"#)))
+                                .unwrap(),
+                        )
+                    }
+                });
+                let _ = server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), handler)
+                    .await;
+            });
+        }
+    });
+    let socket = scratch.path("core.sock");
+    let task = tokio::spawn(gateway::serve(
+        UnixListener::bind(&socket).unwrap(),
+        test_generation(uid(), backend, uid()),
+    ));
+    let mut sender = open(&socket).await;
+
+    // Only the four contract routes exist, and the domain must be a provider profile.
+    for (method, route) in [
+        (Method::GET, "monitoring/begin"),
+        (Method::GET, "proxy-hosts"),
+        (Method::GET, "Monitoring"),
+        (Method::GET, ""),
+        (Method::POST, "monitoring"),
+        (Method::POST, "monitoring/abort"),
+        (Method::POST, "monitoring/begin/parts"),
+        (Method::POST, "crowdsec-bouncer/commit"),
+    ] {
+        assert_problem(
+            &mut sender,
+            handoff_request(method, route, None, None),
+            StatusCode::NOT_FOUND,
+            "operationNotFound",
+        )
+        .await;
+    }
+    // Begin carries no body, while parts and commit need bounded JSON.
+    for (route, body) in [
+        ("monitoring/begin", &br"{}"[..]),
+        ("monitoring/parts", &br#"{"sequence":9007199254740992}"#[..]),
+        ("monitoring/commit", &br#"{"digest":"a","digest":"b"}"#[..]),
+    ] {
+        assert_problem(
+            &mut sender,
+            handoff_request(Method::POST, route, Some("key-1"), Some(body)),
+            StatusCode::BAD_REQUEST,
+            "invalidRequest",
+        )
+        .await;
+    }
+    let mut untyped = handoff_request(Method::POST, "monitoring/parts", None, None);
+    *untyped.body_mut() = Full::new(Bytes::from_static(br#"{"sequence":0}"#));
+    assert_problem(
+        &mut sender,
+        untyped,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "unsupportedMediaType",
+    )
+    .await;
+    assert!(received.try_recv().is_err());
+
+    // Hyper may close a connection whose body the broker did not read.
+    let mut sender = open(&socket).await;
+    let commit = br#"{"digest":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}"#;
+    for (method, route, key, body, status) in [
+        (Method::GET, "monitoring", None, None, StatusCode::OK),
+        (
+            Method::POST,
+            "docker-discovery/begin",
+            Some("begin-1"),
+            None,
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Method::POST,
+            "load-balancer/parts",
+            None,
+            Some(&br#"{"sequence":0}"#[..]),
+            StatusCode::OK,
+        ),
+        (
+            Method::POST,
+            "crowdsec/commit",
+            Some("commit-1"),
+            Some(&commit[..]),
+            StatusCode::OK,
+        ),
+    ] {
+        let response = sender
+            .send_request(handoff_request(method.clone(), route, key, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        let media = if status == StatusCode::OK {
+            "application/json"
+        } else {
+            "application/problem+json"
+        };
+        assert_eq!(response.headers()["content-type"], media);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert_eq!(
+            response.collect().await.unwrap().to_bytes(),
+            &br#"{"state":"platform"}"#[..]
+        );
+        let (parts, forwarded_body) = timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(parts.method, method);
+        assert_eq!(parts.uri, format!("{HANDOFFS}{route}").as_str());
+        assert_eq!(forwarded_body, body.unwrap_or_default());
+        assert_eq!(
+            parts
+                .headers
+                .get("idempotency-key")
+                .map(|value| value.to_str().unwrap()),
+            key
+        );
+        assert_eq!(
+            parts.headers.contains_key("content-type"),
+            body.is_some(),
+            "{route}"
+        );
+        assert_eq!(parts.headers["authorization"], TOKEN);
+        assert_eq!(parts.headers["x-rentnerproxy-app-id"], "test.native");
+        assert_eq!(parts.headers["x-app-installation"], "installation");
+        assert_eq!(parts.headers["x-app-generation"], "9");
+    }
+    assert!(received.try_recv().is_err());
+    backend_task.abort();
+    task.abort();
+}
+
 #[tokio::test]
 async fn verifies_both_unix_peer_identities() {
     if env::var_os("RENTNERPROXY_APP_BOOTSTRAP_FD").is_some() {

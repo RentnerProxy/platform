@@ -17,6 +17,7 @@ import {
     type AppRuntimeStoredGrant,
 } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { abortInstallationLegacyHandoffsInTransaction } from '@/server/LegacyHandoff/app-api.server.ts'
 import {
     APP_RUNTIME_SUPPORT_CAPABILITIES,
     isAppRuntimeGrantTarget,
@@ -337,6 +338,10 @@ export async function checkAppRuntimeDependenciesInTransaction(
         .where(eq(appRuntimeOwnedProxyHosts.installationId, installationId))
         .limit(1)
     if (host) throw new AppRuntimeAuthorityError('conflict')
+    // Platform resumes uncommitted built-in domains with their untouched state; ownership an app
+    // committed stays recorded, because its platform state is already retired.
+    if (action === 'removable')
+        await abortInstallationLegacyHandoffsInTransaction(transaction, installationId)
     if (action === 'purge-data') {
         const [live] = await transaction
             .select({ generation: appRuntimeGenerations.generation })

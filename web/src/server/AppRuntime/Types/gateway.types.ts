@@ -13,6 +13,13 @@ export type AppRuntimeOperation =
     | 'operation'
     | 'cancelOperation'
     | 'events'
+    | LegacyHandoffOperation
+
+export type LegacyHandoffOperation =
+    | 'getLegacyHandoff'
+    | 'beginLegacyHandoff'
+    | 'readLegacyHandoffPart'
+    | 'commitLegacyHandoff'
 
 export interface AppRuntimeCall {
     readonly operation: AppRuntimeOperation

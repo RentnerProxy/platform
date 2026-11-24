@@ -36,7 +36,25 @@ const resourceRoutes: readonly [RegExp, AppRuntimeOperation][] = [
     [/^GET \/platform\/v1\/providers\/([^/]+)$/u, 'provider'],
     [/^GET \/platform\/v1\/operations\/([^/]+)$/u, 'operation'],
     [/^POST \/platform\/v1\/operations\/([^/]+)\/cancel$/u, 'cancelOperation'],
+    [/^GET \/platform\/v1\/legacy-handoffs\/([^/]+)$/u, 'getLegacyHandoff'],
+    [/^POST \/platform\/v1\/legacy-handoffs\/([^/]+)\/begin$/u, 'beginLegacyHandoff'],
+    [/^POST \/platform\/v1\/legacy-handoffs\/([^/]+)\/parts$/u, 'readLegacyHandoffPart'],
+    [/^POST \/platform\/v1\/legacy-handoffs\/([^/]+)\/commit$/u, 'commitLegacyHandoff'],
 ]
+
+const keyedOperations: ReadonlySet<AppRuntimeOperation> = new Set([
+    'updateHost',
+    'cancelOperation',
+    'audit',
+    'notification',
+    'beginLegacyHandoff',
+    'commitLegacyHandoff',
+])
+// These POST operations carry their whole request in the path and the idempotency key.
+const bodylessPosts: ReadonlySet<AppRuntimeOperation> = new Set([
+    'cancelOperation',
+    'beginLegacyHandoff',
+])
 
 function identifyOperation(request: Request) {
     const url = new URL(request.url)
@@ -81,11 +99,7 @@ function readHeaders(request: Request, operation: AppRuntimeOperation) {
     const cursor = appCursorSchema.safeParse(rawCursor ?? undefined)
     if (rawCursor !== null && (operation !== 'events' || !cursor.success)) throw invalid
     const rawKey = headers.get('Idempotency-Key')
-    const needsKey =
-        operation === 'updateHost' ||
-        operation === 'cancelOperation' ||
-        operation === 'audit' ||
-        operation === 'notification'
+    const needsKey = keyedOperations.has(operation)
     if (!needsKey && rawKey !== null) throw invalid
     return {
         credentials: {
@@ -187,7 +201,7 @@ export function createAppRuntimeGateway(
             }
             const route = identifyOperation(request)
             const context = readHeaders(request, route.operation)
-            const hasBody = request.method === 'POST' && route.operation !== 'cancelOperation'
+            const hasBody = request.method === 'POST' && !bodylessPosts.has(route.operation)
             const body = await readBody(request, hasBody, signal)
             return await replyWithinDeadline(
                 () => execute({ ...route, ...context, signal, streamSignal, requestId, body }),
