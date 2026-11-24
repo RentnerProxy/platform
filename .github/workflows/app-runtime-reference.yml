@@ -7,6 +7,7 @@ on:
             - .github/scripts/ci/fixtures/app-image-comparison.sh
             - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
             - .github/scripts/ci/fixtures/app-greeting-native.sh
+            - .github/scripts/ci/fixtures/app-provider-lifecycle.sh
             - '.github/scripts/ci/fixtures/app-runtime-reference/**'
             - 'core/src/app_backup.rs'
             - 'core/src/app_backup/**'
@@ -24,6 +25,7 @@ on:
             - core/tests/private/app_manager/lifecycle.rs
             - 'core/tests/private/app_manager/lifecycle/**'
             - core/tests/private/app_ui.rs
+            - 'core/tests/fixtures/app-manager/**'
             - 'core/tests/fixtures/app-runtime-reference/**'
             - docker/production/Dockerfile
             - docker/production/entrypoint.sh
@@ -45,6 +47,7 @@ on:
             - .github/scripts/ci/fixtures/app-image-comparison.sh
             - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
             - .github/scripts/ci/fixtures/app-greeting-native.sh
+            - .github/scripts/ci/fixtures/app-provider-lifecycle.sh
             - '.github/scripts/ci/fixtures/app-runtime-reference/**'
             - 'core/src/app_backup.rs'
             - 'core/src/app_backup/**'
@@ -62,6 +65,7 @@ on:
             - core/tests/private/app_manager/lifecycle.rs
             - 'core/tests/private/app_manager/lifecycle/**'
             - core/tests/private/app_ui.rs
+            - 'core/tests/fixtures/app-manager/**'
             - 'core/tests/fixtures/app-runtime-reference/**'
             - docker/production/Dockerfile
             - docker/production/entrypoint.sh
@@ -165,6 +169,9 @@ jobs:
               run: |
                   bun install --no-env-file --frozen-lockfile --ignore-scripts
                   bash .github/scripts/ci/fixtures/app-greeting-native.sh "$RUNNER_TEMP/app-runtime-reference" "$REPOSITORY_ID"
+            - name: Verify provider registration across signed lifecycle generations
+              shell: bash
+              run: bash .github/scripts/ci/fixtures/app-provider-lifecycle.sh
 
             - name: Set up Buildx for the native appliance
               uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

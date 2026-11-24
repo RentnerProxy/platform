@@ -1,0 +1,2 @@
+ALTER TABLE "rentnerproxy"."app_runtime_generations" ADD COLUMN "provider_profiles" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "rentnerproxy"."app_runtime_generations" ADD COLUMN "providers" jsonb;

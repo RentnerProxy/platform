@@ -18,16 +18,23 @@ import {
 } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import {
+    APP_RUNTIME_SUPPORT_CAPABILITIES,
     isAppRuntimeGrantTarget,
     isAppRuntimeSupportCapability,
     isLocalAppRuntimePermissionKey,
+    sameAppRuntimeCapability,
 } from './authority-policy.server.ts'
 import { isAppRuntimeIdentity, lockAppRuntimeInstallation } from './authority.server.ts'
-import { appCapabilitySchema } from './contract.ts'
+import {
+    appCapabilitySchema,
+    appProviderProfilesSchema,
+    appProviderRegistrationsSchema,
+} from './contract.ts'
 import {
     AppRuntimeAuthorityError,
     type AppRuntimeGrant,
     type AppRuntimeIdentity,
+    type AppRuntimeProviderRegistration,
     type AppRuntimeRegistration,
 } from './Types/authority.types.ts'
 
@@ -83,6 +90,7 @@ export async function registerAppRuntimeGenerationInTransaction(
         leaseExpiresAt,
         capabilities,
         permissionKeys = [],
+        providerProfiles = [],
         hasUi = false,
     } = registration
     if (
@@ -92,7 +100,8 @@ export async function registerAppRuntimeGenerationInTransaction(
         new Set(capabilities.map(({ id }) => id)).size !== capabilities.length ||
         permissionKeys.length > 64 ||
         !permissionKeys.every(isLocalAppRuntimePermissionKey) ||
-        new Set(permissionKeys).size !== permissionKeys.length
+        new Set(permissionKeys).size !== permissionKeys.length ||
+        !appProviderProfilesSchema.safeParse(providerProfiles).success
     )
         throw new AppRuntimeAuthorityError('invalid_input')
 
@@ -106,6 +115,7 @@ export async function registerAppRuntimeGenerationInTransaction(
         .limit(1)
     const declaredCapabilities = capabilities.map(({ id }) => id).toSorted()
     const declaredPermissions = permissionKeys.toSorted()
+    const declaredProviders = providerProfiles.toSorted()
     const now = Date.now()
     if (previous && previous.generation >= generation) {
         if (
@@ -114,7 +124,8 @@ export async function registerAppRuntimeGenerationInTransaction(
             previous.leaseExpiresAt.getTime() > now &&
             previous.hasUi === hasUi &&
             JSON.stringify(previous.capabilities) === JSON.stringify(declaredCapabilities) &&
-            JSON.stringify(previous.permissionKeys) === JSON.stringify(declaredPermissions)
+            JSON.stringify(previous.permissionKeys) === JSON.stringify(declaredPermissions) &&
+            JSON.stringify(previous.providerProfiles) === JSON.stringify(declaredProviders)
         )
             return
         throw new AppRuntimeAuthorityError('conflict')
@@ -140,8 +151,38 @@ export async function registerAppRuntimeGenerationInTransaction(
         state: 'preparing',
         capabilities: sql`${JSON.stringify(declaredCapabilities)}::text::jsonb`,
         permissionKeys: sql`${JSON.stringify(declaredPermissions)}::text::jsonb`,
+        providerProfiles: sql`${JSON.stringify(declaredProviders)}::text::jsonb`,
         hasUi,
     })
+}
+
+/** Record the broker-validated provider registrations once, while the generation is preparing. */
+export async function recordAppRuntimeProvidersInTransaction(
+    transaction: AuthTransaction,
+    identity: AppRuntimeIdentity,
+    providers: readonly AppRuntimeProviderRegistration[],
+): Promise<void> {
+    if (!appProviderRegistrationsSchema.safeParse(providers).success)
+        throw new AppRuntimeAuthorityError('invalid_input')
+    const generation = await loadLockedGeneration(transaction, identity)
+    if (generation.state !== 'preparing' || generation.leaseExpiresAt.getTime() <= Date.now())
+        throw new AppRuntimeAuthorityError('conflict')
+    if (!providers.every(({ profile }) => generation.providerProfiles.includes(profile)))
+        throw new AppRuntimeAuthorityError('forbidden')
+    const recorded = providers.map(({ id, profile, version }) => ({ id, profile, version }))
+    if (generation.providers !== null) {
+        if (JSON.stringify(generation.providers) === JSON.stringify(recorded)) return
+        throw new AppRuntimeAuthorityError('conflict')
+    }
+    await transaction
+        .update(appRuntimeGenerations)
+        .set({ providers: sql`${JSON.stringify(recorded)}::text::jsonb` })
+        .where(
+            and(
+                eq(appRuntimeGenerations.installationId, identity.installationId),
+                eq(appRuntimeGenerations.generation, identity.generation),
+            ),
+        )
 }
 
 function pendingSecretsFor({ installationId, generation }: AppRuntimeIdentity) {
@@ -419,7 +460,9 @@ export async function replaceAppRuntimeGrantsInTransaction(
             !isAppRuntimeGrantTarget(capability, resourceId, identity.installationId) ||
             (!isAppRuntimeSupportCapability(capability) &&
                 !generation.capabilities.includes(capability.id)) ||
-            (permissionKey !== undefined && !generation.permissionKeys.includes(permissionKey))
+            (permissionKey !== undefined && !generation.permissionKeys.includes(permissionKey)) ||
+            (sameAppRuntimeCapability(capability, APP_RUNTIME_SUPPORT_CAPABILITIES.provider) &&
+                !generation.providerProfiles.includes(resourceId))
         )
             throw new AppRuntimeAuthorityError('invalid_input')
         seen.add(target)

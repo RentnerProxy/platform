@@ -14,10 +14,11 @@ export async function verifyApplianceAppRuntime(context: ApplianceProxyTrafficCo
         await context.command([...exec, 'chmod', '0555', target])
         phase = 'execution'
         await context.command(
-            [...exec, 'timeout', '60', '/usr/local/bin/bun', '--no-env-file', target],
-            65_000,
+            [...exec, 'timeout', '120', '/usr/local/bin/bun', '--no-env-file', target],
+            125_000,
         )
         context.passed('native app IPC, isolated database and generation revocation')
+        context.passed('provider grants, generation cutover and app failure isolation')
     } catch (error) {
         const [appStage, managerStage] = await Promise.all([
             context
@@ -25,10 +26,14 @@ export async function verifyApplianceAppRuntime(context: ApplianceProxyTrafficCo
                 .catch(() => ''),
             context.command([...exec, 'cat', managerProgress]).catch(() => ''),
         ])
-        if (/^failed at (?:preparation|activation|database|notification)$/u.test(appStage))
+        if (
+            /^failed at (?:preparation|activation|provider|database|notification|grant revocation|grant restoration|failure)$/u.test(
+                appStage,
+            )
+        )
             console.error('Native app fixture ' + appStage)
         else if (
-            /^(?:bridge readiness|registration|provisioning|launch|activation|app checks|revocation|cleanup)$/u.test(
+            /^(?:bridge readiness|registration|provisioning|launch|activation|app checks|grant revocation|grant restoration|retirement|update|failure|cleanup)$/u.test(
                 managerStage,
             )
         )
