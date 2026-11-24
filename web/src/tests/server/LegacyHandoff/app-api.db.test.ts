@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 
 import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
 import {
@@ -139,6 +139,44 @@ async function createHarness(domains: readonly LegacyFeatureDomain[], encryption
         }
     }
 
+    /**
+     * Serve the gateway on a real socket, as the broker reaches it, and keep every call's outcome
+     * so a test can wait until a transaction finished after its client went away.
+     */
+    const listen = (sources: LegacyFeatureHandoffSources) => {
+        const settled: Promise<unknown>[] = []
+        const gateway = createAppRuntimeGateway(token, shutdown.signal, (call) => {
+            const result = executeAppRuntimeCall(call, sources)
+            settled.push(result.catch(() => undefined))
+            return result
+        })
+        const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: gateway })
+        const beginOverSocket = async (target: Identity, domain: string, key: string) => {
+            const socket = await Bun.connect({
+                hostname: '127.0.0.1',
+                port: server.port!,
+                socket: { data: () => undefined },
+            })
+            socket.write(
+                [
+                    `POST ${route(domain, '/begin')} HTTP/1.1`,
+                    'Host: app-api',
+                    'Authorization: Bearer ' + token,
+                    'X-App-Installation: ' + target.installationId,
+                    'X-App-Generation: ' + target.generation,
+                    'X-RentnerProxy-App-Uid: ' + target.uid,
+                    'X-RentnerProxy-App-Id: ' + target.appId,
+                    'Idempotency-Key: ' + key,
+                    'Content-Length: 0',
+                    '',
+                    '',
+                ].join('\r\n'),
+            )
+            return socket
+        }
+        return { server, settled, beginOverSocket }
+    }
+
     const controlGateway = gatewayFor({})
     const control = async (action: string, target: Identity, fields: object = {}) =>
         (
@@ -223,7 +261,7 @@ async function createHarness(domains: readonly LegacyFeatureDomain[], encryption
         })
     }
 
-    return { db, handoffApi, control, install, activate, journalRows, partCount, release }
+    return { db, handoffApi, listen, control, install, activate, journalRows, partCount, release }
 }
 
 integrationTest(
@@ -613,6 +651,73 @@ integrationTest(
             expect(await control('purge-data', leaving)).toBe(204)
             expect(await requestKeys()).toEqual([])
             expect(await journalRows()).toEqual(committedOnly)
+        } finally {
+            await harness.release()
+        }
+    },
+)
+
+integrationTest(
+    'a begin still in flight when the broker exits leaves no export after the removal check',
+    async () => {
+        const harness = await createHarness(['load-balancer'], 84)
+        const { db, install, activate, journalRows } = harness
+        try {
+            const balancer = featureSource('load-balancer', [{ pool: 'web' }])
+            const app = await install(
+                'test.handoff-in-flight',
+                ['load-balancer'],
+                [providerGrant('load-balancer')],
+            )
+            await activate(app)
+            const { server, settled, beginOverSocket } = harness.listen({
+                'load-balancer': balancer.source,
+            })
+            const checkHeld = Promise.withResolvers<void>()
+            const releaseCheck = Promise.withResolvers<void>()
+            let check: Promise<unknown> | undefined
+            try {
+                // The second removal check holds the installation row after the broker stopped.
+                check = db.transaction(async (transaction) => {
+                    await transaction
+                        .select({ id: appRuntimeInstallations.id })
+                        .from(appRuntimeInstallations)
+                        .where(eq(appRuntimeInstallations.id, app.installationId))
+                        .for('update')
+                    checkHeld.resolve()
+                    await releaseCheck.promise
+                })
+                await checkHeld.promise
+                const socket = await beginOverSocket(app, 'load-balancer', 'begin-1')
+                // Wait until the forwarded begin queues behind the check's row lock.
+                for (let attempt = 0; attempt < 100 && settled.length === 0; attempt += 1)
+                    // oxlint-disable-next-line no-await-in-loop -- Poll until the gateway calls the service.
+                    await Bun.sleep(20)
+                for (let attempt = 0; attempt < 100; attempt += 1) {
+                    // oxlint-disable-next-line no-await-in-loop -- Poll the lock table until the begin waits.
+                    const [state] = await db.execute<{ waiting: boolean }>(sql`
+                        select exists (
+                            select from pg_stat_activity
+                            where datname = current_database() and wait_event_type = 'Lock'
+                        ) as waiting`)
+                    if (state?.waiting) break
+                    // oxlint-disable-next-line no-await-in-loop -- See above.
+                    await Bun.sleep(20)
+                }
+                // The broker exits, then the check commits and the begin runs its export.
+                socket.end()
+                await Bun.sleep(100)
+                releaseCheck.resolve()
+                await check
+                await Promise.all(settled)
+                expect(settled).toHaveLength(1)
+                expect(balancer.state.exports).toBe(1)
+                expect(await journalRows()).toEqual([])
+            } finally {
+                releaseCheck.resolve()
+                await check?.catch(() => undefined)
+                await server.stop(true)
+            }
         } finally {
             await harness.release()
         }
