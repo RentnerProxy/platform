@@ -21,6 +21,8 @@ import type {
 const integrationEnabled =
     process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && Boolean(process.env.DATABASE_URL)
 const integrationTest = integrationEnabled ? test : test.skip
+// Each test imports the gateway cold and makes dozens of round trips; Bun's 5 s default is tight.
+const handoffTestTimeoutMs = 20_000
 
 interface Identity {
     readonly appId: string
@@ -466,6 +468,7 @@ integrationTest(
             await harness.release()
         }
     },
+    handoffTestTimeoutMs,
 )
 
 integrationTest(
@@ -569,6 +572,7 @@ integrationTest(
             await harness.release()
         }
     },
+    handoffTestTimeoutMs,
 )
 
 integrationTest(
@@ -667,6 +671,7 @@ integrationTest(
             await harness.release()
         }
     },
+    handoffTestTimeoutMs,
 )
 
 integrationTest(
@@ -682,8 +687,19 @@ integrationTest(
                 [providerGrant('load-balancer')],
             )
             await activate(app)
+            // The export runs inside the begin's transaction, so its backend is the begin's session.
+            let exportPid: number | undefined
             const { server, settled, beginOverSocket } = harness.listen({
-                'load-balancer': balancer.source,
+                'load-balancer': {
+                    ...balancer.source,
+                    export: async (transaction, emit) => {
+                        const [session] = await transaction.execute<{ pid: number }>(
+                            sql`select pg_backend_pid() as pid`,
+                        )
+                        exportPid = Number(session!.pid)
+                        await balancer.source.export(transaction, emit)
+                    },
+                },
             })
             const checkHeld = Promise.withResolvers<number>()
             const releaseCheck = Promise.withResolvers<void>()
@@ -708,21 +724,26 @@ integrationTest(
                 checkFailed.catch(() => undefined)
                 const checkPid = await Promise.race([checkHeld.promise, checkFailed])
                 const socket = await beginOverSocket(app, 'load-balancer', 'begin-1')
-                // Wait until the forwarded begin's session is blocked by exactly this check.
-                let blocked = false
-                for (let attempt = 0; attempt < 150 && !blocked; attempt += 1) {
+                // Find the begin's session: it waits to share-lock this installation row, and the
+                // removal check's backend must be among the PIDs blocking exactly that session.
+                let beginPid: number | undefined
+                for (let attempt = 0; attempt < 150 && beginPid === undefined; attempt += 1) {
                     // oxlint-disable-next-line no-await-in-loop -- Poll the lock graph until the begin waits.
-                    const [state] = await db.execute<{ blocked: boolean }>(sql`
-                        select exists (
-                            select from pg_stat_activity
-                            where datname = current_database() and pid <> ${checkPid}
-                                and ${checkPid}::int = any(pg_blocking_pids(pid))
-                        ) as blocked`)
-                    blocked = state?.blocked === true
+                    const [waiting] = await db.execute<{ pid: number; blockers: number[] }>(sql`
+                        select pid, pg_blocking_pids(pid) as blockers
+                        from pg_stat_activity
+                        where datname = current_database() and pid <> ${checkPid}
+                            and wait_event_type = 'Lock'
+                            and query ilike '%app_runtime_installations%for share%'`)
+                    if (waiting) {
+                        expect(waiting.blockers.map(Number)).toContain(checkPid)
+                        beginPid = Number(waiting.pid)
+                    }
                     // oxlint-disable-next-line no-await-in-loop -- See above.
-                    if (!blocked) await Bun.sleep(20)
+                    else await Bun.sleep(20)
                 }
-                if (!blocked) throw new Error('The begin never waited on the removal check')
+                if (beginPid === undefined)
+                    throw new Error('The begin never waited on the removal check')
                 expect(settled).toHaveLength(1)
                 // The broker exits, then the check commits and the begin runs its export.
                 socket.end()
@@ -732,6 +753,8 @@ integrationTest(
                 await Promise.all(settled)
                 expect(settled).toHaveLength(1)
                 expect(balancer.state.exports).toBe(1)
+                // The session that waited on the check is the one that ran the rolled-back export.
+                expect(exportPid).toBe(beginPid)
                 expect(await journalRows()).toEqual([])
             } finally {
                 releaseCheck.resolve()
@@ -742,4 +765,5 @@ integrationTest(
             await harness.release()
         }
     },
+    handoffTestTimeoutMs,
 )
