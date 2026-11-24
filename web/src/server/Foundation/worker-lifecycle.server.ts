@@ -163,6 +163,10 @@ export function createWorkerLifecycleSupervisor() {
                         void stopLoaded().catch(() => state('failed'))
                         return
                     }
+                    if (options.admit && !(await options.admit())) {
+                        state('handed_off')
+                        return
+                    }
                     state('idle')
                     startAttempted = true
                     const current = worker

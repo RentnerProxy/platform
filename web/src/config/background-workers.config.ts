@@ -19,6 +19,8 @@ export const backgroundWorkerStates = [
     'retrying',
     'degraded',
     'maintenance_paused',
+    // An official app owns the worker's built-in feature domain, so platform never starts it.
+    'handed_off',
     'stopping',
     'stopped',
     'failed',
