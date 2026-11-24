@@ -169,7 +169,7 @@ RUN set -eux; \
         install -D -m 0644 "/usr/share/doc/$package/copyright" "/out/usr/share/licenses/rentnerproxy/app-abi/$package"; \
     done
 
-FROM mirror.gcr.io/library/postgres:18.7-alpine3.24 AS postgres-runtime
+FROM mirror.gcr.io/library/postgres:19.0-alpine3.24 AS postgres-runtime
 # RentnerProxy owns the entrypoint and bundles its own gosu build.
 RUN rm -f /usr/local/bin/gosu /usr/local/bin/docker-entrypoint.sh \
     /usr/local/bin/docker-ensure-initdb.sh /usr/local/bin/docker-enforce-initdb.sh

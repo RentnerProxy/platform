@@ -13,7 +13,7 @@ RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/re
     && install -D -m 0755 target/debug/rentnerproxy-controller /out/rentnerproxy-controller \
     && rm -rf target
 
-FROM mirror.gcr.io/library/postgres:18.7-trixie AS tooling
+FROM mirror.gcr.io/library/postgres:19.0-trixie AS tooling
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
 RUN apt-get update \
