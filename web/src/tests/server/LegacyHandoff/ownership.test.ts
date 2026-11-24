@@ -25,6 +25,35 @@ test('an unknown domain is refused before any lock is taken', async () => {
     expect(executed).toBe(false)
 })
 
+/** Answer the transaction-state probe with `state`, then record whether the lock was requested. */
+async function lockWith(state: unknown[]) {
+    let probed = false
+    let locked = false
+    const transaction = {
+        execute: async () => {
+            if (!probed) {
+                probed = true
+                return state
+            }
+            locked = true
+            return []
+        },
+    } as unknown as AuthTransaction
+    await lockLegacyFeatureDomain(transaction, 'monitoring')
+    return locked
+}
+
+test('the exclusive domain lock is only taken in a fresh read committed transaction', async () => {
+    await expect(lockWith([])).rejects.toThrow('read committed')
+    await expect(lockWith([{ isolation: 'repeatable read', writer: false }])).rejects.toThrow(
+        'read committed',
+    )
+    await expect(lockWith([{ isolation: 'read committed', writer: true }])).rejects.toThrow(
+        'platform writer',
+    )
+    expect(await lockWith([{ isolation: 'read committed', writer: false }])).toBe(true)
+})
+
 test('a writer that cannot take the shared domain lock skips without reading ownership', async () => {
     const queries: string[] = []
     const transaction = {
