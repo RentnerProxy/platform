@@ -260,6 +260,13 @@
       "when": 1795540656752,
       "tag": "0036_app_runtime_providers",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1795551533545,
+      "tag": "0037_legacy_feature_handoffs",
+      "breakpoints": true
     }
   ]
 }
