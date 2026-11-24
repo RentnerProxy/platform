@@ -126,7 +126,11 @@ async function authorizeDomain(
         !isAppRuntimeAuthorized(principal, APP_RUNTIME_SUPPORT_CAPABILITIES.provider, domain)
     )
         throw new AppRuntimeAuthorityError('forbidden')
-    return { installationId, actor: principal.user?.id ?? 'service', expiresAt: principal.expiresAt }
+    return {
+        installationId,
+        actor: principal.user?.id ?? 'service',
+        expiresAt: principal.expiresAt,
+    }
 }
 
 /**
