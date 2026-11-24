@@ -224,7 +224,8 @@ export function assertLegacyHandoffParts(
     handoffs: readonly unknown[],
     parts: readonly unknown[],
 ): void {
-    if (handoffs.length > maximumHandoffRows || parts.length > maximumHandoffRows) throw invalidHandoffParts()
+    if (handoffs.length > maximumHandoffRows || parts.length > maximumHandoffRows)
+        throw invalidHandoffParts()
     const expected = new Map<string, number>()
     for (const row of handoffs) {
         if (

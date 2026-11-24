@@ -167,7 +167,12 @@ function encryptedFixture(): Buffer {
 describe('typed backup secret validation', () => {
     test('authenticates ciphertext with its original key and context', () => {
         expect(
-            decryptBackupSecret(fixtureKey, encryptedFixture(), fixtureIv, fixtureContext).toString(),
+            decryptBackupSecret(
+                fixtureKey,
+                encryptedFixture(),
+                fixtureIv,
+                fixtureContext,
+            ).toString(),
         ).toBe('synthetic fixture')
     })
 
@@ -413,9 +418,7 @@ describe('app rows against the installation journal', () => {
         JSON.stringify({ installations: {}, references: [], generations: [] }),
         JSON.stringify({ ...evidence(), padding: 'x'.repeat(256 * 1024) }),
     ])('rejects malformed database evidence %#', (value) => {
-        expect(() => parseAppDatabaseEvidence(value)).toThrow(
-            'Invalid application schema evidence',
-        )
+        expect(() => parseAppDatabaseEvidence(value)).toThrow('Invalid application schema evidence')
     })
 
     test('reads every installation-scoped table and the handoff journal only when it exists', () => {

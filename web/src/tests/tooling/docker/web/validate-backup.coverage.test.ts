@@ -42,7 +42,11 @@ function encrypted(context: string, plaintext = 'synthetic fixture secret') {
     const iv = Buffer.alloc(12, 7)
     const cipher = createCipheriv('aes-256-gcm', key, iv)
     cipher.setAAD(Buffer.from(context))
-    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()])
+    const ciphertext = Buffer.concat([
+        cipher.update(plaintext),
+        cipher.final(),
+        cipher.getAuthTag(),
+    ])
     return { iv, ciphertext }
 }
 
@@ -50,7 +54,13 @@ function handoffPart(domain: string, installation: string, sequence: number) {
     const plaintext = JSON.stringify({ synthetic: domain, sequence })
     const sha256 = createHash('sha256').update(plaintext).digest('hex')
     const context = `legacy-feature-handoff:v1:${domain}:${installation}:${sequence}:${sha256}`
-    return { domain, sequence, sha256, installation_id: installation, ...encrypted(context, plaintext) }
+    return {
+        domain,
+        sequence,
+        sha256,
+        installation_id: installation,
+        ...encrypted(context, plaintext),
+    }
 }
 
 const app = { id: 'app-greeting', appId: 'rentnerproxy.greeting', uid: 20000 }
@@ -449,9 +459,7 @@ describe('backup database validation with isolated storage and injected SQL rows
                     ...encrypted(additionalData, '{"synthetic":"tampered"}'),
                 },
             ])
-            await expect(context.validate()).rejects.toThrow(
-                'Invalid legacy feature handoff parts',
-            )
+            await expect(context.validate()).rejects.toThrow('Invalid legacy feature handoff parts')
             expect(closed).toBe(1)
         },
     )

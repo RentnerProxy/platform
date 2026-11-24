@@ -126,7 +126,9 @@ describe('backup app state validation against a migrated database', () => {
                     // oxlint-disable-next-line no-await-in-loop -- Both schema shapes in turn.
                     const evidence = await readEvidence(client, handoffs)
                     expect(evidence).toEqual({
-                        installations: [{ id: installation, appId: 'fixture.greeting', uid: 20000 }],
+                        installations: [
+                            { id: installation, appId: 'fixture.greeting', uid: 20000 },
+                        ],
                         references: [installation],
                         generations: [{ installationId: installation, generation: 2 }],
                     })
@@ -169,9 +171,9 @@ describe('backup app state validation against a migrated database', () => {
         async () => {
             await withMigratedDatabase(async (client) => {
                 await seedApp(client)
-                await expect(validateLegacyHandoffParts(client, Buffer.alloc(32, 42))).rejects.toThrow(
-                    'backup application key cannot decrypt persisted secrets',
-                )
+                await expect(
+                    validateLegacyHandoffParts(client, Buffer.alloc(32, 42)),
+                ).rejects.toThrow('backup application key cannot decrypt persisted secrets')
                 await client`DELETE FROM rentnerproxy.legacy_feature_handoff_parts
                     WHERE domain = 'dns' AND sequence = 7`
                 await expect(validateLegacyHandoffParts(client, key)).rejects.toThrow(
