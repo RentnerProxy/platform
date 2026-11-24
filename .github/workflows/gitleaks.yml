@@ -2,6 +2,7 @@ name: Gitleaks
 
 on:
     pull_request:
+    merge_group:
     push:
         branches:
             - main
@@ -35,7 +36,7 @@ jobs:
               with:
                   persist-credentials: false
                   path: trusted
-                  ref: ${{ github.event.pull_request.base.sha || github.sha }}
+                  ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
 
             - name: Install Gitleaks
               shell: bash
@@ -46,6 +47,8 @@ jobs:
                   EVENT_NAME: ${{ github.event_name }}
                   PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
                   PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+                  QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+                  QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
                   PUSH_BEFORE_SHA: ${{ github.event.before }}
                   PUSH_AFTER_SHA: ${{ github.event.after }}
               shell: bash

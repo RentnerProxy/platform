@@ -2,7 +2,11 @@ import { mkdir, mkdtemp, rename, rm, writeFile, readFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
-import { selectChecks, detectChanges } from '../../../../../.github/scripts/ci/changes.ts'
+import {
+    selectChecks,
+    detectChanges,
+    deferRuntime,
+} from '../../../../../.github/scripts/ci/changes.ts'
 
 function git(cwd: string, ...args: string[]): string {
     const result = Bun.spawnSync(['git', ...args], {
@@ -132,8 +136,29 @@ describe('affected CI selection', () => {
             const advanced = commit(directory)
             expect(detectChanges('pull_request', advanced, head, directory).full).toBe(false)
             expect(detectChanges('pull_request', advanced, head, directory).rust).toBe(false)
+            expect(detectChanges('merge_group', advanced, head, directory).rust).toBe(false)
             expect(detectChanges('push', advanced, head, directory).rust).toBe(true)
         })
+    })
+    test('only opted-in pull requests defer affected runtime verification to the merge queue', () => {
+        const runtime = selectChecks(['core/src/main.rs'])
+        expect(deferRuntime('pull_request', 'true', runtime)).toEqual({
+            selected: { ...runtime, runtime: false, full: false },
+            deferred: true,
+        })
+        for (const [event, requested] of [
+            ['pull_request', 'false'],
+            ['pull_request', undefined],
+            ['merge_group', 'true'],
+            ['push', 'true'],
+            ['workflow_dispatch', 'true'],
+        ] as const)
+            expect(deferRuntime(event, requested, runtime)).toEqual({
+                selected: runtime,
+                deferred: false,
+            })
+        const documentation = selectChecks(['README.md'])
+        expect(deferRuntime('pull_request', 'true', documentation).deferred).toBe(false)
     })
     test('deletion and rename retain old runtime input, including unusual path characters', async () => {
         await fixture(async (directory, base) => {
@@ -180,8 +205,8 @@ test('required CI jobs guard detector failures and preserve successful unaffecte
         expect(job.steps?.[0]?.run).toContain('test "$DETECTION_RESULT" = success')
         expect(job.steps?.[1]?.name).toBe('Explain unaffected check')
     }
-    expect(workflow.jobs.fuzz?.steps).toHaveLength(1)
-    expect(workflow.jobs.fuzz?.steps?.[0]?.run).not.toContain('test:fuzz')
+    // Fuzz tests run inside Web Tests; no pass-through runner restates that result.
+    expect(workflow.jobs.fuzz).toBeUndefined()
     expect(workflow.jobs['full-verification']?.if).toContain("needs.changes.outputs.full == 'true'")
     expect(workflow.jobs.coverage?.steps?.some((step) => step.run?.includes('--producers'))).toBe(
         true,

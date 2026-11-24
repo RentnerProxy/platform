@@ -113,7 +113,7 @@ jobs:
                   cache-from: |
                       type=gha,version=2,scope=beta2-caddy-build-v1,timeout=2m
                       type=gha,version=2,scope=ci-caddy-build-v1,timeout=2m
-                      type=gha,version=2,scope=production-smokes-proxy-runtime-v1,timeout=2m
+                      type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-amd64
                   cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,version=2,scope=beta2-caddy-build-v1,mode=max,timeout=2m,ignore-error=true' || '' }}
             - name: Build and extract production Caddy fixture binary
               if: env.RUN_CHECK == 'true'

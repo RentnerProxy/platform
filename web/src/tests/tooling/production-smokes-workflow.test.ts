@@ -57,13 +57,17 @@ function externalActionReferences(source: string): readonly string[] {
 }
 
 describe('production smokes workflow triggers and gate', () => {
-    test('runs for pull requests to any base, main pushes, and manual dispatches', async () => {
+    test('runs for pull requests to any base, the merge queue, main pushes, and manual dispatches', async () => {
         const source = await workflow()
-        const document = Bun.YAML.parse(source) as { on: unknown }
+        const document = Bun.YAML.parse(source) as {
+            on: unknown
+            jobs: Record<string, { uses?: string; with?: Record<string, string> }>
+        }
 
         expect(source).toContain('name: Production Smokes')
         expect(document.on).toEqual({
             pull_request: null,
+            merge_group: null,
             push: { branches: ['main'] },
             workflow_dispatch: {
                 inputs: {
@@ -73,6 +77,11 @@ describe('production smokes workflow triggers and gate', () => {
         })
         expect(source).not.toContain('pull_request_target:')
         expect(source).not.toContain('workflow_run:')
+        // Only an explicit repository opt-in moves pull request runtime verification to the queue.
+        expect(document.jobs.changes?.with).toEqual({
+            defer_runtime:
+                "${{ github.event_name == 'pull_request' && vars.CI_MERGE_QUEUE == 'true' }}",
+        })
     })
 
     test('exposes one stable Production Smokes check with bounded concurrency', async () => {
@@ -105,6 +114,7 @@ describe('production smokes workflow triggers and gate', () => {
             IMAGE_BUILD_RESULT: '${{ needs.build-runtime-images.result }}',
             APPLIANCE_RESULT: '${{ needs.smokes-appliance.result }}',
             SERVICES_RESULT: '${{ needs.smokes-services.result }}',
+            RUNTIME_DEFERRED: '${{ needs.changes.outputs.runtime_deferred }}',
         })
         expect(gate.steps[0]?.run).toContain(
             'true) test "$IMAGE_BUILD_RESULT" = success && test "$APPLIANCE_RESULT" = success && test "$SERVICES_RESULT" = success',
@@ -262,9 +272,18 @@ describe('production smokes workflow execution contract', () => {
                 'org.opencontainers.image.revision=${{ github.sha }}',
             )
             expect(build.with?.labels).toContain('io.rentnerproxy.smoke-source=${{ github.sha }}')
-            expect(build.with?.['cache-to']).toContain("github.event_name != 'pull_request'")
             expect(build.with?.['github-token']).toBeUndefined()
         }
+        // Images sharing the Cargo dependency layer only read the registry cache that the trusted
+        // Build Cache workflow refreshes from main; they never export it to the Actions cache.
+        for (const build of [appliance, proxy]) {
+            expect(build.with?.['cache-from']).toContain(
+                'type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-${{ steps.scope.outputs.architecture }}',
+            )
+            expect(build.with?.['cache-to']).toBeUndefined()
+        }
+        const http3 = sharedBuilds.find((step) => step !== appliance && step !== proxy)!
+        expect(http3.with?.['cache-to']).toContain("github.event_name != 'pull_request'")
         expect(sharedBuilds[0]?.with?.provenance).toBe('mode=max')
         expect(sharedBuilds[0]?.with?.sbom).toBeTrue()
         const runner = await repositoryFile('.github/scripts/ci/production-smoke-ci.ts')
@@ -341,7 +360,9 @@ describe('production smokes workflow execution contract', () => {
         for (const step of producer.runs.steps.filter(
             (candidate) => candidate.with?.['cache-from'],
         )) {
-            expect(step.with?.['cache-from']).toContain('${{ steps.scope.outputs.cache_suffix }}')
+            expect(String(step.with?.['cache-from'])).toMatch(
+                /\$\{\{ steps\.scope\.outputs\.(?:cache_suffix|architecture) \}\}/u,
+            )
         }
     })
 
@@ -699,6 +720,34 @@ test.skipIf(process.platform === 'win32').each([
         },
     )
     expect(result.exitCode).toBe(scenario.exit)
+})
+
+test.skipIf(process.platform === 'win32').each([
+    { deferred: 'true', output: 'Runtime verification runs in the merge queue' },
+    { deferred: 'false', output: 'Runtime inputs unchanged' },
+])('the Production Smokes check explains unselected runtime work %j', async (scenario) => {
+    const document = Bun.YAML.parse(await workflow()) as {
+        jobs: Record<string, { steps: { run?: string }[] }>
+    }
+    const result = Bun.spawnSync(
+        ['bash', '-e', '-c', document.jobs['production-smokes']!.steps[0]!.run!],
+        {
+            env: {
+                ...process.env,
+                GITHUB_STEP_SUMMARY: '',
+                SELECTION_RESULT: 'success',
+                RUNTIME_SELECTED: 'false',
+                RUNTIME_DEFERRED: scenario.deferred,
+                IMAGE_BUILD_RESULT: 'skipped',
+                APPLIANCE_RESULT: 'skipped',
+                SERVICES_RESULT: 'skipped',
+            },
+            stdout: 'pipe',
+            stderr: 'pipe',
+        },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.toString()).toContain(scenario.output)
 })
 
 test('main and manual consumers reuse one runtime producer and expose honest full-run evidence', async () => {

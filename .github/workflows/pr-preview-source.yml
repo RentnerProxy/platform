@@ -10,6 +10,9 @@ on:
             - reopened
             - synchronize
             - ready_for_review
+            - labeled
+    # The job is skipped in the merge queue, which satisfies the required check there.
+    merge_group:
 
 permissions:
     contents: read
@@ -24,7 +27,8 @@ jobs:
         name: PR Preview Source
         if: >-
             github.event.pull_request.state == 'open' &&
-            (github.event.action != 'edited' || github.event.changes.base.ref.from != '')
+            (github.event.action != 'edited' || github.event.changes.base.ref.from != '') &&
+            (github.event.action != 'labeled' || github.event.label.name == 'preview')
         runs-on: ubuntu-latest
         timeout-minutes: 5
         steps:

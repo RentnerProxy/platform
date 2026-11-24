@@ -44,18 +44,31 @@ COPY --from=web-build /app/docker/web/static-assets.ts ./docker/web/static-asset
 COPY --from=web-build /app/docker/web/serve.ts ./docker/web/serve.ts
 COPY --from=web-build /app/docker/web/healthcheck.ts ./docker/web/healthcheck.ts
 
-FROM mirror.gcr.io/library/rust:1.100.0-alpine3.24 AS controller-build
+FROM mirror.gcr.io/library/rust:1.100.0-alpine3.24 AS controller-dependencies
 
-ARG TARGETOS
-ARG TARGETARCH
 WORKDIR /build
 RUN apk add --no-cache build-base cmake perl
 COPY core/Cargo.toml core/Cargo.lock ./
+# Compile the locked dependency graph against placeholder targets. This layer depends only on the
+# manifests, so source-only changes reuse it from the build cache and rebuild just the controller.
+RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/registry \
+    set -eu; \
+    mkdir src; \
+    printf 'fn main() {}\n' > src/main.rs; \
+    : > src/lib.rs; \
+    cargo build --locked --release; \
+    cargo clean --release --package rentnerproxy-controller; \
+    rm -rf src
+
+FROM controller-dependencies AS controller-build
+
+ARG TARGETOS
+ARG TARGETARCH
 COPY core/src ./src
 ARG RENTNERPROXY_BUILD_VERSION
-# Only the binary leaves this step: the multi-GB Cargo target and registry would otherwise be
-# exported into the size-limited CI layer cache and evict every other cache. Keep this stage
-# identical in docker/proxy-runtime/Dockerfile so one builder compiles the controller once.
+# Only the binary leaves this step. The dependency target lives solely in the manifest-keyed stage
+# above, which CI caches in the registry instead of the size-limited Actions cache. Keep both
+# stages identical in docker/proxy-runtime/Dockerfile so one builder compiles the controller once.
 RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/registry \
     set -eu; \
     case "$TARGETOS/$TARGETARCH" in \

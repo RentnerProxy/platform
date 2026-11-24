@@ -129,9 +129,15 @@ jobs:
             - name: Install locked browser fixture dependencies and Chromium
               shell: bash
               working-directory: web/src/tests/fixtures/app-runtime-reference
+              # Hosted AMD64 runners already ship Chromium's system libraries, but refreshing their many
+              # apt sources regularly takes minutes. Install system packages only when one is missing.
               run: |
                   bun install --no-env-file --frozen-lockfile
-                  node node_modules/@playwright/test/cli.js install --with-deps --only-shell chromium
+                  node node_modules/@playwright/test/cli.js install --only-shell chromium
+                  shell=$(find "$HOME/.cache/ms-playwright" -type f \( -name chrome-headless-shell -o -name headless_shell \) -print -quit)
+                  if [ -z "$shell" ] || ldd "$shell" | grep -q 'not found'; then
+                      node node_modules/@playwright/test/cli.js install-deps chromium
+                  fi
 
             - name: Verify the native app runtime reference
               shell: bash
@@ -184,6 +190,7 @@ jobs:
                   load: true
                   tags: rentnerproxy-app-runtime-reference:ci
                   cache-from: |
+                      type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-${{ matrix.architecture }}
                       type=gha,version=2,scope=dependency-audit-appliance-${{ matrix.architecture }}-v1,timeout=2m
 
             - name: Verify published Greeting lifecycle and portable offline recovery
@@ -215,6 +222,7 @@ jobs:
                   load: true
                   tags: rentnerproxy-app-runtime-reference:base
                   cache-from: |
+                      type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-${{ matrix.architecture }}
                       type=gha,version=2,scope=dependency-audit-appliance-${{ matrix.architecture }}-v1,timeout=2m
 
             - name: Compare the images and verify the same-volume upgrade and rollback

@@ -434,6 +434,7 @@ describe('published compatibility source selection', () => {
     test('manual selection is restricted and previous can alias deduplicated oldest', async () => {
         const all = await select(undefined, '1.0.0-beta.2')
         expect(requestedCompatibilitySources(all, 'push', 'invalid')).toEqual(all)
+        expect(requestedCompatibilitySources(all, 'merge_group', '')).toEqual(all)
         expect(requestedCompatibilitySources(all, 'workflow_dispatch', 'previous')).toEqual([
             { role: 'previous', release: beta1 },
         ])
