@@ -489,21 +489,33 @@ integrationTest(
                     .set({ leaseExpiresAt: expiresAt })
                     .where(eq(appRuntimeGenerations.installationId, app.installationId))
 
-            // An export that outlives the caller's lease is rolled back and never answered.
+            // An export that outlives the caller's lease is rolled back and never answered. The
+            // export holds until the deadline passed, so authorization surely ran before it.
+            const exportEntered = Promise.withResolvers<'entered'>()
+            const releaseExport = Promise.withResolvers<void>()
             const slow = harness.handoffApi({
                 'load-balancer': {
                     ...balancer.source,
                     export: async (transaction, emit) => {
-                        await Bun.sleep(1_200)
+                        exportEntered.resolve('entered')
+                        await releaseExport.promise
                         await balancer.source.export(transaction, emit)
                     },
                 },
             })
-            await setLease(new Date(Date.now() + 600))
-            expect(await slow.begin(app, 'load-balancer')).toMatchObject({
-                status: 401,
-                body: { code: 'unauthorized' },
-            })
+            const leaseDeadline = Date.now() + 2_000
+            await setLease(new Date(leaseDeadline))
+            const expiring = slow.begin(app, 'load-balancer')
+            try {
+                expect(
+                    await Promise.race([exportEntered.promise, expiring.then(() => 'replied')]),
+                ).toBe('entered')
+                await Bun.sleep(Math.max(0, leaseDeadline - Date.now()) + 50)
+            } finally {
+                releaseExport.resolve()
+            }
+            expect(await expiring).toMatchObject({ status: 401, body: { code: 'unauthorized' } })
+            expect(balancer.state.exports).toBe(1)
             expect(await journalRows()).toEqual([])
             await setLease(new Date(Date.now() + 60_000))
 
@@ -673,37 +685,45 @@ integrationTest(
             const { server, settled, beginOverSocket } = harness.listen({
                 'load-balancer': balancer.source,
             })
-            const checkHeld = Promise.withResolvers<void>()
+            const checkHeld = Promise.withResolvers<number>()
             const releaseCheck = Promise.withResolvers<void>()
             let check: Promise<unknown> | undefined
             try {
                 // The second removal check holds the installation row after the broker stopped.
                 check = db.transaction(async (transaction) => {
+                    const [session] = await transaction.execute<{ pid: number }>(
+                        sql`select pg_backend_pid() as pid`,
+                    )
                     await transaction
                         .select({ id: appRuntimeInstallations.id })
                         .from(appRuntimeInstallations)
                         .where(eq(appRuntimeInstallations.id, app.installationId))
                         .for('update')
-                    checkHeld.resolve()
+                    checkHeld.resolve(Number(session!.pid))
                     await releaseCheck.promise
                 })
-                await checkHeld.promise
+                // A failing lock setup rejects the check before it is held; let it end the test.
+                const checkFailed = check.then(() => new Promise<never>(() => undefined))
+                // The race or the cleanup below reports the rejection.
+                checkFailed.catch(() => undefined)
+                const checkPid = await Promise.race([checkHeld.promise, checkFailed])
                 const socket = await beginOverSocket(app, 'load-balancer', 'begin-1')
-                // Wait until the forwarded begin queues behind the check's row lock.
-                for (let attempt = 0; attempt < 100 && settled.length === 0; attempt += 1)
-                    // oxlint-disable-next-line no-await-in-loop -- Poll until the gateway calls the service.
-                    await Bun.sleep(20)
-                for (let attempt = 0; attempt < 100; attempt += 1) {
-                    // oxlint-disable-next-line no-await-in-loop -- Poll the lock table until the begin waits.
-                    const [state] = await db.execute<{ waiting: boolean }>(sql`
+                // Wait until the forwarded begin's session is blocked by exactly this check.
+                let blocked = false
+                for (let attempt = 0; attempt < 150 && !blocked; attempt += 1) {
+                    // oxlint-disable-next-line no-await-in-loop -- Poll the lock graph until the begin waits.
+                    const [state] = await db.execute<{ blocked: boolean }>(sql`
                         select exists (
                             select from pg_stat_activity
-                            where datname = current_database() and wait_event_type = 'Lock'
-                        ) as waiting`)
-                    if (state?.waiting) break
+                            where datname = current_database() and pid <> ${checkPid}
+                                and ${checkPid}::int = any(pg_blocking_pids(pid))
+                        ) as blocked`)
+                    blocked = state?.blocked === true
                     // oxlint-disable-next-line no-await-in-loop -- See above.
-                    await Bun.sleep(20)
+                    if (!blocked) await Bun.sleep(20)
                 }
+                if (!blocked) throw new Error('The begin never waited on the removal check')
+                expect(settled).toHaveLength(1)
                 // The broker exits, then the check commits and the begin runs its export.
                 socket.end()
                 await Bun.sleep(100)
