@@ -70,21 +70,25 @@ if (typeof window === 'undefined')
     )
 
 const startDockerDiscoveryLifecycle = createServerOnlyFn(() =>
-    startWorkerLifecycle(async () => {
-        const { dockerDiscoveryWorker } =
-            await import('@/server/Admin/DockerDiscovery/discovery-worker.ts')
-        return {
-            // Reconciliation is admitted work, not startup: its SQL/controller budget exceeds startup's deadline.
-            start: () => {
-                runDetachedTask(
-                    () => dockerDiscoveryWorker.start(),
-                    () => console.error('[startup] Background operation failed'),
-                )
-            },
-            // The worker retains its initial flight, so maintenance still drains every admitted write.
-            stop: () => dockerDiscoveryWorker.stop(),
-        }
-    }, 'docker_discovery', whilePlatformOwns('docker-discovery')),
+    startWorkerLifecycle(
+        async () => {
+            const { dockerDiscoveryWorker } =
+                await import('@/server/Admin/DockerDiscovery/discovery-worker.ts')
+            return {
+                // Reconciliation is admitted work, not startup: its SQL/controller budget exceeds startup's deadline.
+                start: () => {
+                    runDetachedTask(
+                        () => dockerDiscoveryWorker.start(),
+                        () => console.error('[startup] Background operation failed'),
+                    )
+                },
+                // The worker retains its initial flight, so maintenance still drains every admitted write.
+                stop: () => dockerDiscoveryWorker.stop(),
+            }
+        },
+        'docker_discovery',
+        whilePlatformOwns('docker-discovery'),
+    ),
 )
 if (typeof window === 'undefined')
     runDetachedTask(
@@ -93,11 +97,15 @@ if (typeof window === 'undefined')
     )
 
 const startCrowdSecRuntimeLifecycle = createServerOnlyFn(() =>
-    startWorkerLifecycle(async () => {
-        const { reconcileCrowdSecConfiguration } =
-            await import('@/server/Admin/CrowdSec/crowdsec.service.ts')
-        return reconcileCrowdSecConfiguration
-    }, 'crowdsec_reconciliation', whilePlatformOwns('crowdsec')),
+    startWorkerLifecycle(
+        async () => {
+            const { reconcileCrowdSecConfiguration } =
+                await import('@/server/Admin/CrowdSec/crowdsec.service.ts')
+            return reconcileCrowdSecConfiguration
+        },
+        'crowdsec_reconciliation',
+        whilePlatformOwns('crowdsec'),
+    ),
 )
 
 if (typeof window === 'undefined')
@@ -164,11 +172,15 @@ if (typeof window === 'undefined')
     )
 
 const startHostMonitoringLifecycle = createServerOnlyFn(() =>
-    startWorkerLifecycle(async () => {
-        const { hostMonitoringWorker } =
-            await import('@/server/HostMonitoring/host-monitoring.worker.server.ts')
-        return hostMonitoringWorker
-    }, 'host_monitoring', whilePlatformOwns('monitoring')),
+    startWorkerLifecycle(
+        async () => {
+            const { hostMonitoringWorker } =
+                await import('@/server/HostMonitoring/host-monitoring.worker.server.ts')
+            return hostMonitoringWorker
+        },
+        'host_monitoring',
+        whilePlatformOwns('monitoring'),
+    ),
 )
 if (typeof window === 'undefined')
     runDetachedTask(

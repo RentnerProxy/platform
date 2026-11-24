@@ -23,11 +23,11 @@ async function startupGuard(): Promise<string> {
 async function boot(migrationStatus: number) {
     const script = [
         'set -Eeuo pipefail',
-        "log() { printf 'LOG %s\\n' \"$*\"; }",
-        "fatal() { printf 'FATAL %s\\n' \"$*\"; exit 1; }",
+        'log() { printf \'LOG %s\\n\' "$*"; }',
+        'fatal() { printf \'FATAL %s\\n\' "$*"; exit 1; }',
         "assert_children_running() { printf 'CHECK\\n'; }",
         // The guard holds forever; the first sleep proves it stayed after checking children.
-        "sleep() { printf 'HELD %s\\n' \"$supervisor_phase\"; exit 3; }",
+        'sleep() { printf \'HELD %s\\n\' "$supervisor_phase"; exit 3; }',
         `run_migrations() { return ${migrationStatus}; }`,
         await startupGuard(),
         'migrate_or_hold_proxy',
