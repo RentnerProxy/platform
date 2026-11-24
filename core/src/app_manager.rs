@@ -376,6 +376,11 @@ impl Manager {
         let (mut registration, deadline) = lease(&who)?;
         registration["capabilities"] = package.manifest["capabilities"].clone();
         registration["permissionKeys"] = package.manifest["permissions"].clone();
+        registration["providerProfiles"] = package
+            .manifest
+            .get("providers")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
         registration["hasUi"] = package.manifest.get("ui").is_some().into();
         self.gateway.post("register", registration).await?;
         let renewal = runtime::Renewal::start(self.gateway.clone(), who.clone(), deadline);

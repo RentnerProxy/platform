@@ -25,10 +25,17 @@ export interface AppRuntimeGrant {
     readonly permissionKey?: string
 }
 
+export interface AppRuntimeProviderRegistration {
+    readonly id: string
+    readonly profile: string
+    readonly version: string
+}
+
 export interface AppRuntimeRegistration {
     readonly identity: AppRuntimeIdentity
     readonly leaseExpiresAt: Date
     readonly capabilities: readonly AppRuntimeCapability[]
+    readonly providerProfiles?: readonly string[]
     readonly permissionKeys?: readonly string[]
     readonly hasUi?: boolean
 }

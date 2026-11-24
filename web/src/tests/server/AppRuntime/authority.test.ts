@@ -4,9 +4,16 @@ import { PERMISSIONS } from '@/config/permissions.config.ts'
 import {
     APP_RUNTIME_SUPPORT_CAPABILITIES,
     isAppRuntimeAuthorized,
+    isAppRuntimeGrantTarget,
+    isAppRuntimeSupportCapability,
     qualifyAppRuntimePermission,
     requireAppRuntimePermission,
 } from '@/server/AppRuntime/authority-policy.server.ts'
+import {
+    appProviderProfiles,
+    appProviderProfilesSchema,
+    appProviderRegistrationsSchema,
+} from '@/server/AppRuntime/contract.ts'
 import {
     appRuntimeEventCursorContext,
     createAppRuntimeEventCursor,
@@ -212,5 +219,89 @@ describe('app runtime cursor authority', () => {
                 ).rejects.toMatchObject({ code: 'cursor_expired' }),
             ),
         )
+    })
+})
+
+describe('app provider registrations', () => {
+    const provider = APP_RUNTIME_SUPPORT_CAPABILITIES.provider
+    const registration = { id: 'dns-main', profile: 'dns', version: '1.0.0' }
+
+    test('accepts only v1 profile lists without duplicates', () => {
+        expect(appProviderProfilesSchema.safeParse([]).success).toBe(true)
+        expect(appProviderProfilesSchema.safeParse([...appProviderProfiles]).success).toBe(true)
+        expect(appProviderProfilesSchema.safeParse(['dns', 'dns']).success).toBe(false)
+        expect(appProviderProfilesSchema.safeParse(['unknown']).success).toBe(false)
+        expect(appProviderProfilesSchema.safeParse([...appProviderProfiles, 'dns']).success).toBe(
+            false,
+        )
+    })
+
+    test('validates strict registrations with bounded unique ids', () => {
+        expect(appProviderRegistrationsSchema.safeParse([registration]).success).toBe(true)
+        const sameProfile = { ...registration, id: 'dns-two' }
+        expect(appProviderRegistrationsSchema.safeParse([registration, sameProfile]).success).toBe(
+            true,
+        )
+        const invalid: unknown[] = [
+            [],
+            [registration, registration],
+            [{ ...registration, version: '1.0.1' }],
+            [{ ...registration, profile: 'unknown' }],
+            [{ ...registration, id: 'Not Valid' }],
+            [{ ...registration, extra: true }],
+            Array.from({ length: 33 }, (_, index) => ({ ...registration, id: 'p' + index })),
+        ]
+        for (const value of invalid)
+            expect(appProviderRegistrationsSchema.safeParse(value).success).toBe(false)
+        expect(
+            appProviderRegistrationsSchema.safeParse(
+                Array.from({ length: 32 }, (_, index) => ({ ...registration, id: 'p' + index })),
+            ).success,
+        ).toBe(true)
+    })
+
+    test('grants target only declared v1 profiles and require an explicit service or APP_ACCESS grant', () => {
+        for (const profile of appProviderProfiles)
+            expect(isAppRuntimeGrantTarget(provider, profile, installationId)).toBe(true)
+        expect(isAppRuntimeGrantTarget(provider, 'unknown', installationId)).toBe(false)
+        expect(isAppRuntimeGrantTarget(provider, installationId, installationId)).toBe(false)
+        expect(isAppRuntimeSupportCapability(provider)).toBe(true)
+
+        const allowed: AppRuntimeGrant = {
+            capability: provider,
+            resourceId: 'dns',
+            allowService: true,
+        }
+        const delegated = { ...allowed, allowService: false }
+        expect(
+            isAppRuntimeAuthorized({ ...servicePrincipal, grants: [allowed] }, provider, 'dns'),
+        ).toBe(true)
+        expect(
+            isAppRuntimeAuthorized({ ...servicePrincipal, grants: [allowed] }, provider, 'oidc'),
+        ).toBe(false)
+        expect(
+            isAppRuntimeAuthorized({ ...servicePrincipal, grants: [delegated] }, provider, 'dns'),
+        ).toBe(false)
+        expect(
+            isAppRuntimeAuthorized({ ...userPrincipal, grants: [delegated] }, provider, 'dns'),
+        ).toBe(true)
+        expect(
+            isAppRuntimeAuthorized(
+                {
+                    ...userPrincipal,
+                    grants: [delegated],
+                    permissions: [PERMISSIONS.PROXY_HOSTS_VIEW],
+                },
+                provider,
+                'dns',
+            ),
+        ).toBe(false)
+        expect(
+            isAppRuntimeAuthorized(
+                { ...servicePrincipal, grants: [{ ...allowed, resourceId: 'unknown' }] },
+                provider,
+                'unknown',
+            ),
+        ).toBe(false)
     })
 })

@@ -253,6 +253,13 @@
       "when": 1795026016161,
       "tag": "0035_app_runtime",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1795540656752,
+      "tag": "0036_app_runtime_providers",
+      "breakpoints": true
     }
   ]
 }

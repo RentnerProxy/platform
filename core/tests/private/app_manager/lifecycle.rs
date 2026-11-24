@@ -123,9 +123,19 @@ impl Drop for CatalogServer {
     }
 }
 
+/// What the fake authority has recorded for one registered generation.
+struct Recorded {
+    activated: bool,
+    declared: bool,
+    providers: Option<Value>,
+}
+
+const FIXTURE_PROVIDERS: &str =
+    r#"[{"id":"fixture-monitor","profile":"monitoring","version":"1.0.0"}]"#;
+
 async fn authority(
     request: Request<Incoming>,
-    generations: Arc<Mutex<BTreeMap<u64, bool>>>,
+    generations: Arc<Mutex<BTreeMap<u64, Recorded>>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
@@ -219,13 +229,48 @@ async fn authority(
             json!({"expiresAt":expires}).to_string(),
         ))));
     }
+    let mut status = StatusCode::NO_CONTENT;
     match action {
         "register" => {
             assert!(states.is_empty());
-            states.insert(generation, false);
+            // Every launch sends the manifest's declared profiles, even when empty.
+            let expected = if value["identity"]["appId"] == "rentnerproxy.greeting" {
+                json!([])
+            } else {
+                json!(["monitoring"])
+            };
+            assert_eq!(value["providerProfiles"], expected);
+            states.insert(
+                generation,
+                Recorded {
+                    activated: false,
+                    declared: expected != json!([]),
+                    providers: None,
+                },
+            );
+        }
+        "providers" => {
+            // Only the registered, not yet activated, current generation may record
+            // providers, and only exactly the fixture app's advertisement.
+            let current = states.keys().next_back() == Some(&generation);
+            let fixture: Value = serde_json::from_str(FIXTURE_PROVIDERS).unwrap();
+            match states.get_mut(&generation) {
+                Some(state)
+                    if current
+                        && !state.activated
+                        && state.declared
+                        && value["providers"] == fixture =>
+                {
+                    state.providers = Some(value["providers"].clone());
+                }
+                _ => status = StatusCode::CONFLICT,
+            }
         }
         "grants" => {
-            assert_eq!(states.get(&generation), Some(&false));
+            assert_eq!(
+                states.get(&generation).map(|state| state.activated),
+                Some(false)
+            );
             assert_eq!(value["grants"], json!([]));
             fs::write(
                 Path::new(SOCKET).with_file_name("last-grants-generation"),
@@ -234,7 +279,11 @@ async fn authority(
             .unwrap();
         }
         "activate" => {
-            assert_eq!(states.insert(generation, true), Some(false));
+            let state = states.get_mut(&generation).unwrap();
+            assert!(!state.activated);
+            // Readiness waits for the 204, so declared providers precede activation.
+            assert_eq!(state.providers.is_some(), state.declared);
+            state.activated = true;
         }
         "renew" => assert!(states.contains_key(&generation)),
         "retire" => {
@@ -245,7 +294,7 @@ async fn authority(
         _ => panic!("unexpected private action {action}"),
     }
     Ok(Response::builder()
-        .status(StatusCode::NO_CONTENT)
+        .status(status)
         .body(Full::new(Bytes::new()))
         .unwrap())
 }
@@ -943,6 +992,14 @@ pub(super) async fn exercise() {
     assert!(snapshot["installations"][ID]["candidate"].is_null());
     crate::app_install::tests::revoke_lifecycle_release(&config, "1.0.0");
     assert!(!capture().output().await.unwrap().status.success());
+    // Declared provider profiles conservatively block removal until an operator
+    // resolution exists. Clear that marker offline so the removal path stays covered.
+    let mut journal = Journal::open(Path::new(ROOT)).unwrap();
+    let mut slot = journal.slot(ID).unwrap().clone();
+    assert!(slot.provider_dependencies_unknown);
+    slot.provider_dependencies_unknown = false;
+    journal.save(ID, slot).unwrap();
+    drop(journal);
     let mut manager = mount_manager(&controller, &config, &token, BootState::Recovery).await;
     ui_action("purge", 409).await;
     ui_action("uninstall", 202).await;

@@ -29,6 +29,14 @@ const PROFILE: &str = "rentnerproxy-linux-v1";
 const VERSION: &str = "1.0.0";
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const PROVIDER_PROFILES: [&str; 6] = [
+    "monitoring",
+    "docker-discovery",
+    "load-balancer",
+    "dns",
+    "oidc",
+    "crowdsec",
+];
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -47,6 +55,9 @@ struct LaunchConfig {
     ui_bridge: Option<String>,
     startup_timeout_ms: Option<u64>,
     process_limit: Option<u8>,
+    /// Provider profiles the signed manifest declares; absent means none.
+    #[serde(default)]
+    providers: Vec<String>,
 }
 
 impl LaunchConfig {
@@ -81,8 +92,18 @@ impl LaunchConfig {
         {
             return Err(io::Error::other("Invalid app launch identity"));
         }
+        if !valid_provider_profiles(&self.providers) {
+            return Err(io::Error::other("Invalid app provider profiles"));
+        }
         filesystem::validate_child_paths(self)
     }
+}
+
+fn valid_provider_profiles(profiles: &[String]) -> bool {
+    profiles.len() <= PROVIDER_PROFILES.len()
+        && profiles.iter().enumerate().all(|(index, profile)| {
+            PROVIDER_PROFILES.contains(&profile.as_str()) && !profiles[..index].contains(profile)
+        })
 }
 
 fn valid_slug(value: &str, max: usize) -> bool {
@@ -261,7 +282,7 @@ async fn run_generation(
         _ = lease::maintain(&state, deadline) => Ok(false),
         result = watchdog.wait() => result.and_then(process::app_exit).map(|()| true),
         result = gateway::serve(listener, Arc::clone(&state)) => result.map(|()| false),
-        result = announce_when_ready(&bootstrap, config.uid, startup_timeout, &mut ready) => result.map(|()| false),
+        result = announce_when_ready(&bootstrap, &state, &config, startup_timeout, &mut ready) => result.map(|()| false),
     };
     let stopped = watchdog.stop().await;
     if child_exited? && !ready {
@@ -272,11 +293,18 @@ async fn run_generation(
 
 async fn announce_when_ready(
     bootstrap: &Bootstrap<'_>,
-    uid: u32,
+    state: &gateway::Generation,
+    config: &LaunchConfig,
     startup_timeout: Duration,
     ready: &mut bool,
 ) -> io::Result<()> {
-    timeout(startup_timeout, gateway::app_ready(bootstrap, uid)).await??;
+    // Readiness is announced only after the platform authority recorded the
+    // app's validated provider registrations for exactly this generation.
+    timeout(
+        startup_timeout,
+        gateway::app_ready(bootstrap, state, config.uid, &config.providers),
+    )
+    .await??;
     // The supervisor consumes this line. App stdout and stderr are discarded.
     use std::io::Write as _;
     writeln!(io::stdout().lock(), "ready")?;
