@@ -61,7 +61,7 @@ export function parseLegacyHandoffRequest(
         case 'beginLegacyHandoff':
             return { operation, domain }
         case 'readLegacyHandoffPart':
-            return { operation, domain, sequence: parse(appLegacyHandoffPartRequest, body).sequence }
+            return { operation, domain, ...parse(appLegacyHandoffPartRequest, body) }
         case 'commitLegacyHandoff':
             return { operation, domain, digest: parse(appLegacyHandoffCommit, body).digest }
     }
@@ -170,23 +170,31 @@ export async function executeLegacyHandoffInTransaction(
             return status
         }
         case 'readLegacyHandoffPart': {
-            const { sequence } = request
-            try {
-                const part = await journal(() =>
-                    readLegacyFeatureHandoffPartInTransaction(
-                        transaction,
-                        domain,
-                        installationId,
-                        sequence,
-                    ),
-                )
-                return { sequence, part }
-            } catch (error) {
-                // Report another holder as a conflict instead of a missing export.
-                if (error instanceof AppRuntimeAuthorityError && error.code === 'not_found')
-                    await readOwnStatus(transaction, domain, installationId)
-                throw error
-            }
+            const { digest, sequence } = request
+            // The shared row lock keeps abort and commit from replacing the export until this
+            // transaction ends, so the digest check and the read see the same export.
+            const [row] = await transaction
+                .select({
+                    installationId: legacyFeatureHandoffs.installationId,
+                    state: legacyFeatureHandoffs.state,
+                    digest: legacyFeatureHandoffs.digest,
+                })
+                .from(legacyFeatureHandoffs)
+                .where(eq(legacyFeatureHandoffs.domain, domain))
+                .for('share')
+            if (row && row.installationId !== installationId)
+                throw new AppRuntimeAuthorityError('conflict')
+            if (row?.state !== 'exported') throw new AppRuntimeAuthorityError('not_found')
+            if (row.digest !== digest) throw new AppRuntimeAuthorityError('conflict')
+            const part = await journal(() =>
+                readLegacyFeatureHandoffPartInTransaction(
+                    transaction,
+                    domain,
+                    installationId,
+                    sequence,
+                ),
+            )
+            return { sequence, part }
         }
         case 'commitLegacyHandoff': {
             const { digest } = request

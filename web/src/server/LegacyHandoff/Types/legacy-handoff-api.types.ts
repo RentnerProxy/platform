@@ -35,6 +35,7 @@ export type LegacyHandoffRequest =
     | {
           readonly operation: 'readLegacyHandoffPart'
           readonly domain: LegacyFeatureDomain
+          readonly digest: string
           readonly sequence: number
       }
     | {

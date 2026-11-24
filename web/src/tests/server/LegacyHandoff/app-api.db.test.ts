@@ -126,8 +126,8 @@ async function createHarness(domains: readonly LegacyFeatureDomain[], encryption
             status: (target: Identity, domain: string) => send(gateway, target, route(domain)),
             begin: (target: Identity, domain: string, key = 'begin-1') =>
                 send(gateway, target, route(domain, '/begin'), { key, method: 'POST' }),
-            part: (target: Identity, domain: string, sequence: unknown) =>
-                send(gateway, target, route(domain, '/parts'), { body: { sequence } }),
+            part: (target: Identity, domain: string, sequence: unknown, digest?: string) =>
+                send(gateway, target, route(domain, '/parts'), { body: { digest, sequence } }),
             commit: (target: Identity, domain: string, digest: string, key = 'commit-1') =>
                 send(gateway, target, route(domain, '/commit'), { body: { digest }, key }),
         }
@@ -276,8 +276,11 @@ integrationTest(
             })
             expect(discovery.state.exports).toBe(0)
             expect((await api.status({ ...app, uid: app.uid + 100 }, 'dns')).status).toBe(401)
-            expect((await api.part(app, 'dns', 1_024)).status).toBe(400)
-            expect((await api.part(app, 'dns', -1)).status).toBe(400)
+            const otherDigest = 'b'.repeat(64)
+            expect((await api.part(app, 'dns', 1_024, otherDigest)).status).toBe(400)
+            expect((await api.part(app, 'dns', -1, otherDigest)).status).toBe(400)
+            expect((await api.part(app, 'dns', 0)).status).toBe(400)
+            expect((await api.part(app, 'dns', 0, 'not-a-digest')).status).toBe(400)
             expect((await api.commit(app, 'dns', 'not-a-digest')).status).toBe(400)
 
             // Without a registered source, platform keeps the domain and nothing is fenced.
@@ -289,13 +292,13 @@ integrationTest(
                 status: 404,
                 body: { code: 'notFound' },
             })
-            expect((await api.part(app, 'monitoring', 0)).status).toBe(404)
-            expect((await api.commit(app, 'monitoring', 'b'.repeat(64))).status).toBe(404)
+            expect((await api.part(app, 'monitoring', 0, otherDigest)).status).toBe(404)
+            expect((await api.commit(app, 'monitoring', otherDigest)).status).toBe(404)
             expect(await journalRows()).toEqual([])
 
             // Nothing is exported yet.
-            expect((await api.part(app, 'dns', 0)).status).toBe(404)
-            expect((await api.commit(app, 'dns', 'b'.repeat(64))).status).toBe(404)
+            expect((await api.part(app, 'dns', 0, otherDigest)).status).toBe(404)
+            expect((await api.commit(app, 'dns', otherDigest)).status).toBe(404)
 
             const begun = await api.begin(app, 'dns')
             expect(begun).toMatchObject({
@@ -312,17 +315,21 @@ integrationTest(
             for (const reply of await Promise.all([
                 api.status(rival, 'dns'),
                 api.begin(rival, 'dns'),
-                api.part(rival, 'dns', 0),
+                api.part(rival, 'dns', 0, digest),
                 api.commit(rival, 'dns', digest),
+                // A read bound to another export never returns a part of this one.
+                api.part(app, 'dns', 0, otherDigest),
             ]))
                 expect(reply).toMatchObject({ status: 409, body: { code: 'conflict' } })
 
             expect(
-                await Promise.all(dnsRecords.map((_, sequence) => api.part(app, 'dns', sequence))),
+                await Promise.all(
+                    dnsRecords.map((_, sequence) => api.part(app, 'dns', sequence, digest)),
+                ),
             ).toEqual(
                 dnsRecords.map((part, sequence) => ({ status: 200, body: { sequence, part } })),
             )
-            expect((await api.part(app, 'dns', 3)).status).toBe(404)
+            expect((await api.part(app, 'dns', 3, digest)).status).toBe(404)
 
             // An unreadable part needs a platform repair, not a retry with other input.
             const at = and(
@@ -338,14 +345,14 @@ integrationTest(
                 .update(legacyFeatureHandoffParts)
                 .set({ ciphertext: ciphertext.map((byte) => byte ^ 0xff) })
                 .where(at)
-            expect(await api.part(app, 'dns', 1)).toMatchObject({
+            expect(await api.part(app, 'dns', 1, digest)).toMatchObject({
                 status: 503,
                 body: { code: 'unavailable' },
             })
             await db.update(legacyFeatureHandoffParts).set({ ciphertext }).where(at)
 
             // Commit transfers exactly the exported digest and retires platform state once.
-            expect(await api.commit(app, 'dns', 'b'.repeat(64))).toMatchObject({
+            expect(await api.commit(app, 'dns', otherDigest)).toMatchObject({
                 status: 409,
                 body: { code: 'conflict' },
             })
@@ -359,7 +366,7 @@ integrationTest(
             expect(dns.state).toMatchObject({ exports: 1, retirements: 1, records: [] })
             expect((await api.status(app, 'dns')).body).toEqual(committed)
             expect((await api.begin(app, 'dns', 'begin-3')).body).toEqual(committed)
-            expect((await api.part(app, 'dns', 0)).status).toBe(404)
+            expect((await api.part(app, 'dns', 0, digest)).status).toBe(404)
             expect(await partCount('dns')).toBe(0)
             expect((await api.status(rival, 'dns')).status).toBe(409)
 

@@ -549,6 +549,7 @@ async fn legacy_handoff_routes_reach_the_platform_bridge_with_their_keys_and_bod
     // Hyper may close a connection whose body the broker did not read.
     let mut sender = open(&socket).await;
     let commit = br#"{"digest":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}"#;
+    let part = br#"{"digest":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","sequence":0}"#;
     for (method, route, key, body, status) in [
         (Method::GET, "monitoring", None, None, StatusCode::OK),
         (
@@ -562,7 +563,7 @@ async fn legacy_handoff_routes_reach_the_platform_bridge_with_their_keys_and_bod
             Method::POST,
             "load-balancer/parts",
             None,
-            Some(&br#"{"sequence":0}"#[..]),
+            Some(&part[..]),
             StatusCode::OK,
         ),
         (
