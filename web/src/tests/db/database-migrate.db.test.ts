@@ -8,7 +8,11 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { MIGRATION_ADVISORY_LOCK_ID } from '@/config/auth.config.ts'
-import { runMigrate } from '@/db/migrate.ts'
+import {
+    DATABASE_NEWER_THAN_IMAGE_EXIT_CODE,
+    DatabaseNewerThanImageError,
+    runMigrate,
+} from '@/db/migrate.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
 
 const repositoryRoot = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -241,6 +245,53 @@ describe('database migration bootstrap', () => {
                     await probe.unsafe(
                         `drop function if exists rentnerproxy.${sqlIdentifier(functionName)}()`,
                     )
+                } finally {
+                    await probe.close()
+                }
+            }
+        },
+        { timeout: 30_000 },
+    )
+
+    integrationTest(
+        'refuses a database migrated by a newer image and leaves it unchanged',
+        async () => {
+            const databaseUrl = disposableDatabaseUrl!
+            const probe = new SQL(databaseUrl)
+            const futureHash = `future-image-migration-${Date.now()}`
+            const history = async () =>
+                (
+                    await probe<{ count: number }[]>`
+                        select count(*)::int as count from drizzle.__drizzle_migrations
+                    `
+                )[0]?.count
+
+            try {
+                await runMigrate({ databaseUrl })
+                const journal = JSON.parse(
+                    await readFile(
+                        join(repositoryRoot, 'web', 'drizzle', 'meta', '_journal.json'),
+                        'utf8',
+                    ),
+                ) as { entries: Array<{ when: number }> }
+                const future = journal.entries.at(-1)!.when + 1
+                await probe`
+                    insert into drizzle.__drizzle_migrations (hash, created_at)
+                    values (${futureHash}, ${future})
+                `
+                const recorded = await history()
+
+                await expect(runMigrate({ databaseUrl })).rejects.toBeInstanceOf(
+                    DatabaseNewerThanImageError,
+                )
+                const [stdout, stderr, exitCode] = await runMigrationProcess(databaseUrl)
+                expect(exitCode, stderr + stdout).toBe(DATABASE_NEWER_THAN_IMAGE_EXIT_CODE)
+                expect(stderr).toContain(`holds migration ${future}`)
+                expect(stdout).not.toContain('Running migrations')
+                expect(await history()).toBe(recorded)
+            } finally {
+                try {
+                    await probe`delete from drizzle.__drizzle_migrations where hash = ${futureHash}`
                 } finally {
                     await probe.close()
                 }
