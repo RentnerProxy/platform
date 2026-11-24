@@ -72,6 +72,7 @@ fn launch(uid: u32, executable: PathBuf, data_directory: PathBuf) -> LaunchConfi
         ui_bridge: None,
         startup_timeout_ms: None,
         process_limit: None,
+        providers: Vec::new(),
     }
 }
 
@@ -668,6 +669,367 @@ async fn an_unreachable_lease_authority_cannot_keep_an_expired_broker_alive() {
     .unwrap();
     assert!(tokio::time::Instant::now() >= initial);
     authority.abort();
+}
+
+#[test]
+fn launch_config_accepts_only_unique_known_provider_profiles() {
+    let strings = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
+    assert!(valid_provider_profiles(&[]));
+    assert!(valid_provider_profiles(&strings(&PROVIDER_PROFILES)));
+    assert!(valid_provider_profiles(&strings(&["dns", "monitoring"])));
+    assert!(!valid_provider_profiles(&strings(&["dns", "dns"])));
+    assert!(!valid_provider_profiles(&strings(&["unknown"])));
+    assert!(!valid_provider_profiles(&strings(&["DNS"])));
+    let mut seven = strings(&PROVIDER_PROFILES);
+    seven.push("seventh".into());
+    assert!(!valid_provider_profiles(&seven));
+
+    let mut config = launch(TEST_UID, PathBuf::new(), PathBuf::new());
+    config.providers = strings(&["monitoring", "monitoring"]);
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid app provider profiles")
+    );
+    config.providers = strings(&["not-a-profile"]);
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid app provider profiles")
+    );
+}
+
+#[test]
+fn launch_frames_default_to_no_declared_providers_and_reject_unknown_members() {
+    let mut frame = json!({
+        "appId": "test.native", "installationId": "installation", "generation": 9,
+        "uid": TEST_UID, "gid": TEST_UID, "executable": "/bin/app", "dataDirectory": "/data",
+        "databaseUrlFile": null, "runtimeProfile": PROFILE, "appProtocol": ">=1.0.0 <2.0.0",
+        "platformApi": ">=1.0.0 <2.0.0", "uiBridge": null,
+        "startupTimeoutMs": null, "processLimit": null,
+    });
+    let absent: LaunchConfig = serde_json::from_value(frame.clone()).unwrap();
+    assert!(absent.providers.is_empty());
+    frame["providers"] = json!(["monitoring", "dns"]);
+    let declared: LaunchConfig = serde_json::from_value(frame.clone()).unwrap();
+    assert_eq!(declared.providers, ["monitoring", "dns"]);
+    frame["provider"] = json!([]);
+    assert!(serde_json::from_value::<LaunchConfig>(frame).is_err());
+}
+
+struct Posted {
+    method: Method,
+    uri: String,
+    authorization: String,
+    body: Value,
+}
+
+struct Readiness {
+    result: Option<io::Result<()>>,
+    posted: Vec<Posted>,
+}
+
+fn registration(id: &str, profile: &str) -> Value {
+    json!({"id": id, "profile": profile, "version": "1.0.0"})
+}
+
+/// Drive `app_ready` against a fake app and a fake authority on own-UID sockets.
+///
+/// `statuses` are the authority's replies in order, repeating the last one.
+/// `authority_delay` postpones binding the authority socket (connection failures).
+/// A `None` result means readiness was still retrying when `patience` elapsed.
+async fn exercise_readiness(
+    ready: Value,
+    declared: &[&str],
+    statuses: &[u16],
+    authority_delay: Duration,
+    patience: Duration,
+) -> Readiness {
+    let scratch = Scratch::create(&env::temp_dir());
+    let app_socket = scratch.path("app.sock");
+    let app = UnixListener::bind(&app_socket).unwrap();
+    let app_task = tokio::spawn(async move {
+        loop {
+            let (stream, _) = app.accept().await.unwrap();
+            let ready = ready.clone();
+            let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                let body = match request.uri().path() {
+                    "/app/v1/health" => json!({"healthy": true}),
+                    "/app/v1/ready" => ready.clone(),
+                    path => panic!("Unexpected fixture app path {path}"),
+                };
+                std::future::ready(Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                    body.to_string(),
+                )))))
+            });
+            tokio::spawn(
+                server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service),
+            );
+        }
+    });
+    let authority_socket = scratch.path("authority.sock");
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let replies = statuses.to_vec();
+    let bind_at = authority_socket.clone();
+    let authority_task = tokio::spawn(async move {
+        tokio::time::sleep(authority_delay).await;
+        let listener = UnixListener::bind(bind_at).unwrap();
+        let mut served = 0;
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let status = replies[served.min(replies.len() - 1)];
+            served += 1;
+            let sender = sender.clone();
+            let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                let sender = sender.clone();
+                async move {
+                    let (parts, body) = request.into_parts();
+                    let body = body.collect().await.unwrap().to_bytes();
+                    sender
+                        .send(Posted {
+                            method: parts.method,
+                            uri: parts.uri.to_string(),
+                            authorization: parts.headers["authorization"]
+                                .to_str()
+                                .unwrap()
+                                .to_owned(),
+                            body: serde_json::from_slice(&body).unwrap(),
+                        })
+                        .unwrap();
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .status(status)
+                            .body(Full::new(Bytes::new()))
+                            .unwrap(),
+                    )
+                }
+            });
+            let _ = server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await;
+        }
+    });
+    let generation = test_generation(uid(), authority_socket, uid());
+    let core_socket = scratch.path("core.sock");
+    let bootstrap = Bootstrap {
+        format_version: 1,
+        app_id: "test.native",
+        installation_id: "installation",
+        generation: 9,
+        runtime_profile: PROFILE,
+        versions: Versions {
+            app_protocol: VERSION,
+            platform_api: VERSION,
+            ui_bridge: None,
+        },
+        app_socket: &app_socket,
+        core_socket: &core_socket,
+        app_credential: "app-credential",
+        core_credential: "core-credential",
+    };
+    let declared: Vec<String> = declared
+        .iter()
+        .map(|profile| (*profile).to_owned())
+        .collect();
+    let result = timeout(
+        patience,
+        gateway::app_ready(&bootstrap, &generation, uid(), &declared),
+    )
+    .await
+    .ok();
+    app_task.abort();
+    authority_task.abort();
+    let mut posted = Vec::new();
+    while let Ok(request) = receiver.try_recv() {
+        posted.push(request);
+    }
+    Readiness { result, posted }
+}
+
+fn ready_with(providers: Value) -> Value {
+    json!({"ready": true, "protocolVersion": VERSION, "providers": providers})
+}
+
+async fn readiness(providers: Value, declared: &[&str], statuses: &[u16]) -> Readiness {
+    exercise_readiness(
+        ready_with(providers),
+        declared,
+        statuses,
+        Duration::ZERO,
+        Duration::from_secs(5),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn invalid_provider_advertisements_are_fatal_and_never_reach_the_authority() {
+    let thirty_three: Vec<Value> = (0..33)
+        .map(|index| registration(&format!("monitor-{index}"), "monitoring"))
+        .collect();
+    let mut extra_member = registration("monitor", "monitoring");
+    extra_member["extra"] = json!(true);
+    let mut numeric_version = registration("monitor", "monitoring");
+    numeric_version["version"] = json!(1);
+    for (case, providers) in [
+        ("too many", json!(thirty_three)),
+        (
+            "duplicate id",
+            json!([
+                registration("monitor", "monitoring"),
+                registration("monitor", "monitoring")
+            ]),
+        ),
+        ("unknown member", json!([extra_member])),
+        (
+            "missing member",
+            json!([{"id": "monitor", "profile": "monitoring"}]),
+        ),
+        ("non-string version", json!([numeric_version])),
+        ("bad id", json!([registration("Bad Id", "monitoring")])),
+        ("empty id", json!([registration("", "monitoring")])),
+        (
+            "unknown profile",
+            json!([registration("monitor", "firewall")]),
+        ),
+        (
+            "undeclared profile",
+            json!([registration("monitor", "dns")]),
+        ),
+        (
+            "bad version",
+            json!([{"id": "monitor", "profile": "monitoring", "version": "1.0.1"}]),
+        ),
+        ("not an array", json!({"id": "monitor"})),
+        ("not an object", json!(["monitor"])),
+    ] {
+        let outcome = readiness(providers, &["monitoring"], &[204]).await;
+        let error = outcome
+            .result
+            .unwrap_or_else(|| panic!("{case} must not be retried"))
+            .expect_err(case);
+        assert_eq!(
+            error.to_string(),
+            "App advertised invalid provider registrations",
+            "{case}"
+        );
+        assert!(outcome.posted.is_empty(), "{case}");
+    }
+}
+
+#[tokio::test]
+async fn valid_registrations_are_posted_with_the_broker_identity_before_readiness() {
+    let thirty_two: Vec<Value> = (0..32)
+        .map(|index| registration(&format!("monitor-{index}"), "monitoring"))
+        .collect();
+    let outcome = readiness(json!(thirty_two), &["monitoring"], &[204]).await;
+    outcome.result.unwrap().unwrap();
+    assert_eq!(outcome.posted.len(), 1);
+
+    let providers = json!([
+        registration("fixture-monitor", "monitoring"),
+        registration("second_monitor", "monitoring"),
+        registration("edge-dns", "dns"),
+    ]);
+    let outcome = readiness(providers.clone(), &["dns", "monitoring"], &[204]).await;
+    outcome.result.unwrap().unwrap();
+    let [posted] = outcome.posted.as_slice() else {
+        panic!("exactly one registration request is expected");
+    };
+    assert_eq!(posted.method, Method::POST);
+    assert_eq!(posted.uri, "/internal/v1/app-generations/providers");
+    assert_eq!(posted.authorization, TOKEN);
+    assert_eq!(
+        posted.body,
+        json!({
+            "identity": {
+                "appId": "test.native", "installationId": "installation",
+                "generation": 9, "uid": uid(),
+            },
+            "providers": providers,
+        })
+    );
+}
+
+#[tokio::test]
+async fn apps_without_providers_become_ready_without_an_authority_request() {
+    let outcome = readiness(json!([]), &[], &[500]).await;
+    outcome.result.unwrap().unwrap();
+    assert!(outcome.posted.is_empty());
+}
+
+#[tokio::test]
+async fn authority_rejections_of_provider_registrations_are_fatal() {
+    for status in [200, 400, 401, 403, 404, 409] {
+        let outcome = readiness(
+            json!([registration("monitor", "monitoring")]),
+            &["monitoring"],
+            &[status],
+        )
+        .await;
+        let error = outcome
+            .result
+            .unwrap_or_else(|| panic!("{status} must not be retried"))
+            .expect_err("registration must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "Platform authority rejected app provider registrations",
+            "{status}"
+        );
+        assert_eq!(outcome.posted.len(), 1, "{status}");
+    }
+}
+
+#[tokio::test]
+async fn transient_authority_failures_retry_the_registration() {
+    for status in [500, 503, 408, 429] {
+        let outcome = readiness(
+            json!([registration("monitor", "monitoring")]),
+            &["monitoring"],
+            &[status, 204],
+        )
+        .await;
+        outcome.result.expect("retried until success").unwrap();
+        assert_eq!(outcome.posted.len(), 2, "{status}");
+        assert_eq!(outcome.posted[0].body, outcome.posted[1].body, "{status}");
+    }
+    // The authority socket does not exist for the first attempts.
+    let outcome = exercise_readiness(
+        ready_with(json!([registration("monitor", "monitoring")])),
+        &["monitoring"],
+        &[204],
+        Duration::from_millis(450),
+        Duration::from_secs(5),
+    )
+    .await;
+    outcome
+        .result
+        .expect("connection failures are retried")
+        .unwrap();
+    assert_eq!(outcome.posted.len(), 1);
+}
+
+#[tokio::test]
+async fn an_app_that_is_not_ready_keeps_retrying_without_registration() {
+    for ready in [
+        json!({"ready": false, "protocolVersion": VERSION, "providers": []}),
+        json!({"ready": true, "protocolVersion": "9.9.9", "providers": []}),
+        json!({"ready": true, "protocolVersion": VERSION}),
+    ] {
+        let outcome = exercise_readiness(
+            ready,
+            &["monitoring"],
+            &[204],
+            Duration::ZERO,
+            Duration::from_millis(700),
+        )
+        .await;
+        assert!(outcome.result.is_none());
+        assert!(outcome.posted.is_empty());
+    }
 }
 
 #[tokio::test]

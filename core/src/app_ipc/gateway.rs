@@ -25,8 +25,8 @@ use hyper::{
 };
 use hyper_util::rt::{TokioIo, TokioTimer};
 use rentnerproxy_app_contracts::{HttpDescriptor, HttpMethod, HttpOperation};
-use serde::{Deserialize, de::DeserializeOwned};
-use serde_json::json;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use tokio::{
     net::UnixListener,
     task::{JoinHandle, JoinSet},
@@ -64,6 +64,7 @@ pub(super) struct Generation {
     gateway_socket: PathBuf,
     gateway_uid: u32,
     bridge_auth: HeaderValue,
+    identity: Value,
     lease_identity: Bytes,
     app_target: Option<AppTarget>,
 }
@@ -81,6 +82,12 @@ impl Generation {
         gateway_uid: u32,
         bridge_auth: HeaderValue,
     ) -> io::Result<Self> {
+        let identity = json!({
+            "appId": config.app_id,
+            "installationId": config.installation_id,
+            "generation": config.generation,
+            "uid": config.uid,
+        });
         Ok(Self {
             uid: config.uid,
             uid_header: identity_header(&config.uid.to_string())?,
@@ -91,17 +98,8 @@ impl Generation {
             gateway_socket,
             gateway_uid,
             bridge_auth,
-            lease_identity: Bytes::from(
-                json!({
-                    "identity": {
-                        "appId": config.app_id,
-                        "installationId": config.installation_id,
-                        "generation": config.generation,
-                        "uid": config.uid,
-                    }
-                })
-                .to_string(),
-            ),
+            lease_identity: Bytes::from(json!({ "identity": &identity }).to_string()),
+            identity,
             app_target: None,
         })
     }
@@ -145,6 +143,33 @@ impl Generation {
                 Ok(Some(lease.expires_at))
             }
             _ => Err(unavailable()),
+        }
+    }
+
+    /// Record validated registrations for this broker's own generation only.
+    async fn register_providers(&self, providers: &[ProviderRegistration]) -> Result<(), Failure> {
+        let body = json!({"identity": &self.identity, "providers": providers}).to_string();
+        let request = Request::post("/internal/v1/app-generations/providers")
+            .header(header::HOST, "localhost")
+            .header(header::CONNECTION, "close")
+            .header(header::AUTHORIZATION, &self.bridge_auth)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|_| Failure::Retry)?;
+        let (response, _connection) =
+            send_to_peer(&self.gateway_socket, self.gateway_uid, request).await?;
+        match response.status() {
+            StatusCode::NO_CONTENT => Ok(()),
+            status
+                if status.is_server_error()
+                    || status == StatusCode::REQUEST_TIMEOUT
+                    || status == StatusCode::TOO_MANY_REQUESTS =>
+            {
+                Err(Failure::Retry)
+            }
+            _ => Err(Failure::Fatal(io::Error::other(
+                "Platform authority rejected app provider registrations",
+            ))),
         }
     }
 
@@ -530,31 +555,92 @@ struct AppHealth {
 struct AppReady {
     ready: bool,
     protocol_version: String,
-    providers: Vec<serde::de::IgnoredAny>,
+    providers: Value,
 }
 
-pub(super) async fn app_ready(bootstrap: &Bootstrap<'_>, uid: u32) -> io::Result<()> {
-    loop {
-        if let Ok(Ok(())) = timeout(RPC_TIMEOUT, check_app_ready(bootstrap, uid)).await {
-            return Ok(());
-        }
-        sleep(Duration::from_millis(200)).await;
+const MAX_PROVIDERS: usize = 32;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderRegistration {
+    id: String,
+    profile: String,
+    version: String,
+}
+
+/// A readiness attempt either may succeed on a later retry or never can.
+enum Failure {
+    Retry,
+    Fatal(io::Error),
+}
+
+impl From<io::Error> for Failure {
+    fn from(_: io::Error) -> Self {
+        Self::Retry
     }
 }
 
-async fn check_app_ready(bootstrap: &Bootstrap<'_>, uid: u32) -> io::Result<()> {
+pub(super) async fn app_ready(
+    bootstrap: &Bootstrap<'_>,
+    generation: &Generation,
+    uid: u32,
+    declared: &[String],
+) -> io::Result<()> {
+    loop {
+        let attempt = timeout(RPC_TIMEOUT, async {
+            let providers = check_app_ready(bootstrap, uid, declared).await?;
+            if providers.is_empty() {
+                return Ok(());
+            }
+            generation.register_providers(&providers).await
+        })
+        .await;
+        match attempt {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(Failure::Fatal(error))) => return Err(error),
+            Ok(Err(Failure::Retry)) | Err(_) => sleep(Duration::from_millis(200)).await,
+        }
+    }
+}
+
+async fn check_app_ready(
+    bootstrap: &Bootstrap<'_>,
+    uid: u32,
+    declared: &[String],
+) -> Result<Vec<ProviderRegistration>, Failure> {
     let healthy: AppHealth = probe_app(bootstrap, uid, "/app/v1/health").await?;
     let ready: AppReady = probe_app(bootstrap, uid, "/app/v1/ready").await?;
-    if !healthy.healthy
-        || !ready.ready
-        || ready.protocol_version != VERSION
-        || ready.providers.len() > 32
-    {
-        return Err(io::Error::other(
-            "App has not reported compatible readiness",
-        ));
+    if !healthy.healthy || !ready.ready || ready.protocol_version != VERSION {
+        return Err(Failure::Retry);
     }
-    Ok(())
+    registrations(ready.providers, declared).map_err(Failure::Fatal)
+}
+
+/// Strictly validate advertised registrations against the manifest-declared profiles.
+fn registrations(value: Value, declared: &[String]) -> io::Result<Vec<ProviderRegistration>> {
+    let invalid = || io::Error::other("App advertised invalid provider registrations");
+    let Value::Array(items) = value else {
+        return Err(invalid());
+    };
+    if items.len() > MAX_PROVIDERS {
+        return Err(invalid());
+    }
+    let providers = items
+        .into_iter()
+        .map(|item| serde_json::from_value::<ProviderRegistration>(item).map_err(|_| invalid()))
+        .collect::<io::Result<Vec<_>>>()?;
+    for (index, provider) in providers.iter().enumerate() {
+        if !record_id(&provider.id)
+            || provider.version != VERSION
+            || !declared.contains(&provider.profile)
+            || providers[..index]
+                .iter()
+                .any(|earlier| earlier.id == provider.id)
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(providers)
 }
 
 async fn probe_app<T: DeserializeOwned>(

@@ -20,6 +20,12 @@ import { roles } from './permissions.ts'
 
 export type AppRuntimeStoredGrant = Omit<typeof appRuntimeGrants.$inferSelect, 'installationId'>
 
+export interface AppRuntimeStoredProvider {
+    readonly id: string
+    readonly profile: string
+    readonly version: string
+}
+
 export const appRuntimeInstallations = rentnerProxySchema.table(
     'app_runtime_installations',
     {
@@ -48,6 +54,11 @@ export const appRuntimeGenerations = rentnerProxySchema.table(
         capabilities: jsonb('capabilities').$type<readonly string[]>().notNull(),
         permissionKeys: jsonb('permission_keys').$type<readonly string[]>().notNull(),
         hasUi: boolean('has_ui').notNull().default(false),
+        providerProfiles: jsonb('provider_profiles')
+            .$type<readonly string[]>()
+            .notNull()
+            .default(sql`'[]'::jsonb`),
+        providers: jsonb('providers').$type<readonly AppRuntimeStoredProvider[]>(),
         pendingGrants: jsonb('pending_grants').$type<readonly AppRuntimeStoredGrant[]>(),
     },
     (table) => [

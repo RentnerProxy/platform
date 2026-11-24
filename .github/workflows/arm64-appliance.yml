@@ -3,10 +3,18 @@ name: ARM64 Appliance
 on:
     # Application code behaves the same on both architectures. Pull requests therefore run native
     # ARM64 only for inputs whose result can differ per architecture: images, packaging, toolchains,
-    # locked dependencies (every Dependabot update that reaches the appliance) and this automation.
+    # locked dependencies (every Dependabot update that reaches the appliance), the native app
+    # runtime boundary and this automation.
     # Main pushes and the release pipeline always verify ARM64 natively.
     pull_request:
         paths:
+            - 'core/src/app_ipc.rs'
+            - 'core/src/app_ipc/**'
+            - 'core/src/app_manager.rs'
+            - 'core/src/app_manager/**'
+            - 'web/src/server/AppRuntime/**'
+            - '.github/scripts/ci/appliance/app-runtime.ts'
+            - '.github/scripts/ci/fixtures/production-app-runtime.ts'
             - 'docker/**'
             - 'packaging/**'
             - 'scripts/smoke/http3/**'

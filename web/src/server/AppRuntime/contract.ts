@@ -46,6 +46,31 @@ export const appCapabilitySchema = z.discriminatedUnion('id', [
     }),
 ])
 
+export const appProviderProfiles = [
+    'monitoring',
+    'docker-discovery',
+    'load-balancer',
+    'dns',
+    'oidc',
+    'crowdsec',
+] as const
+export const appProviderProfileSchema = z.enum(appProviderProfiles)
+/** Signed-manifest `providers`: the profiles one generation may register. */
+export const appProviderProfilesSchema = z
+    .array(appProviderProfileSchema)
+    .max(appProviderProfiles.length)
+    .refine((profiles) => new Set(profiles).size === profiles.length)
+export const appProviderRegistrationSchema = z.strictObject({
+    id: appRecordId,
+    profile: appProviderProfileSchema,
+    version: z.literal('1.0.0'),
+})
+export const appProviderRegistrationsSchema = z
+    .array(appProviderRegistrationSchema)
+    .min(1)
+    .max(32)
+    .refine((providers) => new Set(providers.map(({ id }) => id)).size === providers.length)
+
 const hostname = z
     .string()
     .max(253)

@@ -11,12 +11,15 @@ import {
     appCapabilitySchema,
     appGenerationSchema,
     appIdSchema,
+    appProviderProfilesSchema,
+    appProviderRegistrationsSchema,
     appRecordId,
     appUidSchema,
 } from './contract.ts'
 import {
     activateAppRuntimeGenerationInTransaction,
     checkAppRuntimeDependenciesInTransaction,
+    recordAppRuntimeProvidersInTransaction,
     registerAppRuntimeGenerationInTransaction,
     renewAppRuntimeGenerationLeaseInTransaction,
     replaceAppRuntimeGrantsInTransaction,
@@ -39,7 +42,12 @@ const permissionKeySchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/u)
 const registration = lease.extend({
     capabilities: z.array(appCapabilitySchema).max(32),
     permissionKeys: z.array(permissionKeySchema).max(64).optional(),
+    providerProfiles: appProviderProfilesSchema.default([]),
     hasUi: z.boolean().optional(),
+})
+const providerUpdate = z.strictObject({
+    identity: identitySchema,
+    providers: appProviderRegistrationsSchema,
 })
 const grantUpdate = z.strictObject({
     identity: identitySchema,
@@ -76,15 +84,30 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
                     return readAppRuntimeLeaseInTransaction(transaction, input.identity)
                 }
                 case 'register': {
-                    const { identity, leaseExpiresAt, capabilities, permissionKeys, hasUi } =
-                        parseAppInput(registration, body)
+                    const {
+                        identity,
+                        leaseExpiresAt,
+                        capabilities,
+                        permissionKeys,
+                        providerProfiles,
+                        hasUi,
+                    } = parseAppInput(registration, body)
                     return registerAppRuntimeGenerationInTransaction(transaction, {
                         identity,
                         leaseExpiresAt,
                         capabilities,
+                        providerProfiles,
                         ...(permissionKeys !== undefined && { permissionKeys }),
                         ...(hasUi !== undefined && { hasUi }),
                     })
+                }
+                case 'providers': {
+                    const input = parseAppInput(providerUpdate, body)
+                    return recordAppRuntimeProvidersInTransaction(
+                        transaction,
+                        input.identity,
+                        input.providers,
+                    )
                 }
                 case 'activate':
                 case 'renew': {

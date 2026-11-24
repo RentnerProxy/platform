@@ -283,7 +283,8 @@ impl Running {
             "runtimeProfile":requirements["runtimeProfile"],"appProtocol":requirements["appProtocol"],
             "platformApi":requirements["platformApi"],"uiBridge":requirements.get("uiBridge"),
             "startupTimeoutMs":m["resources"]["startupTimeoutMs"].as_f64().map(|v|v as u64),
-            "processLimit":m["resources"]["processLimit"].as_f64().map(|v|v as u64)
+            "processLimit":m["resources"]["processLimit"].as_f64().map(|v|v as u64),
+            "providers":m["providers"]
         }))?;
         frame.push(b'\n');
         let mut command = Command::new(std::env::current_exe()?);

@@ -33,6 +33,7 @@ import {
     APP_RUNTIME_SUPPORT_CAPABILITIES,
     isAppRuntimeAuthorized,
     isAppRuntimeSupportCapability,
+    sameAppRuntimeCapability,
     qualifyAppRuntimePermission,
 } from './authority-policy.server.ts'
 import {
@@ -132,6 +133,11 @@ async function readGrants(
             (!generation.capabilities.includes(capabilityId) ||
                 !appCapabilitySchema.safeParse(capability).success) &&
             !isAppRuntimeSupportCapability(capability)
+        )
+            return []
+        if (
+            sameAppRuntimeCapability(capability, APP_RUNTIME_SUPPORT_CAPABILITIES.provider) &&
+            !generation.providerProfiles.includes(resourceId)
         )
             return []
         if (permissionKey !== null && !generation.permissionKeys.includes(permissionKey)) return []
@@ -551,4 +557,41 @@ export async function readAppRuntimeSecretInTransaction(
     const value = await decryptSecret(secret, secretContext(installationId, secretId))
     assertLiveSecretLease(principal.expiresAt)
     return { value }
+}
+
+/** Serve only a registration recorded by the caller's own live generation and still granted. */
+export async function readAppRuntimeProviderInTransaction(
+    transaction: AuthTransaction,
+    principal: AppRuntimePrincipal,
+    providerId: string,
+): Promise<{ id: string; profile: string; version: string }> {
+    const { installationId, generation } = principal.identity
+    const [current] = await transaction
+        .select({
+            state: appRuntimeGenerations.state,
+            providerProfiles: appRuntimeGenerations.providerProfiles,
+            providers: appRuntimeGenerations.providers,
+        })
+        .from(appRuntimeGenerations)
+        .where(
+            and(
+                eq(appRuntimeGenerations.installationId, installationId),
+                eq(appRuntimeGenerations.generation, generation),
+            ),
+        )
+    const provider =
+        current?.state === 'active'
+            ? current.providers?.find(({ id }) => id === providerId)
+            : undefined
+    if (
+        provider === undefined ||
+        !current?.providerProfiles.includes(provider.profile) ||
+        !isAppRuntimeAuthorized(
+            principal,
+            APP_RUNTIME_SUPPORT_CAPABILITIES.provider,
+            provider.profile,
+        )
+    )
+        throw new AppRuntimeAuthorityError('not_found')
+    return { id: provider.id, profile: provider.profile, version: provider.version }
 }
