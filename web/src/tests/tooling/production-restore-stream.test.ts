@@ -108,6 +108,7 @@ type RestoreScenario =
     | 'portable-unsupported-image'
     | 'portable-missing-capacity'
     | 'portable-insufficient-capacity'
+    | 'restored-state-mismatch'
 
 async function restore(scenario: RestoreScenario) {
     await mkdir(join(root, 'tmp'), { recursive: true })
@@ -242,6 +243,9 @@ if (command.includes('config --format=json')) {
     if (args.at(-1) !== pending || !mount.endsWith(':/backup:ro')) process.exit(87)
     const member = readFileSync(mount.slice(0, -11) + '/${portableAppStateName}')
     if (createHash('sha256').update(member).digest('hex') !== process.env.FIXTURE_PORTABLE_HASH) process.exit(88)
+} else if (command.includes('--check-restored-app-inventory')) {
+    if (!command.includes('--check-restored-app-inventory /backup ' + process.env.FIXTURE_BACKUP_ID)) process.exit(89)
+    if (scenario === 'restored-state-mismatch') process.exit(9)
 } else if (command.includes('pg_restore')) {
     const mount = args[args.indexOf('--volume') + 1]
     if (!mount.endsWith(':/backup:ro')) process.exit(81)
@@ -353,6 +357,9 @@ test.skipIf(process.platform === 'win32')(
             ),
         )
         const importApps = calls.findIndex((args) => args.includes('restore-portable-apps'))
+        const restoredCheck = calls.findIndex((args) =>
+            args.some((arg) => arg.includes('--check-restored-app-inventory /backup ' + backupId)),
+        )
         const stages = [
             calls.findIndex(
                 (args) =>
@@ -369,6 +376,7 @@ test.skipIf(process.platform === 'win32')(
                 args.some((arg) => arg.includes('--exclude=' + portableAppStateName)),
             ),
             importApps,
+            restoredCheck,
             calls.findIndex((args) => args.includes('complete-app-key-restore')),
             calls.findIndex((args) => args.includes('complete-production-restore')),
             calls.findIndex((args) => args.includes('--force-recreate')),
@@ -614,6 +622,41 @@ test.skipIf(process.platform === 'win32').each(['prepare-failure', 'replacement-
         assert.equal(
             result.calls.some((args) => args.includes('begin-production-restore')),
             scenario === 'replacement-failure',
+        )
+    },
+)
+
+test.skipIf(process.platform === 'win32')(
+    'restored app rows that disagree with the restored journal keep the appliance stopped',
+    async () => {
+        const result = await restore('restored-state-mismatch')
+        assert.equal(result.exit, 1)
+        assert.match(result.stderr, /verify restored application state/)
+        assert.match(result.stderr, /appliance remains stopped/)
+        assert.match(result.stderr, /--resume --confirm-replace/)
+        const replace = result.calls.findIndex((args) =>
+            args.includes('RENTNERPROXY_RESTORE_PHASE=database'),
+        )
+        const crowdsec = result.calls.findIndex((args) =>
+            args.some((arg) => arg.includes('.restore-crowdsec')),
+        )
+        const check = result.calls.findIndex((args) =>
+            args.some((arg) => arg.includes('--check-restored-app-inventory')),
+        )
+        assert.ok(replace >= 0 && crowdsec > replace && check > crowdsec)
+        assert.equal(
+            result.calls[check]![result.calls[check]!.indexOf('--volume') + 1],
+            result.pg[0]![result.pg[0]!.indexOf('--volume') + 1],
+        )
+        assert.equal(result.oldWorkerStarted, false)
+        assert.ok(
+            !result.calls.some(
+                (args) =>
+                    args.includes('up') ||
+                    args.includes('start') ||
+                    args.includes('complete-app-key-restore') ||
+                    args.includes('complete-production-restore'),
+            ),
         )
     },
 )

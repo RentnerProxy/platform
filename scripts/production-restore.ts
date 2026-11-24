@@ -398,6 +398,25 @@ async function restore(): Promise<void> {
                     'restore portable application state and databases',
                     BACKUP_RUNTIME_POLICY.databaseTimeoutMs,
                 )
+            // The restore journal stays pending, and the appliance stopped, while the applied
+            // app rows disagree with the restored installation journal.
+            await runCommand(
+                [
+                    ...compose,
+                    'run',
+                    '--no-TTY',
+                    '--rm',
+                    '--no-deps',
+                    '--entrypoint=bash',
+                    '--volume',
+                    archiveVolume,
+                    applianceService,
+                    '-c',
+                    postgresCommand('restored', '/backup', appAware, backupId),
+                ],
+                'verify restored application state',
+                180_000,
+            )
             await runCommand(
                 [
                     ...compose,

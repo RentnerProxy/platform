@@ -82,7 +82,7 @@ const checkFreshPortableDatabase = [
 ].join('\n')
 
 export function postgresCommand(
-    operation: boolean | 'inventory' | 'portable-apps',
+    operation: boolean | 'inventory' | 'portable-apps' | 'restored',
     backupDirectory = '/backup',
     appAware: boolean | typeof PORTABLE_APP_BACKUP_VERSION = false,
     snapshotId?: string,
@@ -92,9 +92,11 @@ export function postgresCommand(
     const inventory = operation === 'inventory'
     const portable = appAware === PORTABLE_APP_BACKUP_VERSION
     const restoreApps = operation === 'portable-apps'
+    // After every restore step, compare the applied app rows with the restored journal.
+    const restored = operation === 'restored'
     const portablePath = backupDirectory + '/' + portableAppStateName
     if (restoreApps && !portable) throw new Error('Portable application backup required')
-    if (inventory && appAware && !/^[a-f0-9]{64}$/u.test(snapshotId ?? ''))
+    if (((inventory && appAware) || restored) && !/^[a-f0-9]{64}$/u.test(snapshotId ?? ''))
         throw new Error('Missing verified app backup identity')
     if (!/^\/[A-Za-z0-9_./-]+$/u.test(backupDirectory) || backupDirectory.split('/').includes('..'))
         throw new Error('Invalid backup snapshot path')
@@ -173,6 +175,14 @@ export function postgresCommand(
             ? [
                   'restore_phase=applications',
                   appBackupCommand + ' --app-backup restore-portable ' + portablePath,
+              ]
+            : []),
+        ...(restored
+            ? [
+                  'bun --no-env-file /opt/rentnerproxy/web/backup-export.js --check-restored-app-inventory ' +
+                      backupDirectory +
+                      ' ' +
+                      snapshotId,
               ]
             : []),
         ...(validateOnly
