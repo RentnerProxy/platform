@@ -142,11 +142,13 @@ export function detectChanges(
     head: string,
     cwd = process.cwd(),
 ): CheckSelection {
-    if (!['pull_request', 'push'].includes(event)) return selection(true)
+    if (!['pull_request', 'merge_group', 'push'].includes(event)) return selection(true)
     for (const revision of [base, head]) {
         if (!/^[a-f0-9]{40,64}$/u.test(revision) || /^0+$/u.test(revision)) return selection(true)
     }
-    const comparison = event === 'pull_request' ? `${base}...${head}` : `${base}..${head}`
+    // Pull requests and merge queue entries compare against their merge base; pushes include
+    // every commit since the previous tip.
+    const comparison = event === 'push' ? `${base}..${head}` : `${base}...${head}`
     const result = Bun.spawnSync(
         ['git', 'diff', '--no-renames', '--name-only', '-z', comparison, '--'],
         {
@@ -159,16 +161,32 @@ export function detectChanges(
     return selectChecks(result.stdout.toString().split('\0').filter(Boolean))
 }
 
+/**
+ * A pull request may hand its affected runtime verification to the merge queue, which then runs
+ * it once on the exact merge result. Every other event keeps its selection unchanged.
+ */
+export function deferRuntime(
+    event: string,
+    requested: string | undefined,
+    selected: CheckSelection,
+): { selected: CheckSelection; deferred: boolean } {
+    if (event !== 'pull_request' || requested !== 'true' || !selected.runtime)
+        return { selected, deferred: false }
+    return { selected: { ...selected, runtime: false, full: false }, deferred: true }
+}
+
 if (import.meta.main) {
-    const selected = detectChanges(
-        process.env.GITHUB_EVENT_NAME ?? '',
-        process.env.CI_BASE_SHA ?? '',
-        process.env.CI_HEAD_SHA ?? '',
+    const event = process.env.GITHUB_EVENT_NAME ?? ''
+    const { selected, deferred } = deferRuntime(
+        event,
+        process.env.CI_DEFER_RUNTIME,
+        detectChanges(event, process.env.CI_BASE_SHA ?? '', process.env.CI_HEAD_SHA ?? ''),
     )
     if (!process.env.GITHUB_OUTPUT) throw new Error('GITHUB_OUTPUT is required')
     await appendFile(
         process.env.GITHUB_OUTPUT,
-        checkNames.map((name) => `${name}=${String(selected[name])}\n`).join(''),
+        checkNames.map((name) => `${name}=${String(selected[name])}\n`).join('') +
+            `runtime_deferred=${String(deferred)}\n`,
     )
-    console.log(JSON.stringify(selected, null, 2))
+    console.log(JSON.stringify({ ...selected, runtime_deferred: deferred }, null, 2))
 }

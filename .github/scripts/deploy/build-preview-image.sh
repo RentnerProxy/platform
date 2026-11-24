@@ -4,7 +4,9 @@ artifact_directory="$RUNNER_TEMP/pr-preview-artifact"
 oci_archive="$artifact_directory/preview-image.tar"
 mkdir -p "$artifact_directory"
 
+# Read-only reuse of the main-only verification cache; preview builds never write a cache.
 docker buildx build \
+    --cache-from "type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-${PREVIEW_PLATFORM#linux/}" \
     --build-arg "RENTNERPROXY_BUILD_VERSION=$IMMUTABLE_TAG" \
     --build-arg "RENTNERPROXY_BUILD_REVISION=$TESTED_SHA" \
     --file source/docker/production/Dockerfile \

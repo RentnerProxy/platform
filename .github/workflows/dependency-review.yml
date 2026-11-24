@@ -2,17 +2,21 @@ name: Dependency Review
 
 on:
     pull_request:
+    merge_group:
 
 permissions:
     contents: read
 
 concurrency:
-    group: dependency-review-${{ github.event.pull_request.number }}
+    group: dependency-review-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
 
 jobs:
     dependency-review:
         name: Dependency Review
+        # The pull request already reviewed this exact dependency diff; a skipped merge queue
+        # run satisfies the required check without repeating it.
+        if: github.event_name == 'pull_request'
         runs-on: ubuntu-latest
         timeout-minutes: 10
         steps:

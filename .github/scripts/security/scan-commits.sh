@@ -16,6 +16,9 @@ case "$EVENT_NAME" in
     pull_request)
         scan_log_opts="-m ${PR_BASE_SHA}..${PR_HEAD_SHA}"
         ;;
+    merge_group)
+        scan_log_opts="-m ${QUEUE_BASE_SHA}..${QUEUE_HEAD_SHA}"
+        ;;
     push)
         if [[ -z "$PUSH_BEFORE_SHA" || "$PUSH_BEFORE_SHA" == "$zero_sha" ]] || \
             ! git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null; then

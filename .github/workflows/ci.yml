@@ -2,6 +2,7 @@ name: CI
 
 on:
     pull_request:
+    merge_group:
     push:
         branches:
             - main
@@ -17,6 +18,8 @@ concurrency:
 env:
     BUN_VERSION: 1.4.5
     RUST_VERSION: 1.99.1
+    # Incremental state never survives into a later CI run and would only bloat the caches.
+    CARGO_INCREMENTAL: '0'
 
 jobs:
     changes:
@@ -41,6 +44,7 @@ jobs:
               with:
                   persist-credentials: false
                   fetch-depth: 0
+                  filter: blob:none
 
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -50,8 +54,8 @@ jobs:
             - name: 'Select affected verification'
               id: changes
               env:
-                  CI_BASE_SHA: '${{ github.event.pull_request.base.sha || github.event.before }}'
-                  CI_HEAD_SHA: '${{ github.event.pull_request.head.sha || github.sha }}'
+                  CI_BASE_SHA: '${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}'
+                  CI_HEAD_SHA: '${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}'
               run: 'bun --no-env-file .github/scripts/ci/changes.ts'
 
     format:
@@ -265,8 +269,8 @@ jobs:
                   load: true
                   push: false
                   tags: rentnerproxy-ts-coverage:test
-                  cache-from: type=gha,version=2,scope=ci-ts-coverage-v1,timeout=2m
-                  cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,version=2,scope=ci-ts-coverage-v1,mode=max,timeout=2m,ignore-error=true' || '' }}
+                  # Refreshed from main by the Build Cache workflow; this job only reads it.
+                  cache-from: type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:coverage-amd64
               if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Build native distribution verifier for web tests
@@ -310,23 +314,6 @@ jobs:
               if: "${{ needs.changes.outputs.web == 'true' }}"
         needs: 'changes'
         if: '${{ !cancelled() }}'
-
-    fuzz:
-        name: Fuzz Tests
-        needs:
-            - 'changes'
-            - 'web-tests'
-        if: '${{ !cancelled() }}'
-        runs-on: ubuntu-latest
-        timeout-minutes: 1
-        steps:
-            - name: 'Require successful web coverage including every fuzz test'
-              env:
-                  DETECTION_RESULT: '${{ needs.changes.result }}'
-                  WEB_RESULT: '${{ needs.web-tests.result }}'
-              run: |
-                  test "$DETECTION_RESULT" = success && test "$WEB_RESULT" = success
-                  echo "Fuzz tests run within Web Tests when TypeScript inputs are affected." >> "$GITHUB_STEP_SUMMARY"
 
     rust:
         name: Rust
@@ -373,10 +360,7 @@ jobs:
                       core/target/llvm-cov-target/debug/.fingerprint
                       core/target/llvm-cov-target/debug/build
                       core/target/llvm-cov-target/debug/deps
-                      core/target/llvm-cov-target/debug/incremental
-                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-coverage-v1-${{ env.RUST_VERSION }}-llvm-cov-0.9.1-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-${{ hashFiles('core/src/**', 'core/tests/**', 'core/build.rs') }}
-                  restore-keys: |
-                      ${{ runner.os }}-${{ runner.arch }}-cargo-coverage-v1-${{ env.RUST_VERSION }}-llvm-cov-0.9.1-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-
+                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-coverage-v2-${{ env.RUST_VERSION }}-llvm-cov-0.9.1-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**') }}
               if: "${{ needs.changes.outputs.rust == 'true' }}"
 
             - name: Run Clippy
@@ -442,8 +426,7 @@ jobs:
                       core/target/llvm-cov-target/debug/.fingerprint
                       core/target/llvm-cov-target/debug/build
                       core/target/llvm-cov-target/debug/deps
-                      core/target/llvm-cov-target/debug/incremental
-                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-coverage-v1-${{ env.RUST_VERSION }}-llvm-cov-0.9.1-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-${{ hashFiles('core/src/**', 'core/tests/**', 'core/build.rs') }}
+                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-coverage-v2-${{ env.RUST_VERSION }}-llvm-cov-0.9.1-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**') }}
 
             - name: Save Cargo dependency cache
               if: "${{ needs.changes.outputs.rust == 'true' && (github.event_name != 'pull_request' && steps.cargo-cache.outputs.cache-hit != 'true') }}"
@@ -512,9 +495,7 @@ jobs:
               with:
                   path: |
                       core/target/release
-                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v1-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-${{ hashFiles('core/src/**', 'core/tests/**', 'core/build.rs') }}
-                  restore-keys: |
-                      ${{ runner.os }}-${{ runner.arch }}-cargo-release-v1-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-
+                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v2-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**') }}
               if: "${{ needs.changes.outputs.build_core == 'true' }}"
 
             - name: Install dependencies
@@ -538,7 +519,7 @@ jobs:
               with:
                   path: |
                       core/target/release
-                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v1-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-${{ hashFiles('core/src/**', 'core/tests/**', 'core/build.rs') }}
+                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v2-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**') }}
         needs: 'changes'
         if: '${{ !cancelled() }}'
 
@@ -627,7 +608,7 @@ jobs:
                   tags: response-cache-caddy:test
                   cache-from: |
                       type=gha,version=2,scope=ci-caddy-build-v1,timeout=2m
-                      type=gha,version=2,scope=production-smokes-proxy-runtime-v1,timeout=2m
+                      type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-amd64
                   cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,version=2,scope=ci-caddy-build-v1,mode=max,timeout=2m,ignore-error=true' || '' }}
 
             - name: Verify counting upstream, security ordering, variants and ephemeral lifecycle
@@ -723,7 +704,6 @@ jobs:
             - 'lint'
             - 'typecheck'
             - 'web-tests'
-            - 'fuzz'
             - 'rust'
             - 'build'
             - 'caddy-response-cache'

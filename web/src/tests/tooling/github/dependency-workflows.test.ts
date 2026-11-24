@@ -188,6 +188,7 @@ test('assesses production OCI before registry credentials and keeps source execu
         jobs: Record<string, { needs?: string; if?: string; steps?: { run?: string }[] }>
     }
     expect(Object.keys(workflow.on).toSorted()).toEqual([
+        'merge_group',
         'pull_request',
         'push',
         'schedule',

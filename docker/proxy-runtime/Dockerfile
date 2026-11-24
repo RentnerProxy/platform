@@ -1,15 +1,28 @@
 # syntax=mirror.gcr.io/docker/dockerfile:1.24.0
 
-# The controller-build and caddy-build stages (and this frontend) intentionally match
-# docker/production/Dockerfile instruction for instruction: CI builds both images on one
-# BuildKit builder, which then compiles the controller and Caddy only once.
-FROM mirror.gcr.io/library/rust:1.100.0-alpine3.24 AS controller-build
+# The controller-dependencies, controller-build and caddy-build stages (and this frontend)
+# intentionally match docker/production/Dockerfile instruction for instruction: CI builds both
+# images on one BuildKit builder, which then compiles the controller and Caddy only once.
+FROM mirror.gcr.io/library/rust:1.100.0-alpine3.24 AS controller-dependencies
 
-ARG TARGETOS
-ARG TARGETARCH
 WORKDIR /build
 RUN apk add --no-cache build-base cmake perl
 COPY core/Cargo.toml core/Cargo.lock ./
+# Compile the locked dependency graph against placeholder targets. This layer depends only on the
+# manifests, so source-only changes reuse it from the build cache and rebuild just the controller.
+RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/registry \
+    set -eu; \
+    mkdir src; \
+    printf 'fn main() {}\n' > src/main.rs; \
+    : > src/lib.rs; \
+    cargo build --locked --release; \
+    cargo clean --release --package rentnerproxy-controller; \
+    rm -rf src
+
+FROM controller-dependencies AS controller-build
+
+ARG TARGETOS
+ARG TARGETARCH
 COPY core/src ./src
 ARG RENTNERPROXY_BUILD_VERSION
 RUN --mount=type=cache,id=rentnerproxy-cargo-registry,target=/usr/local/cargo/registry \

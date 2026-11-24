@@ -3,44 +3,43 @@
 Für normale Änderungen prüfen **CI**, **Workflow Lint**, **Gitleaks**, **CodeQL**,
 **Dependency Review**, **Deployed Dependency Security** und **Production Smokes**
 den eigenen Code, seine Abhängigkeiten und die Integration der Appliance.
-Geeignete PRs erhalten ein eigenes Docker-Preview-Image nach bestandener
+PRs mit dem Label `preview` erhalten ein eigenes Docker-Preview-Image nach bestandener
 Herkunfts- und Pflichtcheckprüfung. Ein Push auf `main`
 veröffentlicht kein Dev-Image; **Dev Image** wird manuell gestartet.
 
-Es gibt 20 Workflow-Dateien, darunter drei wiederverwendbare Bausteine für
-Image-Build, Release und Veröffentlichung. GitHubs integrierte Dependabot-Automation erstellt
+Es gibt 33 Workflow-Dateien, darunter neun wiederverwendbare Bausteine, etwa für
+Änderungserkennung, Image-Build, Release und Veröffentlichung. GitHubs integrierte Dependabot-Automation erstellt
 zusätzlich den Lauf **Dependency Graph**.
 
-| Workflow                                                           | Startet bei                         | Aufgabe                                                                                                                                            |
-| ------------------------------------------------------------------ | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [CI](workflows/ci.yml)                                             | PR, Push, manuell                   | Format, Lint, Skript-Typprüfung, Web-/Fuzz-Tests, Rust und Produktionsbuild. Der Web-Build prüft auch die Web-Typen.                               |
-| [autofix.ci](workflows/autofix.yml)                                | PR, Push                            | Bun-/Rust-Formatierung über die autofix.ci-App korrigieren; `.github` ist von Korrekturen ausgeschlossen.                                          |
-| [Beta 2 Integration](workflows/beta2-integration.yml)              | PR, Push, manuell                   | Echte Web-/Controller-Abläufe mit PostgreSQL, Valkey und gepinntem Caddy prüfen.                                                                   |
-| [Workflow Lint](workflows/workflow-lint.yml)                       | PR, Push, manuell                   | Actions/YAML mit actionlint und Automations-Shellskripte mit ShellCheck prüfen.                                                                    |
-| [Gitleaks](workflows/gitleaks.yml)                                 | PR, Push, manuell                   | Neue Commits auf Geheimnisse prüfen; manuell auch die vollständige Historie.                                                                       |
-| [CodeQL](workflows/codeql.yml)                                     | PR, Push, wöchentlich, manuell      | Eigenes JavaScript/TypeScript, Rust und GitHub Actions analysieren.                                                                                |
-| [Dependency Review](workflows/dependency-review.yml)               | PR                                  | Neu eingeführte Abhängigkeiten ab Schweregrad „moderate“ prüfen.                                                                                   |
-| [Deployed Dependency Security](workflows/dependency-security.yml)  | PR, Push, täglich, manuell          | Eigene vollständige Cargo-/Bun-Lockfiles, Produktionskandidat und aktuelles Dev-Image prüfen; Details unten.                                       |
-| [Production Smokes](workflows/production-smokes.yml)               | PR, Push, manuell                   | Proxy-, Appliance-, Backup/Restore-, Drain-, ACME- und TLS-Integration in zwei parallelen Jobs prüfen; drei Images werden einmal pro Lauf gebaut.  |
-| [Release Compatibility](workflows/release-compatibility.yml)       | Betroffene PRs, jeder Push, manuell | Neuinstallation sowie Upgrades von ältester unterstützter und vorheriger veröffentlichter Version prüfen; Quellen werden unveränderlich aufgelöst. |
-| [Runtime Reliability](workflows/runtime-reliability.yml)           | Betroffene PRs/Pushes, manuell      | Kurzes Profil mit aktuellem Build; lange Profile nur nach ausdrücklicher Auswahl.                                                                  |
-| [Runtime Scale](workflows/runtime-scale.yml)                       | Nur manuell                         | Begrenzte Proxy-Last: standardmäßig 100 Hosts, vier Worker, drei Runden; Laufzeitlimit zehn Minuten.                                               |
-| [PR Preview Source](workflows/pr-preview-source.yml)               | PR                                  | Exakte getestete Merge-SHA erfassen und den Herkunftsnachweis für das Preview speichern.                                                           |
-| [PR Preview Build](workflows/pr-preview-build.yml)                 | Erfolgreicher Preview-Source-Lauf   | Getestete SHA und Pflichtchecks verifizieren, dann das eigene PR-Image als OCI-Archiv bauen.                                                       |
-| [PR Preview Publish](workflows/pr-preview-publish.yml)             | Erfolgreicher Preview-Build         | Herkunft und Pflichtchecks erneut prüfen, eigene Image-Abhängigkeiten auditieren und das Preview veröffentlichen.                                  |
-| [Dev Image](workflows/dev-image.yml)                               | Nur manuell                         | Dev-Kandidaten bauen, prüfen und über den Publisher als `:dev` veröffentlichen.                                                                    |
-| [RentnerProxy Release](workflows/release.yml)                      | GitHub-Release wird veröffentlicht  | Alpha/Beta/Stable auswählen und die Release-Pipeline aufrufen.                                                                                     |
-| [RentnerProxy Release Pipeline](workflows/release-pipeline.yml)    | Durch Release-Workflow              | Exakte Release-Identität prüfen, Image bauen/bewerten/veröffentlichen und Release Notes aktualisieren.                                             |
-| [Build assessed image](workflows/build-assessed-image.yml)         | Durch Dev-/Release-Pipeline         | Exakte Quelle ohne Registry-Zugang als OCI-Daten bauen, auditieren und Archiv-SHA256 sowie Digest ausgeben.                                        |
-| [Publish assessed OCI image](workflows/publish-assessed-image.yml) | Durch Dev-/Release-Pipeline         | Kandidat, Digest und eigene Abhängigkeiten unabhängig erneut prüfen, danach Registry-Tags veröffentlichen.                                         |
+| Workflow                                                           | Startet bei                                 | Aufgabe                                                                                                                                                                  |
+| ------------------------------------------------------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [CI](workflows/ci.yml)                                             | PR, Merge Queue, Push, manuell              | Format, Lint, Skript-Typprüfung, Web-Tests inklusive Fuzz-Tests, Rust und Produktionsbuild. Der Web-Build prüft auch die Web-Typen.                                      |
+| [autofix.ci](workflows/autofix.yml)                                | PR, Push                                    | Bun-/Rust-Formatierung über die autofix.ci-App korrigieren; `.github` ist von Korrekturen ausgeschlossen.                                                                |
+| [Beta 2 Integration](workflows/beta2-integration.yml)              | PR, Push, manuell                           | Echte Web-/Controller-Abläufe mit PostgreSQL, Valkey und gepinntem Caddy prüfen.                                                                                         |
+| [Workflow Lint](workflows/workflow-lint.yml)                       | PR, Merge Queue, Push, manuell              | Actions/YAML mit actionlint und Automations-Shellskripte mit ShellCheck prüfen.                                                                                          |
+| [Gitleaks](workflows/gitleaks.yml)                                 | PR, Merge Queue, Push, manuell              | Neue Commits auf Geheimnisse prüfen; manuell auch die vollständige Historie.                                                                                             |
+| [CodeQL](workflows/codeql.yml)                                     | PR, Merge Queue, Push, wöchentlich, manuell | Eigenes JavaScript/TypeScript, Rust und GitHub Actions analysieren.                                                                                                      |
+| [Dependency Review](workflows/dependency-review.yml)               | PR, Merge Queue                             | Neu eingeführte Abhängigkeiten ab Schweregrad „moderate“ im PR prüfen; in der Merge Queue übersprungen.                                                                  |
+| [Deployed Dependency Security](workflows/dependency-security.yml)  | PR, Merge Queue, Push, täglich, manuell     | Eigene vollständige Cargo-/Bun-Lockfiles, Produktionskandidat und aktuelles Dev-Image prüfen; Details unten.                                                             |
+| [Production Smokes](workflows/production-smokes.yml)               | PR, Merge Queue, Push, manuell              | Proxy-, Appliance-, Backup/Restore-, Drain-, ACME- und TLS-Integration sowie Upgrade-Kompatibilität und kurzes Reliability-Profil; Images werden einmal pro Lauf gebaut. |
+| [Release Compatibility](workflows/release-compatibility.yml)       | Nur manuell                                 | Neuinstallation sowie Upgrades gezielt prüfen; die PR-/Push-Matrix läuft in Production Smokes.                                                                           |
+| [Runtime Reliability](workflows/runtime-reliability.yml)           | Nur manuell                                 | Kurzes oder langes Profil gezielt starten; das kurze PR-/Push-Profil läuft in Production Smokes.                                                                         |
+| [Runtime Scale](workflows/runtime-scale.yml)                       | Nur manuell                                 | Begrenzte Proxy-Last: standardmäßig 100 Hosts, vier Worker, drei Runden; Laufzeitlimit zehn Minuten.                                                                     |
+| [PR Preview Source](workflows/pr-preview-source.yml)               | PR, Label `preview`, Merge Queue            | Exakte getestete Merge-SHA erfassen; in der Merge Queue übersprungen.                                                                                                    |
+| [PR Preview Build](workflows/pr-preview-build.yml)                 | Erfolgreicher Preview-Source-Lauf           | Nur mit Label `preview`: getestete SHA und Pflichtchecks verifizieren, dann das PR-Image als OCI-Archiv bauen.                                                           |
+| [PR Preview Publish](workflows/pr-preview-publish.yml)             | Erfolgreicher Preview-Build                 | Herkunft und Pflichtchecks erneut prüfen, eigene Image-Abhängigkeiten auditieren und das Preview veröffentlichen.                                                        |
+| [Build Cache](workflows/build-cache.yml)                           | Push, wöchentlich, manuell                  | BuildKit-Layer-Cache für Produktions- und Coverage-Image je Architektur in die Registry schreiben.                                                                       |
+| [Dev Image](workflows/dev-image.yml)                               | Nur manuell                                 | Dev-Kandidaten bauen, prüfen und über den Publisher als `:dev` veröffentlichen.                                                                                          |
+| [RentnerProxy Release](workflows/release.yml)                      | GitHub-Release wird veröffentlicht          | Alpha/Beta/Stable auswählen und die Release-Pipeline aufrufen.                                                                                                           |
+| [RentnerProxy Release Pipeline](workflows/release-pipeline.yml)    | Durch Release-Workflow                      | Exakte Release-Identität prüfen, Image bauen/bewerten/veröffentlichen und Release Notes aktualisieren.                                                                   |
+| [Build assessed image](workflows/build-assessed-image.yml)         | Durch Dev-/Release-Pipeline                 | Exakte Quelle ohne Registry-Zugang als OCI-Daten bauen, auditieren und Archiv-SHA256 sowie Digest ausgeben.                                                              |
+| [Publish assessed OCI image](workflows/publish-assessed-image.yml) | Durch Dev-/Release-Pipeline                 | Kandidat, Digest und eigene Abhängigkeiten unabhängig erneut prüfen, danach Registry-Tags veröffentlichen.                                                               |
 
 Push bedeutet `main`. Die meisten PR-Trigger gelten für alle Zielbranches;
 Preview Source beschränkt sie auf `main`. „Betroffen“ bezeichnet die jeweiligen
-`paths`-Filter. Compatibility und Reliability erfassen `core/`, `web/`, `docker/`,
-`scripts/`, `.github/scripts/`, Build-Konfigurationen und Lockfiles. Dazu gehören
-Migrationen, lokale Go-Module, Docker-Ignore-Dateien und transitiv importierte
-Automatisierung. Jeder Main-Push erhält Compatibility-Evidenz für die exakte SHA,
-auch bei Dokumentationsänderungen. Workflow-Cron-Zeiten sind UTC.
+`paths`-Filter. Production Smokes wählt die Laufzeitprüfungen über die gemeinsame
+Änderungserkennung. Jeder Main-Push erhält Compatibility-Evidenz für die exakte SHA,
+sofern Laufzeit-Eingaben betroffen sind. Workflow-Cron-Zeiten sind UTC.
 
 ## Job- und Artefaktgraph
 
@@ -49,7 +48,9 @@ Workflow-/Artefaktübergaben. Die Trigger stehen vollständig in der Tabelle obe
 
 ```mermaid
 flowchart TD
-    CI[CI: Format, Lint, Script Typecheck, Web Tests, Fuzz Tests, Rust, Build, Caddy Response Cache]
+    CI[CI: Format, Lint, Script Typecheck, Web Tests, Rust, Build, Caddy Response Cache]
+    CACHE[Build Cache: production amd64/arm64, coverage amd64] -->|Registry-Cache, nur lesend| CI
+    CACHE -->|Registry-Cache, nur lesend| SMOKE
     OTHER[Workflow Lint; Gitleaks; Autofix; Dependency Review]
     CODE[CodeQL: JavaScript / TypeScript, Rust, GitHub Actions]
     DEP[Dependency Security: locked-source, production-candidate, deployed-dev]
@@ -96,17 +97,32 @@ Check `Compatibility verified` bewusst nicht.
 
 Normale Prüfungen und unprivilegierte Builds haben `contents: read`. CodeQL
 ergänzt im Analysejob `security-events: write`. Preview-Verifikation liest
-zusätzlich Actions, Checks und PRs. Nur Publisher erhalten `packages: write`;
+zusätzlich Actions, Checks und PRs. Nur Publisher und der Main-only-Job von
+**Build Cache** (für sein Cache-Paket) erhalten `packages: write`;
 nur der Preview-Kommentarjob erhält `pull-requests: write`. Release-Vorbereitung
 liest Issues, der abschließende Release-Job schreibt Inhalte und liest Actions.
 Wiederverwendbare Workflows und Aufrufer begrenzen Rechte pro Job. Checkout-
 Zugangsdaten werden nicht persistiert. autofix.ci arbeitet über seine eigene App.
 
-Preview-Builds teilen keine Publish-Caches. Dev und Release nutzen getrennte
+Preview-Builds lesen nur den Build-Cache und schreiben keinen Cache. Dev und Release nutzen getrennte
 Buildx-Scopes (`dev`, `release-<channel>`). Publisher führen keine Quellskripte
 oder Images aus. Dev und Release sind jeweils serialisiert und werden nicht
 abgebrochen. Normale CI-Läufe ersetzen ältere Läufe desselben PRs; Compatibility
 und Reliability brechen nur ältere PR-Läufe ab.
+
+## Build-Cache und Merge Queue
+
+Die Dockerfiles kompilieren die Rust-Abhängigkeiten in einer eigenen Stage, die nur von
+`core/Cargo.toml` und `core/Cargo.lock` abhängt. **Build Cache** schreibt alle Stages nach
+jedem Main-Push in `ghcr.io/rentnerproxy/platform-build-cache`. PR-, Smoke-, Coverage- und
+Preview-Builds lesen diesen Cache anonym und bauen bei reinen Codeänderungen nur noch den
+Controller selbst. So bleibt der große Cargo-Layer außerhalb des 10-GB-Actions-Caches.
+Das Cache-Paket muss öffentlich sichtbar sein, damit PRs von Forks und Dependabot es lesen.
+
+Alle Workflows mit Pflicht-Checks reagieren auf `merge_group`. Mit der Repository-Variable
+`CI_MERGE_QUEUE=true` meldet Production Smokes bei PRs sofort Erfolg und prüft die Laufzeit
+einmal in der Merge Queue auf dem exakten Merge-Ergebnis. Ohne die Variable läuft sie wie
+bisher in jedem PR. Die Variable wird erst gesetzt, wenn die Merge Queue für `main` aktiv ist.
 
 ## Umfang der Dependency-Prüfung
 
@@ -171,7 +187,8 @@ Commit beschränkt; einzelne Smoke-Befehle bauen weiterhin selbst.
 
 ## Versionspflege
 
-Die Workflows verwenden Bun `1.4.4`, Rust `1.99.1`, actionlint `1.7.12` und
+Die Workflows verwenden Bun `1.4.5`, Rust `1.99.1` (wie `rust-toolchain.toml`),
+actionlint `1.7.12` und
 cargo-audit `0.22.2`. Der Cargo-Scanner wird als offizielles Linux-x86_64-Binary
 derselben Version mit fest gepinnter SHA256 installiert; die Advisory-Datenbank
 wird weiterhin frisch geladen. Format benötigt keine installierten

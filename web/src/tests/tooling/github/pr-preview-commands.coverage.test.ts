@@ -103,7 +103,10 @@ const environment = {
 const savedEnvironment = Object.fromEntries(
     Object.keys(environment).map((name) => [name, process.env[name]]),
 )
-const request = spyOn(GitHubApi.prototype, 'request').mockImplementation(async () => [])
+let labels = [{ name: 'preview' }]
+const request = spyOn(GitHubApi.prototype, 'request').mockImplementation(async (path: string) =>
+    path.includes('/issues/42/labels') ? labels : [],
+)
 const quiet = spyOn(console, 'log').mockImplementation(() => undefined)
 
 beforeAll(async () => {
@@ -200,6 +203,13 @@ test('gate and resolve bind output identity, verified source proof, digest and l
         expect(await invoke(command)).toContain('lifecycle=stale\n')
         lifecycle = 'open'
     }
+    labels = [{ name: 'dependencies' }]
+    gate.mockClear()
+    const unrequested = await invoke('gate')
+    expect(unrequested).toContain('lifecycle=not-requested\n')
+    expect(unrequested).toContain('pr_number=42\n')
+    expect(gate).not.toHaveBeenCalled()
+    labels = [{ name: 'preview' }]
     pullRequest = { ...pullRequest, state: 'closed' }
     expect(await invoke('gate')).toContain('lifecycle=closed\n')
     expect(await invoke('resolve')).toContain('lifecycle=closed\n')

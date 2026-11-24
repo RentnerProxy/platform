@@ -81,11 +81,12 @@ runs:
                   io.rentnerproxy.smoke-source=${{ github.sha }}
                   io.rentnerproxy.smoke-image=appliance
               outputs: type=oci,dest=${{ runner.temp }}/runtime-appliance/image.tar
+              # The trusted Build Cache workflow refreshes the registry cache from main. This build
+              # only reads it, so the large Cargo dependency layer never enters the Actions cache.
               cache-from: |
-                  type=gha,version=2,scope=production-smokes-appliance${{ steps.scope.outputs.cache_suffix }}-v1,timeout=2m
+                  type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-${{ steps.scope.outputs.architecture }}
                   type=gha,version=2,scope=runtime-reliability-appliance${{ steps.scope.outputs.cache_suffix }}-v1,timeout=2m
                   type=gha,version=2,scope=dependency-audit-appliance-${{ steps.scope.outputs.architecture }}-v1,timeout=2m
-              cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,version=2,scope=production-smokes-appliance{0}-v1,mode=max,timeout=2m,ignore-error=true', steps.scope.outputs.cache_suffix) || '' }}
 
         - name: Build exact proxy-runtime OCI image
           if: inputs.include_proxy_runtime == 'true'
@@ -105,8 +106,8 @@ runs:
                   io.rentnerproxy.smoke-source=${{ github.sha }}
                   io.rentnerproxy.smoke-image=proxy-runtime
               outputs: type=oci,dest=${{ runner.temp }}/runtime-proxy-runtime/image.tar
-              cache-from: type=gha,version=2,scope=production-smokes-proxy-runtime${{ steps.scope.outputs.cache_suffix }}-v1,timeout=2m
-              cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,version=2,scope=production-smokes-proxy-runtime{0}-v1,mode=max,timeout=2m,ignore-error=true', steps.scope.outputs.cache_suffix) || '' }}
+              # Its controller and Caddy stages match the production image and come from its cache.
+              cache-from: type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-${{ steps.scope.outputs.architecture }}
 
         - name: Build HTTP3 client OCI image
           uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

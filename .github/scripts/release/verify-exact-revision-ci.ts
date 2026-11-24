@@ -8,7 +8,6 @@ export const REQUIRED_CI_JOBS = [
     'Lint',
     'Script Typecheck',
     'Web Tests',
-    'Fuzz Tests',
     'Rust',
     'Build',
     'Caddy Response Cache',

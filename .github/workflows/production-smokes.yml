@@ -1,6 +1,7 @@
 name: Production Smokes
 'on':
     pull_request: null
+    merge_group: null
 
     push:
         branches:
@@ -25,6 +26,10 @@ env:
 jobs:
     changes:
         uses: ./.github/workflows/detect-changes.yml
+        # With the repository variable CI_MERGE_QUEUE=true, pull requests report this check
+        # immediately and the merge queue runs the full runtime verification on the merge result.
+        with:
+            defer_runtime: ${{ github.event_name == 'pull_request' && vars.CI_MERGE_QUEUE == 'true' }}
 
     build-runtime-images:
         needs: changes
@@ -199,11 +204,17 @@ jobs:
                   IMAGE_BUILD_RESULT: ${{ needs.build-runtime-images.result }}
                   APPLIANCE_RESULT: ${{ needs.smokes-appliance.result }}
                   SERVICES_RESULT: ${{ needs.smokes-services.result }}
+                  RUNTIME_DEFERRED: ${{ needs.changes.outputs.runtime_deferred }}
               run: |
                   test "$SELECTION_RESULT" = success
                   case "$RUNTIME_SELECTED" in
                     true) test "$IMAGE_BUILD_RESULT" = success && test "$APPLIANCE_RESULT" = success && test "$SERVICES_RESULT" = success ;;
-                    false) echo 'Runtime inputs unchanged; no runtime execution required.' ;;
+                    false)
+                      if [ "$RUNTIME_DEFERRED" = true ]; then
+                        echo 'Runtime verification runs in the merge queue on the exact merge result.' | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+                      else
+                        echo 'Runtime inputs unchanged; no runtime execution required.'
+                      fi ;;
                     *) exit 1 ;;
                   esac
         needs: [changes, build-runtime-images, smokes-appliance, smokes-services]

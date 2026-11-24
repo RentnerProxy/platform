@@ -96,7 +96,9 @@ test('Beta journeys cache the exact Caddy fixture without giving PRs cache write
     expect(build.with?.load).toBe(true)
     expect(build.with?.push).toBe(false)
     expect(build.with?.tags).toBe('rentnerproxy-beta2-caddy:${{ github.sha }}')
-    expect(build.with?.['cache-from']).toContain('scope=production-smokes-proxy-runtime-v1')
+    expect(build.with?.['cache-from']).toContain(
+        'type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-amd64',
+    )
     expect(build.with?.['cache-to']).toContain("github.event_name != 'pull_request'")
     const extract = jobs.beta2!.steps!.find((step) => step.env?.CADDY_FIXTURE_IMAGE)!
     expect(extract.env?.CADDY_FIXTURE_IMAGE).toBe('rentnerproxy-beta2-caddy:${{ github.sha }}')

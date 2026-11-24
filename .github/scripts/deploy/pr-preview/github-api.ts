@@ -208,6 +208,18 @@ export async function fetchPullRequest(
     return parsePullRequest(await api.request(`/repos/${api.repository}/pulls/${number}`))
 }
 
+export async function fetchPullRequestLabels(
+    api: GitHubApi,
+    number: number,
+): Promise<readonly string[]> {
+    const labels = await api.arrayPages(
+        `/repos/${api.repository}/issues/${parsePositiveInteger(number, 'Pull request number')}/labels`,
+    )
+    return labels.map((label) =>
+        stringValue(asRecord(label, 'Pull request label').name, 'Pull request label name'),
+    )
+}
+
 export async function fetchBranchHeadSha(api: GitHubApi, ref: string): Promise<string> {
     const branch = validateRef(ref, 'Branch ref')
     const path = branch.split('/').map(encodeURIComponent).join('/')

@@ -1,0 +1,82 @@
+name: Build Cache
+
+# Refreshes the BuildKit layer cache that verification image builds read from the registry.
+# Only main pushes, the weekly base-image refresh and maintainers write it; pull request and
+# smoke workflows only read it anonymously and never receive registry credentials. The
+# registry keeps the large Cargo dependency layers out of the 10 GB Actions cache.
+on:
+    push:
+        branches:
+            - main
+        paths-ignore:
+            - 'docs/**'
+            - 'screenshots/**'
+            - '**/*.md'
+    schedule:
+        - cron: '41 3 * * 1'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: build-cache-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    CACHE_REPOSITORY: ghcr.io/rentnerproxy/platform-build-cache
+    DOCKER_BUILD_SUMMARY: 'false'
+    DOCKER_BUILD_RECORD_UPLOAD: 'false'
+
+jobs:
+    refresh:
+        name: Refresh ${{ matrix.image }} cache (${{ matrix.architecture }})
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 75
+        permissions:
+            contents: read
+            packages: write
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - image: production
+                      file: docker/production/Dockerfile
+                      architecture: amd64
+                      runner: ubuntu-24.04
+                    - image: production
+                      file: docker/production/Dockerfile
+                      architecture: arm64
+                      runner: ubuntu-24.04-arm
+                    - image: coverage
+                      file: docker/tooling/coverage/Dockerfile
+                      architecture: amd64
+                      runner: ubuntu-24.04
+        steps:
+            - name: Check out exact main commit
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+            - name: Sign in to the cache registry
+              env:
+                  GHCR_TOKEN: ${{ github.token }}
+              run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+            - name: Export every build stage to the registry cache
+              uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+              with:
+                  context: .
+                  file: ${{ matrix.file }}
+                  platforms: linux/${{ matrix.architecture }}
+                  push: false
+                  outputs: type=cacheonly
+                  cache-from: type=registry,ref=${{ env.CACHE_REPOSITORY }}:${{ matrix.image }}-${{ matrix.architecture }}
+                  cache-to: type=registry,ref=${{ env.CACHE_REPOSITORY }}:${{ matrix.image }}-${{ matrix.architecture }},mode=max,image-manifest=true,oci-mediatypes=true
+
+            - name: Sign out of the cache registry
+              if: always()
+              run: docker logout ghcr.io
