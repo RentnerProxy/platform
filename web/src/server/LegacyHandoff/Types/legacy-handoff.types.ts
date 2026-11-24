@@ -46,8 +46,7 @@ export interface LegacyFeatureStatus {
 }
 
 export type PlatformOwnedResult<T> =
-    | { readonly owned: true; readonly value: T }
-    | { readonly owned: false }
+    { readonly owned: true; readonly value: T } | { readonly owned: false }
 
 type LegacyFeatureHandoffErrorCode = 'not_found' | 'conflict' | 'invalid_export' | 'corrupt'
 

@@ -56,7 +56,7 @@ integrationTest(
         const { db } = await import('@/db/index.ts')
         const journal = await import('@/server/LegacyHandoff/journal.server.ts')
         const ownership = await import('@/server/LegacyHandoff/ownership.server.ts')
-        const run =<T>(work: (transaction: AuthTransaction) => Promise<T>) =>
+        const run = <T>(work: (transaction: AuthTransaction) => Promise<T>) =>
             db.transaction(async (transaction) => {
                 await transaction.execute(sql`select set_config('lock_timeout', '2000ms', true)`)
                 return work(transaction)
@@ -141,7 +141,11 @@ integrationTest(
             expect(await owner()).toEqual({ owner: 'platform' })
 
             const exported = await begin(first)
-            expect(exported).toMatchObject({ owner: 'handoff', installationId: first, partCount: 3 })
+            expect(exported).toMatchObject({
+                owner: 'handoff',
+                installationId: first,
+                partCount: 3,
+            })
             const digest = exported.owner === 'handoff' ? exported.digest : ''
             expect(digest).toMatch(/^[a-f0-9]{64}$/u)
             expect(await begin(first)).toEqual(exported)
@@ -366,86 +370,93 @@ integrationTest('invalid or incomplete exports never fence a domain', async () =
     }
 })
 
-integrationTest('a handoff waits for running platform writers and turns new ones away', async () => {
-    const { db } = await import('@/db/index.ts')
-    const journal = await import('@/server/LegacyHandoff/journal.server.ts')
-    const ownership = await import('@/server/LegacyHandoff/ownership.server.ts')
-    const installationId = crypto.randomUUID()
-    const originalKey = process.env.APP_ENCRYPTION_KEY
-    process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 73).toString('base64')
-    const writer = Promise.withResolvers<void>()
-    const writerStarted = Promise.withResolvers<void>()
-    const exporting = Promise.withResolvers<void>()
-    const exportStarted = Promise.withResolvers<void>()
-    const cleanup = () =>
-        db.transaction(async (transaction) => {
-            await transaction
-                .delete(legacyFeatureHandoffParts)
-                .where(eq(legacyFeatureHandoffParts.domain, domain))
-            await transaction
-                .delete(legacyFeatureHandoffs)
-                .where(eq(legacyFeatureHandoffs.domain, domain))
-            await transaction
-                .delete(appRuntimeInstallations)
-                .where(eq(appRuntimeInstallations.id, installationId))
-        })
-
-    try {
-        await cleanup()
-        await db.insert(appRuntimeInstallations).values({
-            id: installationId,
-            appId: 'test.handoff-fence',
-            uid: 20_000 + Math.floor(Math.random() * 39_000),
-        })
-        // A platform writer inside its transaction delays the fence until it commits.
-        const writing = db.transaction((transaction) =>
-            ownership.withPlatformOwnedLegacyFeature(transaction, domain, async () => {
-                writerStarted.resolve()
-                await writer.promise
-                return 'written before the fence'
-            }),
-        )
-        await writerStarted.promise
-        let fenced = false
-        const beginning = db
-            .transaction((transaction) =>
-                journal.beginLegacyFeatureHandoffInTransaction(
-                    transaction,
-                    source({
-                        export: async (_transaction, emit) => {
-                            exportStarted.resolve()
-                            await exporting.promise
-                            await emit({ fenced: true })
-                        },
-                    }).handoff,
-                    installationId,
-                ),
-            )
-            .then((result) => {
-                fenced = true
-                return result
+integrationTest(
+    'a handoff waits for running platform writers and turns new ones away',
+    async () => {
+        const { db } = await import('@/db/index.ts')
+        const journal = await import('@/server/LegacyHandoff/journal.server.ts')
+        const ownership = await import('@/server/LegacyHandoff/ownership.server.ts')
+        const installationId = crypto.randomUUID()
+        const originalKey = process.env.APP_ENCRYPTION_KEY
+        process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 73).toString('base64')
+        const writer = Promise.withResolvers<void>()
+        const writerStarted = Promise.withResolvers<void>()
+        const exporting = Promise.withResolvers<void>()
+        const exportStarted = Promise.withResolvers<void>()
+        const cleanup = () =>
+            db.transaction(async (transaction) => {
+                await transaction
+                    .delete(legacyFeatureHandoffParts)
+                    .where(eq(legacyFeatureHandoffParts.domain, domain))
+                await transaction
+                    .delete(legacyFeatureHandoffs)
+                    .where(eq(legacyFeatureHandoffs.domain, domain))
+                await transaction
+                    .delete(appRuntimeInstallations)
+                    .where(eq(appRuntimeInstallations.id, installationId))
             })
-        await Bun.sleep(150)
-        expect(fenced).toBe(false)
-        writer.resolve()
-        expect(await writing).toEqual({ owned: true, value: 'written before the fence' })
 
-        // While the export runs, a new writer skips at once instead of waiting.
-        await exportStarted.promise
-        const started = performance.now()
-        expect(
-            await db.transaction((transaction) =>
-                ownership.withPlatformOwnedLegacyFeature(transaction, domain, async () => 'late'),
-            ),
-        ).toEqual({ owned: false })
-        expect(performance.now() - started).toBeLessThan(1_000)
-        exporting.resolve()
-        expect(await beginning).toMatchObject({ owner: 'handoff', partCount: 1 })
-    } finally {
-        writer.resolve()
-        exporting.resolve()
-        if (originalKey === undefined) delete process.env.APP_ENCRYPTION_KEY
-        else process.env.APP_ENCRYPTION_KEY = originalKey
-        await cleanup()
-    }
-})
+        try {
+            await cleanup()
+            await db.insert(appRuntimeInstallations).values({
+                id: installationId,
+                appId: 'test.handoff-fence',
+                uid: 20_000 + Math.floor(Math.random() * 39_000),
+            })
+            // A platform writer inside its transaction delays the fence until it commits.
+            const writing = db.transaction((transaction) =>
+                ownership.withPlatformOwnedLegacyFeature(transaction, domain, async () => {
+                    writerStarted.resolve()
+                    await writer.promise
+                    return 'written before the fence'
+                }),
+            )
+            await writerStarted.promise
+            let fenced = false
+            const beginning = db
+                .transaction((transaction) =>
+                    journal.beginLegacyFeatureHandoffInTransaction(
+                        transaction,
+                        source({
+                            export: async (_transaction, emit) => {
+                                exportStarted.resolve()
+                                await exporting.promise
+                                await emit({ fenced: true })
+                            },
+                        }).handoff,
+                        installationId,
+                    ),
+                )
+                .then((result) => {
+                    fenced = true
+                    return result
+                })
+            await Bun.sleep(150)
+            expect(fenced).toBe(false)
+            writer.resolve()
+            expect(await writing).toEqual({ owned: true, value: 'written before the fence' })
+
+            // While the export runs, a new writer skips at once instead of waiting.
+            await exportStarted.promise
+            const started = performance.now()
+            expect(
+                await db.transaction((transaction) =>
+                    ownership.withPlatformOwnedLegacyFeature(
+                        transaction,
+                        domain,
+                        async () => 'late',
+                    ),
+                ),
+            ).toEqual({ owned: false })
+            expect(performance.now() - started).toBeLessThan(1_000)
+            exporting.resolve()
+            expect(await beginning).toMatchObject({ owner: 'handoff', partCount: 1 })
+        } finally {
+            writer.resolve()
+            exporting.resolve()
+            if (originalKey === undefined) delete process.env.APP_ENCRYPTION_KEY
+            else process.env.APP_ENCRYPTION_KEY = originalKey
+            await cleanup()
+        }
+    },
+)

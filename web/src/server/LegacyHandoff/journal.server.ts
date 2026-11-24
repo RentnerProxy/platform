@@ -40,7 +40,9 @@ function partContext(
 }
 
 function exportDigest(domain: LegacyFeatureDomain, hashes: readonly string[]): string {
-    return sha256([LEGACY_HANDOFF_DIGEST_LABEL, domain, String(hashes.length), ...hashes].join('\n'))
+    return sha256(
+        [LEGACY_HANDOFF_DIGEST_LABEL, domain, String(hashes.length), ...hashes].join('\n'),
+    )
 }
 
 async function lockJournalRow(transaction: AuthTransaction, domain: LegacyFeatureDomain) {
@@ -215,9 +217,7 @@ export async function abortLegacyFeatureHandoffInTransaction(
     if (row.installationId !== installationId || row.state === 'committed')
         throw new LegacyFeatureHandoffError('conflict')
     await deleteParts(transaction, domain)
-    await transaction
-        .delete(legacyFeatureHandoffs)
-        .where(eq(legacyFeatureHandoffs.domain, domain))
+    await transaction.delete(legacyFeatureHandoffs).where(eq(legacyFeatureHandoffs.domain, domain))
 }
 
 /** Report each domain's owner and, while platform owns it, what an app would take over. */
