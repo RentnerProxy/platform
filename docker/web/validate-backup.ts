@@ -11,8 +11,10 @@ import {
     supportedBackupFormatLabel,
 } from '../../web/src/lib/ApplicationVersion/backupCompatibility.ts'
 import type {
+    BackupAppDatabaseEvidence,
     BackupCertificateJobRow,
     BackupCrowdSecSettingRow,
+    BackupHandoffPartRow,
     BackupMigrationJournal,
     BackupMigrationRow,
     BackupTotpSecretRow,
@@ -60,7 +62,7 @@ export function decryptBackupSecret(
     ciphertext: Buffer,
     iv: Buffer,
     context: string,
-): void {
+): Buffer {
     if (key.length !== 32 || iv.length !== 12 || ciphertext.length < 17) {
         throw new Error('invalid encrypted backup secret')
     }
@@ -68,8 +70,7 @@ export function decryptBackupSecret(
         const decipher = createDecipheriv('aes-256-gcm', key, iv)
         decipher.setAAD(Buffer.from(context, 'utf8'))
         decipher.setAuthTag(ciphertext.subarray(ciphertext.length - 16))
-        decipher.update(ciphertext.subarray(0, -16))
-        decipher.final()
+        return Buffer.concat([decipher.update(ciphertext.subarray(0, -16)), decipher.final()])
     } catch {
         throw new Error('backup application key cannot decrypt persisted secrets')
     }
@@ -111,6 +112,187 @@ export function assertBackupAppRows(installations: unknown, rows: readonly unkno
         )
     )
         throw new Error('App database identities differ from the native installation journal')
+}
+
+// Every table whose rows belong to one installation. Migration 0035 created all of them together.
+const appInstallationTables = [
+    'app_runtime_generations',
+    'app_runtime_grants',
+    'app_runtime_role_permissions',
+    'app_runtime_delegations',
+    'app_runtime_secrets',
+    'app_runtime_pending_secrets',
+    'app_runtime_events',
+    'app_runtime_event_retention',
+    'app_runtime_messages',
+    'app_runtime_owned_proxy_hosts',
+    'app_runtime_operations',
+    'app_runtime_operation_requests',
+] as const
+
+const maximumAppEvidenceBytes = 256 * 1024
+
+/**
+ * Read the installation rows, every installation that dependent rows refer to and the highest
+ * recorded generation per installation as one JSON document. Schemas before the handoff journal
+ * lack its table, so the caller states whether it exists.
+ */
+export function appDatabaseEvidenceSql(handoffs: boolean): string {
+    const references = [...appInstallationTables, ...(handoffs ? ['legacy_feature_handoffs'] : [])]
+        .map((table) => 'SELECT installation_id FROM rentnerproxy.' + table)
+        .join(' UNION ')
+    return `SELECT json_build_object(
+    'installations', (SELECT coalesce(json_agg(installation), '[]') FROM (
+        SELECT id, app_id AS "appId", uid::integer AS uid
+        FROM rentnerproxy.app_runtime_installations ORDER BY id LIMIT 257) installation),
+    'references', (SELECT coalesce(json_agg(installation_id), '[]') FROM (
+        ${references} ORDER BY 1 LIMIT 257) reference),
+    'generations', (SELECT coalesce(json_agg(latest), '[]') FROM (
+        SELECT installation_id AS "installationId", max(generation) AS generation
+        FROM rentnerproxy.app_runtime_generations
+        GROUP BY installation_id ORDER BY 1 LIMIT 257) latest)
+)::text AS evidence`
+}
+
+export function parseAppDatabaseEvidence(value: unknown): BackupAppDatabaseEvidence {
+    let evidence: unknown
+    try {
+        if (typeof value === 'string' && value.length <= maximumAppEvidenceBytes)
+            evidence = JSON.parse(value)
+    } catch {
+        evidence = undefined
+    }
+    if (
+        !isRecord(evidence) ||
+        !Array.isArray(evidence.installations) ||
+        !Array.isArray(evidence.references) ||
+        !Array.isArray(evidence.generations)
+    )
+        throw new Error('Invalid application schema evidence')
+    return {
+        installations: evidence.installations,
+        references: evidence.references,
+        generations: evidence.generations,
+    }
+}
+
+/**
+ * Compare all app rows of one database with the installation journal that governs it. Rows of
+ * dependent tables must belong to an active installation. The next launch registers the journal
+ * generation plus one, and a database that already recorded a higher generation rejects that
+ * registration as a conflict, so the journal must not be behind the database.
+ */
+export function assertBackupAppState(
+    installations: unknown,
+    evidence: BackupAppDatabaseEvidence,
+): void {
+    assertBackupAppRows(installations, evidence.installations)
+    const active = new Set(evidence.installations.map((row) => (isRecord(row) ? row.id : null)))
+    if (
+        evidence.references.length > 256 ||
+        evidence.references.some((id) => typeof id !== 'string' || !active.has(id))
+    )
+        throw new Error('App database rows reference installations outside the backup inventory')
+    const slots: unknown[] = Array.isArray(installations) ? installations : []
+    const journal = new Map(slots.filter(isRecord).map((slot) => [slot.id, slot.generation]))
+    if (evidence.generations.length > 256) throw new Error('Invalid application schema evidence')
+    for (const latest of evidence.generations) {
+        if (!isRecord(latest) || !active.has(latest.installationId))
+            throw new Error(
+                'App database rows reference installations outside the backup inventory',
+            )
+        const recorded = journal.get(latest.installationId)
+        if (
+            typeof latest.generation !== 'number' ||
+            !Number.isSafeInteger(latest.generation) ||
+            typeof recorded !== 'number'
+        )
+            throw new Error('Invalid application schema evidence')
+        if (recorded < latest.generation)
+            throw new Error('App database generation is ahead of the native installation journal')
+    }
+}
+
+// LEGACY_HANDOFF_LIMITS.partBytes plus the AES-GCM tag. The runtime image ships this script
+// without the web configuration, so a test keeps the restated limit in sync.
+export const maximumHandoffPartCiphertextBytes = 262_144 + 16
+const maximumHandoffRows = 64
+const invalidHandoffParts = () => new Error('Invalid legacy feature handoff parts')
+
+/** Exported handoffs keep exactly their parts 0..n-1; committed handoffs keep none. */
+export function assertLegacyHandoffParts(
+    handoffs: readonly unknown[],
+    parts: readonly unknown[],
+): void {
+    if (handoffs.length > maximumHandoffRows || parts.length > maximumHandoffRows) throw invalidHandoffParts()
+    const expected = new Map<string, number>()
+    for (const row of handoffs) {
+        if (
+            !isRecord(row) ||
+            typeof row.domain !== 'string' ||
+            expected.has(row.domain) ||
+            typeof row.installation_id !== 'string' ||
+            (row.state !== 'exported' && row.state !== 'committed') ||
+            typeof row.part_count !== 'number' ||
+            !Number.isSafeInteger(row.part_count) ||
+            row.part_count < 0 ||
+            row.part_count > 1024
+        )
+            throw invalidHandoffParts()
+        expected.set(row.domain, row.state === 'exported' ? row.part_count : 0)
+    }
+    for (const summary of parts) {
+        if (!isRecord(summary) || typeof summary.domain !== 'string') throw invalidHandoffParts()
+        const count = expected.get(summary.domain)
+        // Parts of a committed handoff, or without any journal row, give no count here.
+        if (
+            !count ||
+            summary.count !== count ||
+            summary.distinct !== count ||
+            summary.first !== 0 ||
+            summary.last !== count - 1
+        )
+            throw invalidHandoffParts()
+        expected.delete(summary.domain)
+    }
+    if ([...expected.values()].some((count) => count > 0)) throw invalidHandoffParts()
+}
+
+/** Authenticate every stored handoff part with the backed-up key before anything is replaced. */
+export async function validateLegacyHandoffParts(sql: SQL, key: Buffer): Promise<void> {
+    const handoffs = await sql<unknown[]>`SELECT domain, installation_id, state, part_count
+        FROM rentnerproxy.legacy_feature_handoffs ORDER BY domain LIMIT 65`
+    const parts = await sql<unknown[]>`SELECT domain, count(*)::integer AS count,
+            count(DISTINCT sequence)::integer AS "distinct",
+            min(sequence) AS first, max(sequence) AS last
+        FROM rentnerproxy.legacy_feature_handoff_parts GROUP BY domain ORDER BY domain LIMIT 65`
+    assertLegacyHandoffParts(handoffs, parts)
+    let domain = ''
+    let sequence = -1
+    while (true) {
+        const rows = await sql<BackupHandoffPartRow[]>`SELECT stored.domain, stored.sequence,
+                stored.sha256, journal.installation_id, stored.iv,
+                CASE WHEN octet_length(stored.ciphertext) <= ${maximumHandoffPartCiphertextBytes}
+                    THEN stored.ciphertext END AS ciphertext
+            FROM rentnerproxy.legacy_feature_handoff_parts stored
+            JOIN rentnerproxy.legacy_feature_handoffs journal ON journal.domain = stored.domain
+            WHERE (stored.domain, stored.sequence) > (${domain}::varchar, ${sequence}::integer)
+            ORDER BY stored.domain, stored.sequence LIMIT 16`
+        for (const row of rows) {
+            if (!row.ciphertext) throw invalidHandoffParts()
+            const plaintext = decryptBackupSecret(
+                key,
+                Buffer.from(row.ciphertext),
+                Buffer.from(row.iv),
+                `legacy-feature-handoff:v1:${row.domain}:${row.installation_id}:${row.sequence}:${row.sha256}`,
+            )
+            if (createHash('sha256').update(plaintext).digest('hex') !== row.sha256)
+                throw invalidHandoffParts()
+            domain = row.domain
+            sequence = row.sequence
+        }
+        if (rows.length < 16) break
+    }
 }
 
 export function validateNotificationBackupSecrets(key: Buffer, input: unknown): void {
@@ -232,21 +414,32 @@ export async function validateDatabase(
         await assertCompatibleBackupHistory(rows, journal, (tag) =>
             readFile(join(migrationsPath, tag + '.sql')),
         )
-        const [inventoryTable] = await sql<
-            { present: boolean }[]
-        >`SELECT to_regclass('rentnerproxy.app_runtime_installations') IS NOT NULL AS present`
-        if (typeof inventoryTable?.present !== 'boolean')
+        const [schema] = await sql<{ present: boolean; handoffs: boolean; parts: boolean }[]>`SELECT
+            to_regclass('rentnerproxy.app_runtime_installations') IS NOT NULL AS present,
+            to_regclass('rentnerproxy.legacy_feature_handoffs') IS NOT NULL AS handoffs,
+            to_regclass('rentnerproxy.legacy_feature_handoff_parts') IS NOT NULL AS parts`
+        if (
+            typeof schema?.present !== 'boolean' ||
+            typeof schema.handoffs !== 'boolean' ||
+            schema.parts !== schema.handoffs ||
+            (schema.handoffs && !schema.present)
+        )
             throw new Error('Invalid application schema evidence')
-        const appRows = inventoryTable.present
-            ? await sql`SELECT id, app_id AS "appId", uid::integer AS uid FROM rentnerproxy.app_runtime_installations LIMIT 257`
-            : []
         const apps =
             isRecord(metadata) &&
             (metadata.version === 5 || metadata.version === PORTABLE_APP_BACKUP_VERSION) &&
             isRecord(metadata.applications)
                 ? metadata.applications.installations
                 : []
-        assertBackupAppRows(apps, appRows)
+        let appRows: readonly unknown[] = []
+        if (schema.present) {
+            const [row] = await sql.unsafe<{ evidence: unknown }[]>(
+                appDatabaseEvidenceSql(schema.handoffs),
+            )
+            const evidence = parseAppDatabaseEvidence(row?.evidence)
+            assertBackupAppState(apps, evidence)
+            appRows = evidence.installations
+        } else assertBackupAppRows(apps, appRows)
         if (appRows.length) {
             const [generation] = await sql<{ quiet: boolean }[]>`SELECT
                 NOT EXISTS (SELECT FROM rentnerproxy.app_runtime_generations WHERE state <> 'revoked')
@@ -280,6 +473,7 @@ export async function validateDatabase(
                 if (secrets.length < 64) break
             }
         }
+        if (schema.handoffs) await validateLegacyHandoffParts(sql, key)
         const factors = await sql<
             BackupTotpSecretRow[]
         >`select user_id, secret_ciphertext, secret_iv from rentnerproxy.user_totp_factors`
@@ -404,6 +598,18 @@ if (import.meta.main) {
             'invalid CrowdSec database': 'crowdsec_database',
             'invalid CrowdSec local credentials': 'crowdsec_credentials',
             'invalid CrowdSec bouncer key': 'crowdsec_credentials',
+            'Invalid application file snapshot': 'application_state',
+            'Invalid application schema evidence': 'application_state',
+            'Invalid application backup inventory': 'application_state',
+            'App database identities differ from the native installation journal':
+                'application_state',
+            'App database rows reference installations outside the backup inventory':
+                'application_state',
+            'App database generation is ahead of the native installation journal':
+                'application_state',
+            'App generation has not retired': 'application_state',
+            'Invalid application backup secret': 'application_state',
+            'Invalid legacy feature handoff parts': 'application_state',
         }
         const reason =
             error instanceof Error

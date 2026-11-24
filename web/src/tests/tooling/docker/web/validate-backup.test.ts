@@ -2,12 +2,18 @@ import { describe, expect, test } from 'bun:test'
 import { createCipheriv, createHash } from 'node:crypto'
 
 import {
+    appDatabaseEvidenceSql,
+    assertBackupAppState,
     assertCompatibleBackupHistory,
+    assertLegacyHandoffParts,
     assertSupportedBackupVersion,
     decryptBackupSecret,
     isMigrationJournal,
+    maximumHandoffPartCiphertextBytes,
+    parseAppDatabaseEvidence,
     validateNotificationBackupSecrets,
 } from '../../../../../../docker/web/validate-backup.ts'
+import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
 import { NOTIFICATION_LIMITS, NOTIFICATION_SECRET_CONTEXT } from '@/config/notifications.config.ts'
 import type {
     BackupMigrationJournal,
@@ -160,9 +166,9 @@ function encryptedFixture(): Buffer {
 
 describe('typed backup secret validation', () => {
     test('authenticates ciphertext with its original key and context', () => {
-        expect(() =>
-            decryptBackupSecret(fixtureKey, encryptedFixture(), fixtureIv, fixtureContext),
-        ).not.toThrow()
+        expect(
+            decryptBackupSecret(fixtureKey, encryptedFixture(), fixtureIv, fixtureContext).toString(),
+        ).toBe('synthetic fixture')
     })
 
     test('rejects a different key or context', () => {
@@ -304,4 +310,197 @@ describe('backup format version boundary', () => {
             )
         },
     )
+})
+
+function evidence(
+    overrides: Partial<Record<'installations' | 'references' | 'generations', unknown[]>> = {},
+) {
+    return {
+        installations: [{ id: 'greeting', appId: 'fixture.greeting', uid: 20000 }],
+        references: ['greeting'],
+        generations: [{ installationId: 'greeting', generation: 3 }],
+        ...overrides,
+    }
+}
+
+describe('app rows against the installation journal', () => {
+    const journal = [
+        { id: 'greeting', appId: 'fixture.greeting', uid: 20000, generation: 3 },
+        { id: 'reserved', appId: 'fixture.reserved', uid: 20001, generation: 0 },
+    ]
+
+    test('accepts rows of active installations whose journal is not behind the database', () => {
+        expect(() => assertBackupAppState(journal, evidence())).not.toThrow()
+        expect(() =>
+            assertBackupAppState(
+                journal,
+                evidence({ generations: [{ installationId: 'greeting', generation: 2 }] }),
+            ),
+        ).not.toThrow()
+        expect(() =>
+            assertBackupAppState(
+                [],
+                evidence({ installations: [], references: [], generations: [] }),
+            ),
+        ).not.toThrow()
+    })
+
+    test.each([
+        ['an unknown installation', ['greeting', 'removed']],
+        ['a reserved installation without authority', ['reserved']],
+        ['a non-string identity', [7]],
+        [
+            'more references than an inventory can hold',
+            Array.from({ length: 257 }, () => 'greeting'),
+        ],
+    ])('rejects dependent rows of %s', (_label, references) => {
+        expect(() => assertBackupAppState(journal, evidence({ references }))).toThrow(
+            'App database rows reference installations outside the backup inventory',
+        )
+    })
+
+    test('rejects a recorded generation beyond the journal', () => {
+        expect(() =>
+            assertBackupAppState(
+                journal,
+                evidence({ generations: [{ installationId: 'greeting', generation: 4 }] }),
+            ),
+        ).toThrow('App database generation is ahead of the native installation journal')
+    })
+
+    test.each([
+        ['an unknown installation', [{ installationId: 'removed', generation: 1 }], 'outside'],
+        ['a malformed entry', [null], 'outside'],
+        ['an unsafe number', [{ installationId: 'greeting', generation: 2 ** 53 }], 'schema'],
+        ['a textual number', [{ installationId: 'greeting', generation: '3' }], 'schema'],
+        [
+            'too many entries',
+            Array.from({ length: 257 }, () => ({ installationId: 'greeting', generation: 1 })),
+            'schema',
+        ],
+    ] as const)('rejects generation evidence with %s', (_label, generations, reason) => {
+        expect(() =>
+            assertBackupAppState(journal, evidence({ generations: [...generations] })),
+        ).toThrow(
+            reason === 'outside'
+                ? 'App database rows reference installations outside the backup inventory'
+                : 'Invalid application schema evidence',
+        )
+    })
+
+    test('keeps rejecting installation identities that differ from the journal', () => {
+        expect(() =>
+            assertBackupAppState(
+                journal,
+                evidence({
+                    installations: [{ id: 'greeting', appId: 'fixture.other', uid: 20000 }],
+                }),
+            ),
+        ).toThrow('App database identities differ from the native installation journal')
+    })
+
+    test('parses one bounded JSON document with all three row lists', () => {
+        expect(parseAppDatabaseEvidence(JSON.stringify(evidence()))).toEqual(evidence())
+    })
+
+    test.each([
+        undefined,
+        { installations: [], references: [], generations: [] },
+        '{broken',
+        'null',
+        '[]',
+        JSON.stringify({ installations: [], references: [] }),
+        JSON.stringify({ installations: {}, references: [], generations: [] }),
+        JSON.stringify({ ...evidence(), padding: 'x'.repeat(256 * 1024) }),
+    ])('rejects malformed database evidence %#', (value) => {
+        expect(() => parseAppDatabaseEvidence(value)).toThrow(
+            'Invalid application schema evidence',
+        )
+    })
+
+    test('reads every installation-scoped table and the handoff journal only when it exists', () => {
+        const tables = [
+            'app_runtime_generations',
+            'app_runtime_grants',
+            'app_runtime_role_permissions',
+            'app_runtime_delegations',
+            'app_runtime_secrets',
+            'app_runtime_pending_secrets',
+            'app_runtime_events',
+            'app_runtime_event_retention',
+            'app_runtime_messages',
+            'app_runtime_owned_proxy_hosts',
+            'app_runtime_operations',
+            'app_runtime_operation_requests',
+        ]
+        const legacy = appDatabaseEvidenceSql(false)
+        const current = appDatabaseEvidenceSql(true)
+        for (const table of tables) {
+            expect(legacy).toContain('SELECT installation_id FROM rentnerproxy.' + table + ' ')
+            expect(current).toContain('SELECT installation_id FROM rentnerproxy.' + table + ' ')
+        }
+        expect(legacy).not.toContain('legacy_feature_handoffs')
+        expect(current).toContain(
+            'SELECT installation_id FROM rentnerproxy.legacy_feature_handoffs ',
+        )
+        expect(current.match(/LIMIT 257/gu)).toHaveLength(3)
+    })
+})
+
+describe('legacy feature handoff parts in a backup', () => {
+    const exported = {
+        domain: 'dns',
+        installation_id: 'greeting',
+        state: 'exported',
+        part_count: 3,
+    }
+    const committed = { ...exported, domain: 'oidc', state: 'committed', part_count: 2 }
+    const empty = { ...exported, domain: 'crowdsec', part_count: 0 }
+    const parts = { domain: 'dns', count: 3, distinct: 3, first: 0, last: 2 }
+
+    test('accepts exactly the parts of exported handoffs and none of committed ones', () => {
+        expect(() => assertLegacyHandoffParts([exported, committed, empty], [parts])).not.toThrow()
+        expect(() => assertLegacyHandoffParts([], [])).not.toThrow()
+    })
+
+    test('restates the runtime part limit plus the authentication tag', () => {
+        expect(maximumHandoffPartCiphertextBytes).toBe(LEGACY_HANDOFF_LIMITS.partBytes + 16)
+    })
+
+    test.each([
+        ['an exported handoff without parts', [exported], []],
+        ['a missing part', [exported], [{ ...parts, count: 2, distinct: 2, last: 1 }]],
+        ['a duplicated sequence', [exported], [{ ...parts, distinct: 2 }]],
+        ['a sequence gap', [exported], [{ ...parts, first: 1, last: 3 }]],
+        ['an extra part', [exported], [{ ...parts, count: 4, distinct: 4, last: 3 }]],
+        [
+            'parts of a committed handoff',
+            [committed],
+            [{ ...parts, domain: 'oidc', count: 2, distinct: 2, last: 1 }],
+        ],
+        [
+            'parts of an empty export',
+            [empty],
+            [{ ...parts, domain: 'crowdsec', count: 1, distinct: 1, last: 0 }],
+        ],
+        ['parts without a journal row', [], [parts]],
+        ['two summaries of one domain', [exported], [parts, parts]],
+        ['a malformed summary', [exported], [null]],
+        ['a duplicated journal row', [exported, exported], [parts]],
+        ['an unknown state', [{ ...exported, state: 'aborted' }], [parts]],
+        ['a missing installation', [{ ...exported, installation_id: null }], [parts]],
+        ['a fractional count', [{ ...exported, part_count: 2.5 }], [parts]],
+        ['a negative count', [{ ...exported, part_count: -1 }], []],
+        ['an oversized count', [{ ...exported, part_count: 1025 }], []],
+        ['a malformed journal row', ['dns'], []],
+        [
+            'too many journal rows',
+            Array.from({ length: 65 }, (_, index) => ({ ...empty, domain: String(index) })),
+            [],
+        ],
+    ] as const)('rejects %s', (_label, handoffs, summaries) => {
+        expect(() => assertLegacyHandoffParts([...handoffs], [...summaries])).toThrow(
+            'Invalid legacy feature handoff parts',
+        )
+    })
 })

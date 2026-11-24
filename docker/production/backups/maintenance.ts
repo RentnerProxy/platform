@@ -354,6 +354,8 @@ async function offlineRestore(options: readonly string[]) {
                 join(snapshot, appStateName),
             ])
         if (portable) await restorePortableApps(snapshot)
+        // A pending journal keeps the appliance stopped while restored app rows disagree with it.
+        await command(['bash', '-c', postgresCommand('restored', snapshot, appAware, backupId)])
         await command(['sync', '--file-system', '/var/lib/rentnerproxy'])
         await completeAppEncryptionKeyRestore()
         await completeProductionRestore()

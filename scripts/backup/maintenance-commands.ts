@@ -145,7 +145,7 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
                 result?.stderr ?? '',
             )?.[1]
             const validation =
-                /BACKUP_VALIDATION=(database_version|migration_history|application_key|crowdsec_archive|crowdsec_database|crowdsec_credentials|runtime_validation)/u.exec(
+                /BACKUP_VALIDATION=(database_version|migration_history|application_key|crowdsec_archive|crowdsec_database|crowdsec_credentials|application_state|runtime_validation)/u.exec(
                     result?.stderr ?? '',
                 )?.[1]
             const details = [

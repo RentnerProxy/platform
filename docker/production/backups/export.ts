@@ -40,6 +40,19 @@ import {
 
 class IncompleteBackupCleanup extends Error {}
 
+async function readRestoreSnapshotMetadata(path: string, backupId: string) {
+    if (!/^\/(?:backup|tmp\/rentnerproxy-offline-[A-Za-z0-9_-]+)$/u.test(path))
+        throw new Error('Invalid snapshot path')
+    const { metadata } = await readSnapshotMetadata(
+        path,
+        z
+            .string()
+            .regex(/^[a-f0-9]{64}$/u)
+            .parse(backupId),
+    )
+    return metadata
+}
+
 async function capture(
     args: string[],
     path: string,
@@ -117,6 +130,7 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
             applications?.installations ?? [],
             signal,
             applications ? 'portable' : 'legacy',
+            'journal',
         )
         const dump = await capture(
             [
@@ -259,31 +273,13 @@ if (import.meta.main) {
                 ...(result === 'success' ? {} : { error: result }),
             })
         } else if (args.length === 3 && args[0] === '--check-app-restore-inventory') {
-            const path = args[1]!
-            if (!/^\/(?:backup|tmp\/rentnerproxy-offline-[A-Za-z0-9_-]+)$/u.test(path))
-                throw new Error('Invalid snapshot path')
-            const { metadata } = await readSnapshotMetadata(
-                path,
-                z
-                    .string()
-                    .regex(/^[a-f0-9]{64}$/u)
-                    .parse(args[2]),
-            )
+            const metadata = await readRestoreSnapshotMetadata(args[1]!, args[2]!)
             await checkLiveAppDatabase(
                 metadata.version === 5 ? metadata.applications.installations : [],
                 controller.signal,
             )
         } else if (args.length === 4 && args[0] === '--check-portable-app-restore-inventory') {
-            const path = args[1]!
-            if (!/^\/(?:backup|tmp\/rentnerproxy-offline-[A-Za-z0-9_-]+)$/u.test(path))
-                throw new Error('Invalid snapshot path')
-            const { metadata } = await readSnapshotMetadata(
-                path,
-                z
-                    .string()
-                    .regex(/^[a-f0-9]{64}$/u)
-                    .parse(args[2]),
-            )
+            const metadata = await readRestoreSnapshotMetadata(args[1]!, args[2]!)
             if (metadata.version !== PORTABLE_APP_BACKUP_VERSION)
                 throw new Error('Portable application backup required')
             const resume = z.enum(['true', 'false']).parse(args[3]) === 'true'
@@ -291,6 +287,16 @@ if (import.meta.main) {
                 resume ? metadata.applications.installations : [],
                 controller.signal,
                 resume ? 'portable-resume' : 'portable-fresh',
+                resume ? 'journal' : 'installations',
+            )
+        } else if (args.length === 3 && args[0] === '--check-restored-app-inventory') {
+            // The applied restore must leave app rows that its own installation journal governs.
+            const metadata = await readRestoreSnapshotMetadata(args[1]!, args[2]!)
+            await checkLiveAppDatabase(
+                metadata.version === 4 ? [] : metadata.applications.installations,
+                controller.signal,
+                metadata.version === PORTABLE_APP_BACKUP_VERSION ? 'portable' : 'legacy',
+                'journal',
             )
         } else if (args.length === 7 && args[0] === '--check-portable-restore-capacity') {
             const positive = z.coerce.number().int().safe().positive()
