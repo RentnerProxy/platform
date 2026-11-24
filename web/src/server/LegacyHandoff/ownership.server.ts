@@ -12,18 +12,48 @@ import type {
     PlatformOwnedResult,
 } from './Types/legacy-handoff.types.ts'
 
-function domainLock(domain: LegacyFeatureDomain) {
+function domainKey(domain: LegacyFeatureDomain): number {
     const key = appProviderProfiles.indexOf(domain)
     if (key < 0) throw new TypeError('Unknown legacy feature domain')
-    return sql`${LEGACY_HANDOFF_LIMITS.advisoryLockClass}::int, ${key}::int`
+    return key
 }
 
-/** Wait until no platform writer of the domain is inside a transaction, and keep new ones out. */
+function domainLock(domain: LegacyFeatureDomain) {
+    return sql`${LEGACY_HANDOFF_LIMITS.advisoryLockClass}::int, ${domainKey(domain)}::int`
+}
+
+/**
+ * Wait until no platform writer of the domain is inside a transaction, and keep new ones out.
+ * Statements after the lock must see every writer that committed while it waited, so only read
+ * committed transactions qualify. A transaction that already holds a writer's shared lock would be
+ * granted its own exclusive request at once and is refused.
+ */
 export async function lockLegacyFeatureDomain(
     transaction: AuthTransaction,
     domain: LegacyFeatureDomain,
 ): Promise<void> {
+    const key = domainKey(domain)
+    const [state] = await transaction.execute<{ isolation: string; writer: boolean }>(sql`
+        select current_setting('transaction_isolation') as isolation,
+            exists (
+                select from pg_locks
+                where locktype = 'advisory' and pid = pg_backend_pid() and mode = 'ShareLock'
+                    and classid = (${LEGACY_HANDOFF_LIMITS.advisoryLockClass})::oid
+                    and objid = (${key})::oid and objsubid = 2
+            ) as writer`)
+    if (state?.isolation !== 'read committed')
+        throw new TypeError('Legacy feature handoffs require a read committed transaction')
+    if (state.writer)
+        throw new TypeError('A legacy feature handoff cannot run inside a platform writer')
     await transaction.execute(sql`select pg_advisory_xact_lock(${domainLock(domain)})`)
+}
+
+/** Keep handoffs from changing any domain's owner until this read-only transaction ends. */
+export async function shareLegacyFeatureDomains(transaction: AuthTransaction): Promise<void> {
+    await transaction.execute(sql`
+        select pg_advisory_xact_lock_shared(${LEGACY_HANDOFF_LIMITS.advisoryLockClass}::int, key)
+        from generate_series(0, ${appProviderProfiles.length - 1}::int) as key
+        order by key`)
 }
 
 export function toLegacyFeatureOwner(

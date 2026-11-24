@@ -16,7 +16,11 @@ import { appProviderProfiles, isAppWireJson } from '@/server/AppRuntime/contract
 import type { AppRuntimeJsonValue } from '@/server/AppRuntime/Types/authority.types.ts'
 import { decryptSecret, encryptSecret } from '@/server/Auth/Core/encryption.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
-import { lockLegacyFeatureDomain, toLegacyFeatureOwner } from './ownership.server.ts'
+import {
+    lockLegacyFeatureDomain,
+    shareLegacyFeatureDomains,
+    toLegacyFeatureOwner,
+} from './ownership.server.ts'
 import {
     LegacyFeatureHandoffError,
     type LegacyFeatureDomain,
@@ -43,6 +47,26 @@ function exportDigest(domain: LegacyFeatureDomain, hashes: readonly string[]): s
     return sha256(
         [LEGACY_HANDOFF_DIGEST_LABEL, domain, String(hashes.length), ...hashes].join('\n'),
     )
+}
+
+/**
+ * Serialize one part and validate the stored text itself: `toJSON` can change what is written, and
+ * a throwing getter or hook makes the part invalid instead of escaping past the failure record.
+ */
+function serializePart(part: unknown): string | undefined {
+    try {
+        if (!isAppWireJson(part)) return undefined
+        const plaintext: unknown = JSON.stringify(part)
+        if (
+            typeof plaintext !== 'string' ||
+            Buffer.byteLength(plaintext) > LEGACY_HANDOFF_LIMITS.partBytes ||
+            !isAppWireJson(JSON.parse(plaintext))
+        )
+            return undefined
+        return plaintext
+    } catch {
+        return undefined
+    }
 }
 
 async function lockJournalRow(transaction: AuthTransaction, domain: LegacyFeatureDomain) {
@@ -104,17 +128,17 @@ export async function beginLegacyFeatureHandoffInTransaction(
             iv: encrypted.iv,
         })
     }
-    await source.export(transaction, (part) => {
-        const plaintext = isAppWireJson(part) ? JSON.stringify(part) : ''
-        if (
-            closed ||
-            !plaintext ||
-            Buffer.byteLength(plaintext) > LEGACY_HANDOFF_LIMITS.partBytes ||
-            hashes.length >= LEGACY_HANDOFF_LIMITS.maximumParts
-        ) {
-            failure ??= new LegacyFeatureHandoffError('invalid_export')
-            return Promise.reject(failure)
-        }
+    const reject = () => {
+        failure ??= new LegacyFeatureHandoffError('invalid_export')
+        const rejected = Promise.reject(failure)
+        // A source that does not await still gets a rejected emit, but begin reports the failure.
+        rejected.catch(() => undefined)
+        return rejected
+    }
+    const emit = (part: AppRuntimeJsonValue) => {
+        const plaintext = closed ? undefined : serializePart(part)
+        if (plaintext === undefined || hashes.length >= LEGACY_HANDOFF_LIMITS.maximumParts)
+            return reject()
         const hash = sha256(plaintext)
         // Reserve the position synchronously so parts keep their emission order.
         const stored = store(hashes.push(hash) - 1, plaintext, hash)
@@ -124,9 +148,14 @@ export async function beginLegacyFeatureHandoffInTransaction(
             }),
         )
         return stored
-    })
-    closed = true
-    await Promise.all(pending)
+    }
+    try {
+        await source.export(transaction, emit)
+    } finally {
+        closed = true
+        // Settle every accepted part before begin returns or rethrows, so no write outlives it.
+        await Promise.all(pending)
+    }
     if (failure !== undefined) throw failure
 
     const digest = exportDigest(domain, hashes)
@@ -220,11 +249,15 @@ export async function abortLegacyFeatureHandoffInTransaction(
     await transaction.delete(legacyFeatureHandoffs).where(eq(legacyFeatureHandoffs.domain, domain))
 }
 
-/** Report each domain's owner and, while platform owns it, what an app would take over. */
+/**
+ * Report each domain's owner and, while platform owns it, what an app would take over. Shared
+ * domain locks keep a handoff from committing between the owner read and the inspection.
+ */
 export async function inspectLegacyFeaturesInTransaction(
     transaction: AuthTransaction,
     sources: Readonly<Partial<Record<LegacyFeatureDomain, LegacyFeatureHandoffSource>>>,
 ): Promise<LegacyFeatureStatus[]> {
+    await shareLegacyFeatureDomains(transaction)
     const rows = await transaction.select().from(legacyFeatureHandoffs)
     const owners = new Map(rows.map((row) => [row.domain, toLegacyFeatureOwner(row)]))
     return Promise.all(
