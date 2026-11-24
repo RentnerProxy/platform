@@ -88,11 +88,16 @@ async function verifyNotificationStream(events: Response, message: string): Prom
 }
 
 async function verifyApp(bootstrap: Bootstrap): Promise<void> {
-    const request = (route: string, input?: unknown, key?: string) =>
+    const request = (
+        route: string,
+        input?: unknown,
+        key?: string,
+        method = input === undefined ? 'GET' : 'POST',
+    ) =>
         fetch('http://app-runtime/platform/v1/' + route, {
             unix: bootstrap.coreSocket,
             signal: AbortSignal.timeout(4_000),
-            method: input === undefined ? 'GET' : 'POST',
+            method,
             headers: {
                 Authorization: 'Bearer ' + bootstrap.coreCredential,
                 'X-App-Installation': bootstrap.installationId,
@@ -103,6 +108,7 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
             ...(input !== undefined && { body: JSON.stringify(input) }),
         })
     const provider = (id: string) => request('providers/' + id)
+    const handoff = (domain: string) => request('legacy-handoffs/' + domain)
     const awaitProviderStatus = (status: number) =>
         waitFor(async () =>
             (await provider(providerRegistration.id)).status === status ? true : undefined,
@@ -160,6 +166,28 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
         assert.deepEqual(await live.json(), providerRegistration)
         assert.equal((await provider('fixture-unregistered')).status, 404)
 
+        stage = 'legacy handoff'
+        const platformOwned = { domain: providerRegistration.profile, state: 'platform' }
+        const status = await handoff(providerRegistration.profile)
+        assert.equal(status.status, 200)
+        assert.deepEqual(await status.json(), platformOwned)
+        // No built-in feature registers a source yet, so begin must refuse without fencing.
+        const begin = await request(
+            'legacy-handoffs/' + providerRegistration.profile + '/begin',
+            undefined,
+            'begin-' + bootstrap.generation,
+            'POST',
+        )
+        assert.equal(begin.status, 404)
+        // The service refused it, not a missing broker or gateway route.
+        const refusal: unknown = await begin.json()
+        assert.ok(typeof refusal === 'object' && refusal !== null)
+        assert.equal('code' in refusal && refusal.code, 'notFound')
+        assert.equal('title' in refusal && refusal.title, 'App resource is unavailable.')
+        assert.deepEqual(await (await handoff(providerRegistration.profile)).json(), platformOwned)
+        // The manifest does not declare dns as a provider profile.
+        assert.equal((await handoff('dns')).status, 403)
+
         if (bootstrap.generation !== 1) {
             await Bun.write(progressFile, 'ready-' + bootstrap.generation)
             stage = 'failure'
@@ -214,6 +242,8 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
         stage = 'grant revocation'
         await awaitCommand('revoke-grant')
         await awaitProviderStatus(404)
+        // Without the provider grant the installation has no handoff authority either.
+        assert.equal((await handoff(providerRegistration.profile)).status, 403)
         await Bun.write(progressFile, 'grant-revoked')
 
         stage = 'grant restoration'

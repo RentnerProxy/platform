@@ -34,7 +34,8 @@ use tokio::{
 };
 
 use super::{
-    Bootstrap, LaunchConfig, VERSION, filesystem::connect_peer, lease, record_id, wire_json,
+    Bootstrap, LaunchConfig, PROVIDER_PROFILES, VERSION, filesystem::connect_peer, lease,
+    record_id, wire_json,
 };
 
 const INSTALLATION: &str = "x-app-installation";
@@ -334,7 +335,7 @@ struct Operation {
     events: bool,
 }
 
-static APP_OPERATIONS: LazyLock<[HttpDescriptor; 12]> = LazyLock::new(|| {
+static APP_OPERATIONS: LazyLock<[HttpDescriptor; 16]> = LazyLock::new(|| {
     [
         HttpOperation::GetPlatformContext,
         HttpOperation::SubscribeToEvents,
@@ -348,6 +349,10 @@ static APP_OPERATIONS: LazyLock<[HttpDescriptor; 12]> = LazyLock::new(|| {
         HttpOperation::GetProvider,
         HttpOperation::GetOperation,
         HttpOperation::CancelOperation,
+        HttpOperation::GetLegacyHandoff,
+        HttpOperation::BeginLegacyHandoff,
+        HttpOperation::ReadLegacyHandoffPart,
+        HttpOperation::CommitLegacyHandoff,
     ]
     .map(HttpOperation::descriptor)
 });
@@ -387,8 +392,12 @@ fn route_matches(operation: &HttpDescriptor, path: &str) -> bool {
         return false;
     };
     path.strip_prefix(prefix)
-        .and_then(|id| id.strip_suffix(suffix))
-        .is_some_and(record_id)
+        .and_then(|value| value.strip_suffix(suffix))
+        .is_some_and(|value| match operation.path_parameter_schema() {
+            // A legacy handoff domain is a provider profile, never an arbitrary record.
+            Some("LegacyHandoffDomain") => PROVIDER_PROFILES.contains(&value),
+            _ => record_id(value),
+        })
 }
 
 async fn forward(

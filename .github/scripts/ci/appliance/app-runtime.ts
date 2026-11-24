@@ -19,6 +19,7 @@ export async function verifyApplianceAppRuntime(context: ApplianceProxyTrafficCo
         )
         context.passed('native app IPC, isolated database and generation revocation')
         context.passed('provider grants, generation cutover and app failure isolation')
+        context.passed('legacy handoff status and refusal without a feature source')
     } catch (error) {
         const [appStage, managerStage] = await Promise.all([
             context
@@ -27,7 +28,7 @@ export async function verifyApplianceAppRuntime(context: ApplianceProxyTrafficCo
             context.command([...exec, 'cat', managerProgress]).catch(() => ''),
         ])
         if (
-            /^failed at (?:preparation|activation|provider|database|notification|grant revocation|grant restoration|failure)$/u.test(
+            /^failed at (?:preparation|activation|provider|legacy handoff|database|notification|grant revocation|grant restoration|failure)$/u.test(
                 appStage,
             )
         )

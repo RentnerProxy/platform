@@ -113,4 +113,101 @@ describe('private app gateway', () => {
             (await gateway(new Request('http://app-api/platform/v1/context', { headers }))).status,
         ).toBe(503)
     })
+
+    test('routes legacy handoffs with their domain, keys and bodies', async () => {
+        const { gateway, calls } = fixture()
+        const send = (
+            method: 'GET' | 'POST',
+            route: string,
+            { key, body }: { key?: string; body?: string } = {},
+        ) =>
+            gateway(
+                new Request('http://app-api/platform/v1/legacy-handoffs/' + route, {
+                    method,
+                    headers: {
+                        ...headers,
+                        ...(key !== undefined && { 'Idempotency-Key': key }),
+                        ...(body !== undefined && { 'Content-Type': 'application/json' }),
+                    },
+                    ...(body !== undefined && { body }),
+                }),
+            )
+        const digest = 'a'.repeat(64)
+
+        expect((await send('GET', 'monitoring')).status).toBe(204)
+        expect((await send('POST', 'dns/begin', { key: 'begin-1' })).status).toBe(204)
+        expect(
+            (await send('POST', 'oidc/parts', { body: `{"digest":"${digest}","sequence":2}` }))
+                .status,
+        ).toBe(204)
+        expect(
+            (
+                await send('POST', 'crowdsec/commit', {
+                    key: 'commit-1',
+                    body: `{"digest":"${digest}"}`,
+                })
+            ).status,
+        ).toBe(204)
+        expect(
+            calls.map(({ operation, resourceId, idempotencyKey, body }) => ({
+                operation,
+                resourceId,
+                idempotencyKey,
+                body,
+            })),
+        ).toEqual([
+            {
+                operation: 'getLegacyHandoff',
+                resourceId: 'monitoring',
+                idempotencyKey: undefined,
+                body: undefined,
+            },
+            {
+                operation: 'beginLegacyHandoff',
+                resourceId: 'dns',
+                idempotencyKey: 'begin-1',
+                body: undefined,
+            },
+            {
+                operation: 'readLegacyHandoffPart',
+                resourceId: 'oidc',
+                idempotencyKey: undefined,
+                body: { digest, sequence: 2 },
+            },
+            {
+                operation: 'commitLegacyHandoff',
+                resourceId: 'crowdsec',
+                idempotencyKey: 'commit-1',
+                body: { digest },
+            },
+        ])
+
+        // Begin and commit need a key, reads refuse one, and only parts and commit carry JSON.
+        const refused = [
+            send('GET', 'monitoring', { key: 'read-1' }),
+            send('POST', 'dns/begin'),
+            send('POST', 'dns/begin', { key: 'begin-1', body: '{}' }),
+            send('POST', 'oidc/parts', {
+                key: 'part-1',
+                body: `{"digest":"${digest}","sequence":2}`,
+            }),
+            send('POST', 'oidc/parts'),
+            send('POST', 'crowdsec/commit', { body: `{"digest":"${digest}"}` }),
+            send('GET', 'Monitoring'),
+        ]
+        expect((await Promise.all(refused)).map((response) => response.status)).toEqual(
+            refused.map(() => 400),
+        )
+        // Only the contract routes exist.
+        const missing = [
+            send('GET', 'monitoring/begin'),
+            send('POST', 'monitoring', { body: '{}' }),
+            send('POST', 'monitoring/abort', { key: 'abort-1' }),
+            send('GET', 'monitoring/parts/0'),
+        ]
+        expect((await Promise.all(missing)).map((response) => response.status)).toEqual(
+            missing.map(() => 404),
+        )
+        expect(calls).toHaveLength(4)
+    })
 })
