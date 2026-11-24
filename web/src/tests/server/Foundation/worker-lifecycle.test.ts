@@ -501,6 +501,71 @@ describe('worker lifecycle', () => {
         ).toBe(1)
     })
 
+    test('a worker whose domain is handed off loads but never starts', async () => {
+        workerObservability.reset()
+        let starts = 0
+        let admissions = 0
+        await startWorkerLifecycle(
+            async () => ({
+                start: () => {
+                    starts++
+                },
+                stop: async () => undefined,
+            }),
+            'host_monitoring',
+            {
+                admit: async () => {
+                    admissions++
+                    return false
+                },
+            },
+        )
+        const snapshot = workerObservability
+            .snapshot()
+            .workers.find((entry) => entry.id === 'host_monitoring')
+        expect({ admissions, starts, state: snapshot?.state }).toEqual({
+            admissions: 1,
+            starts: 0,
+            state: 'handed_off',
+        })
+    })
+
+    test('a failed admission read retries the same unstarted worker before it starts', async () => {
+        workerObservability.reset()
+        let loads = 0
+        let starts = 0
+        let admissions = 0
+        await startWorkerLifecycle(
+            async () => {
+                loads++
+                return {
+                    start: () => {
+                        starts++
+                    },
+                    stop: async () => undefined,
+                }
+            },
+            'docker_discovery',
+            {
+                retryDelayMs: 1,
+                admit: async () => {
+                    if (++admissions === 1) throw new Error('journal unavailable')
+                    return true
+                },
+            },
+        )
+        const snapshot = workerObservability
+            .snapshot()
+            .workers.find((entry) => entry.id === 'docker_discovery')
+        expect({ loads, admissions, starts, retries: snapshot?.counters.retry }).toEqual({
+            loads: 1,
+            admissions: 2,
+            starts: 1,
+            retries: 1,
+        })
+        expect(snapshot?.state).not.toBe('handed_off')
+    })
+
     test('does not retry terminal startup failures', async () => {
         let loads = 0
         await expect(

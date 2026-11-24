@@ -3,6 +3,8 @@ import { expect, mock, spyOn, test } from 'bun:test'
 type Worker = { start: () => unknown; stop: () => unknown }
 const workers: unknown[] = []
 const workersById = new Map<string, Worker>()
+const admissionsById = new Map<string, () => Promise<boolean>>()
+const platformOwned = mock(async (domain: string) => domain !== 'crowdsec')
 const loaders: Promise<unknown>[] = []
 const validate = mock(() => {})
 const realtime = mock(() => {})
@@ -67,7 +69,12 @@ await mock.module('@/server/WebSockets/realtimeValkey.service.ts', () => ({
     startRealtimeValkey: realtime,
 }))
 await mock.module('@/server/Foundation/worker-lifecycle.server.ts', () => ({
-    startWorkerLifecycle: (loader: () => Promise<unknown>, id: string) => {
+    startWorkerLifecycle: (
+        loader: () => Promise<unknown>,
+        id: string,
+        options?: { admit?: () => Promise<boolean> },
+    ) => {
+        if (options?.admit) admissionsById.set(id, options.admit)
         const result = loader().then((worker) => {
             workers.push(worker)
             workersById.set(id, worker as Worker)
@@ -109,6 +116,9 @@ await mock.module('@/server/HostMonitoring/host-monitoring.worker.server.ts', ()
     hostMonitoringWorker: monitor,
 }))
 await mock.module('@/server/Admin/NpmImport/npm-temp.ts', () => ({ pruneStaleNpmImports: prune }))
+await mock.module('@/server/LegacyHandoff/worker-admission.server.ts', () => ({
+    isLegacyFeaturePlatformOwned: platformOwned,
+}))
 
 test('server bootstrap validates production, binds every worker and coalesces temporary-file pruning with stop cleanup', async () => {
     const previous = process.env.NODE_ENV
@@ -124,6 +134,23 @@ test('server bootstrap validates production, binds every worker and coalesces te
         expect(validate).toHaveBeenCalledTimes(1)
         expect(realtime).toHaveBeenCalledTimes(1)
         expect(workers).toHaveLength(9)
+        // Only the built-in feature workers ask the handoff journal before they start.
+        expect([...admissionsById.keys()].toSorted()).toEqual([
+            'crowdsec_reconciliation',
+            'docker_discovery',
+            'host_monitoring',
+        ])
+        const admitted = await Promise.all(
+            ['host_monitoring', 'docker_discovery', 'crowdsec_reconciliation'].map((id) =>
+                admissionsById.get(id)!(),
+            ),
+        )
+        expect(admitted).toEqual([true, true, false])
+        expect(platformOwned.mock.calls.map(([domain]) => domain)).toEqual([
+            'monitoring',
+            'docker-discovery',
+            'crowdsec',
+        ])
         for (const worker of [reconcileProxy, reconcileCrowdsec, backup, notification, monitor])
             expect(workers).toContain(worker)
         const discoveryLifecycle = workersById.get('docker_discovery')!
