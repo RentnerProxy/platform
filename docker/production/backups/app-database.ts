@@ -1,4 +1,9 @@
-import { assertBackupAppRows } from '../../web/validate-backup.ts'
+import {
+    appDatabaseEvidenceSql,
+    assertBackupAppRows,
+    assertBackupAppState,
+    parseAppDatabaseEvidence,
+} from '../../web/validate-backup.ts'
 import { rejectAppDatabasesSql } from '../../../scripts/backup/app-state.ts'
 import { runMaintenanceProcess } from '../../../scripts/backup/maintenance-process.ts'
 import type { BackupMetadata } from '../../../scripts/backup/Types/format.types.ts'
@@ -12,10 +17,17 @@ const rejectPortableAppDatabasesSql = `SELECT 1 / (NOT EXISTS (
     WHERE starts_with(rolname, 'rp_app_') OR starts_with(rolname, 'rp_migrate_')
 ))::integer;`
 
+/**
+ * Compare the live app rows with an installation inventory. The `installations` scope checks
+ * identities only, for a target whose database the restore will replace. The `journal` scope also
+ * requires every dependent row and recorded generation to match, for a database that the inventory
+ * governs: at capture, on a resumed portable restore and after a restore has been applied.
+ */
 export async function checkLiveAppDatabase(
     expected: Inventory,
     signal?: AbortSignal,
     mode: 'legacy' | 'portable' | 'portable-fresh' | 'portable-resume' = 'legacy',
+    scope: 'installations' | 'journal' = 'installations',
 ) {
     const result = await runMaintenanceProcess(
         [
@@ -36,7 +48,7 @@ export async function checkLiveAppDatabase(
             cwd: '/',
             timeoutMs: 30_000,
             signal,
-            maximumOutputBytes: 65_536,
+            maximumOutputBytes: 512 * 1024,
             input: Buffer.from(
                 [
                     mode === 'legacy'
@@ -44,13 +56,17 @@ export async function checkLiveAppDatabase(
                         : mode === 'portable-fresh'
                           ? rejectPortableAppDatabasesSql
                           : 'SELECT 1;',
-                    "SELECT to_regclass('rentnerproxy.app_runtime_installations') IS NOT NULL AS has_apps",
+                    "SELECT to_regclass('rentnerproxy.app_runtime_installations') IS NOT NULL AS has_apps, to_regclass('rentnerproxy.legacy_feature_handoffs') IS NOT NULL AS has_handoffs",
                     '\\gset',
                     '\\if :has_apps',
                     "DO $check$ BEGIN IF EXISTS (SELECT FROM rentnerproxy.app_runtime_generations WHERE state <> 'revoked') OR EXISTS (SELECT FROM rentnerproxy.app_runtime_pending_secrets) THEN RAISE EXCEPTION 'App generation has not retired'; END IF; END $check$;",
-                    'SELECT coalesce(json_agg(t),\'[]\') FROM (SELECT id, app_id AS "appId", uid::int AS uid FROM rentnerproxy.app_runtime_installations LIMIT 257) t;',
+                    '\\if :has_handoffs',
+                    appDatabaseEvidenceSql(true) + ';',
                     '\\else',
-                    "SELECT '[]';",
+                    appDatabaseEvidenceSql(false) + ';',
+                    '\\endif',
+                    '\\else',
+                    `SELECT '{"installations":[],"references":[],"generations":[]}';`,
                     '\\endif',
                 ].join('\n'),
             ),
@@ -60,8 +76,15 @@ export async function checkLiveAppDatabase(
         throw new Error('Unsupported live application database state')
     const output = Buffer.from(result.stdout).toString('utf8').trim()
     if (!output.startsWith('1\n')) throw new Error('Invalid live application database evidence')
-    const rows: unknown = JSON.parse(output.slice(2))
-    if (!Array.isArray(rows)) throw new Error('Invalid application inventory')
-    if (mode === 'portable-resume' && rows.length === 0) return
-    assertBackupAppRows(expected, rows)
+    const evidence = parseAppDatabaseEvidence(output.slice(2))
+    // A resumed portable restore may stop before its database was replaced.
+    if (
+        mode === 'portable-resume' &&
+        [evidence.installations, evidence.references, evidence.generations].every(
+            (rows) => rows.length === 0,
+        )
+    )
+        return
+    if (scope === 'journal') assertBackupAppState(expected, evidence)
+    else assertBackupAppRows(expected, evidence.installations)
 }

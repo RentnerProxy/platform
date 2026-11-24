@@ -18,7 +18,7 @@ const RESTORE_SMOKE_OPERATIONS = [
 ] as const
 
 const restoreValidationPattern =
-    /Backup validation: (database_version|migration_history|application_key|crowdsec_archive|crowdsec_database|crowdsec_credentials|runtime_validation)(?:;|\.)/u
+    /Backup validation: (database_version|migration_history|application_key|crowdsec_archive|crowdsec_database|crowdsec_credentials|application_state|runtime_validation)(?:;|\.)/u
 
 const restoreDatabaseDetailsPattern =
     /Restore database phase: (initialize|archive|render|assemble|execute)(?:; SQLSTATE: (23514|42P01|3F000|42501|42601|42710|2BP01|25P02))?\./u
@@ -43,7 +43,7 @@ export function restoreSmokeDiagnostic(output: string): string | undefined {
 export function isRestoreSmokeDiagnostic(line: string): boolean {
     if (line.includes(' [validation: ')) {
         const match =
-            /^(.*?) \[validation: (database_version|migration_history|application_key|crowdsec_archive|crowdsec_database|crowdsec_credentials|runtime_validation)\]$/u.exec(
+            /^(.*?) \[validation: (database_version|migration_history|application_key|crowdsec_archive|crowdsec_database|crowdsec_credentials|application_state|runtime_validation)\]$/u.exec(
                 line,
             )
         return match !== null && isRestoreSmokeDiagnostic(match[1]!)
