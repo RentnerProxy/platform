@@ -203,6 +203,21 @@ integrationTest(
             expect(await control('grants', fifth, { grants: [grant('dns')] })).toBe(204)
             expect(await control('activate', fifth, { leaseExpiresAt })).toBe(204)
             expect((await fetchProvider(fifth, dns.id)).status).toBe(200)
+            // A lease that expires between principal resolution and the read is 401, not 404.
+            const { readAppRuntimeProviderInTransaction, resolveAppRuntimePrincipalInTransaction } =
+                await import('@/server/AppRuntime/authority.server.ts')
+            await expect(
+                db.transaction(async (transaction) => {
+                    const principal = await resolveAppRuntimePrincipalInTransaction(transaction, {
+                        identity: fifth,
+                    })
+                    return readAppRuntimeProviderInTransaction(
+                        transaction,
+                        { ...principal, expiresAt: new Date(Date.now() - 1) },
+                        dns.id,
+                    )
+                }),
+            ).rejects.toMatchObject({ code: 'unauthorized' })
             await expireLease()
             expect((await fetchProvider(fifth, dns.id)).status).toBe(401)
             const sixth = generation(6)

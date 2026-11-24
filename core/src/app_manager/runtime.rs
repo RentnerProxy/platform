@@ -284,7 +284,7 @@ impl Running {
             "platformApi":requirements["platformApi"],"uiBridge":requirements.get("uiBridge"),
             "startupTimeoutMs":m["resources"]["startupTimeoutMs"].as_f64().map(|v|v as u64),
             "processLimit":m["resources"]["processLimit"].as_f64().map(|v|v as u64),
-            "providers":m["providers"]
+            "providers":m.get("providers").cloned().unwrap_or_else(|| json!([]))
         }))?;
         frame.push(b'\n');
         let mut command = Command::new(std::env::current_exe()?);

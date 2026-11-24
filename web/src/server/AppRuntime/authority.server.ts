@@ -579,6 +579,9 @@ export async function readAppRuntimeProviderInTransaction(
                 eq(appRuntimeGenerations.generation, generation),
             ),
         )
+    // A lease that expired during the read is an authority failure, not a missing provider.
+    if (principal.expiresAt.getTime() <= Date.now())
+        throw new AppRuntimeAuthorityError('unauthorized')
     const provider =
         current?.state === 'active'
             ? current.providers?.find(({ id }) => id === providerId)

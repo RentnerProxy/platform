@@ -739,27 +739,36 @@ fn registration(id: &str, profile: &str) -> Value {
 
 /// Drive `app_ready` against a fake app and a fake authority on own-UID sockets.
 ///
+/// `ready` are the app's readiness bodies in order, repeating the last one.
 /// `statuses` are the authority's replies in order, repeating the last one.
 /// `authority_delay` postpones binding the authority socket (connection failures).
 /// A `None` result means readiness was still retrying when `patience` elapsed.
 async fn exercise_readiness(
-    ready: Value,
+    ready: Vec<Value>,
     declared: &[&str],
     statuses: &[u16],
     authority_delay: Duration,
     patience: Duration,
 ) -> Readiness {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     let scratch = Scratch::create(&env::temp_dir());
     let app_socket = scratch.path("app.sock");
     let app = UnixListener::bind(&app_socket).unwrap();
+    let ready = Arc::new(ready);
+    let ready_served = Arc::new(AtomicUsize::new(0));
     let app_task = tokio::spawn(async move {
         loop {
             let (stream, _) = app.accept().await.unwrap();
-            let ready = ready.clone();
+            let ready = Arc::clone(&ready);
+            let ready_served = Arc::clone(&ready_served);
             let service = service_fn(move |request: Request<hyper::body::Incoming>| {
                 let body = match request.uri().path() {
                     "/app/v1/health" => json!({"healthy": true}),
-                    "/app/v1/ready" => ready.clone(),
+                    "/app/v1/ready" => {
+                        let index = ready_served.fetch_add(1, Ordering::Relaxed);
+                        ready[index.min(ready.len() - 1)].clone()
+                    }
                     path => panic!("Unexpected fixture app path {path}"),
                 };
                 std::future::ready(Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
@@ -856,7 +865,7 @@ fn ready_with(providers: Value) -> Value {
 
 async fn readiness(providers: Value, declared: &[&str], statuses: &[u16]) -> Readiness {
     exercise_readiness(
-        ready_with(providers),
+        vec![ready_with(providers)],
         declared,
         statuses,
         Duration::ZERO,
@@ -998,7 +1007,7 @@ async fn transient_authority_failures_retry_the_registration() {
     }
     // The authority socket does not exist for the first attempts.
     let outcome = exercise_readiness(
-        ready_with(json!([registration("monitor", "monitoring")])),
+        vec![ready_with(json!([registration("monitor", "monitoring")]))],
         &["monitoring"],
         &[204],
         Duration::from_millis(450),
@@ -1013,14 +1022,62 @@ async fn transient_authority_failures_retry_the_registration() {
 }
 
 #[tokio::test]
+async fn retries_repeat_the_first_validated_registration() {
+    let first = json!([registration("monitor", "monitoring")]);
+    for later in [
+        json!([]),
+        json!([registration("other", "monitoring")]),
+        json!([
+            registration("other", "monitoring"),
+            registration("monitor", "monitoring")
+        ]),
+    ] {
+        let outcome = exercise_readiness(
+            vec![ready_with(first.clone()), ready_with(later.clone())],
+            &["monitoring"],
+            &[503, 204],
+            Duration::ZERO,
+            Duration::from_secs(5),
+        )
+        .await;
+        outcome.result.expect("retried until success").unwrap();
+        assert_eq!(outcome.posted.len(), 2, "{later}");
+        for posted in &outcome.posted {
+            assert_eq!(posted.body["providers"], first, "{later}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_compatible_ready_response_without_providers_is_fatal() {
+    let outcome = exercise_readiness(
+        vec![json!({"ready": true, "protocolVersion": VERSION})],
+        &["monitoring"],
+        &[204],
+        Duration::ZERO,
+        Duration::from_secs(5),
+    )
+    .await;
+    let error = outcome
+        .result
+        .expect("a missing providers member must not be retried")
+        .expect_err("a missing providers member is invalid");
+    assert_eq!(
+        error.to_string(),
+        "App advertised invalid provider registrations"
+    );
+    assert!(outcome.posted.is_empty());
+}
+
+#[tokio::test]
 async fn an_app_that_is_not_ready_keeps_retrying_without_registration() {
     for ready in [
         json!({"ready": false, "protocolVersion": VERSION, "providers": []}),
         json!({"ready": true, "protocolVersion": "9.9.9", "providers": []}),
-        json!({"ready": true, "protocolVersion": VERSION}),
+        json!({"ready": false, "protocolVersion": VERSION}),
     ] {
         let outcome = exercise_readiness(
-            ready,
+            vec![ready],
             &["monitoring"],
             &[204],
             Duration::ZERO,

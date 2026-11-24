@@ -555,10 +555,13 @@ struct AppHealth {
 struct AppReady {
     ready: bool,
     protocol_version: String,
+    // An absent member stays null and is rejected once the app reports compatible readiness.
+    #[serde(default)]
     providers: Value,
 }
 
 const MAX_PROVIDERS: usize = 32;
+const READY_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -586,19 +589,23 @@ pub(super) async fn app_ready(
     uid: u32,
     declared: &[String],
 ) -> io::Result<()> {
+    let providers = loop {
+        match timeout(RPC_TIMEOUT, check_app_ready(bootstrap, uid, declared)).await {
+            Ok(Ok(providers)) => break providers,
+            Ok(Err(Failure::Fatal(error))) => return Err(error),
+            Ok(Err(Failure::Retry)) | Err(_) => sleep(READY_RETRY_DELAY).await,
+        }
+    };
+    if providers.is_empty() {
+        return Ok(());
+    }
+    // The first validated advertisement is final for this generation. A retry after a
+    // lost confirmation repeats exactly that list instead of probing the app again.
     loop {
-        let attempt = timeout(RPC_TIMEOUT, async {
-            let providers = check_app_ready(bootstrap, uid, declared).await?;
-            if providers.is_empty() {
-                return Ok(());
-            }
-            generation.register_providers(&providers).await
-        })
-        .await;
-        match attempt {
+        match timeout(RPC_TIMEOUT, generation.register_providers(&providers)).await {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(Failure::Fatal(error))) => return Err(error),
-            Ok(Err(Failure::Retry)) | Err(_) => sleep(Duration::from_millis(200)).await,
+            Ok(Err(Failure::Retry)) | Err(_) => sleep(READY_RETRY_DELAY).await,
         }
     }
 }
