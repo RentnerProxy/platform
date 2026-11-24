@@ -73,6 +73,8 @@ const roleUpdate = z.strictObject({
 })
 const secretReference = z.strictObject({ identity: identitySchema, secretId: appRecordId })
 const secretUpdate = secretReference.extend({ value: z.string().min(1).max(16_384) })
+// The removal check aborts legacy handoffs, whose domain locks require read committed.
+const readCommitted = { isolationLevel: 'read committed' } as const
 
 /** These controls are reachable only on the platform-owned bridge, outside the app route allowlist. */
 export function manageAppRuntime(action: string, body: unknown, signal: AbortSignal) {
@@ -180,7 +182,7 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
                         'App management operation was not found.',
                     )
             }
-        })
+        }, readCommitted)
         const headers = { 'Cache-Control': 'no-store' }
         if (result !== undefined) return Response.json(result, { headers })
         return new Response(null, { status: 204, headers })
