@@ -47,7 +47,7 @@ jobs:
         env:
             RUN_CHECK: ${{ needs.changes.outputs.runtime != 'false' }}
             BUN_VERSION: 1.4.5
-            RUST_VERSION: 1.100.0
+            RUST_VERSION: 1.99.1
             DATABASE_URL: postgresql://rentnerproxy:rentnerproxy@127.0.0.1:5432/rentnerproxy_beta2_test
             VALKEY_URL: redis://127.0.0.1:6379
             RENTNERPROXY_BETA2_INTEGRATION: '1'

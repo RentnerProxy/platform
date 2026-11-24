@@ -187,8 +187,8 @@ Commit beschränkt; einzelne Smoke-Befehle bauen weiterhin selbst.
 
 ## Versionspflege
 
-Die Workflows verwenden Bun `1.4.5`, Rust `1.100.0` (wie die Rust-Images der
-Dockerfiles), actionlint `1.7.12` und
+Die Workflows verwenden Bun `1.4.5`, Rust `1.99.1` (wie `rust-toolchain.toml`),
+actionlint `1.7.12` und
 cargo-audit `0.22.2`. Der Cargo-Scanner wird als offizielles Linux-x86_64-Binary
 derselben Version mit fest gepinnter SHA256 installiert; die Advisory-Datenbank
 wird weiterhin frisch geladen. Format benötigt keine installierten

@@ -17,7 +17,7 @@ concurrency:
 
 env:
     BUN_VERSION: 1.4.5
-    RUST_VERSION: 1.100.0
+    RUST_VERSION: 1.99.1
     # Incremental state never survives into a later CI run and would only bloat the caches.
     CARGO_INCREMENTAL: '0'
 
