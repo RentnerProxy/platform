@@ -1,5 +1,4 @@
 import type { AppRuntimeJsonValue } from '@/server/AppRuntime/Types/authority.types.ts'
-import type { LegacyHandoffOperation } from '@/server/AppRuntime/Types/gateway.types.ts'
 import type { LegacyFeatureDomain, LegacyFeatureHandoffSource } from './legacy-handoff.types.ts'
 
 /** Handoff sources by domain; a domain without one cannot begin a handoff. */
@@ -25,12 +24,12 @@ export interface LegacyHandoffPart {
 }
 
 export type LegacyHandoffRequest =
+    | { readonly operation: 'getLegacyHandoff'; readonly domain: LegacyFeatureDomain }
     | {
-          readonly operation: Extract<
-              LegacyHandoffOperation,
-              'getLegacyHandoff' | 'beginLegacyHandoff'
-          >
+          readonly operation: 'beginLegacyHandoff'
           readonly domain: LegacyFeatureDomain
+          /** The idempotency key, bound to the domain once begin succeeds. */
+          readonly key: string
       }
     | {
           readonly operation: 'readLegacyHandoffPart'
@@ -42,4 +41,6 @@ export type LegacyHandoffRequest =
           readonly operation: 'commitLegacyHandoff'
           readonly domain: LegacyFeatureDomain
           readonly digest: string
+          /** The idempotency key, bound to the domain and digest once commit succeeds. */
+          readonly key: string
       }

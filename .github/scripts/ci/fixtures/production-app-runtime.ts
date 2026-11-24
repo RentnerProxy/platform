@@ -179,6 +179,11 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
             'POST',
         )
         assert.equal(begin.status, 404)
+        // The service refused it, not a missing broker or gateway route.
+        const refusal: unknown = await begin.json()
+        assert.ok(typeof refusal === 'object' && refusal !== null)
+        assert.equal('code' in refusal && refusal.code, 'notFound')
+        assert.equal('title' in refusal && refusal.title, 'App resource is unavailable.')
         assert.deepEqual(await (await handoff(providerRegistration.profile)).json(), platformOwned)
         // The manifest does not declare dns as a provider profile.
         assert.equal((await handoff('dns')).status, 403)

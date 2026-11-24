@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { check, integer, primaryKey, timestamp, varchar } from 'drizzle-orm/pg-core'
+import { check, index, integer, primaryKey, timestamp, varchar } from 'drizzle-orm/pg-core'
 
 import { appRuntimeInstallations } from './appRuntime.ts'
 import { rentnerProxySchema } from './base.ts'
@@ -61,5 +61,38 @@ export const legacyFeatureHandoffParts = rentnerProxySchema.table(
         ),
         check('legacy_feature_handoff_parts_sha256_check', sql`${table.sha256} ~ '^[a-f0-9]{64}$'`),
         check('legacy_feature_handoff_parts_iv_check', sql`octet_length(${table.iv}) = 12`),
+    ],
+)
+
+/**
+ * Accepted idempotency keys of App API begin and commit requests. A key reused with other input is
+ * a conflict; the journal itself makes a retry with the same input return the recorded state.
+ */
+export const legacyFeatureHandoffRequests = rentnerProxySchema.table(
+    'legacy_feature_handoff_requests',
+    {
+        installationId: varchar('installation_id', { length: 64 })
+            .notNull()
+            .references(() => appRuntimeInstallations.id, { onDelete: 'cascade' }),
+        actor: varchar('actor', { length: 64 }).notNull(),
+        operation: varchar('operation', { enum: ['begin', 'commit'], length: 6 }).notNull(),
+        key: varchar('idempotency_key', { length: 64 }).notNull(),
+        fingerprint: varchar('fingerprint', { length: 64 }).notNull(),
+        createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    },
+    (table) => [
+        primaryKey({ columns: [table.installationId, table.actor, table.operation, table.key] }),
+        index('legacy_feature_handoff_requests_installation_time_idx').on(
+            table.installationId,
+            table.createdAt,
+        ),
+        check(
+            'legacy_feature_handoff_requests_operation_check',
+            sql`${table.operation} in ('begin', 'commit')`,
+        ),
+        check(
+            'legacy_feature_handoff_requests_fingerprint_check',
+            sql`${table.fingerprint} ~ '^[a-f0-9]{64}$'`,
+        ),
     ],
 )

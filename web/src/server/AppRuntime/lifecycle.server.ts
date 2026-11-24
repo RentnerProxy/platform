@@ -13,6 +13,7 @@ import {
     appRuntimePendingSecrets,
     appRuntimeRolePermissions,
     appRuntimeSecrets,
+    legacyFeatureHandoffRequests,
     roles,
     type AppRuntimeStoredGrant,
 } from '@/db/schema.ts'
@@ -339,7 +340,9 @@ export async function checkAppRuntimeDependenciesInTransaction(
         .limit(1)
     if (host) throw new AppRuntimeAuthorityError('conflict')
     // Platform resumes uncommitted built-in domains with their untouched state; ownership an app
-    // committed stays recorded, because its platform state is already retired.
+    // committed stays recorded, because its platform state is already retired. The app manager
+    // repeats this check after it stopped the app's broker, so a handoff begun before that stop is
+    // released too, and no App API request can begin another one afterwards.
     if (action === 'removable')
         await abortInstallationLegacyHandoffsInTransaction(transaction, installationId)
     if (action === 'purge-data') {
@@ -366,6 +369,9 @@ export async function checkAppRuntimeDependenciesInTransaction(
         await transaction
             .delete(appRuntimeGrants)
             .where(eq(appRuntimeGrants.installationId, installationId))
+        await transaction
+            .delete(legacyFeatureHandoffRequests)
+            .where(eq(legacyFeatureHandoffRequests.installationId, installationId))
         await bumpAuthorizationEpoch(transaction, installationId)
     }
 }

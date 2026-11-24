@@ -301,9 +301,12 @@ export function executeAppRuntimeCall(
             case 'beginLegacyHandoff':
             case 'readLegacyHandoffPart':
             case 'commitLegacyHandoff': {
-                // Begin and commit are idempotent through the journal state itself: a repeated
-                // request returns the recorded export or ownership, so the key needs no record.
-                const request = parseLegacyHandoffRequest(call.operation, resourceId, body)
+                const request = parseLegacyHandoffRequest(
+                    call.operation,
+                    resourceId,
+                    body,
+                    idempotencyKey,
+                )
                 return json(
                     await appRuntimeTransaction(
                         signal,

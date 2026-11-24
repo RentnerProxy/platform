@@ -1,9 +1,15 @@
 import '@tanstack/react-start/server-only'
 
-import { and, eq } from 'drizzle-orm'
+import { createHash } from 'node:crypto'
+import { and, desc, eq, lt, lte } from 'drizzle-orm'
 import type { z } from 'zod'
 
-import { appRuntimeGenerations, legacyFeatureHandoffs } from '@/db/schema.ts'
+import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
+import {
+    appRuntimeGenerations,
+    legacyFeatureHandoffRequests,
+    legacyFeatureHandoffs,
+} from '@/db/schema.ts'
 import {
     APP_RUNTIME_SUPPORT_CAPABILITIES,
     isAppRuntimeAuthorized,
@@ -42,6 +48,11 @@ import {
 } from './Types/legacy-handoff.types.ts'
 
 const unavailable = new AppRuntimeProblem(503, 'unavailable', 'App API is unavailable.')
+const idempotencyConflict = new AppRuntimeProblem(
+    409,
+    'idempotencyConflict',
+    'Idempotency key was reused.',
+)
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
     const parsed = schema.safeParse(value)
@@ -49,22 +60,42 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
     return parsed.data
 }
 
+function requiredKey(key: string | undefined): string {
+    if (key === undefined) throw new AppRuntimeAuthorityError('invalid_input')
+    return key
+}
+
 /** Validate the domain path parameter and the operation's body before any transaction starts. */
 export function parseLegacyHandoffRequest(
     operation: LegacyHandoffOperation,
     domainParameter: string | undefined,
     body: unknown,
+    idempotencyKey: string | undefined,
 ): LegacyHandoffRequest {
     const domain = parse(appProviderProfileSchema, domainParameter)
     switch (operation) {
         case 'getLegacyHandoff':
-        case 'beginLegacyHandoff':
             return { operation, domain }
+        case 'beginLegacyHandoff':
+            return { operation, domain, key: requiredKey(idempotencyKey) }
         case 'readLegacyHandoffPart':
             return { operation, domain, ...parse(appLegacyHandoffPartRequest, body) }
         case 'commitLegacyHandoff':
-            return { operation, domain, digest: parse(appLegacyHandoffCommit, body).digest }
+            return {
+                operation,
+                domain,
+                digest: parse(appLegacyHandoffCommit, body).digest,
+                key: requiredKey(idempotencyKey),
+            }
     }
+}
+
+interface DomainAuthority {
+    readonly installationId: string
+    /** Idempotency keys are scoped like app messages: per service or delegated user. */
+    readonly actor: string
+    /** The earliest of the lease, delegation and session deadlines. */
+    readonly expiresAt: Date
 }
 
 /**
@@ -75,7 +106,7 @@ async function authorizeDomain(
     transaction: AuthTransaction,
     credentials: AppRuntimeCredentials,
     domain: LegacyFeatureDomain,
-): Promise<string> {
+): Promise<DomainAuthority> {
     const principal = await resolveAppRuntimePrincipalInTransaction(transaction, credentials)
     const { installationId, generation } = principal.identity
     const [current] = await transaction
@@ -95,7 +126,67 @@ async function authorizeDomain(
         !isAppRuntimeAuthorized(principal, APP_RUNTIME_SUPPORT_CAPABILITIES.provider, domain)
     )
         throw new AppRuntimeAuthorityError('forbidden')
-    return installationId
+    return { installationId, actor: principal.user?.id ?? 'service', expiresAt: principal.expiresAt }
+}
+
+/**
+ * Bind an accepted begin or commit key to its input before the journal changes. Reuse with other
+ * input is a conflict; a retry with the same input continues to the journal, which returns the
+ * recorded export or ownership. A failed request rolls the binding back with the transaction.
+ */
+async function bindRequestKey(
+    transaction: AuthTransaction,
+    { installationId, actor }: DomainAuthority,
+    operation: 'begin' | 'commit',
+    key: string,
+    input: readonly string[],
+): Promise<void> {
+    const fingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
+    const [inserted] = await transaction
+        .insert(legacyFeatureHandoffRequests)
+        .values({ installationId, actor, operation, key, fingerprint })
+        .onConflictDoNothing()
+        .returning({ key: legacyFeatureHandoffRequests.key })
+    const scope = eq(legacyFeatureHandoffRequests.installationId, installationId)
+    if (!inserted) {
+        const [existing] = await transaction
+            .select({ fingerprint: legacyFeatureHandoffRequests.fingerprint })
+            .from(legacyFeatureHandoffRequests)
+            .where(
+                and(
+                    scope,
+                    eq(legacyFeatureHandoffRequests.actor, actor),
+                    eq(legacyFeatureHandoffRequests.operation, operation),
+                    eq(legacyFeatureHandoffRequests.key, key),
+                ),
+            )
+        if (existing && existing.fingerprint !== fingerprint) throw idempotencyConflict
+        return
+    }
+    // Forget expired keys and keep only the newest ones; the journal still dedupes their retries.
+    const { requestKeyRetentionMs, requestKeysPerInstallation } = LEGACY_HANDOFF_LIMITS
+    await transaction
+        .delete(legacyFeatureHandoffRequests)
+        .where(
+            and(
+                scope,
+                lte(
+                    legacyFeatureHandoffRequests.createdAt,
+                    new Date(Date.now() - requestKeyRetentionMs),
+                ),
+            ),
+        )
+    const [oldestKept] = await transaction
+        .select({ createdAt: legacyFeatureHandoffRequests.createdAt })
+        .from(legacyFeatureHandoffRequests)
+        .where(scope)
+        .orderBy(desc(legacyFeatureHandoffRequests.createdAt))
+        .offset(requestKeysPerInstallation - 1)
+        .limit(1)
+    if (oldestKept)
+        await transaction
+            .delete(legacyFeatureHandoffRequests)
+            .where(and(scope, lt(legacyFeatureHandoffRequests.createdAt, oldestKept.createdAt)))
 }
 
 function toStatus(
@@ -145,8 +236,29 @@ export async function executeLegacyHandoffInTransaction(
     request: LegacyHandoffRequest,
     sources: LegacyFeatureHandoffSources,
 ): Promise<LegacyHandoffStatus | LegacyHandoffPart> {
+    const authority = await authorizeDomain(transaction, credentials, request.domain)
+    if (request.operation === 'beginLegacyHandoff')
+        await bindRequestKey(transaction, authority, 'begin', request.key, [request.domain])
+    if (request.operation === 'commitLegacyHandoff')
+        await bindRequestKey(transaction, authority, 'commit', request.key, [
+            request.domain,
+            request.digest,
+        ])
+    const result = await runRequest(transaction, authority.installationId, request, sources)
+    // The journal work can wait on locks. Never answer, or keep its writes, once the caller's
+    // authority has expired; the throw rolls the transaction back.
+    if (authority.expiresAt.getTime() <= Date.now())
+        throw new AppRuntimeAuthorityError('unauthorized')
+    return result
+}
+
+async function runRequest(
+    transaction: AuthTransaction,
+    installationId: string,
+    request: LegacyHandoffRequest,
+    sources: LegacyFeatureHandoffSources,
+): Promise<LegacyHandoffStatus | LegacyHandoffPart> {
     const { domain } = request
-    const installationId = await authorizeDomain(transaction, credentials, domain)
     const source = sources[domain]
     // A source registered under another key would hand off a domain the caller was not checked for.
     if (source && source.domain !== domain)

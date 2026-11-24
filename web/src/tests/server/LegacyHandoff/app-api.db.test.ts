@@ -1,11 +1,13 @@
 import { expect, test } from 'bun:test'
 import { and, eq, inArray } from 'drizzle-orm'
 
+import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
 import {
     appRuntimeGenerations,
     appRuntimeGrants,
     appRuntimeInstallations,
     legacyFeatureHandoffParts,
+    legacyFeatureHandoffRequests,
     legacyFeatureHandoffs,
 } from '@/db/schema.ts'
 import { APP_RUNTIME_SUPPORT_CAPABILITIES } from '@/server/AppRuntime/authority-policy.server.ts'
@@ -312,6 +314,14 @@ integrationTest(
             expect(await api.begin(app, 'dns', 'begin-2')).toEqual(begun)
             expect(dns.state.exports).toBe(1)
             expect((await api.status(app, 'dns')).body).toEqual(begun.body)
+            // A key reused for another domain is refused before the journal is touched.
+            expect(await api.begin(app, 'monitoring', 'begin-1')).toMatchObject({
+                status: 409,
+                body: { code: 'idempotencyConflict' },
+            })
+            expect(await journalRows()).toEqual([
+                { domain: 'dns', installationId: app.installationId, state: 'exported' },
+            ])
 
             // Another installation never sees this handoff as a state.
             for (const reply of await Promise.all([
@@ -365,6 +375,11 @@ integrationTest(
                 status: 200,
                 body: committed,
             })
+            // The refused commit above left its key unbound; the accepted one binds it.
+            expect(await api.commit(app, 'dns', otherDigest, 'commit-1')).toMatchObject({
+                status: 409,
+                body: { code: 'idempotencyConflict' },
+            })
             expect(dns.state).toMatchObject({ exports: 1, retirements: 1, records: [] })
             expect((await api.status(app, 'dns')).body).toEqual(committed)
             expect((await api.begin(app, 'dns', 'begin-3')).body).toEqual(committed)
@@ -376,7 +391,10 @@ integrationTest(
             const unsourced = harness.handoffApi({})
             expect((await unsourced.begin(app, 'dns', 'begin-4')).body).toEqual(committed)
             expect((await unsourced.commit(app, 'dns', digest, 'commit-3')).body).toEqual(committed)
-            expect((await unsourced.commit(app, 'dns', 'b'.repeat(64))).status).toBe(409)
+            expect(await unsourced.commit(app, 'dns', otherDigest, 'commit-4')).toMatchObject({
+                status: 409,
+                body: { code: 'conflict' },
+            })
             expect((await unsourced.commit(rival, 'dns', digest)).status).toBe(409)
             expect(dns.state.retirements).toBe(1)
 
@@ -413,10 +431,10 @@ integrationTest(
 )
 
 integrationTest(
-    'an exported handoff without its source cannot be committed and stays resumable',
+    'expired authority, bounded keys and a missing source never complete a handoff',
     async () => {
         const harness = await createHarness(['load-balancer'], 82)
-        const { install, activate } = harness
+        const { db, install, activate, journalRows } = harness
         try {
             const balancer = featureSource('load-balancer', [{ pool: 'web' }])
             const api = harness.handoffApi({ 'load-balancer': balancer.source })
@@ -427,8 +445,63 @@ integrationTest(
                 [providerGrant('load-balancer')],
             )
             await activate(app)
+            const setLease = (expiresAt: Date) =>
+                db
+                    .update(appRuntimeGenerations)
+                    .set({ leaseExpiresAt: expiresAt })
+                    .where(eq(appRuntimeGenerations.installationId, app.installationId))
+
+            // An export that outlives the caller's lease is rolled back and never answered.
+            const slow = harness.handoffApi({
+                'load-balancer': {
+                    ...balancer.source,
+                    export: async (transaction, emit) => {
+                        await Bun.sleep(1_200)
+                        await balancer.source.export(transaction, emit)
+                    },
+                },
+            })
+            await setLease(new Date(Date.now() + 600))
+            expect(await slow.begin(app, 'load-balancer')).toMatchObject({
+                status: 401,
+                body: { code: 'unauthorized' },
+            })
+            expect(await journalRows()).toEqual([])
+            await setLease(new Date(Date.now() + 60_000))
+
+            // Expired keys and the oldest beyond the per-installation bound are forgotten.
+            const { requestKeyRetentionMs, requestKeysPerInstallation } = LEGACY_HANDOFF_LIMITS
+            const storedKey = (key: string, createdAt: Date) => ({
+                installationId: app.installationId,
+                actor: 'service',
+                operation: 'begin' as const,
+                key,
+                fingerprint: 'c'.repeat(64),
+                createdAt,
+            })
+            await db
+                .insert(legacyFeatureHandoffRequests)
+                .values([
+                    storedKey('expired', new Date(Date.now() - requestKeyRetentionMs - 60_000)),
+                    ...Array.from({ length: requestKeysPerInstallation }, (_, index) =>
+                        storedKey('kept-' + index, new Date(Date.now() - 3_600_000 + index)),
+                    ),
+                ])
+            const keys = async () =>
+                (
+                    await db
+                        .select({ key: legacyFeatureHandoffRequests.key })
+                        .from(legacyFeatureHandoffRequests)
+                        .where(eq(legacyFeatureHandoffRequests.installationId, app.installationId))
+                ).map(({ key }) => key)
 
             const begun = await api.begin(app, 'load-balancer')
+            const remaining = await keys()
+            expect(remaining).toHaveLength(requestKeysPerInstallation)
+            expect(remaining).toContain('begin-1')
+            expect(remaining).not.toContain('expired')
+            expect(remaining).not.toContain('kept-0')
+            expect(remaining).toContain('kept-1')
             const { digest } = begun.body as { digest: string }
             expect((await unsourced.begin(app, 'load-balancer')).body).toEqual(begun.body)
             expect(await unsourced.commit(app, 'load-balancer', digest)).toMatchObject({
@@ -472,10 +545,10 @@ integrationTest(
             await activate(leaving)
             await activate(staying)
 
-            const balancerExport = await api.begin(leaving, 'load-balancer')
+            const balancerExport = await api.begin(leaving, 'load-balancer', 'begin-lb')
             const { digest } = balancerExport.body as { digest: string }
             expect((await api.commit(leaving, 'load-balancer', digest)).status).toBe(200)
-            expect((await api.begin(leaving, 'oidc')).body).toMatchObject({
+            expect((await api.begin(leaving, 'oidc', 'begin-oidc')).body).toMatchObject({
                 state: 'exported',
                 partCount: 1,
             })
@@ -498,29 +571,48 @@ integrationTest(
                 { domain: 'oidc', installationId: leaving.installationId, state: 'exported' },
             ])
 
-            // The removal check aborts the import, so platform resumes its untouched state.
-            expect(await control('removable', leaving)).toBe(204)
-            expect(await journalRows()).toEqual([
+            // The removal checks abort the import, so platform resumes its untouched state. The app
+            // manager runs the check before and again after it stopped the app's broker; an app
+            // that begins again in between is released by the second check.
+            const committedOnly = [
                 {
                     domain: 'load-balancer',
                     installationId: leaving.installationId,
-                    state: 'committed',
+                    state: 'committed' as const,
                 },
-            ])
+            ]
+            expect(await control('removable', leaving)).toBe(204)
+            expect(await journalRows()).toEqual(committedOnly)
+            expect(await platformWrite()).toEqual({ owned: true, value: 'platform wrote' })
+            expect((await api.begin(leaving, 'oidc', 'begin-oidc')).body).toMatchObject({
+                state: 'exported',
+            })
+            expect(await control('removable', leaving)).toBe(204)
+            expect(await journalRows()).toEqual(committedOnly)
             expect(await partCount('oidc')).toBe(0)
-            expect(oidc.state).toMatchObject({ exports: 1, retirements: 0, records: oidcRecords })
+            expect(oidc.state).toMatchObject({ exports: 2, retirements: 0, records: oidcRecords })
             expect(balancer.state.retirements).toBe(1)
             expect(await platformWrite()).toEqual({ owned: true, value: 'platform wrote' })
-            // A repeated removal check after the workers stopped finds nothing left to abort.
-            expect(await control('removable', leaving)).toBe(204)
 
             // Another official app can now take over the released domain.
             expect((await api.begin(staying, 'oidc')).body).toMatchObject({ state: 'exported' })
-            expect(oidc.state.exports).toBe(2)
+            expect(oidc.state.exports).toBe(3)
             expect((await api.status(staying, 'load-balancer')).status).toBe(403)
             expect(await control('removable', staying)).toBe(204)
             expect(await partCount('oidc')).toBe(0)
-            expect(await journalRows()).toHaveLength(1)
+            expect(await journalRows()).toEqual(committedOnly)
+
+            // Purging the removed app's data drops its request keys; its ownership stays recorded.
+            const requestKeys = () =>
+                db
+                    .select({ key: legacyFeatureHandoffRequests.key })
+                    .from(legacyFeatureHandoffRequests)
+                    .where(eq(legacyFeatureHandoffRequests.installationId, leaving.installationId))
+            expect(await requestKeys()).not.toEqual([])
+            expect(await control('revoke', leaving)).toBe(204)
+            expect(await control('purge-data', leaving)).toBe(204)
+            expect(await requestKeys()).toEqual([])
+            expect(await journalRows()).toEqual(committedOnly)
         } finally {
             await harness.release()
         }

@@ -267,6 +267,13 @@
       "when": 1795551533545,
       "tag": "0037_legacy_feature_handoffs",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1795556823470,
+      "tag": "0038_legacy_feature_handoff_requests",
+      "breakpoints": true
     }
   ]
 }
