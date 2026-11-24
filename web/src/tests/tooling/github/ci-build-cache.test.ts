@@ -134,8 +134,15 @@ test('only the main-only Build Cache workflow writes the registry build cache', 
             string,
             {
                 permissions?: Record<string, string>
-                strategy: { matrix: { include: { image: string; file: string; architecture: string }[] } }
-                steps: { uses?: string; run?: string; if?: string; with?: Record<string, unknown> }[]
+                strategy: {
+                    matrix: { include: { image: string; file: string; architecture: string }[] }
+                }
+                steps: {
+                    uses?: string
+                    run?: string
+                    if?: string
+                    with?: Record<string, unknown>
+                }[]
             }
         >
     }
@@ -175,6 +182,8 @@ test('only the main-only Build Cache workflow writes the registry build cache', 
         expect(consumer, path).toContain(
             'type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:',
         )
-        expect(consumer, path).not.toMatch(/cache-to:[^\n]*type=registry|docker login|packages: write/u)
+        expect(consumer, path).not.toMatch(
+            /cache-to:[^\n]*type=registry|docker login|packages: write/u,
+        )
     }
 })
