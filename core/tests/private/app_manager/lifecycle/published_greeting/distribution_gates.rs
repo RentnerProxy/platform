@@ -123,8 +123,7 @@ async fn refused_submission(path: &str, request: &Value) -> u16 {
 /// The authority fixture records the generation of the last grant publication and rejects
 /// any non-empty grant set for Greeting. Updates and restarts keep the approved grants.
 fn grants_record() -> String {
-    fs::read_to_string(Path::new(APP_API_SOCKET).with_file_name("last-grants-generation"))
-        .unwrap()
+    fs::read_to_string(Path::new(APP_API_SOCKET).with_file_name("last-grants-generation")).unwrap()
 }
 
 /// Fetch the UI entry document of `generation` and compare it with its staged package.
