@@ -271,6 +271,20 @@ test('file writes handle partial progress and reject zero progress or disk error
     } as unknown as Parameters<typeof writeFileChunk>[0]
     await writeFileChunk(partial, input)
     assert.equal(written, input.length)
+    const positions: (number | undefined)[] = []
+    const positioned = {
+        write: async (
+            _bytes: Uint8Array,
+            _offset: number,
+            length: number,
+            position: number | undefined,
+        ) => {
+            positions.push(position)
+            return { bytesWritten: Math.min(3, length) }
+        },
+    } as unknown as typeof partial
+    await writeFileChunk(positioned, input, 512)
+    assert.deepEqual(positions, [512, 515, 518])
     await assert.rejects(
         writeFileChunk(
             { write: async () => ({ bytesWritten: 0 }) } as unknown as typeof partial,
