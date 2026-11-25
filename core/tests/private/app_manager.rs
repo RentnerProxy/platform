@@ -274,7 +274,10 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
         installed.plan(&release("2"), Some(&v2), Some(2), true),
         Some(DataChange::Keep)
     );
-    assert_eq!(installed.plan(&release("1"), Some(&v1), Some(2), true), None);
+    assert_eq!(
+        installed.plan(&release("1"), Some(&v1), Some(2), true),
+        None
+    );
     let mut tolerant = v1.clone();
     tolerant.read_versions.push(2);
     tolerant.write_versions.push(2);
@@ -290,11 +293,11 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
         installed.plan(&release("2"), Some(&v2), Some(1), false),
         None
     );
+    assert_eq!(installed.plan(&release("2"), Some(&v2), None, false), None);
     assert_eq!(
-        installed.plan(&release("2"), Some(&v2), None, false),
+        Slot::default().plan(&release("1"), Some(&v1), None, false),
         None
     );
-    assert_eq!(Slot::default().plan(&release("1"), Some(&v1), None, false), None);
     let mut forward = v2.clone();
     forward.write_versions.push(1);
     for may_migrate in [false, true] {
@@ -323,7 +326,10 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
     // Only SQL steps on a complete forward chain inside migrations/ can run.
     let mut gap = v2.clone();
     gap.migrations.remove(1);
-    assert_eq!(installed.plan(&release("2"), Some(&gap), Some(1), true), None);
+    assert_eq!(
+        installed.plan(&release("2"), Some(&gap), Some(1), true),
+        None
+    );
     for path in [
         "migrations/v2/upgrade.json",
         "migrations/../upgrade.sql",
@@ -351,7 +357,10 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
     };
     let mut undeclared = v1.clone();
     undeclared.migrations.clear();
-    assert_eq!(dataless.plan(&release("1"), Some(&undeclared), None, true), None);
+    assert_eq!(
+        dataless.plan(&release("1"), Some(&undeclared), None, true),
+        None
+    );
     assert_eq!(
         dataless.plan(&release("1"), Some(&v1), None, true),
         migrate(0, 1, &["initialize.sql"])
