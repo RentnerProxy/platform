@@ -320,7 +320,9 @@ pub(super) fn retire(slots: &BTreeMap<String, Slot>, apply: bool) -> io::Result<
             parent.sync_all()?;
         }
     }
-    Ok(())
+    // A retry after an unsynced removal finds nothing left to remove. Make the
+    // removals durable before the caller forgets the installations.
+    parent.sync_all()
 }
 
 pub(super) fn purge(id: &str, slot: &Slot) -> io::Result<()> {

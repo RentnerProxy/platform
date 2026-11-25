@@ -410,6 +410,13 @@ async fn privileged_restore_published_greeting() {
     .unwrap();
     assert!(journal["installations"].get(&installation_id).is_some());
     assert!(app_root.join("data").is_dir());
+    // The server keeps sleeping after its client exits, so end the backend itself.
+    postgres(
+        uid,
+        "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity \
+         WHERE datname = current_database() AND pid <> pg_backend_pid();",
+    )
+    .await;
     for attempt in 0.. {
         if postgres(uid, sessions).await == "0" {
             break;
