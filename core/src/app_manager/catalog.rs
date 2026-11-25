@@ -368,10 +368,7 @@ impl Endpoint {
                     "Application lifecycle operation failed for {}: {error}",
                     request.installation_id
                 );
-                let error = if error
-                    .get_ref()
-                    .is_some_and(|cause| cause.is::<lifecycle::IncompatibleData>())
-                {
+                let error = if lifecycle::incompatible(&error) {
                     LifecycleFailure::IncompatibleData
                 } else {
                     match error.kind() {
@@ -487,6 +484,7 @@ impl Manager {
             slot.removed_data_required = Some(false);
             self.journal.save(id, slot)?;
         }
-        self.switch(id, candidate, grants).await
+        self.switch(id, candidate, grants, super::DataPolicy::Migrate)
+            .await
     }
 }

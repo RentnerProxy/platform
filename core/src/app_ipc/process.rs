@@ -350,7 +350,7 @@ async fn observe_exit(pid: u32) -> io::Result<()> {
     Ok(())
 }
 
-fn has_exited(pid: u32) -> io::Result<bool> {
+pub(crate) fn has_exited(pid: u32) -> io::Result<bool> {
     let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
     // SAFETY: waitid writes a siginfo_t. WNOWAIT retains the child PID until
     // the process group has been stopped and the Tokio handle reaps it.
@@ -391,7 +391,12 @@ pub(super) fn app_exit(status: ExitStatus) -> io::Result<()> {
     }
 }
 
-fn restrict_child(uid: u32, gid: u32, parent: u32, process_limit: libc::rlim_t) -> io::Result<()> {
+pub(crate) fn restrict_child(
+    uid: u32,
+    gid: u32,
+    parent: u32,
+    process_limit: libc::rlim_t,
+) -> io::Result<()> {
     // SAFETY: close_range only marks inherited descriptors for closure on exec.
     // Standard input/output/error are deliberately assigned by the command.
     if unsafe {

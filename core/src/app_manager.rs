@@ -3,6 +3,7 @@ mod control;
 mod gateway;
 mod journal;
 mod lifecycle;
+mod migration;
 pub(crate) mod portable_backup;
 mod removal;
 mod runtime;
@@ -18,7 +19,7 @@ use crate::appliance_process::{SCAN_BUDGET, uid_in_use, verify_uid_stopped};
 use control::Command;
 pub use control::run_app_control;
 use gateway::{Gateway, identity, lease};
-use journal::{Data, Grant, Journal, Release, Removal, Slot};
+use journal::{Data, DataChange, Grant, Journal, Release, Removal, Slot};
 use runtime::Running;
 use serde_json::{Value, json};
 use service::Operation;
@@ -44,6 +45,15 @@ const MAX_GENERATION: u64 = 9_007_199_254_740_991;
 const DRAIN_IO_BUDGET: Duration = Duration::from_millis(17_250);
 const SHUTDOWN_BUDGET: Duration = Duration::from_millis(17_750);
 const SCAN_ADMISSION_MARGIN: Duration = Duration::from_millis(50);
+
+/// Whether an activation may run the declared data migrations of its release. Restarts,
+/// rollbacks and recovery only open data that the release can already read and write.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum DataPolicy {
+    Migrate,
+    OpenOnly,
+}
+
 fn bad(message: &'static str) -> io::Error {
     io::Error::other(message)
 }
@@ -293,6 +303,7 @@ impl Manager {
         id: &str,
         release: Release,
         grants: Option<&[Grant]>,
+        policy: DataPolicy,
         mut boot_lock_retries: Option<&mut usize>,
     ) -> io::Result<()> {
         let slot = self.journal.slot(id)?.clone();
@@ -337,9 +348,22 @@ impl Manager {
             })
             .await?;
         let data = package.manifest.get("data").map(read_data).transpose()?;
-        if !slot.accepts(&release, data.as_ref()) {
-            return Err(io::Error::other(lifecycle::IncompatibleData));
-        }
+        // Decide before the fence so that an incompatible release leaves the current one running.
+        // The marker lives in app-owned data: the app can only mislead its own data plan with it.
+        let recorded = if slot.database_provisioned {
+            self.during(Operation::Launch(id), migration::recorded_version(slot.uid))
+                .await?
+        } else {
+            None
+        };
+        let change = slot
+            .plan(
+                &release,
+                data.as_ref(),
+                recorded,
+                policy == DataPolicy::Migrate,
+            )
+            .ok_or_else(|| io::Error::other(lifecycle::IncompatibleData))?;
         let generation = slot
             .generation
             .checked_add(1)
@@ -364,6 +388,10 @@ impl Manager {
                 None
             }
         };
+        if let DataChange::Migrate(steps) = &change {
+            // Refuse a step the runner cannot keep atomic while the current release still runs.
+            migration::steps(&package.directory, steps)?;
+        }
         let writer = self.fence(id).await?;
         // The old UID can change its own data directory's mode until its fence completes.
         admit_storage()?;
@@ -421,6 +449,17 @@ impl Manager {
             // For a reinstall after purge, only completed provisioning creates a data directory.
             slot.removed_data_required = Some(true);
         }
+        if let DataChange::Migrate(steps) = &change {
+            // Recovery may finish only this activation once its migration might have committed.
+            slot.migrating = Some((&release).into());
+            self.journal.save(id, slot.clone())?;
+            // A failed step leaves the data untouched, so the fallback can restart the old release.
+            self.during(
+                Operation::Launch(id),
+                migration::apply(slot.uid, &package.directory, steps),
+            )
+            .await?;
+        }
         slot.written = data;
         slot.provider_dependencies_unknown |= package.manifest["providers"]
             .as_array()
@@ -462,9 +501,10 @@ impl Manager {
         id: &str,
         target: Release,
         grants: Option<&[Grant]>,
+        policy: DataPolicy,
     ) -> io::Result<()> {
         let before = self.journal.slot(id)?.clone();
-        match self.launch(id, target, grants, None).await {
+        match self.launch(id, target, grants, policy, None).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 let after = self.journal.slot(id)?;
@@ -480,8 +520,16 @@ impl Manager {
                     // The failed activation may have committed new grants. Replaying an old
                     // grant set could also restore access an operator revoked during cutover.
                     let uncertain = self.journal.slot(id)?.uncertain_grants();
+                    // After a completed migration the old release usually cannot open the data,
+                    // which leaves the installation in recovery instead of losing those writes.
                     if self
-                        .launch(id, active, uncertain.then_some([].as_slice()), None)
+                        .launch(
+                            id,
+                            active,
+                            uncertain.then_some([].as_slice()),
+                            DataPolicy::OpenOnly,
+                            None,
+                        )
                         .await
                         .is_ok()
                     {
@@ -572,7 +620,8 @@ impl Manager {
                     .candidate
                     .clone()
                     .ok_or_else(|| bad("No staged candidate"))?;
-                self.switch(&installation_id, target, Some(&grants)).await?;
+                self.switch(&installation_id, target, Some(&grants), DataPolicy::Migrate)
+                    .await?;
             }
             Command::Rollback { installation_id } => {
                 let target = self
@@ -581,7 +630,8 @@ impl Manager {
                     .previous
                     .clone()
                     .ok_or_else(|| bad("No retained previous release"))?;
-                self.switch(&installation_id, target, Some(&[])).await?;
+                self.switch(&installation_id, target, Some(&[]), DataPolicy::OpenOnly)
+                    .await?;
             }
             Command::Stop { installation_id } => {
                 self.stop(&installation_id).await?;
@@ -601,8 +651,21 @@ impl Manager {
                     .active
                     .clone()
                     .ok_or_else(|| bad("No committed release"))?;
+                // A migration that committed before its activation failed leaves data only the
+                // staged release can open. Recovery finishes exactly that activation, never one
+                // the operator did not start, and does not migrate again.
+                let candidate = slot.migrated_candidate();
                 let grants = slot.uncertain_grants().then_some([].as_slice());
-                self.switch(&installation_id, target, grants).await?;
+                let result = self
+                    .switch(&installation_id, target, grants, DataPolicy::OpenOnly)
+                    .await;
+                match (result, candidate) {
+                    (Err(error), Some(candidate)) if lifecycle::incompatible(&error) => {
+                        self.switch(&installation_id, candidate, grants, DataPolicy::OpenOnly)
+                            .await?;
+                    }
+                    (result, _) => result?,
+                }
             }
         }
         Ok(Value::Null)
@@ -633,13 +696,30 @@ impl Manager {
                         .active
                         .take()
                         .ok_or_else(|| bad("No active release to recover"))?;
-                    self.launch(
-                        &id,
-                        target,
-                        slot.uncertain_grants().then_some([].as_slice()),
-                        Some(&mut lock_retries),
-                    )
-                    .await?;
+                    let grants = slot.uncertain_grants().then_some([].as_slice());
+                    let result = self
+                        .launch(
+                            &id,
+                            target,
+                            grants,
+                            DataPolicy::OpenOnly,
+                            Some(&mut lock_retries),
+                        )
+                        .await;
+                    // Finish an activation whose migration committed before the boot, as Start does.
+                    match (result, slot.migrated_candidate()) {
+                        (Err(error), Some(candidate)) if lifecycle::incompatible(&error) => {
+                            self.launch(
+                                &id,
+                                candidate,
+                                grants,
+                                DataPolicy::OpenOnly,
+                                Some(&mut lock_retries),
+                            )
+                            .await?;
+                        }
+                        (result, _) => result?,
+                    }
                 }
                 Ok::<_, io::Error>(())
             }

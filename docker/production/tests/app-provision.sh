@@ -129,4 +129,16 @@ ln -s "$bootstrap/sentry" "$state_file"
 printf '{}' | reject "$controller" --write-bootstrap-state production-restore-v1.json replace
 [[ $(<"$bootstrap/sentry") == '{"fixture":true}' ]]
 "$ipc_tests" --ignored --exact app_manager::tests::privileged_postgres_uid_fencing
-printf '%s\n' 'PASS: native app UID and PostgreSQL provisioning and protected bootstrap publication'
+
+# Data migrations log in as the app over its own socket, so restart with production client authentication.
+readonly hba=${RENTNERPROXY_TEST_PG_HBA:-/fixture/pg_hba.conf}
+readonly ident=${RENTNERPROXY_TEST_PG_IDENT:-/fixture/pg_ident.conf}
+[[ -r $hba && -r $ident ]]
+gosu postgres "$postgres/pg_ctl" --pgdata="$database" --mode=fast --wait --timeout=15 stop >/dev/null
+install -d -m 0755 -o postgres -g postgres /run/rentnerproxy/app-db
+gosu postgres "$postgres/pg_ctl" --pgdata="$database" --log="$database/server.log" \
+    --options="-c listen_addresses= -c unix_socket_directories=$socket,/run/rentnerproxy/app-db -c hba_file=$hba -c ident_file=$ident" \
+    --wait --timeout=15 start >/dev/null
+provision 59184 database
+"$ipc_tests" --ignored --exact app_manager::migration::tests::privileged_app_data_migrations
+printf '%s\n' 'PASS: native app UID and PostgreSQL provisioning, data migrations and protected bootstrap publication'

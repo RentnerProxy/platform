@@ -8,6 +8,8 @@ use std::{
     process::ExitCode,
 };
 
+use zeroize::Zeroizing;
+
 use super::filesystem::{lock_file, require_safe_parents};
 use crate::protected_files::{Ownership, Publication, publish};
 
@@ -148,6 +150,24 @@ fn database_password(installation: &Path) -> io::Result<String> {
         publication,
     )?;
     Ok(password)
+}
+
+/// Read the credential an earlier database provisioning reserved, without creating one.
+pub(crate) fn existing_database_password(uid: u32) -> io::Result<Zeroizing<String>> {
+    if !(20_000..=59_999).contains(&uid) {
+        return Err(unsafe_path());
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(
+            Path::new(APPLICATIONS)
+                .join(uid.to_string())
+                .join(PASSWORD_FILE),
+        )?;
+    read_password(file)?
+        .map(Zeroizing::new)
+        .ok_or_else(|| io::Error::other("Missing protected app database credential"))
 }
 
 fn read_password(file: File) -> io::Result<Option<String>> {
