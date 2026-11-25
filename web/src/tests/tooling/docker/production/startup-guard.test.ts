@@ -62,3 +62,48 @@ test.skipIf(Bun.which('bash') === null)(
         expect(failed.stdout).not.toContain('WEB STARTED')
     },
 )
+
+/** Run the entrypoint's child supervision with one exited and one running fixture child. */
+async function supervise(exited: string, running: string) {
+    const source = await readFile(entrypoint, 'utf8')
+    const supervision = /^assert_children_running\(\) \{[\s\S]*?^\}$/mu.exec(source)
+    if (!supervision) throw new Error('entrypoint child supervision changed shape')
+    const script = [
+        'set -Eeuo pipefail',
+        'log() { printf \'LOG %s\\n\' "$*"; }',
+        'fatal() { printf \'FATAL %s\\n\' "$*"; exit 1; }',
+        "recover_web() { printf 'RECOVER\\n'; }",
+        'child_pids=()',
+        'child_names=()',
+        'trap \'kill "${child_pids[@]}" 2>/dev/null || true\' EXIT',
+        'true &',
+        'child_pids+=("$!")',
+        'child_names+=(' + exited + ')',
+        // Reap the exited child first, so the supervision cannot see it as a running zombie.
+        'wait "${child_pids[0]}"',
+        'sleep 30 >/dev/null 2>&1 &',
+        'child_pids+=("$!")',
+        'child_names+=(' + running + ')',
+        supervision[0],
+        'assert_children_running',
+        'printf \'RUNNING %s\\n\' "${child_names[*]}"',
+    ].join('\n')
+    const child = Bun.spawn(['bash', '-c', script], { stdout: 'pipe', stderr: 'pipe' })
+    const [stdout, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited])
+    return { stdout, exitCode }
+}
+
+test.skipIf(Bun.which('bash') === null)(
+    'a stopped app manager leaves the proxy and administration running, another owned child does not',
+    async () => {
+        // An older image whose app manager refuses newer app state takes this path.
+        expect(await supervise('app-manager', 'controller')).toEqual({
+            stdout: 'LOG app manager stopped; installed app operations are unavailable\nRUNNING controller\n',
+            exitCode: 0,
+        })
+        expect(await supervise('controller', 'app-manager')).toEqual({
+            stdout: 'FATAL controller stopped unexpectedly\n',
+            exitCode: 1,
+        })
+    },
+)
