@@ -29,6 +29,49 @@ fn only_the_exact_migration_comment_records_a_version() {
     }
 }
 
+#[test]
+fn steps_stay_plain_sql_inside_the_runner_transaction() {
+    for sql in [
+        "",
+        "CREATE TABLE settings (name text PRIMARY KEY, value text NOT NULL);\nINSERT INTO settings VALUES ('a;b', 'COMMIT');",
+        "-- COMMIT; \\! id\nSELECT 1; /* outer /* COMMIT; */ END; */ SELECT 2",
+        "SELECT 'it''s; COMMIT', E'quote\\'; COMMIT', \"odd;\"\"name\", U&'\\0041';",
+        "DO $$ BEGIN COMMIT; END $$; DO $body$ BEGIN PERFORM 1; END; $body$ LANGUAGE plpgsql;",
+        "PREPARE fetch_setting AS SELECT value FROM settings WHERE name = $1; SELECT a$b FROM t$1;",
+        "SAVEPOINT step; RELEASE SAVEPOINT step; ROLLBACK TO step; ROLLBACK WORK TO SAVEPOINT step;",
+        "CREATE FUNCTION one() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; SELECT CASE WHEN true THEN 1 END; END;\nSELECT one();",
+        "create or replace procedure tidy() language sql begin atomic delete from settings; end; call tidy();",
+        "SELECT (SELECT 1; END);",
+    ] {
+        assert!(plain_sql(sql.as_bytes()), "{sql}");
+    }
+    for sql in [
+        "COMMIT;",
+        "SELECT 1; commit",
+        "UPDATE settings SET value = 'x'; END;",
+        "ROLLBACK;",
+        "rollback work;",
+        "ABORT;",
+        "BEGIN;",
+        "START TRANSACTION;",
+        "PREPARE TRANSACTION 'held';",
+        "COMMIT PREPARED 'held';",
+        "SELECT 'it''s'; /* nested /* */ still */ COMMIT;",
+        "SELECT E'\\''; COMMIT;",
+        "DO $tag$ SELECT 1 $tag$; COMMIT;",
+        "\\! id",
+        "SELECT 1; \\c other",
+        "SELECT 1 \\gexec",
+        "SELECT 'unterminated",
+        "SELECT \"unterminated",
+        "/* unterminated",
+        "DO $$ unterminated",
+        "CREATE FUNCTION one() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END; COMMIT;",
+    ] {
+        assert!(!plain_sql(sql.as_bytes()), "{sql}");
+    }
+}
+
 async fn query(sql: &str) -> String {
     let output = runtime::control_sql_in(&format!("rp_app_{UID}"), sql)
         .await
@@ -160,22 +203,32 @@ async fn privileged_app_data_migrations() {
         .unwrap_err();
     assert_eq!(recorded_version(UID).await.unwrap(), Some(2));
 
-    // Client shell escapes run as the app identity and end with the migration.
+    // psql commands and transaction control are refused before any session starts, so no step
+    // reaches a shell and no step commits without the rest.
     let witness = evidence.path().join("identity");
     write(
         "shell.sql",
         &format!(
-            "\\! id -u > {}\n\\! sleep 60 &\nCREATE TABLE shell (entry text);\n",
+            "\\! id -u > {}\nCREATE TABLE shell (entry text);\n",
             witness.display()
         ),
     );
-    apply(UID, package.path(), &migration(2, 3, &["shell.sql"]))
+    write("split.sql", "CREATE TABLE split (entry text);\nCOMMIT;\n");
+    for step in ["shell.sql", "split.sql"] {
+        apply(UID, package.path(), &migration(2, 3, &["audit.sql", step]))
+            .await
+            .unwrap_err();
+    }
+    assert!(!witness.exists());
+    assert_eq!(recorded_version(UID).await.unwrap(), Some(2));
+    for table in ["audit", "shell", "split"] {
+        assert_eq!(query(&missing(table)).await, "t");
+    }
+    assert_released().await;
+    write("journal.sql", "CREATE TABLE journal (entry text);\n");
+    apply(UID, package.path(), &migration(2, 3, &["journal.sql"]))
         .await
         .unwrap();
-    assert_eq!(
-        fs::read_to_string(&witness).unwrap().trim(),
-        UID.to_string()
-    );
     assert_eq!(recorded_version(UID).await.unwrap(), Some(3));
     assert_released().await;
 
@@ -201,7 +254,7 @@ async fn privileged_app_data_migrations() {
     // withdraws the grant and ends the session it left behind.
     write(
         "cancelled.sql",
-        "\\! sleep 60 &\nCREATE TABLE cancelled (entry text);\nSELECT pg_sleep(30);\n",
+        "CREATE TABLE cancelled (entry text);\nSELECT pg_sleep(30);\n",
     );
     let cancelled = migration(3, 4, &["cancelled.sql"]);
     tokio::time::timeout(

@@ -19,7 +19,7 @@ use crate::appliance_process::{SCAN_BUDGET, uid_in_use, verify_uid_stopped};
 use control::Command;
 pub use control::run_app_control;
 use gateway::{Gateway, identity, lease};
-use journal::{Data, DataChange, Grant, Journal, Release, ReleaseSelection, Removal, Slot};
+use journal::{Data, DataChange, Grant, Journal, Release, Removal, Slot};
 use runtime::Running;
 use serde_json::{Value, json};
 use service::Operation;
@@ -388,6 +388,10 @@ impl Manager {
                 None
             }
         };
+        if let DataChange::Migrate(steps) = &change {
+            // Refuse a step the runner cannot keep atomic while the current release still runs.
+            migration::steps(&package.directory, steps)?;
+        }
         let writer = self.fence(id).await?;
         // The old UID can change its own data directory's mode until its fence completes.
         admit_storage()?;
@@ -650,9 +654,7 @@ impl Manager {
                 // A migration that committed before its activation failed leaves data only the
                 // staged release can open. Recovery finishes exactly that activation, never one
                 // the operator did not start, and does not migrate again.
-                let candidate = slot.candidate.clone().filter(|candidate| {
-                    slot.migrating.as_ref() == Some(&ReleaseSelection::from(candidate))
-                });
+                let candidate = slot.migrated_candidate();
                 let grants = slot.uncertain_grants().then_some([].as_slice());
                 let result = self
                     .switch(&installation_id, target, grants, DataPolicy::OpenOnly)
@@ -694,14 +696,30 @@ impl Manager {
                         .active
                         .take()
                         .ok_or_else(|| bad("No active release to recover"))?;
-                    self.launch(
-                        &id,
-                        target,
-                        slot.uncertain_grants().then_some([].as_slice()),
-                        DataPolicy::OpenOnly,
-                        Some(&mut lock_retries),
-                    )
-                    .await?;
+                    let grants = slot.uncertain_grants().then_some([].as_slice());
+                    let result = self
+                        .launch(
+                            &id,
+                            target,
+                            grants,
+                            DataPolicy::OpenOnly,
+                            Some(&mut lock_retries),
+                        )
+                        .await;
+                    // Finish an activation whose migration committed before the boot, as Start does.
+                    match (result, slot.migrated_candidate()) {
+                        (Err(error), Some(candidate)) if lifecycle::incompatible(&error) => {
+                            self.launch(
+                                &id,
+                                candidate,
+                                grants,
+                                DataPolicy::OpenOnly,
+                                Some(&mut lock_retries),
+                            )
+                            .await?;
+                        }
+                        (result, _) => result?,
+                    }
                 }
                 Ok::<_, io::Error>(())
             }

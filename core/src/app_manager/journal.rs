@@ -245,6 +245,14 @@ impl Slot {
         }
     }
 
+    /// The staged release whose own activation started a data migration. Once its migration may
+    /// have committed, recovery finishes that activation instead of reopening the old release.
+    pub fn migrated_candidate(&self) -> Option<Release> {
+        self.candidate
+            .clone()
+            .filter(|candidate| self.migrating.as_ref() == Some(&ReleaseSelection::from(candidate)))
+    }
+
     pub fn commit_release(&mut self, release: Release) {
         if self
             .candidate

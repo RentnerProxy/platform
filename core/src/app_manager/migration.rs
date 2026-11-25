@@ -1,7 +1,7 @@
 //! Run an app's declared SQL data migrations as the app, in one transaction.
 //!
-//! The app's own OS identity runs `psql` under the app sandbox, so client meta-commands cannot
-//! reach beyond what the app process itself may do. The session logs in as the runtime role and
+//! Steps must be plain SQL without psql commands or transaction control. The app's own OS
+//! identity still runs `psql` under the app sandbox. The session logs in as the runtime role and
 //! assumes the schema owner only while the platform grants it. The completed version is stored
 //! as the comment on the `app` schema in the same transaction, so a crash between the commit and
 //! the journal update cannot rerun or skip a step. Portable backups carry that comment with the
@@ -37,6 +37,7 @@ const MARKER: &str = "rentnerproxy.data-version=";
 const MIGRATION_TIMEOUT: Duration = Duration::from_secs(600);
 const PROCESS_LIMIT: libc::rlim_t = 16;
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_STEP_BYTES: u64 = 16 * 1024 * 1024;
 
 struct Roles {
     uid: u32,
@@ -109,11 +110,7 @@ async fn apply_within(
     limit: Duration,
 ) -> io::Result<()> {
     let roles = Roles::new(uid)?;
-    let steps = migration
-        .steps
-        .iter()
-        .map(|step| package_file(package, step))
-        .collect::<io::Result<Vec<_>>>()?;
+    let steps = steps(package, migration)?;
     runtime::control_sql(&format!(
         "GRANT {} TO {} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;\n",
         roles.owner, roles.runtime
@@ -129,14 +126,213 @@ async fn apply_within(
     Ok(())
 }
 
-/// Resolve a declared step inside the verified, manager-owned package tree.
-fn package_file(package: &Path, step: &str) -> io::Result<PathBuf> {
-    let path = package.join(step);
-    if fs::symlink_metadata(&path)?.is_file() {
-        Ok(path)
-    } else {
-        Err(bad("Invalid app data migration step"))
+/// Resolve every declared step inside the verified, manager-owned package tree and require plain
+/// SQL. Callers run this before the fence, so a refused step leaves the current release running.
+pub(super) fn steps(package: &Path, migration: &Migration) -> io::Result<Vec<PathBuf>> {
+    migration
+        .steps
+        .iter()
+        .map(|step| {
+            let path = package.join(step);
+            let metadata = fs::symlink_metadata(&path)?;
+            if !metadata.is_file() || metadata.len() > MAX_STEP_BYTES {
+                return Err(bad("Invalid app data migration step"));
+            }
+            if !plain_sql(&fs::read(&path)?) {
+                return Err(bad(
+                    "App data migration steps cannot control transactions or use psql commands",
+                ));
+            }
+            Ok(path)
+        })
+        .collect()
+}
+
+/// Split SQL into statements the way psql does and accept only plain statements: no psql
+/// meta-command and nothing that ends or opens a transaction, which would let earlier steps
+/// commit without the rest (`--single-transaction` cannot prevent that). Quoted text, comments
+/// and `BEGIN ATOMIC` routine bodies are skipped as psql lexes them.
+fn plain_sql(sql: &[u8]) -> bool {
+    let mut scanner = Statements::default();
+    let mut i = 0;
+    while i < sql.len() {
+        let byte = sql[i];
+        let next = sql.get(i + 1).copied();
+        i = match (byte, next) {
+            (b'-', Some(b'-')) => sql[i..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(sql.len(), |end| i + end + 1),
+            (b'/', Some(b'*')) => match block_comment(sql, i) {
+                Some(end) => end,
+                None => return false,
+            },
+            (b'\'', _) => match quoted(sql, i, b'\'', false) {
+                Some(end) => end,
+                None => return false,
+            },
+            (b'"', _) => match quoted(sql, i, b'"', false) {
+                Some(end) => end,
+                None => return false,
+            },
+            (b'$', _) => match dollar_quoted(sql, i) {
+                Some(Some(end)) => end,
+                Some(None) => i + 1,
+                None => return false,
+            },
+            (b'\\', _) => return false,
+            (b'(', _) => {
+                scanner.parentheses += 1;
+                i + 1
+            }
+            (b')', _) => {
+                scanner.parentheses = scanner.parentheses.saturating_sub(1);
+                i + 1
+            }
+            (b';', _) => {
+                if scanner.parentheses == 0 && scanner.routine == 0 && !scanner.finish() {
+                    return false;
+                }
+                i + 1
+            }
+            _ if identifier_start(byte) => {
+                let end = sql[i..]
+                    .iter()
+                    .position(|byte| !identifier_part(*byte))
+                    .map_or(sql.len(), |length| i + length);
+                let word = String::from_utf8_lossy(&sql[i..end]).to_ascii_lowercase();
+                if word == "e" && sql.get(end) == Some(&b'\'') {
+                    match quoted(sql, end, b'\'', true) {
+                        Some(after) => after,
+                        None => return false,
+                    }
+                } else {
+                    scanner.word(word);
+                    end
+                }
+            }
+            _ => i + 1,
+        };
     }
+    scanner.finish()
+}
+
+/// psql's statement state: the leading words, open parentheses and `BEGIN` routine bodies.
+#[derive(Default)]
+struct Statements {
+    words: Vec<String>,
+    parentheses: u32,
+    routine: u32,
+}
+
+impl Statements {
+    fn word(&mut self, word: String) {
+        // Like psql, only CREATE [OR REPLACE] FUNCTION|PROCEDURE opens BEGIN ... END bodies.
+        let leading = |index: usize| self.words.get(index).map(String::as_str);
+        let routine = leading(0) == Some("create")
+            && (matches!(leading(1), Some("function" | "procedure"))
+                || (leading(1) == Some("or")
+                    && leading(2) == Some("replace")
+                    && matches!(leading(3), Some("function" | "procedure"))));
+        if routine && self.parentheses == 0 {
+            match word.as_str() {
+                "begin" => self.routine += 1,
+                "case" if self.routine > 0 => self.routine += 1,
+                "end" if self.routine > 0 => self.routine -= 1,
+                _ => (),
+            }
+        }
+        if self.words.len() < 4 {
+            self.words.push(word);
+        }
+    }
+
+    /// Check the finished statement and start the next one.
+    fn finish(&mut self) -> bool {
+        let leading = |index: usize| self.words.get(index).map(String::as_str);
+        let transaction = match leading(0) {
+            Some("begin" | "start" | "commit" | "end" | "abort") => true,
+            Some("rollback") => {
+                leading(1) != Some("to")
+                    && !(matches!(leading(1), Some("work" | "transaction"))
+                        && leading(2) == Some("to"))
+            }
+            Some("prepare") => leading(1) == Some("transaction"),
+            _ => false,
+        };
+        *self = Self::default();
+        !transaction
+    }
+}
+
+fn identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || byte >= 0x80
+}
+
+fn identifier_part(byte: u8) -> bool {
+    identifier_start(byte) || byte.is_ascii_digit() || byte == b'$'
+}
+
+/// Skip a nested `/* */` comment starting at `start`.
+fn block_comment(sql: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0_u32;
+    let mut i = start;
+    while i + 1 < sql.len() {
+        match (sql[i], sql[i + 1]) {
+            (b'/', b'*') => {
+                depth += 1;
+                i += 2;
+            }
+            (b'*', b'/') => {
+                depth -= 1;
+                i += 2;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Skip a quoted literal or identifier starting at `start`. Doubled quotes stay inside; escape
+/// strings (`E'...'`) also take a backslash-escaped character.
+fn quoted(sql: &[u8], start: usize, quote: u8, escapes: bool) -> Option<usize> {
+    let mut i = start + 1;
+    while i < sql.len() {
+        match sql[i] {
+            b'\\' if escapes => i += 2,
+            byte if byte == quote => {
+                if sql.get(i + 1) == Some(&quote) {
+                    i += 2;
+                } else {
+                    return Some(i + 1);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Skip a `$tag$ ... $tag$` body. `Some(None)` means the `$` starts no quote, such as `$1`.
+fn dollar_quoted(sql: &[u8], start: usize) -> Option<Option<usize>> {
+    let tag_end = sql[start + 1..]
+        .iter()
+        .position(|byte| !(identifier_start(*byte) || byte.is_ascii_digit()))
+        .map(|length| start + 1 + length);
+    let Some(tag_end) = tag_end.filter(|end| sql[*end] == b'$') else {
+        return Some(None);
+    };
+    if sql.get(start + 1).is_some_and(u8::is_ascii_digit) {
+        return Some(None);
+    }
+    let delimiter = &sql[start..=tag_end];
+    sql[tag_end + 1..]
+        .windows(delimiter.len())
+        .position(|window| window == delimiter)
+        .map(|offset| Some(tag_end + 1 + offset + delimiter.len()))
 }
 
 async fn run(roles: &Roles, steps: &[PathBuf], target: u32, limit: Duration) -> io::Result<()> {
