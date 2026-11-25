@@ -280,15 +280,19 @@ async fn refused_escalation(
     (status, before)
 }
 
-/// The manager asked for the signed timestamp, and each metadata request was `answered`.
+/// The manager requested signed metadata, and each metadata request was `answered`.
+/// An answered refresh reaches the timestamp. An unanswered one stops at its first
+/// request, the check for a successor root.
 fn metadata_refreshed(requests: &[Served], answered: bool) -> bool {
     let metadata: Vec<_> = requests
         .iter()
         .filter(|request| request.host == METADATA_HOST)
         .collect();
-    metadata
+    let reached_timestamp = metadata
         .iter()
-        .any(|request| request.path.ends_with("/metadata/timestamp.json"))
+        .any(|request| request.path.ends_with("/metadata/timestamp.json"));
+    !metadata.is_empty()
+        && (reached_timestamp || !answered)
         && metadata
             .iter()
             .all(|request| request.status.is_some() == answered)
