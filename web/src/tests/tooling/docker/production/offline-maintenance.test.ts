@@ -240,7 +240,9 @@ test
     }
 })
 
-test.skipIf(process.platform !== 'linux' || process.getuid?.() !== 0).each(['apps', 'empty'] as const)(
+test
+    .skipIf(process.platform !== 'linux' || process.getuid?.() !== 0)
+    .each(['apps', 'empty'] as const)(
     'offline backup archives captured %s state and checks the dump against it',
     async (scenario) => {
         const root = await mkdtemp(join(tmpdir(), 'rp-offline-app-backup-'))

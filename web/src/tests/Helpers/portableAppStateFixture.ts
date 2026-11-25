@@ -42,5 +42,8 @@ export function portableAppState() {
     prefix.write('RPAPPB2\0')
     prefix.writeUInt32BE(header.length, 8)
     const snapshot = Buffer.concat([prefix, header, data, database])
-    return { snapshot, applications: { ...digest(snapshot), installations: [portableInstallation] } }
+    return {
+        snapshot,
+        applications: { ...digest(snapshot), installations: [portableInstallation] },
+    }
 }

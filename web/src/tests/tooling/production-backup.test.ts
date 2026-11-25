@@ -29,7 +29,8 @@ async function backup(scenario: string) {
     const compose = join(directory, 'compose.yml')
     await writeFile(compose, 'fixture only; docker is replaced')
     await writeFile(join(directory, 'archive.tar'), directoryArchive())
-    if (scenario === 'apps') await writeFile(join(directory, 'app-state'), portableAppState().snapshot)
+    if (scenario === 'apps')
+        await writeFile(join(directory, 'app-state'), portableAppState().snapshot)
     await writeFile(
         join(directory, 'clock.ts'),
         `let calls = 0; const now = performance.now.bind(performance); Object.defineProperty(performance, 'now', { value: () => new Error().stack?.includes('appliance-readiness.ts') ? (calls++ < 3 ? 0 : 200_000) : now() });`,

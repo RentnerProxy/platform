@@ -10,7 +10,10 @@ import {
 import { portableInstallation } from '@/tests/Helpers/portableAppStateFixture.ts'
 
 test('passes only a valid captured inventory to the offline database check', () => {
-    const installations = [portableInstallation, { ...portableInstallation, id: 'kiri-2', uid: 20001 }]
+    const installations = [
+        portableInstallation,
+        { ...portableInstallation, id: 'kiri-2', uid: 20001 },
+    ]
     const encoded = encodeCapturedInstallations(installations)
     expect(encoded).toMatch(/^[A-Za-z0-9+/]+=*$/u)
     expect(decodeCapturedInstallations(encoded)).toEqual(installations)
@@ -67,8 +70,8 @@ test('captures app state only from app storage with the cluster running', () => 
     expect(exit).toBeGreaterThan(0)
     expect(exit).toBeLessThan(command.indexOf('gosu postgres postgres -D'))
     expect(command.indexOf('"$ready"')).toBeLessThan(command.indexOf('capture-portable'))
-    expect(command.endsWith('/usr/local/bin/rentnerproxy-controller --app-backup capture-portable')).toBe(
-        true,
-    )
+    expect(
+        command.endsWith('/usr/local/bin/rentnerproxy-controller --app-backup capture-portable'),
+    ).toBe(true)
     expect(command).not.toContain('pg_dump')
 })

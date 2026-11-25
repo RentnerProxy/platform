@@ -143,8 +143,7 @@ async function offlineBackup() {
     await rename('/backup/app-encryption-key', join(staging, 'app-encryption-key'))
     const key = await readFile(join(staging, 'app-encryption-key'))
     const appFile = join(staging, portableAppStateName)
-    const appState = (await command(['bash', '-c', portableAppCaptureCommand()], appFile))
-        .artifact!
+    const appState = (await command(['bash', '-c', portableAppCaptureCommand()], appFile)).artifact!
     let applications
     if (appState.bytes) {
         const file = await open(appFile, 'r')
