@@ -110,6 +110,32 @@ async fn generation_replacement_and_drain_revoke_open_entries() {
     assert_eq!(registry.entry("demo", 2).err(), Some(StatusCode::NOT_FOUND));
 }
 
+#[tokio::test]
+async fn closing_a_generation_withdraws_its_provider_endpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = Registry::default();
+    let child = Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut live = super::super::runtime::Running::fixture_child(child);
+    live.providers = registry
+        .providers
+        .publish_in("closing", 20_005, 1, temp.path());
+    let key = HeaderValue::from_static("closing-key");
+    let invoke = || {
+        registry
+            .providers
+            .invoke("closing", "monitor-main", &key, Bytes::new())
+    };
+    // While published, the call reaches the (absent) broker instead of a missing endpoint.
+    assert_ne!(invoke().await.err(), Some(StatusCode::NOT_FOUND));
+    // A stop closes the generation before waiting for its child to exit.
+    live.close();
+    assert_eq!(invoke().await.err(), Some(StatusCode::NOT_FOUND));
+}
+
 #[test]
 fn local_http_encoders_enforce_their_bounds() {
     struct EncodeFailure;

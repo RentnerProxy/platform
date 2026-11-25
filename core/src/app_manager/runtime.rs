@@ -371,7 +371,9 @@ impl Running {
             .await
     }
     pub fn close(&mut self) {
+        // Withdraw both publications first, so no caller reaches a stopping generation.
         self.ui.take();
+        self.providers.take();
         self.renewal.take();
         self.pipe.take();
     }
