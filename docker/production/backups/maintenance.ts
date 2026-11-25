@@ -34,8 +34,14 @@ import {
     readSnapshotMetadata,
     snapshotProductionRestore,
 } from '../../../scripts/backup/restore-snapshot.ts'
-import { appBackupCommand, appStateName } from '../../../scripts/backup/app-state.ts'
 import {
+    appBackupCommand,
+    appStateName,
+    inspectPortableAppStateFile,
+    portableAppStateName,
+} from '../../../scripts/backup/app-state.ts'
+import {
+    portableAppCaptureCommand,
     postgresCommand,
     postgresDumpCommand,
     controllerRestoreCommand,
@@ -136,8 +142,24 @@ async function offlineBackup() {
     await command(['bun', '--no-env-file', bootstrap, 'export-app-key'])
     await rename('/backup/app-encryption-key', join(staging, 'app-encryption-key'))
     const key = await readFile(join(staging, 'app-encryption-key'))
+    const appFile = join(staging, portableAppStateName)
+    const appState = (await command(['bash', '-c', portableAppCaptureCommand()], appFile)).artifact!
+    let applications
+    if (appState.bytes) {
+        const file = await open(appFile, 'r')
+        try {
+            applications = await inspectPortableAppStateFile(file, operationSignal)
+        } finally {
+            await file.close()
+        }
+        if (applications.bytes !== appState.bytes || applications.sha256 !== appState.sha256)
+            throw new Error('Captured application state changed before publication')
+    } else await rm(appFile)
     const dump = (
-        await command(['bash', '-c', postgresDumpCommand()], join(staging, 'postgres.dump'))
+        await command(
+            ['bash', '-c', postgresDumpCommand(applications?.installations)],
+            join(staging, 'postgres.dump'),
+        )
     ).artifact!
     await command(['pg_restore', '--list', join(staging, 'postgres.dump')])
     const controller = (
@@ -149,10 +171,12 @@ async function offlineBackup() {
                 '--directory=/var/lib/rentnerproxy/proxy',
                 ...stateArchiveExclusions.map((entry) => '--exclude=' + entry),
                 '.',
+                ...(applications ? ['--directory=' + staging, portableAppStateName] : []),
             ],
             join(staging, 'controller-state.tar'),
         )
     ).artifact!
+    if (applications) await rm(appFile)
     const crowdsec = (
         await command(
             [
@@ -188,7 +212,9 @@ async function offlineBackup() {
         createdAt: new Date().toISOString(),
         format: 'rentnerproxy-production-backup',
         redis: 'excluded',
-        version: CURRENT_COMPATIBILITY_PROFILE.backup.writtenVersion,
+        ...(applications
+            ? { version: PORTABLE_APP_BACKUP_VERSION, applications }
+            : { version: CURRENT_COMPATIBILITY_PROFILE.backup.writtenVersion }),
     }
     await publishProductionBackup(staging, '/backup/complete', metadata, operationSignal)
 }
