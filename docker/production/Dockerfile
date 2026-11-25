@@ -161,7 +161,7 @@ FROM mirror.gcr.io/valkey/valkey:9.2.0-alpine AS valkey-runtime
 
 # Already published app executables use the v1 GNU/Linux ABI. Keep its narrowly
 # scoped libraries and loader paths while the appliance services move to musl.
-FROM mirror.gcr.io/library/debian:13.7-slim AS published-app-glibc
+FROM mirror.gcr.io/library/debian:13.8-slim AS published-app-glibc
 ARG TARGETARCH
 ARG BUILDKIT_SBOM_SCAN_STAGE=true
 RUN set -eux; \
