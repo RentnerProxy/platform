@@ -11,7 +11,11 @@ fn marker(digest: &str, complete: bool, retiring: bool) -> RestoreMarker {
     }
 }
 
-fn target(marker: Option<RestoreMarker>, installed: bool, published: bool) -> io::Result<Destination> {
+fn target(
+    marker: Option<RestoreMarker>,
+    installed: bool,
+    published: bool,
+) -> io::Result<Destination> {
     destination(marker.as_ref(), &BACKUP.repeat(64), installed, published)
 }
 
@@ -66,9 +70,11 @@ fn the_same_backup_resumes_its_retirement_and_restore() {
 
 #[test]
 fn markers_record_a_retirement_only_while_it_is_pending() {
-    let legacy: RestoreMarker =
-        serde_json::from_str(&format!(r#"{{"digest":"{}","complete":false}}"#, BACKUP.repeat(64)))
-            .unwrap();
+    let legacy: RestoreMarker = serde_json::from_str(&format!(
+        r#"{{"digest":"{}","complete":false}}"#,
+        BACKUP.repeat(64)
+    ))
+    .unwrap();
     assert!(!legacy.retiring);
     let finished = serde_json::to_value(marker(BACKUP, true, false)).unwrap();
     assert!(finished.get("retiring").is_none());

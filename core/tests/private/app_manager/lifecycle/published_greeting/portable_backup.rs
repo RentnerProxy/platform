@@ -345,7 +345,9 @@ async fn privileged_restore_published_greeting() {
     }
     postgres(
         uid,
-        &format!("SET ROLE rp_app_{uid}; INSERT INTO app.recovery_sentinel VALUES (3, 'replaced');"),
+        &format!(
+            "SET ROLE rp_app_{uid}; INSERT INTO app.recovery_sentinel VALUES (3, 'replaced');"
+        ),
     )
     .await;
     let untracked = Path::new("/var/lib/rentnerproxy/apps/.untracked");
@@ -358,7 +360,10 @@ async fn privileged_restore_published_greeting() {
         &fs::read("/var/lib/rentnerproxy/app-manager/portable-restore.json").unwrap(),
     )
     .unwrap();
-    assert_eq!(marker["complete"], true, "a rejected replacement changes nothing");
+    assert_eq!(
+        marker["complete"], true,
+        "a rejected replacement changes nothing"
+    );
     assert!(marker.get("retiring").is_none());
 
     // A session the retirement does not own interrupts it after the marker
@@ -385,7 +390,10 @@ async fn privileged_restore_published_greeting() {
         if postgres(uid, sessions).await == "1" {
             break;
         }
-        assert!(attempt < 200, "the foreign app database session did not start");
+        assert!(
+            attempt < 200,
+            "the foreign app database session did not start"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(!backup_status(&controller, config, "restore-portable", &bundle).await);
@@ -406,7 +414,10 @@ async fn privileged_restore_published_greeting() {
         if postgres(uid, sessions).await == "0" {
             break;
         }
-        assert!(attempt < 200, "the foreign app database session did not end");
+        assert!(
+            attempt < 200,
+            "the foreign app database session did not end"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     let verified = backup_command(&controller, config, "verify-portable")

@@ -271,7 +271,12 @@ impl BackupJournal {
     pub fn destination(&self, digest: &str, inventory: &Inventory) -> io::Result<Destination> {
         let slots = self.0.slots();
         let published = serde_json::to_value(slots)? == inventory.metadata()?;
-        destination(read_marker()?.as_ref(), digest, !slots.is_empty(), published)
+        destination(
+            read_marker()?.as_ref(),
+            digest,
+            !slots.is_empty(),
+            published,
+        )
     }
 
     /// The UIDs of every installation that a replacing restore retires.
