@@ -42,6 +42,7 @@ await mock.module('@/features/ApplicationVersion/middleware.ts', () => ({
         currentChannel: 'beta',
         latest: null,
     }),
+    getApplicationUpgradePreviewHandler: async () => ({ status: 'unavailable' }),
 }))
 
 const { act } = await import('react')

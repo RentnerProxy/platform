@@ -60,7 +60,64 @@
         "recoveryTitle": "Wiederherstellung bei fehlgeschlagenem Update",
         "recovery": "Das Backup vor dem Upgrade auf einem frischen Volume mit dem exakten Quell-Image-Digest und den Wiederherstellungswerkzeugen dieses Quell-Releases einspielen. Niemals ein älteres Image auf einem bereits von einer neueren Version migrierten Volume starten. Wiederherstellung ersetzt Zieldaten; Projekt und Backup bewusst auswählen.",
         "restoreValidation": "Die Wiederherstellungswerkzeuge prüfen Backup und Quellidentität. Unterstützte v4-Migrationshistorie muss ein nichtleeres exaktes Präfix der Zielhistorie sein, einschließlich Positionen, SHA-256-Hashes und Zeitstempeln. Ältere Formate, abweichende Historien und Downgrades werden abgelehnt. Bereitstellungs-Secrets privat neben dem Backup aufbewahren; sie fehlen im Manifest. Vor einer beabsichtigten Umgebungsänderung Origin und vertrauenswürdige Proxy-CIDRs prüfen.",
-        "resume": "Wird eine Wiederherstellung nach Beginn des Ersetzens unterbrochen, blockiert das persistente Journal den Start. Eine manuell gestartete Appliance stoppen und dasselbe Backup mit --resume --confirm-replace erneut ausführen. Es wird erneut geprüft und der Austausch wiederholt; ein anderes Backup wird bei offenem Journal abgelehnt."
+        "resume": "Wird eine Wiederherstellung nach Beginn des Ersetzens unterbrochen, blockiert das persistente Journal den Start. Eine manuell gestartete Appliance stoppen und dasselbe Backup mit --resume --confirm-replace erneut ausführen. Es wird erneut geprüft und der Austausch wiederholt; ein anderes Backup wird bei offenem Journal abgelehnt.",
+        "preview": {
+            "title": "Apps und integrierte Funktionen",
+            "loading": "Installierte Apps und integrierte Funktionen werden mit dem Ziel-Release abgeglichen …",
+            "none": "keine",
+            "requirements": {
+                "pending": "Das Ziel-Release hat seine App-Anforderungen noch nicht veröffentlicht. Die Kompatibilität von Apps und integrierten Funktionen lässt sich daher nicht vorab prüfen.",
+                "invalid": "Die App-Anforderungen des Ziel-Releases sind ungültig. Verwende dieses Ziel erst, wenn das Release korrigiert ist.",
+                "unavailable": "Die App-Anforderungen des Ziel-Releases konnten nicht geladen werden. Prüfe erneut, bevor du aktualisierst."
+            },
+            "status": {
+                "forbidden": "Nur Eigentümer der Appliance können installierte Apps und integrierte Funktionen prüfen.",
+                "unavailable": "Installierte Apps und integrierte Funktionen konnten nicht geprüft werden. Prüfe erneut, bevor du aktualisierst.",
+                "ready": "Jede installierte App läuft mit dem Ziel-Release, und keine genutzte integrierte Funktion entfällt.",
+                "incomplete": "Es wurde keine Inkompatibilität gefunden, aber nicht jede installierte App konnte mit dem Ziel-Release abgeglichen werden.",
+                "blocked": "Das Ziel-Release kann diese Kombination nicht ausführen. Behebe zuerst die folgenden Punkte; bis dahin bleibt die Image-Referenz verborgen."
+            },
+            "issuesTitle": "Inkompatible Kombinationen",
+            "issues": {
+                "app-incompatible": "{{app}} {{version}} läuft nicht mit dem Ziel-Release. Aktualisiere die App auf eine kompatible Version oder deinstalliere sie vor dem Update.",
+                "feature-retired-without-app": "Das Ziel-Release enthält die integrierte Funktion {{feature}} nicht mehr. Installiere zuerst eine dieser Apps und schließe die Übergabe ab: {{apps}}.",
+                "feature-handoff-pending": "Das Ziel-Release enthält die integrierte Funktion {{feature}} nicht mehr, und ihre Einstellungen wurden noch nicht an die installierte App übergeben. Schließe zuerst die Übergabe ab; kann diese Version sie nicht übergeben, aktualisiere über ein Zwischen-Release, das es kann."
+            },
+            "featuresTitle": "Integrierte Funktionen",
+            "features": {
+                "monitoring": "Monitoring",
+                "docker-discovery": "Docker-Erkennung",
+                "load-balancer": "Load Balancer",
+                "dns": "DNS",
+                "oidc": "OIDC-Anmeldung",
+                "crowdsec": "CrowdSec"
+            },
+            "target": {
+                "built-in": "Bleibt im Ziel-Release integriert",
+                "retired": "Im Ziel-Release nur noch per App verfügbar"
+            },
+            "owner": {
+                "platform": "Von der Plattform betrieben",
+                "handoff": "Übergabe läuft",
+                "app": "An eine App übergeben"
+            },
+            "configured": {
+                "yes": "konfiguriert",
+                "no": "nicht konfiguriert",
+                "unknown": "Konfiguration noch nicht prüfbar"
+            },
+            "references": "Verweise",
+            "requiredApps": "Apps für diese Funktion",
+            "providedBy": "Bereitgestellt von installierten Apps",
+            "appsTitle": "Installierte Apps",
+            "appsUnavailable": "Die App-Laufzeit ist nicht verfügbar, daher konnten installierte Apps nicht geprüft werden.",
+            "noApps": "Es sind keine Apps installiert.",
+            "apps": {
+                "compatible": "Läuft mit dem Ziel-Release.",
+                "incompatible": "Läuft nicht mit dem Ziel-Release.",
+                "unknown": "Nicht prüfbar: Der App-Katalog führt genau dieses Release nicht mehr."
+            }
+        }
     },
     "toast": {
         "notification": "Benachrichtigung",

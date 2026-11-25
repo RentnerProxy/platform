@@ -17,6 +17,7 @@ import {
     nativeAppCatalog,
     nativeCatalogInstall,
     nativeCatalogLifecycle,
+    nativeCatalogTargetCheck,
 } from '@/server/AppRuntime/catalog/transport.server.ts'
 import { uiProblems } from '@/server/AppRuntime/ui/transport.server.ts'
 import { AuthDomainError } from '@/server/Auth/Core/errors.server.ts'
@@ -35,7 +36,17 @@ const entry = {
     summary: 'Say hello.',
     publisher: 'RentnerProxy',
     hasUi: true,
+    providers: ['monitoring' as const],
     availability: 'available' as const,
+}
+const installation = {
+    ...release,
+    generation: 3,
+    installationId: 'greeting-test',
+    state: 'running' as const,
+    providers: null,
+    update: null,
+    previous: null,
 }
 
 const { version, archiveSha256 } = release
@@ -193,6 +204,76 @@ describe('native signed catalog wire contract', () => {
                 install: { ...release, status: 'installed' },
             }).success,
         ).toBe(false)
+    })
+
+    test('carries signed provider profiles for listed releases and installations', () => {
+        const snapshot = {
+            state: 'stale',
+            entries: [entry],
+            install: null,
+            installations: [installation, { ...installation, providers: ['dns', 'oidc'] }],
+            lifecycle: null,
+        }
+        expect(catalogSnapshotSchema.safeParse(snapshot).success).toBe(true)
+        for (const providers of [undefined, ['monitoring', 'monitoring'], ['unknown']]) {
+            const { providers: _, ...withoutProviders } = entry
+            const changed = providers ? { ...entry, providers } : withoutProviders
+            expect(
+                catalogSnapshotSchema.safeParse({ ...snapshot, entries: [changed] }).success,
+            ).toBe(false)
+        }
+        const { providers: _, ...unlisted } = installation
+        expect(
+            catalogSnapshotSchema.safeParse({ ...snapshot, installations: [unlisted] }).success,
+        ).toBe(false)
+    })
+
+    test('checks installations against a verified target environment over the app UI socket', async () => {
+        const signal = AbortSignal.timeout(1_000)
+        const environment = {
+            runtimeProfile: 'rentnerproxy-linux-v1',
+            platformApi: '1.1.0',
+            appProtocol: '1.0.0',
+            uiBridge: null,
+            engineCapabilities: ['caddy.crowdsec.v1'],
+        }
+        const checked = {
+            installationId: 'greeting-test',
+            appId: release.appId,
+            version: release.version,
+            archiveSha256: release.archiveSha256,
+            state: 'disabled' as const,
+            providers: ['monitoring' as const],
+            target: 'incompatible' as const,
+        }
+        const replies = spyOn(globalThis, 'fetch')
+            .mockResolvedValueOnce(Response.json({ installations: [checked] }))
+            .mockResolvedValueOnce(
+                Response.json({ installations: [{ ...checked, state: 'removed' }] }),
+            )
+            .mockResolvedValueOnce(Response.json({ installations: [checked, checked] }))
+        try {
+            await expect(nativeCatalogTargetCheck(environment, signal)).resolves.toEqual({
+                installations: [checked],
+            })
+            await expect(nativeCatalogTargetCheck(environment, signal)).rejects.toBe(
+                uiProblems.unavailable,
+            )
+            await expect(nativeCatalogTargetCheck(environment, signal)).rejects.toBe(
+                uiProblems.unavailable,
+            )
+            expect(replies).toHaveBeenNthCalledWith(
+                1,
+                'http://localhost/v1/catalog/target-check',
+                expect.objectContaining({
+                    unix: '/run/rentnerproxy/app-ui/web.sock',
+                    method: 'POST',
+                    body: JSON.stringify(environment),
+                }),
+            )
+        } finally {
+            replies.mockRestore()
+        }
     })
 
     test('uses the existing app UI socket and rejects a mismatched install acknowledgment', async () => {

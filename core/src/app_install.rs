@@ -16,6 +16,11 @@ mod package;
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub(crate) mod recovery;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod target;
 mod transport;
 
 #[cfg(test)]
@@ -43,7 +48,24 @@ pub(crate) use package::{UI_ASSET_LIMIT, UI_DOCUMENT_LIMIT, parse_ui_api};
 use rentnerproxy_app_contracts::{Contracts, ManifestEnvironment};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) use target::TargetSupport;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) use target::{InstalledRelease, TargetCheck, TargetEnvironment};
 use time::OffsetDateTime;
+
+/// The app runtime this platform release offers. The release requirements asset publishes the
+/// same values (`web/src/config/app-requirements.config.ts`), so an older platform can check
+/// installed apps against a newer release before its image changes.
+pub(crate) const RUNTIME_PROFILE: &str = "rentnerproxy-linux-v1";
+pub(crate) const PROTOCOL_VERSION: &str = "1.0.0";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -233,16 +255,27 @@ impl Installer {
             .iter()
             .map(String::as_str)
             .collect();
-        let environment = ManifestEnvironment {
-            target: self.target,
-            runtime_profile: "rentnerproxy-linux-v1",
-            platform_api: "1.0.0",
-            app_protocol: "1.0.0",
-            ui_bridge: Some("1.0.0"),
-            engine_capabilities: &capabilities,
-        };
+        self.check_environment(
+            manifest,
+            &ManifestEnvironment {
+                target: self.target,
+                runtime_profile: RUNTIME_PROFILE,
+                platform_api: PROTOCOL_VERSION,
+                app_protocol: PROTOCOL_VERSION,
+                ui_bridge: Some(PROTOCOL_VERSION),
+                engine_capabilities: &capabilities,
+            },
+        )
+    }
+
+    /// Whether a platform offering `environment` can run the package described by `manifest`.
+    fn check_environment(
+        &self,
+        manifest: &Value,
+        environment: &ManifestEnvironment<'_>,
+    ) -> io::Result<()> {
         self.contracts
-            .check_manifest_compatibility(manifest, &environment)
+            .check_manifest_compatibility(manifest, environment)
             .map_err(invalid_contract)
     }
 }

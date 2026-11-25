@@ -161,6 +161,7 @@ export async function loadPublishedSource(
             publishedAt: release.published_at!,
             notes: null,
             readinessAssetId: asset.id,
+            appRequirementsAssetId: null,
         })
         if (!readiness || readiness.upgrade.policy === 'manual-review')
             throw new Error(

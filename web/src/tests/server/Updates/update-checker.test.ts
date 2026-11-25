@@ -46,6 +46,29 @@ function fixture(tag = 'v1.0.0-beta.2') {
         },
         upgrade: { policy: 'beta1-appliance-v1', minimumVersion: 'v1.0.0-beta.1' },
     }
+    const requirements = {
+        schemaVersion: 1,
+        releaseId: 42,
+        tag,
+        channel: metadata.channel,
+        publishedAt: publication,
+        revision,
+        environment: {
+            runtimeProfile: 'rentnerproxy-linux-v1',
+            platformApi: '1.1.0',
+            appProtocol: '1.0.0',
+            uiBridge: '1.0.0',
+            engineCapabilities: ['caddy.crowdsec.v1'],
+        },
+        features: [
+            { domain: 'monitoring', status: 'retired', apps: ['rentnerproxy.monitoring'] },
+            { domain: 'docker-discovery', status: 'built-in', apps: [] },
+            { domain: 'load-balancer', status: 'built-in', apps: [] },
+            { domain: 'dns', status: 'built-in', apps: ['rentnerproxy.dns'] },
+            { domain: 'oidc', status: 'built-in', apps: [] },
+            { domain: 'crowdsec', status: 'built-in', apps: [] },
+        ],
+    }
     const release = {
         id: 42,
         tag_name: tag,
@@ -63,6 +86,7 @@ function fixture(tag = 'v1.0.0-beta.2') {
         const intercepted = intercept?.(url)
         if (intercepted) return intercepted
         if (url.hostname === 'api.github.com') {
+            if (url.pathname.endsWith('/assets/98')) return Response.json(requirements)
             return Response.json(url.pathname.endsWith('/assets/99') ? metadata : [release])
         }
         if (url.hostname === 'ghcr.io' && url.pathname === '/token')
@@ -75,6 +99,7 @@ function fixture(tag = 'v1.0.0-beta.2') {
     }) as typeof fetch
     return {
         metadata,
+        requirements,
         release,
         calls,
         fetcher,
@@ -355,6 +380,111 @@ describe('read-only update checker', () => {
     })
 })
 
+const requirementsAsset = {
+    id: 98,
+    name: 'rentnerproxy-app-requirements.json',
+    state: 'uploaded',
+    size: 2048,
+}
+
+describe('target app requirements', () => {
+    test('loads requirements bound to the release and its readiness revision', async () => {
+        const data = fixture()
+        data.release.assets.push(requirementsAsset)
+        const result = await checkerFor(data)('1.0.0-beta.1')
+        expect(result.latest?.appRequirements).toEqual({
+            status: 'verified',
+            environment: data.requirements.environment as never,
+            features: data.requirements.features as never,
+        })
+        expect(data.calls.filter((url) => url.includes('/assets/'))).toEqual([
+            'https://api.github.com/repos/RentnerProxy/platform/releases/assets/99',
+            'https://api.github.com/repos/RentnerProxy/platform/releases/assets/98',
+        ])
+    })
+    test('keeps requirements pending until both control assets are published', async () => {
+        const missing = fixture()
+        expect((await checkerFor(missing)('1.0.0-beta.1')).latest?.appRequirements).toEqual({
+            status: 'pending',
+            environment: null,
+            features: [],
+        })
+        const unpublished = fixture()
+        unpublished.release.assets = [requirementsAsset]
+        expect((await checkerFor(unpublished)('1.0.0-beta.1')).latest?.appRequirements.status).toBe(
+            'pending',
+        )
+        expect(unpublished.calls.some((url) => url.includes('/assets/98'))).toBe(false)
+        await Promise.all(
+            [
+                { ...requirementsAsset, size: 16_385 },
+                { ...requirementsAsset, state: 'starter' },
+            ].map(async (asset) => {
+                const unbounded = fixture()
+                unbounded.release.assets.push(asset)
+                expect(
+                    (await checkerFor(unbounded)('1.0.0-beta.1')).latest?.appRequirements.status,
+                ).toBe('pending')
+                expect(unbounded.calls.some((url) => url.includes('/assets/98'))).toBe(false)
+            }),
+        )
+    })
+    test('rejects requirements for another release, revision or shape', async () => {
+        const mutations: Record<string, unknown>[] = [
+            { releaseId: 43 },
+            { tag: 'v1.0.0-beta.3' },
+            { publishedAt: '2026-10-19T12:00:00Z' },
+            { revision: 'b'.repeat(40) },
+            { schemaVersion: 2 },
+            { extra: true },
+            { environment: { runtimeProfile: 'rentnerproxy-linux-v1' } },
+            {
+                features: [
+                    { domain: 'monitoring', status: 'retired', apps: [] },
+                    ...fixture().requirements.features.slice(1),
+                ],
+            },
+            { features: fixture().requirements.features.toReversed() },
+        ]
+        await Promise.all(
+            mutations.map(async (mutation) => {
+                const data = fixture()
+                data.release.assets.push(requirementsAsset)
+                Object.assign(data.requirements, mutation)
+                const result = await checkerFor(data)('1.0.0-beta.1')
+                expect(result.latest?.appRequirements, JSON.stringify(mutation)).toEqual({
+                    status: 'invalid',
+                    environment: null,
+                    features: [],
+                })
+                expect(result.latest?.image.status).toBe('verified')
+            }),
+        )
+    })
+    test('rechecks a verified image after five minutes until its requirements verify', async () => {
+        const data = fixture()
+        let now = Date.parse(publication)
+        const check = checkerFor(data, () => now)
+        expect((await check('1.0.0-beta.1')).latest?.appRequirements.status).toBe('pending')
+        data.release.assets.push(requirementsAsset)
+        now += 5 * 60 * 1000
+        expect((await check('1.0.0-beta.1')).latest?.appRequirements.status).toBe('verified')
+        now += 30 * 60 * 1000
+        await check('1.0.0-beta.1')
+        expect(data.calls.filter((url) => url.includes('?per_page'))).toHaveLength(2)
+    })
+    test('reports unavailable requirements without dropping the verified image', async () => {
+        const data = fixture()
+        data.release.assets.push(requirementsAsset)
+        data.intercept((url) =>
+            url.pathname.endsWith('/assets/98') ? new Response('', { status: 502 }) : undefined,
+        )
+        const result = await checkerFor(data)('1.0.0-beta.1')
+        expect(result.latest?.appRequirements.status).toBe('unavailable')
+        expect(result.latest?.image.status).toBe('verified')
+    })
+})
+
 describe('declared upgrade compatibility', () => {
     test.each(['v1.0.0-beta.2', 'v1.0.0-beta.3', 'v1.0.0-beta.4', 'v1.0.0'])(
         'restricts historical readiness repositories to their exact release tags: %s',
@@ -367,6 +497,7 @@ describe('declared upgrade compatibility', () => {
                 publishedAt: publication,
                 notes: null,
                 readinessAssetId: 99,
+                appRequirementsAssetId: null,
                 version: tag.slice(1),
             }
             expect(parseReleaseReadiness(data.metadata, identity)).not.toBeNull()
@@ -425,6 +556,7 @@ describe('declared upgrade compatibility', () => {
             publishedAt: publication,
             notes: null,
             readinessAssetId: 99,
+            appRequirementsAssetId: null,
             version: '2.0.0',
         }
         expect(parseReleaseReadiness(data.metadata, identity)).toBeNull()

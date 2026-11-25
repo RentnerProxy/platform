@@ -3,7 +3,12 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { Root } from 'react-dom/client'
 
 import withTestLanguage, { catalogs, withLanguageRoot } from '@/tests/Helpers/withTestLanguage.tsx'
-import type { ApplicationUpdateResult } from '@/features/ApplicationVersion/Types/application-update.types.ts'
+import type {
+    ApplicationUpdate,
+    ApplicationUpdateResult,
+    UpgradePreviewFeature,
+} from '@/features/ApplicationVersion/Types/application-update.types.ts'
+import type { ApplicationUpgradePreviewQuery } from '@/features/ApplicationVersion/Types/application-update-dialog.types.ts'
 
 if (!GlobalRegistrator.isRegistered)
     GlobalRegistrator.register({ settings: { device: { prefersReducedMotion: 'reduce' } } })
@@ -37,10 +42,37 @@ const result: ApplicationUpdateResult = {
             minimumVersion: 'v1.0.0-beta.1',
             intermediateVersion: null,
         },
+        appRequirements: { status: 'pending', environment: null, features: [] },
     },
 }
 
-async function render(data: ApplicationUpdateResult | undefined, open = true) {
+const verifiedRequirements: ApplicationUpdate['appRequirements'] = {
+    status: 'verified',
+    environment: {
+        runtimeProfile: 'rentnerproxy-linux-v1',
+        platformApi: '1.1.0',
+        appProtocol: '1.0.0',
+        uiBridge: '1.0.0',
+        engineCapabilities: [],
+    },
+    features: [{ domain: 'monitoring', status: 'retired', apps: ['rentnerproxy.monitoring'] }],
+}
+
+const feature: UpgradePreviewFeature = {
+    domain: 'monitoring',
+    target: 'retired',
+    apps: ['rentnerproxy.monitoring'],
+    owner: 'platform',
+    configured: true,
+    references: 3,
+    providers: [],
+}
+
+async function render(
+    data: ApplicationUpdateResult | undefined,
+    open = true,
+    preview?: ApplicationUpgradePreviewQuery,
+) {
     if (!root) {
         const container = document.createElement('div')
         document.body.append(container)
@@ -49,7 +81,12 @@ async function render(data: ApplicationUpdateResult | undefined, open = true) {
     await act(async () =>
         root!.render(
             <ToastProvider {...TOAST_PROVIDER_PROPS}>
-                <ApplicationUpdateDialog data={data} open={open} onOpenChange={() => {}} />
+                <ApplicationUpdateDialog
+                    data={data}
+                    preview={preview}
+                    open={open}
+                    onOpenChange={() => {}}
+                />
             </ToastProvider>,
         ),
     )
@@ -176,6 +213,90 @@ test('verified references remain available for manual review of unsupported upgr
     })
     expect(dialog.querySelector('textarea')?.value).toBe(result.latest!.image.reference!)
     expect(dialog.textContent).toContain('Copy image reference')
+})
+
+test('without published app requirements the preview explains why it is missing', async () => {
+    const dialog = await render(result)
+    const section = dialog.querySelector(`[aria-label="${catalogs.en.updates.preview.title}"]`)!
+    expect(section.textContent).toContain(catalogs.en.updates.preview.requirements.pending)
+    expect(section.querySelector('ul')).toBeNull()
+    expect(dialog.querySelector('textarea')?.value).toBe(result.latest!.image.reference!)
+})
+
+test('incompatible combinations hide the verified reference and name every issue', async () => {
+    const latest = { ...result.latest!, appRequirements: verifiedRequirements }
+    const dialog = await render({ ...result, latest }, true, {
+        loading: false,
+        preview: {
+            status: 'blocked',
+            features: [feature],
+            apps: [
+                {
+                    installationId: 'app-dns',
+                    appId: 'example.dns',
+                    version: '2.1.0',
+                    state: 'running',
+                    providers: ['dns'],
+                    target: 'incompatible',
+                },
+            ],
+            issues: [
+                {
+                    kind: 'app-incompatible',
+                    installationId: 'app-dns',
+                    appId: 'example.dns',
+                    version: '2.1.0',
+                },
+                {
+                    kind: 'feature-retired-without-app',
+                    domain: 'monitoring',
+                    apps: ['rentnerproxy.monitoring'],
+                },
+            ],
+        },
+    })
+    const section = dialog.querySelector(`[aria-label="${catalogs.en.updates.preview.title}"]`)!
+    expect(section.textContent).toContain(catalogs.en.updates.preview.status.blocked)
+    const issues = section.querySelector(
+        `[aria-label="${catalogs.en.updates.preview.issuesTitle}"]`,
+    )!
+    expect(issues.querySelectorAll('li')).toHaveLength(2)
+    expect(issues.textContent).toContain('example.dns 2.1.0 does not run on the target release')
+    expect(issues.textContent).toContain(
+        'no longer includes the built-in Monitoring feature. Install one of these apps and complete its handoff first: rentnerproxy.monitoring.',
+    )
+    expect(section.textContent).toContain(catalogs.en.updates.preview.target.retired)
+    expect(section.textContent).toContain(`${catalogs.en.updates.preview.references}: 3`)
+    expect(section.textContent).toContain(catalogs.en.updates.preview.apps.incompatible)
+    expect(dialog.querySelector('textarea')).toBeNull()
+    expect(dialog.textContent).not.toContain(catalogs.en.updates.copy)
+})
+
+test('ready, incomplete and restricted previews keep the verified reference', async () => {
+    const latest = { ...result.latest!, appRequirements: verifiedRequirements }
+    const dialog = await render({ ...result, latest }, true, { loading: true, preview: undefined })
+    expect(dialog.textContent).toContain(catalogs.en.updates.preview.loading)
+    for (const [preview, text] of [
+        [
+            {
+                status: 'ready',
+                features: [{ ...feature, target: 'built-in', apps: [] }],
+                apps: [],
+                issues: [],
+            },
+            catalogs.en.updates.preview.status.ready,
+        ],
+        [
+            { status: 'incomplete', features: [feature], apps: null, issues: [] },
+            catalogs.en.updates.preview.appsUnavailable,
+        ],
+        [{ status: 'forbidden' }, catalogs.en.updates.preview.status.forbidden],
+    ] as const) {
+        // oxlint-disable-next-line no-await-in-loop -- Each state rerenders the same dialog.
+        await render({ ...result, latest }, true, { loading: false, preview })
+        expect(dialog.textContent).toContain(text)
+        expect(dialog.querySelector('textarea')?.value).toBe(result.latest!.image.reference!)
+    }
 })
 
 test('untrusted release links fall back to the official release listing', async () => {

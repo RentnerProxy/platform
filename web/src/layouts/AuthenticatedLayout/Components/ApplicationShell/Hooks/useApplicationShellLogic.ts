@@ -6,6 +6,7 @@ import useApplicationSidebarRefs from './useApplicationSidebarRefs.ts'
 import useNavigationExpansion from './useNavigationExpansion.ts'
 import { useRef, useState } from 'react'
 import useApplicationUpdateQuery from '@/features/ApplicationVersion/Hooks/useApplicationUpdateQuery.ts'
+import useApplicationUpgradePreviewQuery from '@/features/ApplicationVersion/Hooks/useApplicationUpgradePreviewQuery.ts'
 
 export default function useApplicationShellLogic(
     user: ApplicationUserSummary,
@@ -16,6 +17,7 @@ export default function useApplicationShellLogic(
     const view = getApplicationShellViewModel(user, t)
     const update = useApplicationUpdateQuery()
     const [isUpdateOpen, setIsUpdateOpen] = useState(false)
+    const updatePreview = useApplicationUpgradePreviewQuery(update?.latest, isUpdateOpen)
     const pendingUpdate = useRef(false)
 
     const openUpdate = () => {
@@ -39,6 +41,7 @@ export default function useApplicationShellLogic(
     return {
         state: {
             update,
+            updatePreview,
             isUpdateOpen,
             canViewAccount: view.canViewAccount,
             navigationItems: view.navigationItems,
