@@ -22,6 +22,9 @@ use super::*;
 #[path = "app_ipc_ui.rs"]
 mod root_ui_dispatch;
 
+#[path = "app_ipc_providers.rs"]
+mod root_provider_dispatch;
+
 const TOKEN: &str = "Bearer manager-test-token";
 const CREDENTIAL: &str = "Bearer native-app-test-token";
 const CONTEXT: &str = "/platform/v1/context";
@@ -243,7 +246,7 @@ async fn root_ui_dispatch_uses_only_generation_bound_app_credentials() {
     let mut generation = test_generation(uid(), authority_socket, uid());
     Arc::get_mut(&mut generation)
         .unwrap()
-        .set_app_target(app_socket, "app-ui-direction")
+        .set_app_target(app_socket, "app-ui-direction", true)
         .unwrap();
     let core = scratch.path("core.sock");
     let core_task = tokio::spawn(gateway::serve(
@@ -926,6 +929,105 @@ struct Posted {
 struct Readiness {
     result: Option<io::Result<()>>,
     posted: Vec<Posted>,
+}
+
+#[test]
+fn provider_results_must_answer_their_invocation() {
+    let pair = |profile: &str, request: Value, result: Value| {
+        gateway::provider_result_matches(
+            &json!({"profile": profile, "payload": request}),
+            &json!({"profile": profile, "payload": result}),
+        )
+    };
+    let observed = |count: usize| json!(vec![json!({}); count]);
+    // Lists stay within the requested limit.
+    assert!(pair("monitoring", json!({"limit": 2}), json!({"samples": observed(2)})));
+    assert!(!pair("monitoring", json!({"limit": 2}), json!({"samples": observed(3)})));
+    let discovery = json!({"connectionId": "docker-one", "limit": 1});
+    assert!(pair(
+        "docker-discovery",
+        discovery.clone(),
+        json!({"connectionId": "docker-one", "observations": observed(1)})
+    ));
+    assert!(!pair(
+        "docker-discovery",
+        discovery.clone(),
+        json!({"connectionId": "docker-two", "observations": []})
+    ));
+    assert!(!pair(
+        "docker-discovery",
+        discovery,
+        json!({"connectionId": "docker-one", "observations": observed(2)})
+    ));
+    // An applied load-balancer revision is the requested one; other outcomes keep the old one.
+    let apply = json!({"action": "apply", "contributionId": "pool", "revision": "7"});
+    let status = |status: &str, revision: &str| {
+        json!({"contributionId": "pool",
+            "revisionStatus": {"status": status, "appliedRevision": revision}})
+    };
+    assert!(pair("load-balancer", apply.clone(), status("applied", "7")));
+    assert!(!pair("load-balancer", apply.clone(), status("applied", "6")));
+    assert!(pair("load-balancer", apply.clone(), status("rejected", "6")));
+    assert!(!pair(
+        "load-balancer",
+        apply,
+        json!({"contributionId": "other", "revisionStatus": {"status": "unchanged"}})
+    ));
+    assert!(pair(
+        "load-balancer",
+        json!({"action": "readStatus", "contributionId": "pool"}),
+        status("applied", "9")
+    ));
+    // DNS, OIDC and CrowdSec results concern the same action and resource.
+    let check = json!({"action": "check", "challengeId": "challenge"});
+    assert!(pair(
+        "dns",
+        check.clone(),
+        json!({"action": "check", "challengeId": "challenge"})
+    ));
+    assert!(!pair(
+        "dns",
+        check.clone(),
+        json!({"action": "cleanup", "challengeId": "challenge"})
+    ));
+    assert!(!pair(
+        "dns",
+        check,
+        json!({"action": "check", "challengeId": "other"})
+    ));
+    assert!(pair(
+        "oidc",
+        json!({"transactionId": "login"}),
+        json!({"transactionId": "login"})
+    ));
+    assert!(!pair(
+        "oidc",
+        json!({"transactionId": "login"}),
+        json!({"transactionId": "other"})
+    ));
+    let logs = json!({"action": "consumeLogs", "batchId": "batch"});
+    assert!(pair(
+        "crowdsec",
+        logs.clone(),
+        json!({"action": "consumeLogs", "batchId": "batch"})
+    ));
+    assert!(!pair(
+        "crowdsec",
+        logs.clone(),
+        json!({"action": "consumeLogs", "batchId": "other"})
+    ));
+    assert!(!pair("crowdsec", logs, json!({"action": "evaluate"})));
+    assert!(pair(
+        "crowdsec",
+        json!({"action": "evaluate", "proxyHostId": "host"}),
+        json!({"action": "evaluate"})
+    ));
+    // The result belongs to the invoked profile, which must be a known one.
+    assert!(!gateway::provider_result_matches(
+        &json!({"profile": "oidc", "payload": {"transactionId": "login"}}),
+        &json!({"profile": "dns", "payload": {"transactionId": "login"}}),
+    ));
+    assert!(!pair("unknown", json!({}), json!({})));
 }
 
 fn registration(id: &str, profile: &str) -> Value {

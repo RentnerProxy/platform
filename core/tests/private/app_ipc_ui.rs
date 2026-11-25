@@ -15,7 +15,7 @@ fn start_broker(scratch: &Scratch) -> (PathBuf, JoinHandle<io::Result<()>>) {
     let mut generation = test_generation(uid(), scratch.path("authority.sock"), uid());
     Arc::get_mut(&mut generation)
         .unwrap()
-        .set_app_target(scratch.path("app.sock"), APP_AUTH)
+        .set_app_target(scratch.path("app.sock"), APP_AUTH, true)
         .unwrap();
     let core = scratch.path("core.sock");
     let broker = tokio::spawn(gateway::serve(

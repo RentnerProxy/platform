@@ -65,6 +65,17 @@ integrationTest(
             ).status
         const fetchProvider = (target: typeof identity, id: string) =>
             send(target, '/platform/v1/providers/' + id)
+        // The broker asks the authority on the bridge before each provider invocation.
+        const authorizeInvocation = async (target: typeof identity, providerId: string) => {
+            const response = await send(target, '/internal/v1/app-generations/provider', {
+                identity: target,
+                providerId,
+            })
+            return {
+                status: response.status,
+                body: response.status === 200 ? await response.json() : undefined,
+            }
+        }
         const leaseExpiresAt = new Date(Date.now() + 60_000).toISOString()
         const dns = { id: 'dns-main', profile: 'dns', version: '1.0.0' }
         const monitor = { id: 'monitor-main', profile: 'monitoring', version: '1.0.0' }
@@ -141,6 +152,7 @@ integrationTest(
                 }),
             ).toBe(204)
             expect((await fetchProvider(identity, dns.id)).status).toBe(401)
+            expect((await authorizeInvocation(identity, dns.id)).status).toBe(401)
 
             expect(await control('activate', identity, { leaseExpiresAt })).toBe(204)
             const served = await fetchProvider(identity, dns.id)
@@ -149,12 +161,22 @@ integrationTest(
             expect((await fetchProvider(identity, monitor.id)).status).toBe(404)
             expect((await fetchProvider(identity, 'unknown')).status).toBe(404)
             expect(await control('providers', identity, { providers: [dns, monitor] })).toBe(409)
+            // An invocation needs the same live registration and service grant as the read.
+            expect(await authorizeInvocation(identity, dns.id)).toEqual({ status: 200, body: dns })
+            expect((await authorizeInvocation(identity, monitor.id)).status).toBe(404)
+            expect((await authorizeInvocation(identity, 'unknown')).status).toBe(404)
+            expect((await authorizeInvocation(identity, 'Not A Record')).status).toBe(400)
+            expect(
+                await control('provider', identity, { providerId: dns.id, profile: 'dns' }),
+            ).toBe(400)
 
             // Replacing the live grants takes effect immediately.
             expect(await control('grants', identity, { grants: [] })).toBe(204)
             expect((await fetchProvider(identity, dns.id)).status).toBe(404)
+            expect((await authorizeInvocation(identity, dns.id)).status).toBe(404)
             expect(await control('grants', identity, { grants: [grant('dns')] })).toBe(204)
             expect((await fetchProvider(identity, dns.id)).status).toBe(200)
+            expect((await authorizeInvocation(identity, dns.id)).status).toBe(200)
 
             // Update: generation 2 supersedes generation 1 and never serves its registrations.
             const second = generation(2)
@@ -165,6 +187,7 @@ integrationTest(
             expect((await fetchProvider(second, secondDns.id)).status).toBe(401)
             expect(await control('activate', second, { leaseExpiresAt })).toBe(204)
             expect((await fetchProvider(identity, dns.id)).status).toBe(401)
+            expect((await authorizeInvocation(identity, dns.id)).status).toBe(401)
             expect(await control('providers', identity, { providers: [dns] })).toBe(409)
             // Rollback-like generation: cleared grants stay unserved until granted again.
             expect((await fetchProvider(second, secondDns.id)).status).toBe(404)
@@ -187,8 +210,10 @@ integrationTest(
             expect((await fetchProvider(third, monitor.id)).status).toBe(200)
 
             // Revocation is immediate.
+            expect((await authorizeInvocation(third, monitor.id)).status).toBe(200)
             expect(await control('revoke', third)).toBe(204)
             expect((await fetchProvider(third, monitor.id)).status).toBe(401)
+            expect((await authorizeInvocation(third, monitor.id)).status).toBe(401)
             expect(await control('providers', third, { providers: [monitor] })).toBe(409)
 
             // A manifest without providers cannot register any; an expired lease cannot record.

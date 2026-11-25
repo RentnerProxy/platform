@@ -535,6 +535,7 @@ async fn privileged_web_socket_serves_generation_scoped_ui() {
     assert_metadata_and_assets(&client).await;
     assert_invalid_requests(&client).await;
     assert_invocation(&client, &demo, &broker).await;
+    assert_provider_invocations(&client, &registry, &app_root).await;
 
     let broker_path = &offline.entry.broker_socket;
     fs::create_dir_all(broker_path.parent().unwrap()).unwrap();
@@ -845,4 +846,225 @@ async fn assert_invocation(client: &Client, demo: &Publication, broker: &Broker)
     client.post(REQUEST_BODY).await.assert(429);
     drop(held);
     *broker.reply.lock().unwrap() = BrokerReply::success();
+}
+
+const PROVIDER_PATH: &str = "/v1/providers/monitored/monitor-main";
+const PROVIDER_HEADERS: &str = "Content-Type: application/json\r\nIdempotency-Key: caller-7\r\n";
+const PROVIDER_BODY: &[u8] = br#"{"profile":"monitoring","payload":{"limit":2}}"#;
+const PROVIDER_RESULT: &[u8] = br#"{"profile":"monitoring","payload":{"samples":[]}}"#;
+
+/// A broker that answers provider invocations for one published generation.
+struct ProviderBroker {
+    reply: Mutex<BrokerReply>,
+    hold_calls: AtomicBool,
+    entered: Notify,
+    release: Notify,
+}
+
+impl ProviderBroker {
+    fn bind(publication: &ProviderPublication, generation: &'static str) -> (Arc<Self>, Task) {
+        let path = &publication.endpoint.broker_socket;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(path).unwrap();
+        let broker = Arc::new(Self {
+            reply: Mutex::new(BrokerReply {
+                status: StatusCode::OK,
+                media: "application/json",
+                body: Bytes::from_static(PROVIDER_RESULT),
+            }),
+            hold_calls: AtomicBool::new(false),
+            entered: Notify::new(),
+            release: Notify::new(),
+        });
+        let behavior = Arc::clone(&broker);
+        let task = Task(tokio::spawn(async move {
+            let mut connections = JoinSet::new();
+            loop {
+                tokio::select! {
+                    _ = connections.join_next(), if !connections.is_empty() => {},
+                    accepted = listener.accept() => {
+                        let (stream, _) = accepted.unwrap();
+                        assert_eq!(stream.peer_cred().unwrap().uid(), 0);
+                        let behavior = Arc::clone(&behavior);
+                        connections.spawn(async move {
+                            let service = service_fn(move |request: Request<Incoming>| {
+                                let behavior = Arc::clone(&behavior);
+                                async move {
+                                    Ok::<_, std::convert::Infallible>(
+                                        behavior.respond(request, generation).await,
+                                    )
+                                }
+                            });
+                            let _ = http1::Builder::new()
+                                .keep_alive(false)
+                                .serve_connection(TokioIo::new(stream), service)
+                                .await;
+                        });
+                    }
+                }
+            }
+        }));
+        (broker, task)
+    }
+
+    async fn respond(&self, request: Request<Incoming>, generation: &str) -> Response<Full<Bytes>> {
+        assert_eq!(request.method(), Method::POST);
+        assert_eq!(request.uri().path(), "/app/v1/providers/monitor-main");
+        assert_eq!(request.headers()["x-app-installation"], "monitored");
+        assert_eq!(request.headers()["x-app-generation"], generation);
+        assert_eq!(request.headers()["idempotency-key"], "caller-7");
+        assert_eq!(request.headers()[header::CONTENT_TYPE], "application/json");
+        for forbidden in [header::AUTHORIZATION, header::COOKIE] {
+            assert!(!request.headers().contains_key(forbidden));
+        }
+        let body = request.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), PROVIDER_BODY);
+        if self.hold_calls.load(Ordering::Acquire) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        let reply = self.reply.lock().unwrap().clone();
+        Response::builder()
+            .status(reply.status)
+            .header(header::CONTENT_TYPE, reply.media)
+            .body(Full::new(reply.body))
+            .unwrap()
+    }
+}
+
+async fn assert_provider_invocations(client: &Client, registry: &Registry, app_root: &Path) {
+    let invoke = || {
+        client.request(
+            "POST",
+            PROVIDER_PATH,
+            "Content-Type: application/json\r\nIdempotency-Key: caller-7\r\nCookie: ignored\r\nAuthorization: ignored\r\n",
+            PROVIDER_BODY,
+        )
+    };
+    // No generation of the installation is invocable yet.
+    invoke().await.assert(404);
+    let first = registry
+        .providers
+        .publish_in("monitored", 20_004, 3, app_root)
+        .unwrap();
+    let (broker, _task) = ProviderBroker::bind(&first, "3");
+    let reply = invoke().await;
+    reply.assert(200);
+    assert_eq!(reply.json(), value!({"profile": "monitoring", "payload": {"samples": []}}));
+
+    // The broker's decision maps onto the web socket without leaking its body.
+    for (status, expected) in [
+        (StatusCode::NOT_FOUND, 404),
+        (StatusCode::BAD_REQUEST, 400),
+        (StatusCode::UNSUPPORTED_MEDIA_TYPE, 400),
+        (StatusCode::PAYLOAD_TOO_LARGE, 400),
+        (StatusCode::CONFLICT, 409),
+        (StatusCode::UNAUTHORIZED, 412),
+        (StatusCode::FORBIDDEN, 412),
+        (StatusCode::GATEWAY_TIMEOUT, 504),
+        (StatusCode::SERVICE_UNAVAILABLE, 503),
+    ] {
+        *broker.reply.lock().unwrap() = BrokerReply {
+            status,
+            media: "application/problem+json",
+            body: Bytes::from_static(b"private broker problem"),
+        };
+        let reply = invoke().await;
+        reply.assert(expected);
+        assert!(reply.body.is_empty());
+    }
+    for (media, body) in [
+        ("text/plain", Bytes::from_static(PROVIDER_RESULT)),
+        (
+            "application/json",
+            Bytes::from(vec![b'x'; MAX_JSON_BYTES + 1]),
+        ),
+    ] {
+        *broker.reply.lock().unwrap() = BrokerReply {
+            status: StatusCode::OK,
+            media,
+            body,
+        };
+        invoke().await.assert(502);
+    }
+    *broker.reply.lock().unwrap() = BrokerReply {
+        status: StatusCode::OK,
+        media: "application/json",
+        body: Bytes::from_static(PROVIDER_RESULT),
+    };
+
+    for (path, headers, status) in [
+        ("/v1/providers/monitored", PROVIDER_HEADERS, 404),
+        ("/v1/providers/monitored/", PROVIDER_HEADERS, 404),
+        ("/v1/providers/Monitored/monitor-main", PROVIDER_HEADERS, 404),
+        (
+            "/v1/providers/monitored/monitor-main/extra",
+            PROVIDER_HEADERS,
+            404,
+        ),
+        ("/v1/providers/unknown/monitor-main", PROVIDER_HEADERS, 404),
+        (PROVIDER_PATH, "Content-Type: application/json\r\n", 400),
+        (PROVIDER_PATH, "Idempotency-Key: caller-7\r\n", 400),
+        (
+            PROVIDER_PATH,
+            "Content-Type: text/plain\r\nIdempotency-Key: caller-7\r\n",
+            400,
+        ),
+        (
+            PROVIDER_PATH,
+            "Content-Type: application/json\r\nIdempotency-Key: Caller-7\r\n",
+            400,
+        ),
+    ] {
+        client
+            .request("POST", path, headers, PROVIDER_BODY)
+            .await
+            .assert(status);
+    }
+    client
+        .request(
+            "POST",
+            PROVIDER_PATH,
+            PROVIDER_HEADERS,
+            &vec![b' '; MAX_JSON_BYTES + 1],
+        )
+        .await
+        .assert(413);
+
+    let held = first
+        .endpoint
+        .calls
+        .try_acquire_many(providers::MAX_CALLS_PER_INSTALLATION as u32)
+        .unwrap();
+    invoke().await.assert(429);
+    drop(held);
+
+    // A newer generation withdraws the older one, also from an invocation in flight.
+    broker.hold_calls.store(true, Ordering::Release);
+    let inflight = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .request("POST", PROVIDER_PATH, PROVIDER_HEADERS, PROVIDER_BODY)
+                .await
+        }
+    });
+    timeout(Duration::from_secs(3), broker.entered.notified())
+        .await
+        .unwrap();
+    let second = registry
+        .providers
+        .publish_in("monitored", 20_004, 4, app_root)
+        .unwrap();
+    inflight.await.unwrap().assert(412);
+    broker.release.notify_one();
+    // The new generation's broker is not listening yet.
+    invoke().await.assert(412);
+    let (_second_broker, _second_task) = ProviderBroker::bind(&second, "4");
+    invoke().await.assert(200);
+    // Dropping the replaced publication leaves the newer one in place.
+    drop(first);
+    invoke().await.assert(200);
+    drop(second);
+    invoke().await.assert(404);
 }
