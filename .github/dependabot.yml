@@ -94,6 +94,12 @@ updates:
           docker-by-dependency:
               applies-to: 'version-updates'
               group-by: 'dependency-name'
+      ignore:
+          # The appliance stays on PostgreSQL 18: a new major version cannot start existing
+          # PostgreSQL 18 data directories, and the image has no data upgrade path.
+          - dependency-name: 'library/postgres'
+            update-types:
+                - 'version-update:semver-major'
 
     - package-ecosystem: 'docker-compose'
       directory: '/'
