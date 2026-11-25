@@ -19,10 +19,20 @@ export async function readFileRange(
     return buffer
 }
 
-export async function writeFileChunk(file: FileHandle, bytes: Uint8Array): Promise<void> {
+/** Writes all bytes at `position`, or at the current file offset when no position is given. */
+export async function writeFileChunk(
+    file: FileHandle,
+    bytes: Uint8Array,
+    position?: number,
+): Promise<void> {
     let offset = 0
     while (offset < bytes.length) {
-        const { bytesWritten } = await file.write(bytes, offset, bytes.length - offset)
+        const { bytesWritten } = await file.write(
+            bytes,
+            offset,
+            bytes.length - offset,
+            position === undefined ? undefined : position + offset,
+        )
         if (!bytesWritten) throw new Error('backup file write made no progress')
         offset += bytesWritten
     }
