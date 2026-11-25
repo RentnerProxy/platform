@@ -1,11 +1,13 @@
 // oxlint-disable no-await-in-loop -- Verify malformed proof records against one private fixture file.
 import { expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { chmod, chown, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, chown, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { copyCoverageFixtureModules } from '@/tests/Helpers/coverageFixture.ts'
 import { PORTABLE_APP_BACKUP_VERSION } from '@/config/compatibility.config.ts'
+import { portableAppState } from '@/tests/Helpers/portableAppStateFixture.ts'
+import { encodeCapturedInstallations } from '../../../../../../scripts/backup/captured-inventory.ts'
 import {
     readIsolatedValidationProof,
     readIsolatedValidationCapacity,
@@ -237,3 +239,123 @@ test
         await rm(root, { recursive: true, force: true })
     }
 })
+
+test
+    .skipIf(process.platform !== 'linux' || process.getuid?.() !== 0)
+    .each(['apps', 'empty'] as const)(
+    'offline backup archives captured %s state and checks the dump against it',
+    async (scenario) => {
+        const root = await mkdtemp(join(tmpdir(), 'rp-offline-app-backup-'))
+        const code = join(root, 'code')
+        const output = join(root, 'output')
+        const state = join(root, 'state')
+        const bin = join(root, 'bin')
+        const bootstrap = join(root, 'bootstrap.ts')
+        const source = join(root, 'backup-source.json')
+        const envelope = join(root, 'app-state')
+        const calls = join(root, 'calls')
+        const module = 'docker/production/backups/maintenance.ts'
+        const { snapshot, applications } = portableAppState()
+        try {
+            await Promise.all([
+                mkdir(output, { mode: 0o700 }),
+                mkdir(join(state, 'proxy/certificates'), { recursive: true }),
+                mkdir(join(state, 'crowdsec'), { recursive: true }),
+                mkdir(bin),
+            ])
+            await copyCoverageFixtureModules(code, [module], {
+                // Coverage instrumentation may rewrite string literals with double quotes.
+                "'/backup": "'" + output,
+                '"/backup': '"' + output,
+                '/var/lib/rentnerproxy': state,
+                '/usr/share/rentnerproxy/backup-source.json': source,
+                '/opt/rentnerproxy/web/docker/web/bootstrap-secrets.ts': bootstrap,
+                '/usr/lib/postgresql/18/bin:/usr/local/bin:/usr/bin:/bin': [
+                    bin,
+                    dirname(process.execPath),
+                    '/usr/local/bin',
+                    '/usr/bin',
+                    '/bin',
+                ].join(':'),
+            })
+            await Promise.all([
+                writeFile(join(state, 'proxy/routes.json'), '{"routes":[]}'),
+                writeFile(
+                    source,
+                    JSON.stringify({
+                        imageId: null,
+                        revision: null,
+                        version: '1.0.0-beta.4',
+                        buildSha256: 'b'.repeat(64),
+                    }),
+                ),
+                scenario === 'apps' ? writeFile(envelope, snapshot) : Promise.resolve(),
+                writeFile(
+                    bootstrap,
+                    `
+                        import { writeFileSync } from 'node:fs'
+                        if (process.argv[2] !== 'export-app-key') process.exit(95)
+                        writeFileSync(${JSON.stringify(output + '/app-encryption-key')}, 'A'.repeat(43) + '=\\n', { mode: 0o600 })
+                    `,
+                ),
+                writeFile(
+                    join(bin, 'bash'),
+                    `#!/usr/bin/env -S bun --no-env-file
+                        import { appendFileSync, existsSync, readFileSync } from 'node:fs'
+                        if (process.argv[2] !== '-c') process.exit(96)
+                        const script = process.argv[3]
+                        appendFileSync(${JSON.stringify(calls)}, script + '\\n--\\n')
+                        if (script.includes('--app-backup capture-portable')) {
+                            if (existsSync(${JSON.stringify(envelope)})) process.stdout.write(readFileSync(${JSON.stringify(envelope)}))
+                        } else if (script.includes('pg_dump')) process.stdout.write('fixture-dump')
+                        else process.exit(97)
+                    `,
+                    { mode: 0o755 },
+                ),
+                writeFile(join(bin, 'pg_restore'), '#!/bin/sh\nexit 0\n', { mode: 0o755 }),
+            ])
+            const result = Bun.spawn(
+                [process.execPath, '--no-env-file', join(code, module), 'backup'],
+                {
+                    env: { ...process.env, PUBLIC_ORIGIN: 'https://proxy.test' },
+                    stdin: 'ignore',
+                    stdout: 'pipe',
+                    stderr: 'pipe',
+                },
+            )
+            const [exit, stderr] = await Promise.all([
+                result.exited,
+                new Response(result.stderr).text(),
+            ])
+            expect(exit, stderr).toBe(0)
+            const metadata = JSON.parse(
+                await readFile(join(output, 'complete/metadata.json'), 'utf8'),
+            ) as { version: number; applications?: unknown }
+            const invoked = await readFile(calls, 'utf8')
+            expect(invoked.indexOf('capture-portable')).toBeLessThan(invoked.indexOf('pg_dump'))
+            expect((await readdir(join(output, 'complete'))).toSorted()).toEqual([
+                'app-encryption-key',
+                'controller-state.tar',
+                'crowdsec-state.tar',
+                'metadata.json',
+                'postgres.dump',
+            ])
+            if (scenario === 'apps') {
+                expect(metadata.version).toBe(PORTABLE_APP_BACKUP_VERSION)
+                expect(metadata.applications).toEqual(applications)
+                expect(invoked).toContain(
+                    '--check-live-app-inventory ' +
+                        encodeCapturedInstallations(applications.installations),
+                )
+                expect(invoked).not.toContain('--app-backup empty')
+            } else {
+                expect(metadata.version).toBe(4)
+                expect(metadata.applications).toBeUndefined()
+                expect(invoked).toContain('--app-backup empty')
+                expect(invoked).not.toContain('--check-live-app-inventory')
+            }
+        } finally {
+            await rm(root, { recursive: true, force: true })
+        }
+    },
+)
