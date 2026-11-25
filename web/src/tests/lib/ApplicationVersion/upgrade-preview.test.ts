@@ -12,13 +12,11 @@ import {
 } from '@/lib/ApplicationVersion/upgradePreview.ts'
 
 function plan(retired: Partial<Record<BuiltInFeatureDomain, readonly string[]>> = {}) {
-    return appProviderProfiles.map(
-        (domain): BuiltInFeatureTransition => ({
-            domain,
-            status: retired[domain] ? 'retired' : 'built-in',
-            apps: retired[domain] ?? [],
-        }),
-    )
+    return appProviderProfiles.map((domain): BuiltInFeatureTransition => ({
+        domain,
+        status: retired[domain] ? 'retired' : 'built-in',
+        apps: retired[domain] ?? [],
+    }))
 }
 
 function app(overrides: Partial<UpgradePreviewApp> = {}): UpgradePreviewApp {
@@ -69,10 +67,14 @@ describe('upgrade preview evaluation', () => {
     })
 
     test('an installed app the target would not run blocks the update', () => {
-        const preview = evaluateUpgradePreview(plan(), [], [
-            app(),
-            app({ installationId: 'app-dns', appId: 'example.dns', target: 'incompatible' }),
-        ])
+        const preview = evaluateUpgradePreview(
+            plan(),
+            [],
+            [
+                app(),
+                app({ installationId: 'app-dns', appId: 'example.dns', target: 'incompatible' }),
+            ],
+        )
         expect(preview.status).toBe('blocked')
         expect(preview.issues).toEqual([
             {
@@ -96,7 +98,10 @@ describe('upgrade preview evaluation', () => {
 
     test('a retired feature without an installed providing app blocks the update', () => {
         const target = plan({ monitoring: ['rentnerproxy.monitoring'] })
-        for (const local of [[], [platformOwned('monitoring', { configured: true, references: 0 })]])
+        for (const local of [
+            [],
+            [platformOwned('monitoring', { configured: true, references: 0 })],
+        ])
             expect(evaluateUpgradePreview(target, local, []).issues).toEqual([
                 {
                     kind: 'feature-retired-without-app',

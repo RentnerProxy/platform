@@ -411,9 +411,9 @@ describe('target app requirements', () => {
         })
         const unpublished = fixture()
         unpublished.release.assets = [requirementsAsset]
-        expect(
-            (await checkerFor(unpublished)('1.0.0-beta.1')).latest?.appRequirements.status,
-        ).toBe('pending')
+        expect((await checkerFor(unpublished)('1.0.0-beta.1')).latest?.appRequirements.status).toBe(
+            'pending',
+        )
         expect(unpublished.calls.some((url) => url.includes('/assets/98'))).toBe(false)
         await Promise.all(
             [

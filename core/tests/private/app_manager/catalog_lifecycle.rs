@@ -88,7 +88,10 @@ fn installations_report_the_providers_of_their_exact_listed_release() {
         serde_json::from_value::<CatalogEntry>(value).unwrap()
     };
     let mut row = Installation::new(ID, &committed(), true).unwrap();
-    assert_eq!(serde_json::to_value(&row).unwrap()["providers"], Value::Null);
+    assert_eq!(
+        serde_json::to_value(&row).unwrap()["providers"],
+        Value::Null
+    );
     row.set_providers(&[
         listed(&release("1.9.2", 'd'), json!(["dns"])),
         listed(&release("1.10.0", 'a'), json!(["oidc"])),

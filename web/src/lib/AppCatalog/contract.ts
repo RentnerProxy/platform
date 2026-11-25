@@ -65,7 +65,8 @@ export const catalogTargetCheckSchema = z.strictObject({
         .array(targetInstallationSchema)
         .max(256)
         .refine(
-            (rows) => new Set(rows.map(({ installationId }) => installationId)).size === rows.length,
+            (rows) =>
+                new Set(rows.map(({ installationId }) => installationId)).size === rows.length,
         ),
 })
 

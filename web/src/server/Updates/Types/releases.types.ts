@@ -20,8 +20,7 @@ export type ReleaseIdentity = Pick<PublishedUpdateRelease, 'id' | 'tag' | 'chann
 export type ControlAssetStatus = 'pending' | 'invalid' | 'unavailable'
 
 export type LoadedReleaseAsset =
-    | { readonly status: 'loaded'; readonly raw: unknown }
-    | { readonly status: ControlAssetStatus }
+    { readonly status: 'loaded'; readonly raw: unknown } | { readonly status: ControlAssetStatus }
 
 export interface UpdateCheckerDependencies {
     readonly fetcher?: typeof fetch

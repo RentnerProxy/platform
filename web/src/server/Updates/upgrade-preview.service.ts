@@ -65,8 +65,6 @@ export async function getUpgradePreviewService(
     } catch {
         return { status: 'unavailable' }
     }
-    const apps = await dependencies
-        .checkTarget(requirements.environment, signal)
-        .catch(() => null)
+    const apps = await dependencies.checkTarget(requirements.environment, signal).catch(() => null)
     return evaluateUpgradePreview(requirements.features, features, apps)
 }

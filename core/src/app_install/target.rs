@@ -51,7 +51,9 @@ fn name(value: &str, dotted: bool) -> bool {
         && (!dotted || parts.clone().count() >= 2)
         && (dotted || !value.contains('.'))
         && parts.all(|part| {
-            part.bytes().next().is_some_and(|byte| byte.is_ascii_alphanumeric())
+            part.bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
                 && part
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')

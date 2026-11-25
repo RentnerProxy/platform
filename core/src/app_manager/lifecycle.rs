@@ -127,7 +127,12 @@ pub(super) fn check_target<'a>(
 
     let installed: Vec<_> = installations
         .iter()
-        .filter(|row| matches!(row.state, State::Running | State::Disabled | State::RecoveryRequired))
+        .filter(|row| {
+            matches!(
+                row.state,
+                State::Running | State::Disabled | State::RecoveryRequired
+            )
+        })
         .collect();
     let releases: Vec<_> = installed
         .iter()

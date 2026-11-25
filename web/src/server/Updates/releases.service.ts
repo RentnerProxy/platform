@@ -162,9 +162,7 @@ function uploadedAsset(
 ): number | null {
     const matches = assets.filter((asset) => asset.name === name)
     const asset = matches.length === 1 ? matches[0] : undefined
-    return asset?.state === 'uploaded' && asset.size > 0 && asset.size <= maxBytes
-        ? asset.id
-        : null
+    return asset?.state === 'uploaded' && asset.size > 0 && asset.size <= maxBytes ? asset.id : null
 }
 
 /** Download one bounded JSON control asset through the validated GitHub redirect chain. */
@@ -300,12 +298,7 @@ export function createUpdateChecker({
             }
             if (readiness) {
                 try {
-                    appRequirements = await loadAppRequirements(
-                        release,
-                        readiness,
-                        fetcher,
-                        signal,
-                    )
+                    appRequirements = await loadAppRequirements(release, readiness, fetcher, signal)
                 } catch {
                     appRequirements = noAppRequirements
                 }
