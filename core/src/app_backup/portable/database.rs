@@ -201,14 +201,42 @@ pub(super) fn verify_archive(uid: u32, input: &Path) -> io::Result<()> {
 // The portable restore marker and fresh-target preflight authorize cleanup of
 // an interrupted reservation for this UID. Never infer ownership from its name.
 pub(super) fn reset(uid: u32) -> io::Result<()> {
+    reset_identities(uid, true)
+}
+
+fn reset_identities(uid: u32, apply: bool) -> io::Result<()> {
     let app = App::new(uid)?;
     sql(
         "postgres",
         Some(&app),
-        &[],
+        &[format!("--set=apply={apply}")],
         include_str!("database/reset.sql"),
         None,
     )?;
+    Ok(())
+}
+
+/// Checks that a replacing restore can drop the app databases of the retired
+/// journal UIDs, and that no other app database identity exists.
+pub(super) fn check_retirement(uids: &BTreeSet<u32>) -> io::Result<()> {
+    let mut values = Vec::with_capacity(uids.len());
+    for &uid in uids {
+        App::new(uid)?;
+        values.push(uid.to_string());
+    }
+    let result = sql(
+        "postgres",
+        None,
+        &[format!("--set=uids={{{}}}", values.join(","))],
+        include_str!("database/retire.sql"),
+        None,
+    )?;
+    if result != "t\n" {
+        return Err(rejected("Untracked app database identity"));
+    }
+    for &uid in uids {
+        reset_identities(uid, false)?;
+    }
     Ok(())
 }
 
