@@ -60,7 +60,64 @@
         "recoveryTitle": "Herstel als de update mislukt",
         "recovery": "Herstel de back-up van vóór de upgrade op een nieuw volume met de exacte digest van de bronimage en de hersteltools van die bronrelease. Start nooit een oudere image op een volume dat al door een nieuwere versie is gemigreerd. Herstellen vervangt de doelgegevens; selecteer het project en de back-up zorgvuldig.",
         "restoreValidation": "De hersteltools valideren de back-up en de bronidentiteit. De ondersteunde v4-migratiegeschiedenis moet een niet-lege, exacte prefix van de doelgeschiedenis zijn, inclusief posities, SHA-256-hashes en tijdstempels. Oudere indelingen, afwijkende geschiedenissen en downgrades worden geweigerd. Bewaar implementatiegeheimen privé bij de back-up; ze ontbreken in het manifest. Controleer de CIDR-bereiken van origin en vertrouwde proxies voordat je de implementatie bewust wijzigt.",
-        "resume": "Als het herstel wordt onderbroken nadat de vervanging is begonnen, blokkeert het persistente journal het opstarten. Stop een appliance die handmatig is gestart en voer dezelfde back-up opnieuw uit met --resume --confirm-replace. Dezelfde back-up wordt opnieuw gevalideerd en de vervanging wordt herhaald; een andere back-up wordt geweigerd zolang het journal openstaat."
+        "resume": "Als het herstel wordt onderbroken nadat de vervanging is begonnen, blokkeert het persistente journal het opstarten. Stop een appliance die handmatig is gestart en voer dezelfde back-up opnieuw uit met --resume --confirm-replace. Dezelfde back-up wordt opnieuw gevalideerd en de vervanging wordt herhaald; een andere back-up wordt geweigerd zolang het journal openstaat.",
+        "preview": {
+            "title": "Apps en ingebouwde functies",
+            "loading": "Geïnstalleerde apps en ingebouwde functies worden gecontroleerd tegen de doelrelease…",
+            "none": "geen",
+            "requirements": {
+                "pending": "De doelrelease heeft haar app-vereisten nog niet gepubliceerd, dus de compatibiliteit van apps en ingebouwde functies kan niet vooraf worden bekeken.",
+                "invalid": "De app-vereisten van de doelrelease zijn ongeldig. Gebruik dit doel pas als de release is gecorrigeerd.",
+                "unavailable": "De app-vereisten van de doelrelease konden niet worden geladen. Controleer opnieuw voordat je bijwerkt."
+            },
+            "status": {
+                "forbidden": "Alleen eigenaren kunnen geïnstalleerde apps en ingebouwde functies bekijken.",
+                "unavailable": "Geïnstalleerde apps en ingebouwde functies konden niet worden gecontroleerd. Controleer opnieuw voordat je bijwerkt.",
+                "ready": "Elke geïnstalleerde app werkt met de doelrelease en geen ingebouwde functie die in gebruik is, verdwijnt.",
+                "incomplete": "Er is geen incompatibiliteit gevonden, maar niet elke geïnstalleerde app kon tegen de doelrelease worden gecontroleerd.",
+                "blocked": "De doelrelease kan deze combinatie niet uitvoeren. Los eerst de onderstaande punten op; tot die tijd blijft de image-referentie verborgen."
+            },
+            "issuesTitle": "Incompatibele combinaties",
+            "issues": {
+                "app-incompatible": "{{app}} {{version}} werkt niet met de doelrelease. Werk de app bij naar een compatibele versie of verwijder haar voordat je bijwerkt.",
+                "feature-retired-without-app": "De doelrelease bevat de ingebouwde functie {{feature}} niet meer. Installeer eerst een van deze apps en rond de overdracht af: {{apps}}.",
+                "feature-handoff-pending": "De doelrelease bevat de ingebouwde functie {{feature}} niet meer en de instellingen ervan zijn nog niet aan de geïnstalleerde app overgedragen. Rond eerst de overdracht af; kan deze versie haar niet overdragen, werk dan bij via een tussenrelease die dat wel kan."
+            },
+            "featuresTitle": "Ingebouwde functies",
+            "features": {
+                "monitoring": "Monitoring",
+                "docker-discovery": "Docker-detectie",
+                "load-balancer": "Load balancer",
+                "dns": "DNS",
+                "oidc": "OIDC-aanmelding",
+                "crowdsec": "CrowdSec"
+            },
+            "target": {
+                "built-in": "Blijft ingebouwd in de doelrelease",
+                "retired": "In de doelrelease alleen via een app beschikbaar"
+            },
+            "owner": {
+                "platform": "Beheerd door het platform",
+                "handoff": "Overdracht bezig",
+                "app": "Overgedragen aan een app"
+            },
+            "configured": {
+                "yes": "geconfigureerd",
+                "no": "niet geconfigureerd",
+                "unknown": "configuratie nog niet te inspecteren"
+            },
+            "references": "Verwijzingen",
+            "requiredApps": "Apps voor deze functie",
+            "providedBy": "Geleverd door geïnstalleerde apps",
+            "appsTitle": "Geïnstalleerde apps",
+            "appsUnavailable": "De app-runtime is niet beschikbaar, dus geïnstalleerde apps konden niet worden gecontroleerd.",
+            "noApps": "Er zijn geen apps geïnstalleerd.",
+            "apps": {
+                "compatible": "Werkt met de doelrelease.",
+                "incompatible": "Werkt niet met de doelrelease.",
+                "unknown": "Niet te controleren: de app-catalogus vermeldt precies deze release niet meer."
+            }
+        }
     },
     "toast": {
         "notification": "Melding",

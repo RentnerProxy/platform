@@ -62,7 +62,64 @@
         "recoveryTitle": "Recuperação se a atualização falhar",
         "recovery": "Recupere o backup anterior à atualização em um volume novo, usando o digest exato da imagem de origem e as ferramentas de restauração dessa versão de origem. Nunca inicie uma imagem antiga em um volume já migrado por uma versão mais recente. A restauração substitui os dados de destino; selecione o projeto e o backup com cuidado.",
         "restoreValidation": "As ferramentas de restauração validam o backup e a identidade da origem. O histórico de migração v4 compatível precisa ser um prefixo exato e não vazio do histórico de destino, incluindo posições, hashes SHA-256 e registros de data e hora. Formatos antigos, históricos divergentes e downgrades são rejeitados. Mantenha os segredos da implantação em local privado junto ao backup; eles não constam no manifesto. Confira as redes CIDR de origem e dos proxies confiáveis antes de qualquer alteração intencional na implantação.",
-        "resume": "Se a restauração for interrompida após o início da substituição, o journal persistente bloqueia a inicialização. Pare qualquer appliance iniciada manualmente e execute novamente o mesmo backup com --resume --confirm-replace. O mesmo backup será validado novamente e a substituição será repetida; outro backup será rejeitado enquanto o journal estiver pendente."
+        "resume": "Se a restauração for interrompida após o início da substituição, o journal persistente bloqueia a inicialização. Pare qualquer appliance iniciada manualmente e execute novamente o mesmo backup com --resume --confirm-replace. O mesmo backup será validado novamente e a substituição será repetida; outro backup será rejeitado enquanto o journal estiver pendente.",
+        "preview": {
+            "title": "Apps e funcionalidades integradas",
+            "loading": "A verificar as apps instaladas e as funcionalidades integradas em relação à versão de destino…",
+            "none": "nenhuma",
+            "requirements": {
+                "pending": "A versão de destino ainda não publicou os requisitos de apps, pelo que não é possível pré-visualizar a compatibilidade de apps e funcionalidades integradas.",
+                "invalid": "Os requisitos de apps da versão de destino são inválidos. Não utilize este destino até a versão ser corrigida.",
+                "unavailable": "Não foi possível carregar os requisitos de apps da versão de destino. Verifique novamente antes de atualizar."
+            },
+            "status": {
+                "forbidden": "Apenas os proprietários podem rever as apps instaladas e as funcionalidades integradas.",
+                "unavailable": "Não foi possível verificar as apps instaladas e as funcionalidades integradas. Verifique novamente antes de atualizar.",
+                "ready": "Todas as apps instaladas funcionam com a versão de destino e nenhuma funcionalidade integrada em uso é retirada.",
+                "incomplete": "Não foi encontrada nenhuma incompatibilidade, mas nem todas as apps instaladas puderam ser verificadas em relação à versão de destino.",
+                "blocked": "A versão de destino não consegue executar esta combinação. Resolva primeiro os problemas abaixo; até lá, a referência da imagem permanece oculta."
+            },
+            "issuesTitle": "Combinações incompatíveis",
+            "issues": {
+                "app-incompatible": "{{app}} {{version}} não funciona com a versão de destino. Atualize-a para uma versão compatível ou desinstale-a antes de atualizar.",
+                "feature-retired-without-app": "A versão de destino já não inclui a funcionalidade integrada {{feature}}. Instale primeiro uma destas apps e conclua a transferência: {{apps}}.",
+                "feature-handoff-pending": "A versão de destino já não inclui a funcionalidade integrada {{feature}} e as respetivas definições ainda não foram transferidas para a app instalada. Conclua primeiro a transferência; se esta versão não a conseguir transferir, atualize através de uma versão intermédia que o consiga."
+            },
+            "featuresTitle": "Funcionalidades integradas",
+            "features": {
+                "monitoring": "Monitorização",
+                "docker-discovery": "Deteção de Docker",
+                "load-balancer": "Balanceador de carga",
+                "dns": "DNS",
+                "oidc": "Início de sessão OIDC",
+                "crowdsec": "CrowdSec"
+            },
+            "target": {
+                "built-in": "Continua integrada na versão de destino",
+                "retired": "Na versão de destino, apenas disponível através de uma app"
+            },
+            "owner": {
+                "platform": "Gerida pela plataforma",
+                "handoff": "Transferência em curso",
+                "app": "Transferida para uma app"
+            },
+            "configured": {
+                "yes": "configurada",
+                "no": "não configurada",
+                "unknown": "configuração ainda não inspecionável"
+            },
+            "references": "Referências",
+            "requiredApps": "Apps para esta funcionalidade",
+            "providedBy": "Fornecida por apps instaladas",
+            "appsTitle": "Apps instaladas",
+            "appsUnavailable": "O ambiente de execução de apps não está disponível, pelo que não foi possível verificar as apps instaladas.",
+            "noApps": "Não há apps instaladas.",
+            "apps": {
+                "compatible": "Funciona com a versão de destino.",
+                "incompatible": "Não funciona com a versão de destino.",
+                "unknown": "Não foi possível verificar: o catálogo de apps já não lista exatamente esta versão."
+            }
+        }
     },
     "toast": {
         "notification": "Notificação",

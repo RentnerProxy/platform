@@ -162,6 +162,7 @@ export default function AuthenticatedShell({
             </div>
             <ApplicationUpdateDialog
                 data={state.update}
+                preview={state.updatePreview}
                 open={state.isUpdateOpen}
                 onOpenChange={handler.handleUpdateOpenChange}
             />

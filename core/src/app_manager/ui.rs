@@ -27,6 +27,7 @@ use tokio::{net::UnixListener, sync::Semaphore, task::JoinSet, time::timeout};
 use tokio_util::sync::CancellationToken;
 
 use super::{catalog, lifecycle};
+use crate::app_install::TargetEnvironment;
 use crate::app_ipc::{
     APP_ROOT, WEB_UID,
     filesystem::require_safe_parents,
@@ -47,6 +48,8 @@ const MAX_LIST_PROBES: usize = 16;
 const MAX_LIST_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CATALOG_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_INSTALL_BYTES: usize = 4 * 1024;
+// 256 installations with their release identity, state and provider profiles.
+const MAX_TARGET_CHECK_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_OPERATIONS_PER_INSTALLATION: usize = 4;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -283,6 +286,35 @@ async fn handle(
     }
     if parts.method != Method::POST {
         return Err(StatusCode::NOT_FOUND);
+    }
+    if path == "/v1/catalog/target-check" {
+        if !header_value(&parts.headers, header::CONTENT_TYPE.as_str()).is_some_and(json_media_type)
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let bytes = read_body_limited(incoming, MAX_INSTALL_BYTES).await?;
+        let environment: TargetEnvironment =
+            serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+        if !environment.valid() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let permit = blocking
+            .try_acquire_owned()
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        let view = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            catalog.check_target(&environment)
+        })
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+        .map_err(|error| {
+            eprintln!("Application target check unavailable: {error}");
+            StatusCode::SERVICE_UNAVAILABLE
+        })?;
+        if view.len() > MAX_TARGET_CHECK_RESPONSE_BYTES {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        return response("application/json", Bytes::from(view));
     }
     if matches!(path, "/v1/catalog/install" | "/v1/catalog/lifecycle") {
         if !header_value(&parts.headers, header::CONTENT_TYPE.as_str()).is_some_and(json_media_type)

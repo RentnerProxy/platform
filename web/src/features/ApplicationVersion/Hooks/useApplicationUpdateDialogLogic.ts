@@ -12,12 +12,15 @@ import type {
 export default function useApplicationUpdateDialogLogic(
     data: ApplicationUpdateDialogProps['data'],
     open: boolean,
+    preview: ApplicationUpdateDialogProps['preview'],
 ): ApplicationUpdateDialogLogicResult {
     const runAction = useAsyncAction()
     const { t } = useTranslationStore()
+    // A known incompatible app or retired feature blocks the copyable reference like Alpha does.
     const reference =
         data?.latest?.image.status === 'verified' &&
-        data.latest.compatibility.status !== 'requires-beta1'
+        data.latest.compatibility.status !== 'requires-beta1' &&
+        preview?.preview?.status !== 'blocked'
             ? data.latest.image.reference
             : null
     const generation = useRef(0)

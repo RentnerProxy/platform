@@ -4,14 +4,16 @@ import { buttonClassName } from '@/shared/Buttons/buttonStyles.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import useApplicationUpdateDialogLogic from '../Hooks/useApplicationUpdateDialogLogic.ts'
 import type { ApplicationUpdateDialogProps } from '../Types/application-update-dialog.types.ts'
+import UpgradePreviewSection from './UpgradePreviewSection.tsx'
 
 export default function ApplicationUpdateDialog({
     data,
+    preview,
     open,
     onOpenChange,
 }: ApplicationUpdateDialogProps) {
     const { t } = useTranslationStore()
-    const { state, handler } = useApplicationUpdateDialogLogic(data, open)
+    const { state, handler } = useApplicationUpdateDialogLogic(data, open, preview)
 
     return (
         <Modal
@@ -107,6 +109,13 @@ export default function ApplicationUpdateDialog({
                         </div>
                     ) : null}
                 </section>
+                {data?.latest ? (
+                    <UpgradePreviewSection
+                        requirements={data.latest.appRequirements}
+                        preview={preview?.preview}
+                        loading={preview?.loading ?? false}
+                    />
+                ) : null}
                 <section className="grid gap-2">
                     <h3 className="m-0 font-bold">{t('updates.notes')}</h3>
                     <section

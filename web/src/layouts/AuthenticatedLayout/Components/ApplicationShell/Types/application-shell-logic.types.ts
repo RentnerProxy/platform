@@ -1,10 +1,12 @@
 import type { RefObject } from 'react'
 import type { ApplicationUpdateResult } from '@/features/ApplicationVersion/Types/application-update.types.ts'
+import type { ApplicationUpgradePreviewQuery } from '@/features/ApplicationVersion/Types/application-update-dialog.types.ts'
 import type { ApplicationNavigationItem } from './application-shell.types.ts'
 
 export interface ApplicationShellLogicResult {
     readonly state: {
         readonly update: ApplicationUpdateResult | undefined
+        readonly updatePreview: ApplicationUpgradePreviewQuery
         readonly isUpdateOpen: boolean
         readonly canViewAccount: boolean
         readonly navigationItems: readonly ApplicationNavigationItem[]

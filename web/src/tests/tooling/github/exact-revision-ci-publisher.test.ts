@@ -176,7 +176,7 @@ if [[ "$1" == api ]]; then
     if [[ "$FIXTURE_FINAL_IDENTITY_FAIL" == true && -f "$FIXTURE_GATE_PASSED" ]]; then exit 1; fi
     printf '123\\tv1.0.0\\tfalse\\tfalse\\t2026-10-22T00:00:00Z\\n'
 elif [[ "$1" == release && "$2" == upload ]]; then
-    printf 'upload\\n' >> "$FIXTURE_EVENTS"
+    printf 'upload %s\\n' "$(basename "$4")" >> "$FIXTURE_EVENTS"
 else exit 9; fi
 `,
                 { mode: 0o700 },
@@ -190,6 +190,7 @@ case "$2" in
     */verify-exact-revision-ci.ts) printf 'gate\\n' >> "$FIXTURE_EVENTS"; if [[ "$FIXTURE_GATE_EXIT" == 0 ]]; then : > "$FIXTURE_GATE_PASSED"; fi; exit "$FIXTURE_GATE_EXIT" ;;
     */verify-compatibility-policy-source.ts) printf 'policy\\n' >> "$FIXTURE_EVENTS"; exit "$FIXTURE_POLICY_EXIT" ;;
     */generate-release-readiness.ts) printf 'generate\\n' >> "$FIXTURE_EVENTS"; printf '{}' > "$RUNNER_TEMP/rentnerproxy-release/rentnerproxy-update.json" ;;
+    */generate-release-app-requirements.ts) printf 'requirements\\n' >> "$FIXTURE_EVENTS"; printf '{}' > "$RUNNER_TEMP/rentnerproxy-release/rentnerproxy-app-requirements.json" ;;
     *) exit 9 ;;
 esac
 `,
@@ -225,7 +226,8 @@ esac
             expect(stdout + stderr).not.toContain('SYNTHETIC-SECRET')
             expect(await readFile(events, 'utf8')).toBe(
                 scenario.exit === 0
-                    ? 'identity\ngate\nidentity\npolicy\ngenerate\nupload\n'
+                    ? 'identity\ngate\nidentity\npolicy\ngenerate\nrequirements\n' +
+                          'upload rentnerproxy-app-requirements.json\nupload rentnerproxy-update.json\n'
                     : scenario.finalIdentityFails
                       ? 'identity\ngate\nidentity\n'
                       : scenario.policy !== 0

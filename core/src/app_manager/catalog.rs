@@ -14,7 +14,7 @@ use super::{
     journal::{Grant, Release, Removal},
     lifecycle,
 };
-use crate::app_install::{CatalogEntry, Installer};
+use crate::app_install::{CatalogEntry, Installer, TargetEnvironment};
 
 #[cfg(test)]
 #[path = "../../tests/private/app_manager/catalog.rs"]
@@ -184,8 +184,10 @@ impl Endpoint {
         };
         let entries = entries.as_deref().unwrap_or_default();
         let mut installations = installations.to_vec();
-        if status == CatalogStatus::Ready {
-            for installation in &mut installations {
+        for installation in &mut installations {
+            // A stale listing is still signed; only update offers need a fresh one.
+            installation.set_providers(entries);
+            if status == CatalogStatus::Ready {
                 installation.set_update(entries);
             }
         }
@@ -196,6 +198,22 @@ impl Endpoint {
             installations,
             lifecycle,
         })?)
+    }
+
+    /// Check the published installations against a target platform release. This blocks on the
+    /// accepted catalog, so callers run it off the async executor.
+    pub(super) fn check_target(&self, environment: &TargetEnvironment) -> io::Result<Vec<u8>> {
+        #[derive(Serialize)]
+        struct TargetView<'a> {
+            installations: Vec<lifecycle::TargetInstallation<'a>>,
+        }
+
+        let published = Arc::clone(&self.state()?.installations);
+        let installer = Installer::open_appliance(self.config.as_deref())?;
+        let installations = lifecycle::check_target(&published, |releases| {
+            installer.check_target(environment, releases)
+        })?;
+        Ok(serde_json::to_vec(&TargetView { installations })?)
     }
 
     pub(super) fn publish(&self, installations: Vec<lifecycle::Installation>) -> io::Result<()> {
