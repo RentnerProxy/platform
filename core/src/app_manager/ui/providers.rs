@@ -145,7 +145,8 @@ impl Endpoint {
             StatusCode::GATEWAY_TIMEOUT => return Err(StatusCode::GATEWAY_TIMEOUT),
             _ => return Err(StatusCode::SERVICE_UNAVAILABLE),
         }
-        if !header_value(reply.headers(), header::CONTENT_TYPE.as_str()).is_some_and(json_media_type)
+        if !header_value(reply.headers(), header::CONTENT_TYPE.as_str())
+            .is_some_and(json_media_type)
         {
             return Err(StatusCode::BAD_GATEWAY);
         }

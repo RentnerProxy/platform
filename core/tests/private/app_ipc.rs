@@ -941,8 +941,16 @@ fn provider_results_must_answer_their_invocation() {
     };
     let observed = |count: usize| json!(vec![json!({}); count]);
     // Lists stay within the requested limit.
-    assert!(pair("monitoring", json!({"limit": 2}), json!({"samples": observed(2)})));
-    assert!(!pair("monitoring", json!({"limit": 2}), json!({"samples": observed(3)})));
+    assert!(pair(
+        "monitoring",
+        json!({"limit": 2}),
+        json!({"samples": observed(2)})
+    ));
+    assert!(!pair(
+        "monitoring",
+        json!({"limit": 2}),
+        json!({"samples": observed(3)})
+    ));
     let discovery = json!({"connectionId": "docker-one", "limit": 1});
     assert!(pair(
         "docker-discovery",
@@ -966,8 +974,16 @@ fn provider_results_must_answer_their_invocation() {
             "revisionStatus": {"status": status, "appliedRevision": revision}})
     };
     assert!(pair("load-balancer", apply.clone(), status("applied", "7")));
-    assert!(!pair("load-balancer", apply.clone(), status("applied", "6")));
-    assert!(pair("load-balancer", apply.clone(), status("rejected", "6")));
+    assert!(!pair(
+        "load-balancer",
+        apply.clone(),
+        status("applied", "6")
+    ));
+    assert!(pair(
+        "load-balancer",
+        apply.clone(),
+        status("rejected", "6")
+    ));
     assert!(!pair(
         "load-balancer",
         apply,

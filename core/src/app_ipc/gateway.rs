@@ -137,10 +137,9 @@ impl Generation {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Full::new(Bytes::from(body)))
             .map_err(|_| Problem::Unavailable)?;
-        let (response, _connection) =
-            send_to_peer(&self.gateway_socket, self.gateway_uid, request)
-                .await
-                .map_err(|_| Problem::Unavailable)?;
+        let (response, _connection) = send_to_peer(&self.gateway_socket, self.gateway_uid, request)
+            .await
+            .map_err(|_| Problem::Unavailable)?;
         match response.status() {
             StatusCode::OK => {}
             StatusCode::UNAUTHORIZED => return Err(Problem::Identity),
@@ -496,7 +495,9 @@ pub(super) fn provider_result_matches(invocation: &Value, outcome: &Value) -> bo
         }
         Some("dns") => same("action") && same("challengeId"),
         Some("oidc") => same("transactionId"),
-        Some("crowdsec") => same("action") && (request["action"] != "consumeLogs" || same("batchId")),
+        Some("crowdsec") => {
+            same("action") && (request["action"] != "consumeLogs" || same("batchId"))
+        }
         _ => false,
     }
 }

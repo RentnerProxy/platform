@@ -950,7 +950,10 @@ async fn assert_provider_invocations(client: &Client, registry: &Registry, app_r
     let (broker, _task) = ProviderBroker::bind(&first, "3");
     let reply = invoke().await;
     reply.assert(200);
-    assert_eq!(reply.json(), value!({"profile": "monitoring", "payload": {"samples": []}}));
+    assert_eq!(
+        reply.json(),
+        value!({"profile": "monitoring", "payload": {"samples": []}})
+    );
 
     // The broker's decision maps onto the web socket without leaking its body.
     for (status, expected) in [
@@ -996,7 +999,11 @@ async fn assert_provider_invocations(client: &Client, registry: &Registry, app_r
     for (path, headers, status) in [
         ("/v1/providers/monitored", PROVIDER_HEADERS, 404),
         ("/v1/providers/monitored/", PROVIDER_HEADERS, 404),
-        ("/v1/providers/Monitored/monitor-main", PROVIDER_HEADERS, 404),
+        (
+            "/v1/providers/Monitored/monitor-main",
+            PROVIDER_HEADERS,
+            404,
+        ),
         (
             "/v1/providers/monitored/monitor-main/extra",
             PROVIDER_HEADERS,
