@@ -611,13 +611,23 @@ async fn assert_catalog_requests(
     });
     environment["engineCapabilities"] = value!(["Caddy.crowdsec.v1"]);
     client
-        .request("POST", target, JSON, &serde_json::to_vec(&environment).unwrap())
+        .request(
+            "POST",
+            target,
+            JSON,
+            &serde_json::to_vec(&environment).unwrap(),
+        )
         .await
         .assert(400);
     environment["engineCapabilities"] = value!([]);
     // The fixture endpoint has no installer configuration, so no accepted catalog can answer.
     client
-        .request("POST", target, JSON, &serde_json::to_vec(&environment).unwrap())
+        .request(
+            "POST",
+            target,
+            JSON,
+            &serde_json::to_vec(&environment).unwrap(),
+        )
         .await
         .assert(503);
     let lifecycle = "/v1/catalog/lifecycle";

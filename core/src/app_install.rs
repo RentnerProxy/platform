@@ -49,16 +49,16 @@ use rentnerproxy_app_contracts::{Contracts, ManifestEnvironment};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
-pub(crate) use target::{InstalledRelease, TargetCheck, TargetEnvironment};
-#[cfg(all(
     test,
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub(crate) use target::TargetSupport;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) use target::{InstalledRelease, TargetCheck, TargetEnvironment};
 use time::OffsetDateTime;
 
 /// The app runtime this platform release offers. The release requirements asset publishes the

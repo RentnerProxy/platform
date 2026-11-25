@@ -227,7 +227,7 @@ esac
             expect(await readFile(events, 'utf8')).toBe(
                 scenario.exit === 0
                     ? 'identity\ngate\nidentity\npolicy\ngenerate\nrequirements\n' +
-                      'upload rentnerproxy-app-requirements.json\nupload rentnerproxy-update.json\n'
+                          'upload rentnerproxy-app-requirements.json\nupload rentnerproxy-update.json\n'
                     : scenario.finalIdentityFails
                       ? 'identity\ngate\nidentity\n'
                       : scenario.policy !== 0

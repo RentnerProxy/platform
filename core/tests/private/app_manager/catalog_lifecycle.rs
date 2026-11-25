@@ -131,7 +131,10 @@ fn target_checks_cover_only_installations_the_platform_may_start_again() {
         let digest = "a".repeat(64);
         assert_eq!(
             seen,
-            [(APP, "1.9.2", digest.as_str()), (APP, "1.9.2", digest.as_str())]
+            [
+                (APP, "1.9.2", digest.as_str()),
+                (APP, "1.9.2", digest.as_str())
+            ]
         );
         Ok(vec![
             TargetCheck {
