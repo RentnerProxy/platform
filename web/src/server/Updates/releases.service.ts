@@ -340,8 +340,11 @@ export function createUpdateChecker({
         if (cached?.version === currentVersion && now() < cached.expiresAt) return cached.result
         if (pending?.version === currentVersion) return pending.promise
         const promise = check(currentVersion).then((result) => {
+            // A verified image without verified app requirements would hide the preview for an hour.
             const complete =
-                result.status === 'current' || result.latest?.image.status === 'verified'
+                result.status === 'current' ||
+                (result.latest?.image.status === 'verified' &&
+                    result.latest.appRequirements.status === 'verified')
             cached = {
                 version: currentVersion,
                 result,

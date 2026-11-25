@@ -68,7 +68,12 @@ describe('upgrade preview service', () => {
         ])
         const signal = new AbortController().signal
         const deps = dependencies({ checkTarget })
-        const preview = await getUpgradePreviewService('1.0.0-beta.4', signal, deps)
+        const preview = await getUpgradePreviewService(
+            '1.0.0-beta.4',
+            'v1.0.0-beta.5',
+            signal,
+            deps,
+        )
         expect(deps.update).toHaveBeenCalledWith('1.0.0-beta.4')
         expect(checkTarget).toHaveBeenCalledWith(environment, signal)
         expect(preview).toMatchObject({
@@ -84,7 +89,12 @@ describe('upgrade preview service', () => {
                 update: mock(async () => update({ status, environment: null, features: [] })),
             })
             expect(
-                await getUpgradePreviewService('1.0.0-beta.4', AbortSignal.timeout(1_000), deps),
+                await getUpgradePreviewService(
+                    '1.0.0-beta.4',
+                    'v1.0.0-beta.5',
+                    AbortSignal.timeout(1_000),
+                    deps,
+                ),
             ).toEqual({ status: 'unavailable' })
             expect(deps.inspectFeatures).not.toHaveBeenCalled()
             expect(deps.checkTarget).not.toHaveBeenCalled()
@@ -101,14 +111,34 @@ describe('upgrade preview service', () => {
             })),
         })
         expect(
-            await getUpgradePreviewService('1.0.0-beta.4', AbortSignal.timeout(1_000), deps),
+            await getUpgradePreviewService(
+                '1.0.0-beta.4',
+                'v1.0.0-beta.5',
+                AbortSignal.timeout(1_000),
+                deps,
+            ),
         ).toEqual({ status: 'unavailable' })
+    })
+
+    test('never previews another release than the one the dialog shows', async () => {
+        const deps = dependencies()
+        expect(
+            await getUpgradePreviewService(
+                '1.0.0-beta.4',
+                'v1.0.0-beta.6',
+                AbortSignal.timeout(1_000),
+                deps,
+            ),
+        ).toEqual({ status: 'unavailable' })
+        expect(deps.inspectFeatures).not.toHaveBeenCalled()
+        expect(deps.checkTarget).not.toHaveBeenCalled()
     })
 
     test('a failed feature inspection hides the preview, a failed app check marks it incomplete', async () => {
         expect(
             await getUpgradePreviewService(
                 '1.0.0-beta.4',
+                'v1.0.0-beta.5',
                 AbortSignal.timeout(1_000),
                 dependencies({
                     inspectFeatures: mock(async () => {
@@ -120,6 +150,7 @@ describe('upgrade preview service', () => {
         expect(
             await getUpgradePreviewService(
                 '1.0.0-beta.4',
+                'v1.0.0-beta.5',
                 AbortSignal.timeout(1_000),
                 dependencies({
                     checkTarget: mock(async () => {

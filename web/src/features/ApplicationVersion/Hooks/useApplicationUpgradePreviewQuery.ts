@@ -9,10 +9,12 @@ export default function useApplicationUpgradePreviewQuery(
     latest: ApplicationUpdate | null | undefined,
     open: boolean,
 ): ApplicationUpgradePreviewQuery {
+    const tag = latest?.tag ?? ''
     const enabled = open && latest?.appRequirements.status === 'verified'
     const query = useQuery({
-        queryKey: ['application-upgrade-preview', latest?.tag ?? null],
-        queryFn: () => getApplicationUpgradePreviewHandler(),
+        queryKey: ['application-upgrade-preview', tag],
+        // The server answers only for this exact tag, so a newer release never stands in for it.
+        queryFn: () => getApplicationUpgradePreviewHandler({ data: { tag } }),
         enabled,
         staleTime: 0,
         gcTime: 0,

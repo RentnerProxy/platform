@@ -27,7 +27,8 @@ const defaultDependencies: UpgradePreviewDependencies = {
             { accessMode: 'read only' },
         ),
     checkTarget: async (environment: AppRuntimeEnvironment, signal: AbortSignal) => {
-        if (!appUiEnabled()) return null
+        // Without the native app runtime no app can be installed, so none can provide a feature.
+        if (!appUiEnabled()) return []
         const { installations } = await nativeCatalogTargetCheck(environment, signal)
         return installations.map(
             ({ installationId, appId, version, state, providers, target }) => ({
@@ -45,15 +46,17 @@ const defaultDependencies: UpgradePreviewDependencies = {
 /**
  * Preview the verified target release against this installation: built-in feature ownership from
  * the handoff journal and each installed app checked by the Rust app manager. Only verified
- * release data reaches the target check; the browser never supplies an environment.
+ * release data reaches the target check; the browser names the release tag it shows, never an
+ * environment, and a different current target yields no preview.
  */
 export async function getUpgradePreviewService(
     currentVersion: string,
+    tag: string,
     signal: AbortSignal,
     dependencies: UpgradePreviewDependencies = defaultDependencies,
 ): Promise<ApplicationUpgradePreview> {
     const update: ApplicationUpdateResult = await dependencies.update(currentVersion)
-    const requirements = update.latest?.appRequirements
+    const requirements = update.latest?.tag === tag ? update.latest.appRequirements : undefined
     if (requirements?.status !== 'verified' || !requirements.environment)
         return { status: 'unavailable' }
     let features: readonly LocalBuiltInFeature[]

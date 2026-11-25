@@ -482,6 +482,7 @@ test.each([
     'policy',
     'generate',
     'requirements',
+    'requirements-asset',
     'ci-recheck',
     'policy-recheck',
     'readiness',
@@ -526,7 +527,11 @@ if [[ "$1" == api ]]; then
     if [[ "$FIXTURE_FAILURE" == identity && -f "$FIXTURE_READY" ]]; then exit 1; fi
     printf '123\\tv1.0.0\\tfalse\\tfalse\\t2026-10-22T00:00:00Z\\n'
 elif [[ "$1 $2" == 'release upload' ]]; then
-    if [[ "$*" == *rentnerproxy-update.json* ]]; then
+    if [[ "$*" == *rentnerproxy-app-requirements.json* ]]; then
+        [[ "$*" != *rentnerproxy-update.json* ]]
+        printf 'requirements-asset\\n' >> "$FIXTURE_EVENTS"
+        [[ "$FIXTURE_FAILURE" != requirements-asset ]]
+    elif [[ "$*" == *rentnerproxy-update.json* ]]; then
         printf 'readiness\\n' >> "$FIXTURE_EVENTS"
         [[ "$FIXTURE_FAILURE" != readiness ]]
         : > "$FIXTURE_READY"
@@ -624,6 +629,7 @@ esac
                 'policy',
                 'generate',
                 'requirements',
+                'requirements-asset',
                 'readiness',
                 'identity',
                 'body',

@@ -175,10 +175,12 @@ test('publishes app requirements with readiness, pins their sources and clears t
     expect(generateRequirements).toBeGreaterThan(generateReadiness)
     expect(validateOnly).toBeGreaterThan(generateRequirements)
     expect(upload).toBeGreaterThan(validateOnly)
-    // Readers that see readiness must already find the requirements.
-    expect(readiness.indexOf(APP_REQUIREMENTS_ASSET, upload)).toBeLessThan(
-        readiness.indexOf('rentnerproxy-update.json', upload),
-    )
+    // Readers that see readiness must already find the requirements: two sequential uploads.
+    const readinessUpload = readiness.indexOf('gh release upload', upload + 1)
+    expect(readiness.slice(upload, readinessUpload)).toContain(APP_REQUIREMENTS_ASSET)
+    expect(readiness.slice(upload, readinessUpload)).not.toContain('rentnerproxy-update.json')
+    expect(readiness.slice(readinessUpload)).toContain('rentnerproxy-update.json')
+    expect(readiness.slice(readinessUpload)).not.toContain(APP_REQUIREMENTS_ASSET)
     expect(await script('publish-building-release.sh')).toContain(`'${APP_REQUIREMENTS_ASSET}'`)
     const policy = await script('verify-compatibility-policy-source.ts')
     expect(policy).toContain("'web/src/config/app-requirements.config.ts'")

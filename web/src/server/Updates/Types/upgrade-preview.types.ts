@@ -8,7 +8,7 @@ import type { LocalBuiltInFeature } from '@/lib/ApplicationVersion/upgradePrevie
 export interface UpgradePreviewDependencies {
     readonly update: (currentVersion: string) => Promise<ApplicationUpdateResult>
     readonly inspectFeatures: () => Promise<readonly LocalBuiltInFeature[]>
-    /** `null` when this deployment runs without the native app runtime. */
+    /** `null` when the app manager cannot answer; no apps without the native app runtime. */
     readonly checkTarget: (
         environment: AppRuntimeEnvironment,
         signal: AbortSignal,

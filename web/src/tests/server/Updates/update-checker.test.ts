@@ -461,6 +461,18 @@ describe('target app requirements', () => {
             }),
         )
     })
+    test('rechecks a verified image after five minutes until its requirements verify', async () => {
+        const data = fixture()
+        let now = Date.parse(publication)
+        const check = checkerFor(data, () => now)
+        expect((await check('1.0.0-beta.1')).latest?.appRequirements.status).toBe('pending')
+        data.release.assets.push(requirementsAsset)
+        now += 5 * 60 * 1000
+        expect((await check('1.0.0-beta.1')).latest?.appRequirements.status).toBe('verified')
+        now += 30 * 60 * 1000
+        await check('1.0.0-beta.1')
+        expect(data.calls.filter((url) => url.includes('?per_page'))).toHaveLength(2)
+    })
     test('reports unavailable requirements without dropping the verified image', async () => {
         const data = fixture()
         data.release.assets.push(requirementsAsset)

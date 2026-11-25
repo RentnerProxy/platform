@@ -1,5 +1,6 @@
 import { createServerFn } from '@tanstack/react-start'
 import { getRequest, setResponseHeader } from '@tanstack/react-start/server'
+import { z } from 'zod'
 
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import { APP_VERSION } from '@/lib/ApplicationVersion/version.ts'
@@ -17,15 +18,18 @@ export const getApplicationUpdateHandler = createServerFn({ method: 'GET' }).han
     return getAvailableUpdateService(APP_VERSION)
 })
 
-/** Installed apps and built-in feature state are owner information, like the app catalog. */
-export const getApplicationUpgradePreviewHandler = createServerFn({ method: 'GET' }).handler(
-    async (): Promise<ApplicationUpgradePreview> => {
+/**
+ * Installed apps and built-in feature state are owner information, like the app catalog. The tag
+ * binds the preview to the release whose image reference the dialog shows.
+ */
+export const getApplicationUpgradePreviewHandler = createServerFn({ method: 'GET' })
+    .validator(z.strictObject({ tag: z.string().min(1).max(128) }))
+    .handler(async ({ data }): Promise<ApplicationUpgradePreview> => {
         setResponseHeader('Cache-Control', 'private, no-store')
         try {
             await requireOwnerSessionService()
         } catch {
             return { status: 'forbidden' }
         }
-        return getUpgradePreviewService(APP_VERSION, appUiSignal(getRequest()))
-    },
-)
+        return getUpgradePreviewService(APP_VERSION, data.tag, appUiSignal(getRequest()))
+    })
