@@ -294,6 +294,12 @@ pub(in crate::app_manager) async fn fixture_request(
     (reply.status, value)
 }
 
+/// GET a UI asset over the manager's web socket and return its status and raw body.
+pub(in crate::app_manager) async fn fixture_asset(path: &str) -> (u16, Vec<u8>) {
+    let reply = Client(PathBuf::from(SOCKET)).get(path).await;
+    (reply.status, reply.body)
+}
+
 fn staged_package(root: &Path) -> StagedPackage {
     fs::create_dir(root.join("ui")).unwrap();
     fs::create_dir(root.join("api")).unwrap();

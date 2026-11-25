@@ -12,7 +12,7 @@ stop_postgres() {
     exit "$status"
 }
 
-if [[ ${1:-} == --container || ${1:-} == --restore ]]; then
+if [[ ${1:-} == --container || ${1:-} == --gates || ${1:-} == --restore ]]; then
     postgres=/usr/lib/postgresql/18/bin
     database=/tmp/greeting-postgres
     install -d -m 0700 -o postgres -g postgres "$database" /var/run/postgresql
@@ -27,6 +27,9 @@ if [[ ${1:-} == --container || ${1:-} == --restore ]]; then
     if [[ $1 == --container ]]; then
         /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::privileged_published_greeting_lifecycle --nocapture
         test -s "$RP_GREETING_LIFECYCLE_REPORT"
+    elif [[ $1 == --gates ]]; then
+        /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::distribution_gates::privileged_published_greeting_distribution_gates --nocapture
+        test -s "$RP_GREETING_GATES_REPORT"
     else
         /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::portable_backup::privileged_restore_published_greeting --nocapture
         test -s "$RP_GREETING_RECOVERY_REPORT"
@@ -72,7 +75,7 @@ mkdir -p "$output"
 output=$(realpath "$output")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
-rm -f -- "$output/greeting-lifecycle.json" "$output/greeting-recovery.json"
+rm -f -- "$output/greeting-lifecycle.json" "$output/greeting-gates.json" "$output/greeting-recovery.json"
 mkdir -m 0700 "$work/portable"
 
 download() {
@@ -125,7 +128,11 @@ fi
 run_fixture() {
     local mode=$1
     shift
-    docker run --rm --init --no-healthcheck --network none --add-host github.com:127.0.0.1 --read-only --user 0:0 \
+    # Signed metadata and release assets use separate loopback hosts, as in production.
+    # Marketplace and GitHub API names point at a stand-in that only counts connections.
+    docker run --rm --init --no-healthcheck --network none --read-only --user 0:0 \
+        --add-host github.com:127.0.0.1 --add-host raw.githubusercontent.com:127.0.0.2 \
+        --add-host market.rentner.dev:127.0.0.3 --add-host api.github.com:127.0.0.3 \
         --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add KILL \
         --cap-add SETGID --cap-add SETUID --security-opt no-new-privileges \
         --tmpfs '/run:rw,exec,mode=0755,size=128m' \
@@ -153,6 +160,14 @@ run_fixture --container \
     --env RP_GREETING_FIXTURE=/greeting \
     --env RP_GREETING_CAPTURE_DIRECTORY=/portable \
     --env RP_GREETING_LIFECYCLE_REPORT=/evidence/greeting-lifecycle.json
+
+# A second fresh appliance state checks distribution outages, expired trust metadata,
+# capability escalation and generation-bound calls against the same releases.
+run_fixture --gates \
+    --cap-add NET_BIND_SERVICE \
+    --mount "type=bind,source=$work,target=/greeting,readonly" \
+    --env RP_GREETING_FIXTURE=/greeting \
+    --env RP_GREETING_GATES_REPORT=/evidence/greeting-gates.json
 
 # A fresh volume and PostgreSQL cluster have only the backup and an independent public pin.
 run_fixture --restore \
