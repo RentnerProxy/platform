@@ -76,7 +76,6 @@ fn empty_reply(status: StatusCode) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
-
 fn verify_authority_request(parts: hyper::http::request::Parts, body: Bytes) {
     assert_eq!(parts.method, Method::POST);
     assert_eq!(parts.headers["authorization"], TOKEN);
