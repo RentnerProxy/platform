@@ -5,6 +5,7 @@ on:
         paths:
             - .github/workflows/app-runtime-reference.yml
             - .github/scripts/ci/fixtures/app-data-migrations.sh
+            - .github/scripts/ci/fixtures/app-offline-restore.ts
             - .github/scripts/ci/fixtures/app-image-comparison.sh
             - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
             - .github/scripts/ci/fixtures/app-greeting-native.sh
@@ -36,7 +37,12 @@ on:
             - docker/production/apps/catalog/root.json
             - docker/production/apps/pg_hba.conf
             - docker/production/apps/pg_ident.conf
+            - docker-compose.yml
+            - scripts/production-backup.ts
+            - scripts/production-restore.ts
+            - 'scripts/backup/**'
             - scripts/smoke/wait.ts
+            - 'web/src/lib/AppCatalog/**'
             - 'web/src/lib/AppUi/**'
             - web/src/server/security-headers.ts
             - 'web/src/tests/fixtures/app-runtime-reference/**'
@@ -48,6 +54,7 @@ on:
         paths:
             - .github/workflows/app-runtime-reference.yml
             - .github/scripts/ci/fixtures/app-data-migrations.sh
+            - .github/scripts/ci/fixtures/app-offline-restore.ts
             - .github/scripts/ci/fixtures/app-image-comparison.sh
             - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
             - .github/scripts/ci/fixtures/app-greeting-native.sh
@@ -79,7 +86,12 @@ on:
             - docker/production/apps/catalog/root.json
             - docker/production/apps/pg_hba.conf
             - docker/production/apps/pg_ident.conf
+            - docker-compose.yml
+            - scripts/production-backup.ts
+            - scripts/production-restore.ts
+            - 'scripts/backup/**'
             - scripts/smoke/wait.ts
+            - 'web/src/lib/AppCatalog/**'
             - 'web/src/lib/AppUi/**'
             - web/src/server/security-headers.ts
             - 'web/src/tests/fixtures/app-runtime-reference/**'
@@ -209,6 +221,12 @@ jobs:
                   GREETING_APPLIANCE_IMAGE_ID: ${{ steps.appliance.outputs.imageid }}
               run: bash .github/scripts/ci/fixtures/app-greeting-lifecycle.sh "$RUNNER_TEMP/app-runtime-reference"
 
+            - name: Verify an offline restore of an installed catalog app
+              shell: bash
+              env:
+                  APPLIANCE_IMAGE_ID: ${{ steps.appliance.outputs.imageid }}
+              run: bun --no-env-file --no-orphans .github/scripts/ci/fixtures/app-offline-restore.ts "$APPLIANCE_IMAGE_ID" "$RUNNER_TEMP/app-runtime-reference"
+
             - name: Check out the comparison baseline
               if: github.event_name == 'pull_request'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -256,3 +274,4 @@ jobs:
                       ${{ runner.temp }}/app-runtime-reference/greeting-lifecycle.json
                       ${{ runner.temp }}/app-runtime-reference/greeting-gates.json
                       ${{ runner.temp }}/app-runtime-reference/greeting-recovery.json
+                      ${{ runner.temp }}/app-runtime-reference/greeting-offline-restore.json
