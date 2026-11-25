@@ -6,11 +6,14 @@
 //! generation-bound UI and API calls, and a restart without any network. Marketplace and
 //! GitHub API endpoints stay blocked throughout.
 
-use super::distribution::{self, Distribution, Files, METADATA_HOST, RELEASE_HOST, Served};
+use super::distribution::{
+    self, Distribution, Files, METADATA_HOST, RELEASE_HOST, Served, release_path,
+};
 use super::*;
 use crate::app_install::tests::published_greeting::{PublishedSnapshot, prepare_at};
 use crate::app_manager::ui::tests::fixture_asset;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use rentnerproxy_app_contracts::Contracts;
 use std::collections::BTreeMap;
 use time::OffsetDateTime;
 
@@ -55,6 +58,33 @@ fn escalated_catalog(current: &[u8]) -> Vec<u8> {
     catalog["releases"].as_array_mut().unwrap().push(release);
     bump_revision(&mut catalog);
     serde_json::to_vec(&catalog).unwrap()
+}
+
+/// The release asset paths of the escalated release. The catalog derives each download URL
+/// from the manifest identity, so these differ from every authentic Greeting asset.
+fn escalated_asset_paths(catalog: &[u8]) -> Vec<String> {
+    let document: Value = serde_json::from_slice(catalog).unwrap();
+    let contracts = Contracts::new().unwrap();
+    let catalog = contracts.validate_catalog(&document).unwrap();
+    let release = catalog
+        .releases()
+        .iter()
+        .find(|release| release["appId"] == APP_ID && release["version"] == ESCALATED_VERSION)
+        .expect("escalated Greeting release");
+    release["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|package| {
+            let target = package["manifest"]["target"].as_str().unwrap();
+            let assets = catalog
+                .package(APP_ID, ESCALATED_VERSION, target)
+                .unwrap()
+                .release_assets();
+            [assets.archive.url, assets.sbom.url, assets.provenance.url]
+        })
+        .map(|url| release_path(&url))
+        .collect()
 }
 
 /// Store a catalog checkpoint as the installer would have accepted it at `accepted_at`.
@@ -228,11 +258,49 @@ async fn refused_update(
     (evidence, requests)
 }
 
-fn only_metadata(requests: &[Served]) -> bool {
-    requests.iter().all(|request| request.host == METADATA_HOST)
-        && requests
+/// Submit an update to the escalated release and require a refusal that leaves the active
+/// app untouched. Returns the refusal status and the state observed before the submission.
+async fn refused_escalation(
+    view: &Value,
+    id: &str,
+    store: &Path,
+    target: &Value,
+) -> (u16, ActiveApp) {
+    let before = ActiveApp::observe(view, id, store).await;
+    let status = refused_submission(
+        "/v1/catalog/lifecycle",
+        &lifecycle_request("update", running_installation(view, id), Some(target)),
+    )
+    .await;
+    assert_eq!(
+        ActiveApp::observe(&catalog_view().await, id, store).await,
+        before,
+        "the escalated update changed the active app"
+    );
+    (status, before)
+}
+
+/// The manager asked for the signed timestamp, and each metadata request was `answered`.
+fn metadata_refreshed(requests: &[Served], answered: bool) -> bool {
+    let metadata: Vec<_> = requests
+        .iter()
+        .filter(|request| request.host == METADATA_HOST)
+        .collect();
+    metadata
+        .iter()
+        .any(|request| request.path.ends_with("/metadata/timestamp.json"))
+        && metadata
             .iter()
-            .any(|request| request.path.ends_with("/metadata/timestamp.json"))
+            .all(|request| request.status.is_some() == answered)
+}
+
+/// Each release asset request with whether the release host answered it.
+fn release_requests(requests: &[Served]) -> Vec<(&str, bool)> {
+    requests
+        .iter()
+        .filter(|request| request.host == RELEASE_HOST)
+        .map(|request| (request.path.as_str(), request.status.is_some()))
+        .collect()
 }
 
 #[tokio::test]
@@ -256,6 +324,12 @@ async fn privileged_published_greeting_distribution_gates() {
     fixture.repository.publish(&official, now);
     let escalated_bytes = escalated_catalog(&official);
     let current = fixture.repository.publish(&escalated_bytes, now).clone();
+    let escalated_paths = escalated_asset_paths(&escalated_bytes);
+    let (first_path, second_path) = (
+        release_path(&first.archive_url),
+        release_path(&second.archive_url),
+    );
+    assert!(!escalated_paths.contains(&first_path) && !escalated_paths.contains(&second_path));
     // A newer revision whose online roles were signed two days ago and have expired.
     let expired_successor = fixture
         .repository
@@ -295,12 +369,19 @@ async fn privileged_published_greeting_distribution_gates() {
     assert_eq!(fs::read(&checkpoint).unwrap(), planted);
     assert_eq!(package_store_entries(store), empty_store);
     let expired_requests = hosts.requests_since(since);
-    assert!(only_metadata(&expired_requests), "{expired_requests:?}");
+    assert!(
+        metadata_refreshed(&expired_requests, true),
+        "{expired_requests:?}"
+    );
+    assert!(
+        release_requests(&expired_requests).is_empty(),
+        "{expired_requests:?}"
+    );
     halt(&mut manager).await;
 
     // 2. Fresh signed metadata is reachable, release assets are not.
     hosts.serve_metadata(current.clone());
-    hosts.set_releases_reachable(false);
+    hosts.set_releases_available(false);
     manager = start_manager(&controller, config, token, None).await;
     let listing = wait_catalog_state("ready").await;
     assert_eq!(
@@ -337,14 +418,20 @@ async fn privileged_published_greeting_distribution_gates() {
     assert_eq!(unreachable_install["installations"], json!([]));
     assert_eq!(manager_status().await.unwrap(), json!({}));
     assert_eq!(package_store_entries(store), empty_store);
+    // The download reached the release host, which closed it without a response.
     let unreachable_requests = hosts.requests_since(since);
     assert!(
-        only_metadata(&unreachable_requests),
+        metadata_refreshed(&unreachable_requests, true),
+        "{unreachable_requests:?}"
+    );
+    assert_eq!(
+        release_requests(&unreachable_requests),
+        [(first_path.as_str(), false)],
         "{unreachable_requests:?}"
     );
 
     // 3. Marketplace endpoints stay blocked. Signed metadata and release assets suffice.
-    hosts.set_releases_reachable(true);
+    hosts.set_releases_available(true);
     let since = hosts.requests().len();
     post_install(&install).await;
     let installed_view = wait_install("installed").await;
@@ -369,19 +456,14 @@ async fn privileged_published_greeting_distribution_gates() {
     let offered = json!({"version": second.version, "archiveSha256": second.archive_sha256});
     assert_eq!(active["update"], offered);
     // The capability request keeps 1.0.2 out of the offered updates.
-    escalation_refusals.push(
-        refused_submission(
-            "/v1/catalog/lifecycle",
-            &lifecycle_request("update", active, Some(&escalated_target)),
-        )
-        .await,
-    );
+    let (status, baseline) =
+        refused_escalation(&ready, &installation_id, store, &escalated_target).await;
+    escalation_refusals.push(status);
     let update = lifecycle_request("update", active, Some(&offered));
-    let baseline = ActiveApp::observe(&ready, &installation_id, store).await;
 
     // 4. Release assets become unreachable while signed metadata stays reachable.
     wait_catalog_state("ready").await;
-    hosts.set_releases_reachable(false);
+    hosts.set_releases_available(false);
     let (asset_outage, requests) = refused_update(
         &hosts,
         &update,
@@ -390,11 +472,16 @@ async fn privileged_published_greeting_distribution_gates() {
         "release-assets-unreachable",
     )
     .await;
-    assert!(only_metadata(&requests), "{requests:?}");
+    assert!(metadata_refreshed(&requests, true), "{requests:?}");
+    assert_eq!(
+        release_requests(&requests),
+        [(second_path.as_str(), false)],
+        "{requests:?}"
+    );
 
-    // 5. Signed metadata becomes unreachable as well.
+    // 5. Signed metadata becomes unreachable as well. The refresh fails before any download.
     wait_catalog_state("ready").await;
-    hosts.set_metadata_reachable(false);
+    hosts.set_metadata_available(false);
     let (distribution_outage, requests) = refused_update(
         &hosts,
         &update,
@@ -403,12 +490,13 @@ async fn privileged_published_greeting_distribution_gates() {
         "distribution-unreachable",
     )
     .await;
-    assert!(requests.is_empty(), "{requests:?}");
+    assert!(metadata_refreshed(&requests, false), "{requests:?}");
+    assert!(release_requests(&requests).is_empty(), "{requests:?}");
 
     // 6. During an offered update, the repository serves a newer revision whose online
     // roles expired before it was served. Restart for a listing verified while reachable.
-    hosts.set_metadata_reachable(true);
-    hosts.set_releases_reachable(true);
+    hosts.set_metadata_available(true);
+    hosts.set_releases_available(true);
     halt(&mut manager).await;
     manager = start_manager(&controller, config, token, Some(&installation_id)).await;
     let ready = wait_catalog_state("ready").await;
@@ -427,7 +515,8 @@ async fn privileged_published_greeting_distribution_gates() {
         "expired-metadata-successor",
     )
     .await;
-    assert!(only_metadata(&requests), "{requests:?}");
+    assert!(metadata_refreshed(&requests, true), "{requests:?}");
+    assert!(release_requests(&requests).is_empty(), "{requests:?}");
     assert_eq!(fs::read(&checkpoint).unwrap(), accepted);
 
     // 7. The authentic update replaces backend and UI while the manager keeps running.
@@ -492,25 +581,19 @@ async fn privileged_published_greeting_distribution_gates() {
     let current_row = running_installation(&ready, &installation_id);
     assert_eq!(current_row["generation"], new_generation);
     assert_eq!(current_row["update"], Value::Null);
-    escalation_refusals.push(
-        refused_submission(
-            "/v1/catalog/lifecycle",
-            &lifecycle_request("update", current_row, Some(&escalated_target)),
-        )
-        .await,
-    );
+    let (status, _) =
+        refused_escalation(&ready, &installation_id, store, &escalated_target).await;
+    escalation_refusals.push(status);
 
-    // No request carried credentials, and no Marketplace or GitHub API endpoint was used.
+    // No request carried credentials, and no asset of the escalated release was requested.
     let requests = hosts.requests();
     assert!(requests.iter().all(Served::anonymous), "{requests:?}");
-    let escalated_asset = format!("-v{ESCALATED_VERSION}/");
     assert!(
         requests
             .iter()
-            .all(|request| !request.path.contains(&escalated_asset)),
+            .all(|request| !escalated_paths.contains(&request.path)),
         "{requests:?}"
     );
-    assert_eq!(hosts.marketplace_attempts(), 0);
 
     // 8. Without any network, the installed app and the cached listing keep working.
     hosts.stop();
@@ -535,16 +618,15 @@ async fn privileged_published_greeting_distribution_gates() {
     )
     .await;
     assert_eq!(offline_ui, ui);
-    escalation_refusals.push(
-        refused_submission(
-            "/v1/catalog/lifecycle",
-            &lifecycle_request("update", restarted, Some(&escalated_target)),
-        )
-        .await,
-    );
-    assert_eq!(hosts.marketplace_attempts(), 0);
+    let (status, _) =
+        refused_escalation(&offline, &installation_id, store, &escalated_target).await;
+    escalation_refusals.push(status);
     halt(&mut manager).await;
     authority.kill().await.unwrap();
+    // Count once the manager has stopped, including connections still queued at the
+    // listener, so the assertion and the report use the same final value.
+    let marketplace_attempts = hosts.finish();
+    assert_eq!(marketplace_attempts, 0);
 
     let architecture = if cfg!(target_arch = "x86_64") {
         "linux-amd64"
@@ -580,6 +662,7 @@ async fn privileged_published_greeting_distribution_gates() {
             "version": ESCALATED_VERSION,
             "availability": "grantsRequired",
             "refusedSubmissions": escalation_refusals,
+            "assetPaths": escalated_paths,
             "assetRequested": false,
         },
         "updateWithoutRestart": {
@@ -597,7 +680,7 @@ async fn privileged_published_greeting_distribution_gates() {
             "uiVerified": true,
         },
         "anonymousRequests": requests.len(),
-        "marketplaceAttempts": hosts.marketplace_attempts(),
+        "marketplaceAttempts": marketplace_attempts,
     });
     fs::create_dir_all(report_path.parent().unwrap()).unwrap();
     fs::write(&report_path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();

@@ -2,9 +2,11 @@
 //!
 //! As in production, signed catalog metadata and release archives come from separate hosts:
 //! `raw.githubusercontent.com` serves the TUF repository and `github.com` the release assets.
-//! A third address stands in for Marketplace and GitHub API endpoints. It never answers and
-//! counts every connection attempt. The fixture container has no other network and maps
-//! these names to loopback addresses with `--add-host`.
+//! Either host can become unavailable: it then records each request and closes the
+//! connection without an HTTP response. A third address stands in for Marketplace and
+//! GitHub API endpoints. It never answers and counts every connection attempt. The fixture
+//! container has no other network and maps these names to loopback addresses with
+//! `--add-host`.
 
 use std::{
     collections::BTreeMap,
@@ -13,7 +15,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, TcpListener, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
@@ -95,7 +97,8 @@ pub(super) struct Served {
     pub path: String,
     pub query: bool,
     pub credential_headers: Vec<String>,
-    pub status: u16,
+    /// `None` when an unavailable host closed the connection without an HTTP response.
+    pub status: Option<u16>,
     pub bytes: u64,
 }
 
@@ -138,7 +141,7 @@ impl Served {
             path: path.to_owned(),
             query,
             credential_headers,
-            status: 0,
+            status: None,
             bytes: 0,
         })
     }
@@ -152,15 +155,59 @@ impl Served {
     }
 }
 
+#[derive(Default)]
+struct LogState {
+    served: Vec<Served>,
+    in_flight: usize,
+}
+
+/// Requests in arrival order. A request is recorded before its response starts and
+/// completed after the response ends. No lock is held while a response is written, so one
+/// host never waits for another host's client.
+#[derive(Default)]
+struct RequestLog {
+    state: Mutex<LogState>,
+    settled: Condvar,
+}
+
+impl RequestLog {
+    fn begin(&self, served: Served) -> usize {
+        let mut state = self.state.lock().unwrap();
+        state.served.push(served);
+        state.in_flight += 1;
+        state.served.len() - 1
+    }
+
+    fn complete(&self, index: usize, status: Option<u16>, bytes: u64) {
+        let mut state = self.state.lock().unwrap();
+        state.served[index].status = status;
+        state.served[index].bytes = bytes;
+        state.in_flight -= 1;
+        self.settled.notify_all();
+    }
+
+    /// Every recorded request, after each response in flight has ended.
+    fn settled(&self) -> Vec<Served> {
+        self.settled
+            .wait_while(self.state.lock().unwrap(), |state| state.in_flight > 0)
+            .unwrap()
+            .served
+            .clone()
+    }
+}
+
 struct Shared {
     metadata: Mutex<Files>,
     archives: BTreeMap<String, PathBuf>,
     archive_response: Mutex<ArchiveResponse>,
-    log: Mutex<Vec<Served>>,
+    metadata_available: AtomicBool,
+    releases_available: AtomicBool,
+    log: RequestLog,
     marketplace_attempts: AtomicUsize,
 }
 
-/// A loopback listener. Dropping it closes the port, so new connections are refused.
+/// A loopback listener. Dropping it handles the connections already queued, then closes
+/// the port, so later connections are refused.
 struct Host {
     stop: Arc<AtomicBool>,
     task: Option<thread::JoinHandle<()>>,
@@ -173,11 +220,15 @@ impl Host {
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&stop);
         let task = thread::spawn(move || {
-            while !stopping.load(Ordering::Acquire) {
+            loop {
+                // Read the flag before accepting, so a stop still drains the queue.
+                let stopped = stopping.load(Ordering::Acquire);
                 match listener.accept() {
-                    Ok((socket, _)) if !stopping.load(Ordering::Acquire) => handle(socket),
-                    Ok(_) => break,
+                    Ok((socket, _)) => handle(socket),
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        if stopped {
+                            break;
+                        }
                         thread::sleep(Duration::from_millis(10));
                     }
                     Err(error) => panic!("Distribution fixture listener failed: {error}"),
@@ -205,7 +256,6 @@ impl Drop for Host {
 
 pub(super) struct Distribution {
     shared: Arc<Shared>,
-    tls: Arc<rustls::ServerConfig>,
     metadata: Option<Host>,
     releases: Option<Host>,
     _marketplace: Host,
@@ -243,34 +293,33 @@ impl Distribution {
                 })
                 .collect(),
             archive_response: Mutex::default(),
-            log: Mutex::default(),
+            metadata_available: AtomicBool::new(true),
+            releases_available: AtomicBool::new(true),
+            log: RequestLog::default(),
             marketplace_attempts: AtomicUsize::new(0),
         });
+        let https = |address: Ipv4Addr, host: &'static str| {
+            let shared = Arc::clone(&shared);
+            let tls = Arc::clone(&tls);
+            Host::start(address, move |socket| {
+                if let Err(error) = serve(socket, Arc::clone(&tls), host, &shared) {
+                    eprintln!("{host} fixture request failed: {error}");
+                }
+            })
+        };
+        let metadata = https(METADATA_ADDRESS, METADATA_HOST);
+        let releases = https(RELEASE_ADDRESS, RELEASE_HOST);
         let attempts = Arc::clone(&shared);
         let marketplace = Host::start(MARKETPLACE_ADDRESS, move |socket| {
             attempts.marketplace_attempts.fetch_add(1, Ordering::SeqCst);
             drop(socket);
         });
-        let mut distribution = Self {
+        Self {
             shared,
-            tls,
-            metadata: None,
-            releases: None,
+            metadata: Some(metadata),
+            releases: Some(releases),
             _marketplace: marketplace,
-        };
-        distribution.set_metadata_reachable(true);
-        distribution.set_releases_reachable(true);
-        distribution
-    }
-
-    fn https(&self, address: Ipv4Addr, host: &'static str) -> Host {
-        let shared = Arc::clone(&self.shared);
-        let tls = Arc::clone(&self.tls);
-        Host::start(address, move |socket| {
-            if let Err(error) = serve(socket, Arc::clone(&tls), host, &shared) {
-                eprintln!("{host} fixture request failed: {error}");
-            }
-        })
+        }
     }
 
     /// Replace the TUF repository files served from the next request on.
@@ -278,37 +327,41 @@ impl Distribution {
         *self.shared.metadata.lock().unwrap() = files;
     }
 
-    pub(super) fn set_metadata_reachable(&mut self, reachable: bool) {
-        if reachable != self.metadata.is_some() {
-            self.metadata = None;
-            if reachable {
-                self.metadata = Some(self.https(METADATA_ADDRESS, METADATA_HOST));
-            }
-        }
+    /// An unavailable host records each request and closes the connection unanswered.
+    pub(super) fn set_metadata_available(&self, available: bool) {
+        self.shared
+            .metadata_available
+            .store(available, Ordering::SeqCst);
     }
 
-    pub(super) fn set_releases_reachable(&mut self, reachable: bool) {
-        if reachable != self.releases.is_some() {
-            self.releases = None;
-            if reachable {
-                self.releases = Some(self.https(RELEASE_ADDRESS, RELEASE_HOST));
-            }
-        }
+    /// An unavailable host records each request and closes the connection unanswered.
+    pub(super) fn set_releases_available(&self, available: bool) {
+        self.shared
+            .releases_available
+            .store(available, Ordering::SeqCst);
     }
 
     /// Close the metadata and release hosts. The Marketplace stand-in keeps counting.
     pub(super) fn stop(&mut self) {
-        self.set_metadata_reachable(false);
-        self.set_releases_reachable(false);
+        self.metadata = None;
+        self.releases = None;
+    }
+
+    /// Close every host and return the final number of Marketplace connection attempts,
+    /// including connections that were still queued at the listener.
+    pub(super) fn finish(self) -> usize {
+        let shared = Arc::clone(&self.shared);
+        drop(self);
+        shared.marketplace_attempts.load(Ordering::SeqCst)
     }
 
     pub(super) fn set_archive_response(&self, mode: ArchiveResponse) {
         *self.shared.archive_response.lock().unwrap() = mode;
     }
 
-    /// Every request served so far. A response in flight completes before this returns.
+    /// Every request recorded so far. A response in flight completes before this returns.
     pub(super) fn requests(&self) -> Vec<Served> {
-        self.shared.log.lock().unwrap().clone()
+        self.shared.log.settled()
     }
 
     pub(super) fn requests_since(&self, since: usize) -> Vec<Served> {
@@ -324,13 +377,10 @@ impl Distribution {
             .map(|request| request.bytes)
             .collect()
     }
-
-    pub(super) fn marketplace_attempts(&self) -> usize {
-        self.shared.marketplace_attempts.load(Ordering::SeqCst)
-    }
 }
 
-fn release_path(url: &str) -> String {
+/// The request path of an official release asset URL.
+pub(super) fn release_path(url: &str) -> String {
     url.strip_prefix("https://github.com")
         .expect("official release URL host")
         .to_owned()
@@ -352,7 +402,10 @@ fn read_head(stream: &mut impl Read) -> io::Result<Vec<String>> {
     }
 }
 
-enum Body {
+enum Reply {
+    /// An unavailable host closes the connection without an HTTP response.
+    Unanswered,
+    NotFound,
     Metadata(Vec<u8>),
     Archive(PathBuf),
 }
@@ -368,62 +421,74 @@ fn serve(
     socket.set_write_timeout(Some(Duration::from_secs(180)))?;
     let connection = rustls::ServerConnection::new(tls).map_err(io::Error::other)?;
     let mut stream = rustls::StreamOwned::new(connection, socket);
-    let mut served = Served::parse(host, &read_head(&mut stream)?)?;
-    let body = if served.method != "GET" {
-        None
+    let served = Served::parse(host, &read_head(&mut stream)?)?;
+    let available = if host == METADATA_HOST {
+        &shared.metadata_available
+    } else {
+        &shared.releases_available
+    };
+    let reply = if !available.load(Ordering::SeqCst) {
+        Reply::Unanswered
+    } else if served.method != "GET" {
+        Reply::NotFound
     } else if host == METADATA_HOST {
         served
             .path
             .strip_prefix(REPOSITORY_PATH)
             .and_then(|name| shared.metadata.lock().unwrap().get(name).cloned())
-            .map(Body::Metadata)
+            .map_or(Reply::NotFound, Reply::Metadata)
     } else {
         shared
             .archives
             .get(&served.path)
             .cloned()
-            .map(Body::Archive)
+            .map_or(Reply::NotFound, Reply::Archive)
     };
-    // Hold the log through the TLS flush, so a test that observes the client's outcome
-    // also observes this request and the exact number of payload bytes it received.
-    let mut log = shared.log.lock().unwrap();
+    // Record the request before answering and its outcome after the TLS flush, so a test
+    // that observes the client's outcome also observes the exact payload bytes it received.
+    let index = shared.log.begin(served);
     let mode = *shared.archive_response.lock().unwrap();
-    let result = respond(&mut stream, body, mode, &mut served);
-    log.push(served);
+    let (mut status, mut bytes) = (None, 0);
+    let result = respond(&mut stream, reply, mode, &mut status, &mut bytes);
+    shared.log.complete(index, status, bytes);
     result
 }
 
 fn respond(
     stream: &mut rustls::StreamOwned<rustls::ServerConnection, TcpStream>,
-    body: Option<Body>,
+    reply: Reply,
     mode: ArchiveResponse,
-    served: &mut Served,
+    status: &mut Option<u16>,
+    bytes: &mut u64,
 ) -> io::Result<()> {
-    let Some(body) = body else {
-        served.status = 404;
-        stream.write_all(
-            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        )?;
-        stream.conn.send_close_notify();
-        return stream.flush();
-    };
-    let length = match &body {
-        Body::Metadata(bytes) => bytes.len() as u64,
-        Body::Archive(path) => fs::metadata(path)?.len(),
-    };
-    served.status = 200;
-    write!(
-        stream,
-        "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
-    )?;
-    served.bytes = match body {
-        Body::Metadata(bytes) => {
-            stream.write_all(&bytes)?;
-            length
+    fn ok(stream: &mut impl Write, length: u64) -> io::Result<()> {
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
+        )
+    }
+    match reply {
+        Reply::Unanswered => {}
+        Reply::NotFound => {
+            *status = Some(404);
+            stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )?;
+        }
+        Reply::Metadata(body) => {
+            *status = Some(200);
+            ok(stream, body.len() as u64)?;
+            stream.write_all(&body)?;
+            *bytes = body.len() as u64;
         }
         // Archive responses are copied from disk to TLS in bounded chunks by io::copy.
-        Body::Archive(path) => mode.write(File::open(path)?, length, stream)?,
-    };
+        Reply::Archive(path) => {
+            let length = fs::metadata(&path)?.len();
+            *status = Some(200);
+            ok(stream, length)?;
+            *bytes = mode.write(File::open(path)?, length, stream)?;
+        }
+    }
     stream.conn.send_close_notify();
     stream.flush()
 }
