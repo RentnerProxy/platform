@@ -93,7 +93,12 @@ async function createTarget(root: string, name: string, offline: boolean) {
         project,
         env,
         compose: (args: string[], timeout?: number) =>
-            run('docker', ['compose', '--project-name', project, '--file', file, ...args], timeout, env),
+            run(
+                'docker',
+                ['compose', '--project-name', project, '--file', file, ...args],
+                timeout,
+                env,
+            ),
     }
 }
 
@@ -124,7 +129,12 @@ async function catalog(container: string, body?: unknown) {
     const args = ['exec', '--user', webUser, container, 'curl', '--silent', '--show-error']
     args.push('--fail-with-body', '--max-time', '20', '--unix-socket', managerSocket)
     if (body !== undefined)
-        args.push('--header', 'Content-Type: application/json', '--data-binary', JSON.stringify(body))
+        args.push(
+            '--header',
+            'Content-Type: application/json',
+            '--data-binary',
+            JSON.stringify(body),
+        )
     args.push('http://localhost/v1/catalog' + (body === undefined ? '' : '/install'))
     return JSON.parse(await docker(args)) as unknown
 }
@@ -328,9 +338,9 @@ try {
 } finally {
     const leftovers: string[] = []
     for (const target of targets)
-        await target.compose(['down', '--volumes', '--remove-orphans'], 180_000).catch(
-            (error: unknown) => leftovers.push(target.project + ': ' + String(error)),
-        )
+        await target
+            .compose(['down', '--volumes', '--remove-orphans'], 180_000)
+            .catch((error: unknown) => leftovers.push(target.project + ': ' + String(error)))
     // The backup holds the disposable appliance's keys and is never needed for cleanup.
     await rm(join(root, 'backups'), { force: true, recursive: true })
     if (leftovers.length === 0) await rm(root, { force: true, recursive: true })
