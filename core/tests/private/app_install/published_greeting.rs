@@ -26,6 +26,8 @@ const RELEASES: [(&str, &str, u64); 2] = [
 pub(crate) struct PublishedGreeting {
     pub root: Vec<u8>,
     pub snapshots: [PublishedSnapshot; 2],
+    /// The throwaway repository that signed `snapshots`, for further revisions.
+    pub repository: ReplayRepository,
 }
 
 pub(crate) struct PublishedSnapshot {
@@ -71,7 +73,7 @@ fn official_catalog(
     })
 }
 
-fn replay_trust(now: OffsetDateTime) -> (Vec<u8>, SigningKeys) {
+fn replay_trust(expires: OffsetDateTime) -> (Vec<u8>, SigningKeys) {
     let roles = ["root", "targets", "snapshot", "timestamp"];
     let signing = roles.map(|_| {
         let mut seed = [0; 32];
@@ -95,7 +97,7 @@ fn replay_trust(now: OffsetDateTime) -> (Vec<u8>, SigningKeys) {
     }
     let signed = json!({
         "_type": "root", "consistent_snapshot": true, "version": 1,
-        "spec_version": "1.0.0", "expires": (now + Duration::days(2)).format(&Rfc3339).unwrap(),
+        "spec_version": "1.0.0", "expires": expires.format(&Rfc3339).unwrap(),
         "keys": descriptors, "roles": delegations,
     });
     // These ASCII-only fields serialize as sorted compact JSON, the canonical TUF wire form.
@@ -114,29 +116,103 @@ fn replay_trust(now: OffsetDateTime) -> (Vec<u8>, SigningKeys) {
     )
 }
 
+fn read_replay(
+    root: &[u8],
+    files: &Files,
+    at: OffsetDateTime,
+    previous: Option<&TrustedCatalog>,
+) -> TrustedCatalog {
+    read_catalog(
+        |name, _| Ok(files.get(name).cloned()),
+        root,
+        ReadOptions {
+            now: at,
+            allow_expired_roles: false,
+            next_root: None,
+            previous,
+        },
+    )
+    .unwrap()
+}
+
+/// A throwaway TUF repository that re-signs verified catalog bytes under a test root.
+pub(crate) struct ReplayRepository {
+    root: Vec<u8>,
+    keys: SigningKeys,
+    files: Files,
+    state: TrustedCatalog,
+}
+
+impl ReplayRepository {
+    fn bootstrap(root_expires: OffsetDateTime, signed_at: OffsetDateTime) -> Self {
+        let (root, keys) = replay_trust(root_expires);
+        let files = bootstrap_catalog(&root, &keys, signed_at).unwrap();
+        let state = read_replay(&root, &files, signed_at, None);
+        Self {
+            root,
+            keys,
+            files,
+            state,
+        }
+    }
+
+    pub(crate) fn catalog_bytes(&self) -> &[u8] {
+        self.state.catalog_bytes()
+    }
+
+    fn sign_with_icons(&self, catalog: &[u8], icons: &Files, signed_at: OffsetDateTime) -> Files {
+        let mut files = self.files.clone();
+        let options = UpdateOptions {
+            now: signed_at,
+            next_root: None,
+            icons,
+        };
+        files.extend(update_catalog(&self.state, catalog, &self.keys, options).unwrap());
+        files
+    }
+
+    /// Sign the next catalog at `signed_at` without accepting it as repository state.
+    /// Online roles expire relative to `signed_at`, so a past time yields expired metadata.
+    pub(crate) fn sign(&self, catalog: &[u8], signed_at: OffsetDateTime) -> Files {
+        self.sign_with_icons(catalog, &Files::new(), signed_at)
+    }
+
+    fn publish_with_icons(
+        &mut self,
+        catalog: &[u8],
+        icons: &Files,
+        signed_at: OffsetDateTime,
+    ) -> &Files {
+        let files = self.sign_with_icons(catalog, icons, signed_at);
+        self.state = read_replay(&self.root, &files, signed_at, Some(&self.state));
+        assert_eq!(self.state.catalog_bytes(), catalog);
+        self.files = files;
+        &self.files
+    }
+
+    /// Sign and accept the next catalog. Unchanged bytes renew only the due online roles.
+    pub(crate) fn publish(&mut self, catalog: &[u8], signed_at: OffsetDateTime) -> &Files {
+        self.publish_with_icons(catalog, &Files::new(), signed_at)
+    }
+}
+
 /// Verify the immutable official catalog and archives before renewing their TUF envelopes.
 pub(crate) fn prepare(fixture: &Path) -> PublishedGreeting {
+    prepare_at(
+        fixture,
+        OffsetDateTime::now_utc().replace_nanosecond(0).unwrap(),
+    )
+}
+
+/// Like [`prepare`], with online roles signed at `signed_at`. The test root stays valid
+/// for two days from now, so a past `signed_at` replays metadata that has since expired.
+pub(crate) fn prepare_at(fixture: &Path, signed_at: OffsetDateTime) -> PublishedGreeting {
     let accepted_at = OffsetDateTime::parse("2026-11-22T15:37:00Z", &Rfc3339).unwrap();
     let first = official_catalog(&fixture.join("v1.0.0"), accepted_at, None);
     let second = official_catalog(&fixture.join("v1.0.1"), accepted_at, Some(&first));
 
     let now = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
-    let (root, keys) = replay_trust(now);
-    let mut files = bootstrap_catalog(&root, &keys, now).unwrap();
-    let read_replay = |files: &Files, previous: Option<&TrustedCatalog>| {
-        read_catalog(
-            |name, _| Ok(files.get(name).cloned()),
-            &root,
-            ReadOptions {
-                now,
-                allow_expired_roles: false,
-                next_root: None,
-                previous,
-            },
-        )
-        .unwrap()
-    };
-    let mut replay = read_replay(&files, None);
+    let mut repository = ReplayRepository::bootstrap(now + Duration::days(2), signed_at);
     let contracts = Contracts::new().unwrap();
     let target = if cfg!(target_arch = "x86_64") {
         "linux-amd64"
@@ -187,28 +263,16 @@ pub(crate) fn prepare(fixture: &Path) -> PublishedGreeting {
                 Some((icon.path, read_file(&path, icon.size_bytes).unwrap()))
             })
             .collect();
-        files.extend(
-            update_catalog(
-                &replay,
-                bytes,
-                &keys,
-                UpdateOptions {
-                    now,
-                    next_root: None,
-                    icons: &icons,
-                },
-            )
-            .unwrap(),
-        );
-        replay = read_replay(&files, Some(&replay));
-        assert_eq!(replay.catalog_bytes(), bytes);
+        let files = repository
+            .publish_with_icons(bytes, &icons, signed_at)
+            .clone();
 
         PublishedSnapshot {
             version,
             official_commit,
             catalog_revision,
             catalog_sha256: digest(bytes),
-            files: files.clone(),
+            files,
             archive_path,
             archive_url: asset.url,
             archive_sha256: asset.sha256.into(),
@@ -216,5 +280,9 @@ pub(crate) fn prepare(fixture: &Path) -> PublishedGreeting {
             manifest_sha256: package.manifest_sha256().into(),
         }
     });
-    PublishedGreeting { root, snapshots }
+    PublishedGreeting {
+        root: repository.root.clone(),
+        snapshots,
+        repository,
+    }
 }
