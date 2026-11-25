@@ -264,7 +264,9 @@ test
                 mkdir(bin),
             ])
             await copyCoverageFixtureModules(code, [module], {
+                // Coverage instrumentation may rewrite string literals with double quotes.
                 "'/backup": "'" + output,
+                '"/backup': '"' + output,
                 '/var/lib/rentnerproxy': state,
                 '/usr/share/rentnerproxy/backup-source.json': source,
                 '/opt/rentnerproxy/web/docker/web/bootstrap-secrets.ts': bootstrap,
