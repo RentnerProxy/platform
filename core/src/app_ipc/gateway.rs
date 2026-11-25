@@ -475,11 +475,13 @@ async fn invoke_provider(
 pub(super) fn provider_result_matches(invocation: &Value, outcome: &Value) -> bool {
     let (request, result) = (&invocation["payload"], &outcome["payload"]);
     let same = |name: &str| result[name] == request[name];
+    // The contract bounds the limit to an integral 1 to 100, which JSON may also write
+    // as 2.0 or 2e0, so compare it as a number.
     let within_limit = |name: &str| {
         result[name]
             .as_array()
-            .zip(request["limit"].as_u64())
-            .is_some_and(|(items, limit)| items.len() as u64 <= limit)
+            .zip(request["limit"].as_f64())
+            .is_some_and(|(items, limit)| items.len() as f64 <= limit)
     };
     if invocation["profile"] != outcome["profile"] {
         return false;

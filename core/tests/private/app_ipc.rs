@@ -940,17 +940,33 @@ fn provider_results_must_answer_their_invocation() {
         )
     };
     let observed = |count: usize| json!(vec![json!({}); count]);
-    // Lists stay within the requested limit.
-    assert!(pair(
-        "monitoring",
-        json!({"limit": 2}),
-        json!({"samples": observed(2)})
-    ));
-    assert!(!pair(
-        "monitoring",
-        json!({"limit": 2}),
-        json!({"samples": observed(3)})
-    ));
+    // Lists stay within the requested limit, however JSON writes that integral limit.
+    for limit in ["2", "2.0", "2e0"] {
+        let request: Value = serde_json::from_str(&format!(r#"{{"limit":{limit}}}"#)).unwrap();
+        assert!(pair(
+            "monitoring",
+            request.clone(),
+            json!({"samples": observed(2)})
+        ));
+        assert!(!pair(
+            "monitoring",
+            request,
+            json!({"samples": observed(3)})
+        ));
+        let discovery: Value =
+            serde_json::from_str(&format!(r#"{{"connectionId":"docker-one","limit":{limit}}}"#))
+                .unwrap();
+        assert!(pair(
+            "docker-discovery",
+            discovery.clone(),
+            json!({"connectionId": "docker-one", "observations": observed(2)})
+        ));
+        assert!(!pair(
+            "docker-discovery",
+            discovery,
+            json!({"connectionId": "docker-one", "observations": observed(3)})
+        ));
+    }
     let discovery = json!({"connectionId": "docker-one", "limit": 1});
     assert!(pair(
         "docker-discovery",
