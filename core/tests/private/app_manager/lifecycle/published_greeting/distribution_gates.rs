@@ -46,7 +46,10 @@ fn escalated_catalog(current: &[u8]) -> Vec<u8> {
         manifest["capabilities"] = json!([{"id": "proxy.hosts.read.v1", "scope": "proxyHosts"}]);
         // A distinct identity keeps the cached 1.0.1 archive from satisfying this release,
         // so any staging attempt would have to request its release asset.
-        let identity = format!("unpublished {APP_ID} {ESCALATED_VERSION} {}", manifest["target"]);
+        let identity = format!(
+            "unpublished {APP_ID} {ESCALATED_VERSION} {}",
+            manifest["target"]
+        );
         package["archive"]["sha256"] = marketplace_artifacts::digest(identity.as_bytes()).into();
     }
     catalog["releases"].as_array_mut().unwrap().push(release);
@@ -335,7 +338,10 @@ async fn privileged_published_greeting_distribution_gates() {
     assert_eq!(manager_status().await.unwrap(), json!({}));
     assert_eq!(package_store_entries(store), empty_store);
     let unreachable_requests = hosts.requests_since(since);
-    assert!(only_metadata(&unreachable_requests), "{unreachable_requests:?}");
+    assert!(
+        only_metadata(&unreachable_requests),
+        "{unreachable_requests:?}"
+    );
 
     // 3. Marketplace endpoints stay blocked. Signed metadata and release assets suffice.
     hosts.set_releases_reachable(true);
@@ -387,8 +393,14 @@ async fn privileged_published_greeting_distribution_gates() {
     // 5. Signed metadata becomes unreachable as well.
     wait_catalog_state("ready").await;
     hosts.set_metadata_reachable(false);
-    let (distribution_outage, requests) =
-        refused_update(&hosts, &update, &baseline, store, "distribution-unreachable").await;
+    let (distribution_outage, requests) = refused_update(
+        &hosts,
+        &update,
+        &baseline,
+        store,
+        "distribution-unreachable",
+    )
+    .await;
     assert!(requests.is_empty(), "{requests:?}");
 
     // 6. During an offered update, the repository serves a newer revision whose online
@@ -424,8 +436,13 @@ async fn privileged_published_greeting_distribution_gates() {
     let before = running_installation(&ready, &installation_id);
     let old_generation = before["generation"].as_u64().unwrap();
     assert_eq!(old_generation, first_generation + 2);
-    let (ui_entry, previous_ui) =
-        served_ui(&installation_id, old_generation, store, &first.archive_sha256).await;
+    let (ui_entry, previous_ui) = served_ui(
+        &installation_id,
+        old_generation,
+        store,
+        &first.archive_sha256,
+    )
+    .await;
     let since = hosts.requests().len();
     post_lifecycle(&lifecycle_request("update", before, Some(&offered))).await;
     let updated_view = wait_lifecycle("update", "succeeded").await;
@@ -438,7 +455,13 @@ async fn privileged_published_greeting_distribution_gates() {
         hosts.deliveries(since, &second.archive_url),
         [second.archive_size_bytes]
     );
-    let (_, ui) = served_ui(&installation_id, new_generation, store, &second.archive_sha256).await;
+    let (_, ui) = served_ui(
+        &installation_id,
+        new_generation,
+        store,
+        &second.archive_sha256,
+    )
+    .await;
     assert_eq!(
         read_greeting(&installation_id, new_generation).await,
         PERSISTED_GREETING

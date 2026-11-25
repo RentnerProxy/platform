@@ -235,7 +235,12 @@ impl Distribution {
             metadata: Mutex::new(metadata),
             archives: releases
                 .iter()
-                .map(|release| (release_path(&release.archive_url), release.archive_path.clone()))
+                .map(|release| {
+                    (
+                        release_path(&release.archive_url),
+                        release.archive_path.clone(),
+                    )
+                })
                 .collect(),
             archive_response: Mutex::default(),
             log: Mutex::default(),
@@ -373,7 +378,11 @@ fn serve(
             .and_then(|name| shared.metadata.lock().unwrap().get(name).cloned())
             .map(Body::Metadata)
     } else {
-        shared.archives.get(&served.path).cloned().map(Body::Archive)
+        shared
+            .archives
+            .get(&served.path)
+            .cloned()
+            .map(Body::Archive)
     };
     // Hold the log through the TLS flush, so a test that observes the client's outcome
     // also observes this request and the exact number of payload bytes it received.
