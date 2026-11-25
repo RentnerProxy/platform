@@ -1066,9 +1066,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.12.0"
+version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c3e324da4c95177d6291d4c8730197c0d1822f8a9766814a4a44fa5ab797c9c"
+checksum = "229c6ff5584df4c6becbfe00567128bac768c8cd32ebc8a8366bd81ed072e8f3"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1395,9 +1395,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.63.0"
+version = "0.63.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4d2afab27172a0073112ce84a64ec7fd06f3b8bdad37d46e86c53c933ed232b"
+checksum = "f048e101172edb2c5f0351d7e3bc3796ac89b7f150e64b0cbd20dd82215b2160"
 dependencies = [
  "ahash",
  "bytecount",
