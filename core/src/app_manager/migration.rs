@@ -151,7 +151,9 @@ pub(super) fn steps(package: &Path, migration: &Migration) -> io::Result<Vec<Pat
 /// Split SQL into statements the way psql does and accept only plain statements: no psql
 /// meta-command and nothing that ends or opens a transaction, which would let earlier steps
 /// commit without the rest (`--single-transaction` cannot prevent that). Quoted text, comments
-/// and `BEGIN ATOMIC` routine bodies are skipped as psql lexes them.
+/// and `BEGIN ATOMIC` routine bodies are skipped as psql lexes them. A step can switch
+/// `standard_conforming_strings`, which changes how psql reads a backslash in `'...'`, so plain
+/// string literals must not contain one; `E'...'` strings and dollar quoting lex the same either way.
 fn plain_sql(sql: &[u8]) -> bool {
     let mut scanner = Statements::default();
     let mut i = 0;
@@ -168,8 +170,8 @@ fn plain_sql(sql: &[u8]) -> bool {
                 None => return false,
             },
             (b'\'', _) => match quoted(sql, i, b'\'', false) {
-                Some(end) => end,
-                None => return false,
+                Some(end) if !sql[i..end].contains(&b'\\') => end,
+                _ => return false,
             },
             (b'"', _) => match quoted(sql, i, b'"', false) {
                 Some(end) => end,
