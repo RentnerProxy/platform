@@ -832,12 +832,6 @@ async fn tls_serve_inner(
                 return;
             }
         }
-        if !connection.is_handshaking() && !observed {
-            seen.lock()
-                .await
-                .push(connection.server_name().unwrap_or("").to_owned());
-            observed = true;
-        }
         let mut buffer = [0; 16384];
         let Ok(n) = stream.read(&mut buffer).await else {
             return;
@@ -849,6 +843,14 @@ async fn tls_serve_inner(
             || connection.process_new_packets().is_err()
         {
             return;
+        }
+        // The client's Finished message and its request can arrive in one read, so record
+        // the name as soon as the handshake completes and before the request is answered.
+        if !connection.is_handshaking() && !observed {
+            seen.lock()
+                .await
+                .push(connection.server_name().unwrap_or("").to_owned());
+            observed = true;
         }
         let mut bytes = [0; 4096];
         while let Ok(n) = connection.reader().read(&mut bytes) {
