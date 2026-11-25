@@ -60,7 +60,64 @@
         "recoveryTitle": "Recovery if the update fails",
         "recovery": "Recover the pre-upgrade backup onto a fresh volume using the exact source image digest and that source release's restore tools. Never start an older image on a volume already migrated by a newer version. Restore replaces target data; select the project and backup deliberately.",
         "restoreValidation": "Restore tools validate the backup and source identity. Supported v4 migration history must be a nonempty exact prefix of the target history, including positions, SHA-256 hashes and timestamps. Older formats, divergent histories and downgrades are rejected. Keep deployment secrets privately alongside the backup; they are absent from its manifest. Review origin and trusted-proxy CIDRs before any intentional deployment change.",
-        "resume": "If restore is interrupted after replacement begins, its persistent journal blocks startup. Stop any manually started appliance and rerun the same backup with --resume --confirm-replace. The same backup is validated again and replacement repeats; another backup is rejected while the journal is pending."
+        "resume": "If restore is interrupted after replacement begins, its persistent journal blocks startup. Stop any manually started appliance and rerun the same backup with --resume --confirm-replace. The same backup is validated again and replacement repeats; another backup is rejected while the journal is pending.",
+        "preview": {
+            "title": "Apps and built-in features",
+            "loading": "Checking installed apps and built-in features against the target release…",
+            "none": "none",
+            "requirements": {
+                "pending": "The target release has not published its app requirements yet, so app and built-in feature compatibility cannot be previewed.",
+                "invalid": "The target release's app requirements are invalid. Do not use this target until the release is corrected.",
+                "unavailable": "The target release's app requirements could not be loaded. Recheck before updating."
+            },
+            "status": {
+                "forbidden": "Only owners can review installed apps and built-in features.",
+                "unavailable": "Installed apps and built-in features could not be checked. Recheck before updating.",
+                "ready": "Every installed app runs on the target release, and no built-in feature in use is retired.",
+                "incomplete": "No incompatibility was found, but not every installed app could be checked against the target release.",
+                "blocked": "The target release cannot run this combination. Resolve the issues below first; the image reference stays hidden until then."
+            },
+            "issuesTitle": "Incompatible combinations",
+            "issues": {
+                "app-incompatible": "{{app}} {{version}} does not run on the target release. Update it to a compatible version or uninstall it before updating.",
+                "feature-retired-without-app": "The target release no longer includes the built-in {{feature}} feature. Install one of these apps and complete its handoff first: {{apps}}.",
+                "feature-handoff-pending": "The target release no longer includes the built-in {{feature}} feature, and its settings have not been handed off to the installed app. Complete the handoff first; if this version cannot hand it off, update through an intermediate release that can."
+            },
+            "featuresTitle": "Built-in features",
+            "features": {
+                "monitoring": "Monitoring",
+                "docker-discovery": "Docker discovery",
+                "load-balancer": "Load balancer",
+                "dns": "DNS",
+                "oidc": "OIDC sign-in",
+                "crowdsec": "CrowdSec"
+            },
+            "target": {
+                "built-in": "Remains built into the target release",
+                "retired": "Provided only by an app in the target release"
+            },
+            "owner": {
+                "platform": "Run by the platform",
+                "handoff": "Handoff in progress",
+                "app": "Handed off to an app"
+            },
+            "configured": {
+                "yes": "configured",
+                "no": "not configured",
+                "unknown": "configuration not inspectable yet"
+            },
+            "references": "References",
+            "requiredApps": "Apps for this feature",
+            "providedBy": "Provided by installed apps",
+            "appsTitle": "Installed apps",
+            "appsUnavailable": "The app runtime is unavailable, so installed apps could not be checked.",
+            "noApps": "No apps are installed.",
+            "apps": {
+                "compatible": "Runs on the target release.",
+                "incompatible": "Does not run on the target release.",
+                "unknown": "Could not be checked: the app catalog no longer lists this exact release."
+            }
+        }
     },
     "toast": {
         "notification": "Notification",

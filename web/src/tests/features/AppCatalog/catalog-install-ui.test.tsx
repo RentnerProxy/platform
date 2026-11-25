@@ -28,6 +28,7 @@ const current = {
     installationId: 'greeting-test',
     generation: 1,
     state: 'running',
+    providers: null,
     update: null,
     previous: null,
 } satisfies CatalogInstallation
@@ -41,6 +42,7 @@ const ready: CatalogSnapshot = {
             publisher: 'RentnerProxy',
             summary: 'Save a greeting.',
             hasUi: true,
+            providers: [],
             availability: 'available',
         },
     ],

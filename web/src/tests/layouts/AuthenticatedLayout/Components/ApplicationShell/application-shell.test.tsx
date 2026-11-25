@@ -194,6 +194,7 @@ describe('application topbar', () => {
                             minimumVersion: null,
                             intermediateVersion: null,
                         },
+                        appRequirements: { status: 'pending', environment: null, features: [] },
                     },
                 }}
                 onOpen={() => {

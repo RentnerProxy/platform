@@ -4,11 +4,13 @@ import {
     catalogInstallSchema,
     catalogLifecycleSchema,
     catalogSnapshotSchema,
+    catalogTargetCheckSchema,
     sameCatalogLifecycle,
     sameCatalogRelease,
     type CatalogLifecycleInput,
     type CatalogSelector,
 } from '@/lib/AppCatalog/contract.ts'
+import type { AppRuntimeEnvironment } from '@/lib/ApplicationVersion/Types/app-requirements.types.ts'
 import { nativeAppRuntimeJson, uiProblems } from '../ui/transport.server.ts'
 
 export function nativeAppCatalog(signal: AbortSignal) {
@@ -18,6 +20,21 @@ export function nativeAppCatalog(signal: AbortSignal) {
         signal,
         undefined,
         12 * 1024 * 1024,
+    )
+}
+
+/** Ask the Rust app manager whether a target platform release would run each installed app. */
+export function nativeCatalogTargetCheck(environment: AppRuntimeEnvironment, signal: AbortSignal) {
+    return nativeAppRuntimeJson(
+        catalogTargetCheckSchema,
+        '/v1/catalog/target-check',
+        signal,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(environment),
+        },
+        256 * 1024,
     )
 }
 

@@ -40,6 +40,7 @@ export default function useApplicationUpdateQuery(): ApplicationUpdateResult | u
                     minimumVersion: null,
                     intermediateVersion: null,
                 },
+                appRequirements: { status: 'pending', environment: null, features: [] },
             },
         }
     }

@@ -81,6 +81,32 @@ fn only_the_latest_newer_eligible_release_is_offered_with_its_exact_digest() {
 }
 
 #[test]
+fn installations_report_the_providers_of_their_exact_listed_release() {
+    let listed = |release: &Release, providers: Value| {
+        let mut value = serde_json::to_value(entry(release, "available")).unwrap();
+        value["providers"] = providers;
+        serde_json::from_value::<CatalogEntry>(value).unwrap()
+    };
+    let mut row = Installation::new(ID, &committed(), true).unwrap();
+    assert_eq!(serde_json::to_value(&row).unwrap()["providers"], Value::Null);
+    row.set_providers(&[
+        listed(&release("1.9.2", 'd'), json!(["dns"])),
+        listed(&release("1.10.0", 'a'), json!(["oidc"])),
+    ]);
+    assert_eq!(row.providers, None);
+    row.set_providers(&[
+        listed(&release("1.9.2", 'd'), json!(["dns"])),
+        listed(&release("1.9.2", 'a'), json!(["monitoring", "crowdsec"])),
+    ]);
+    assert_eq!(
+        serde_json::to_value(&row).unwrap()["providers"],
+        json!(["monitoring", "crowdsec"])
+    );
+    row.set_providers(&[]);
+    assert_eq!(row.providers, None);
+}
+
+#[test]
 fn lifecycle_admission_checks_generation_release_state_and_rollback_identity() {
     let mut slot = committed();
     let running = Installation::new(ID, &slot, true).unwrap();

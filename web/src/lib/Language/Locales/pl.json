@@ -64,7 +64,64 @@
         "recoveryTitle": "Odzyskiwanie po nieudanej aktualizacji",
         "recovery": "Odtwórz kopię sprzed aktualizacji na nowym woluminie, używając dokładnego digestu obrazu źródłowego i narzędzi odtwarzania tego wydania źródłowego. Nigdy nie uruchamiaj starszego obrazu na woluminie zmigrowanym już przez nowszą wersję. Odtwarzanie zastępuje dane docelowe; starannie wybierz projekt i kopię zapasową.",
         "restoreValidation": "Narzędzia odtwarzania weryfikują kopię i tożsamość źródła. Obsługiwana historia migracji v4 musi być niepustym, dokładnym prefiksem historii docelowej, wraz z pozycjami, hashami SHA-256 i znacznikami czasu. Starsze formaty, rozbieżne historie i downgrade’y są odrzucane. Przechowuj sekrety wdrożenia prywatnie razem z kopią; nie ma ich w manifeście. Przed zamierzoną zmianą wdrożenia sprawdź sieci CIDR origin i zaufanych proxy.",
-        "resume": "Jeśli odtwarzanie zostanie przerwane po rozpoczęciu zastępowania, trwały dziennik blokuje uruchomienie. Zatrzymaj ręcznie uruchomioną appliance i ponownie wykonaj odtwarzanie tej samej kopii za pomocą --resume --confirm-replace. Ta sama kopia zostanie ponownie zweryfikowana i zastąpienie zostanie powtórzone; inna kopia zostanie odrzucona, gdy dziennik pozostaje oczekujący."
+        "resume": "Jeśli odtwarzanie zostanie przerwane po rozpoczęciu zastępowania, trwały dziennik blokuje uruchomienie. Zatrzymaj ręcznie uruchomioną appliance i ponownie wykonaj odtwarzanie tej samej kopii za pomocą --resume --confirm-replace. Ta sama kopia zostanie ponownie zweryfikowana i zastąpienie zostanie powtórzone; inna kopia zostanie odrzucona, gdy dziennik pozostaje oczekujący.",
+        "preview": {
+            "title": "Aplikacje i funkcje wbudowane",
+            "loading": "Sprawdzanie zainstalowanych aplikacji i funkcji wbudowanych pod kątem wydania docelowego…",
+            "none": "brak",
+            "requirements": {
+                "pending": "Wydanie docelowe nie opublikowało jeszcze wymagań dotyczących aplikacji, więc nie można sprawdzić zgodności aplikacji i funkcji wbudowanych.",
+                "invalid": "Wymagania dotyczące aplikacji w wydaniu docelowym są nieprawidłowe. Nie używaj tego celu, dopóki wydanie nie zostanie poprawione.",
+                "unavailable": "Nie udało się wczytać wymagań dotyczących aplikacji dla wydania docelowego. Sprawdź ponownie przed aktualizacją."
+            },
+            "status": {
+                "forbidden": "Tylko właściciele mogą przeglądać zainstalowane aplikacje i funkcje wbudowane.",
+                "unavailable": "Nie udało się sprawdzić zainstalowanych aplikacji i funkcji wbudowanych. Sprawdź ponownie przed aktualizacją.",
+                "ready": "Każda zainstalowana aplikacja działa z wydaniem docelowym i żadna używana funkcja wbudowana nie zostaje wycofana.",
+                "incomplete": "Nie znaleziono niezgodności, ale nie wszystkie zainstalowane aplikacje udało się sprawdzić pod kątem wydania docelowego.",
+                "blocked": "Wydanie docelowe nie może uruchomić tej kombinacji. Najpierw rozwiąż poniższe problemy; do tego czasu odwołanie do obrazu pozostaje ukryte."
+            },
+            "issuesTitle": "Niezgodne kombinacje",
+            "issues": {
+                "app-incompatible": "{{app}} {{version}} nie działa z wydaniem docelowym. Przed aktualizacją zaktualizuj ją do zgodnej wersji lub ją odinstaluj.",
+                "feature-retired-without-app": "Wydanie docelowe nie zawiera już wbudowanej funkcji {{feature}}. Najpierw zainstaluj jedną z tych aplikacji i dokończ przekazanie: {{apps}}.",
+                "feature-handoff-pending": "Wydanie docelowe nie zawiera już wbudowanej funkcji {{feature}}, a jej ustawienia nie zostały jeszcze przekazane zainstalowanej aplikacji. Najpierw dokończ przekazanie; jeśli ta wersja nie potrafi go wykonać, zaktualizuj przez wydanie pośrednie, które to potrafi."
+            },
+            "featuresTitle": "Funkcje wbudowane",
+            "features": {
+                "monitoring": "Monitorowanie",
+                "docker-discovery": "Wykrywanie Dockera",
+                "load-balancer": "Równoważenie obciążenia",
+                "dns": "DNS",
+                "oidc": "Logowanie OIDC",
+                "crowdsec": "CrowdSec"
+            },
+            "target": {
+                "built-in": "Pozostaje wbudowana w wydanie docelowe",
+                "retired": "W wydaniu docelowym dostępna tylko przez aplikację"
+            },
+            "owner": {
+                "platform": "Obsługiwana przez platformę",
+                "handoff": "Trwa przekazanie",
+                "app": "Przekazana aplikacji"
+            },
+            "configured": {
+                "yes": "skonfigurowana",
+                "no": "nieskonfigurowana",
+                "unknown": "konfiguracji nie można jeszcze sprawdzić"
+            },
+            "references": "Odwołania",
+            "requiredApps": "Aplikacje dla tej funkcji",
+            "providedBy": "Dostarczana przez zainstalowane aplikacje",
+            "appsTitle": "Zainstalowane aplikacje",
+            "appsUnavailable": "Środowisko uruchomieniowe aplikacji jest niedostępne, więc nie udało się sprawdzić zainstalowanych aplikacji.",
+            "noApps": "Brak zainstalowanych aplikacji.",
+            "apps": {
+                "compatible": "Działa z wydaniem docelowym.",
+                "incompatible": "Nie działa z wydaniem docelowym.",
+                "unknown": "Nie można sprawdzić: katalog aplikacji nie zawiera już dokładnie tego wydania."
+            }
+        }
     },
     "toast": {
         "notification": "Powiadomienie",

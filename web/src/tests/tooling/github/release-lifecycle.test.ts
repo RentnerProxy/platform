@@ -381,7 +381,7 @@ if [[ "$1" == api ]]; then
     if [[ "$2" == --method ]]; then
         printf 'delete %s\\n' "$(basename "$4")" >> "$FIXTURE_EVENTS"
         [[ "$FIXTURE_FAILURE" != delete-failure ]]
-        [[ "$4" == "repos/RentnerProxy/platform/releases/assets/11" || "$4" == "repos/RentnerProxy/platform/releases/assets/12" || "$4" == "repos/RentnerProxy/platform/releases/assets/13" || "$4" == "repos/RentnerProxy/platform/releases/assets/14" || "$4" == "repos/RentnerProxy/platform/releases/assets/15" || "$4" == "repos/RentnerProxy/platform/releases/assets/26" || "$4" == "repos/RentnerProxy/platform/releases/assets/30" ]]
+        [[ "$4" == "repos/RentnerProxy/platform/releases/assets/11" || "$4" == "repos/RentnerProxy/platform/releases/assets/12" || "$4" == "repos/RentnerProxy/platform/releases/assets/13" || "$4" == "repos/RentnerProxy/platform/releases/assets/14" || "$4" == "repos/RentnerProxy/platform/releases/assets/15" || "$4" == "repos/RentnerProxy/platform/releases/assets/16" || "$4" == "repos/RentnerProxy/platform/releases/assets/26" || "$4" == "repos/RentnerProxy/platform/releases/assets/30" ]]
         exit
     elif [[ "$2" == */assets ]]; then
         [[ "$2" == 'repos/RentnerProxy/platform/releases/123/assets' ]]
@@ -389,7 +389,7 @@ if [[ "$1" == api ]]; then
         : > "$FIXTURE_LISTED"
         printf '21\\tRentnerProxy-v0.9.0-CHANGELOG.md\\n22\\trentnerproxy-update.json.asc\\n23\\trentnerproxy_1.0.0_amd64.deb\\n24\\trentnerproxy-1.0.0.aarch64.rpm\\n25\\tSHA256SUMS.asc\\n26\\tbuilding-banner.png\\n27\\tcontributor-kevin.png.asc\\n28\\tcontributor-INVALID.svg\\n29\\tunrelated.svg\\n'
         if [[ "$FIXTURE_FAILURE" == stale || "$FIXTURE_FAILURE" == delete-* ]]; then
-            printf '13\\tRentnerProxy-v1.0.0-CHANGELOG.md\\n12\\trelease-banner.png\\n11\\trentnerproxy-update.json\\n14\\tcontributor-kevin.png\\n15\\tcontributor-legacy.svg\\n'
+            printf '13\\tRentnerProxy-v1.0.0-CHANGELOG.md\\n12\\trelease-banner.png\\n11\\trentnerproxy-update.json\\n14\\tcontributor-kevin.png\\n15\\tcontributor-legacy.svg\\n16\\trentnerproxy-app-requirements.json\\n'
         fi
         exit
     fi
@@ -458,7 +458,7 @@ printf 'building' > "$RUNNER_TEMP/rentnerproxy-release/building-body.md"
             }
             expect(await readFile(events, 'utf8')).toBe(
                 failure === 'stale'
-                    ? 'list 123\ndelete 11\ndelete 26\ndelete 12\ndelete 13\ndelete 14\ndelete 15\nedit\n'
+                    ? 'list 123\ndelete 11\ndelete 16\ndelete 26\ndelete 12\ndelete 13\ndelete 14\ndelete 15\nedit\n'
                     : failure === 'success'
                       ? 'list 123\ndelete 26\nedit\n'.repeat(2)
                       : failure === 'delete-identity'
@@ -481,6 +481,7 @@ test.each([
     'ci',
     'policy',
     'generate',
+    'requirements',
     'ci-recheck',
     'policy-recheck',
     'readiness',
@@ -563,6 +564,9 @@ case "$2" in
     */generate-release-readiness.ts)
         printf 'generate\\n' >> "$FIXTURE_EVENTS"
         [[ "$FIXTURE_FAILURE" != generate ]] ;;
+    */generate-release-app-requirements.ts)
+        printf 'requirements\\n' >> "$FIXTURE_EVENTS"
+        [[ "$FIXTURE_FAILURE" != requirements ]] ;;
     *) exit 9 ;;
 esac
 `,
@@ -612,12 +616,14 @@ esac
                 'identity',
                 'policy',
                 'generate',
+                'requirements',
                 'assets',
                 'identity',
                 'ci',
                 'identity',
                 'policy',
                 'generate',
+                'requirements',
                 'readiness',
                 'identity',
                 'body',

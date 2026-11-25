@@ -41,7 +41,7 @@ if [[ -n "$committed_digest" ]]; then
     echo 'Preserving the committed release while checking a digest-identical recovery.'
     exit 0
 fi
-for control_asset in 'rentnerproxy-update.json' 'building-banner.png' 'release-banner.png' "RentnerProxy-$RELEASE_TAG-CHANGELOG.md" 'contributor-avatar'; do
+for control_asset in 'rentnerproxy-update.json' 'rentnerproxy-app-requirements.json' 'building-banner.png' 'release-banner.png' "RentnerProxy-$RELEASE_TAG-CHANGELOG.md" 'contributor-avatar'; do
     while IFS=$'\t' read -r asset_id asset_name; do
         if [[ "$control_asset" == 'contributor-avatar' ]]; then
             [[ "$asset_name" =~ ^contributor-[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?\.(png|svg)$ ]] || continue

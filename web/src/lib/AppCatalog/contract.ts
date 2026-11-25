@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { appIdSchema, appRecordId } from '@/lib/AppUi/identifiers.ts'
+import { appIdSchema, appProviderProfilesSchema, appRecordId } from '@/lib/AppUi/identifiers.ts'
 
 export const APP_CATALOG_INSTALL_PATH = '/api/v1/app-catalog/install'
 export const APP_CATALOG_LIFECYCLE_PATH = '/api/v1/app-catalog/lifecycle'
@@ -25,6 +25,7 @@ const catalogEntrySchema = catalogSelectorSchema.extend({
     summary: displayText(400),
     publisher: displayText(80),
     hasUi: z.boolean(),
+    providers: appProviderProfilesSchema,
     availability: z.enum(['available', 'incompatible', 'grantsRequired']),
 })
 
@@ -45,8 +46,27 @@ const installationSchema = installedReleaseSchema.extend({
     installationId: appRecordId,
     appId: appIdSchema,
     state: z.enum(['running', 'disabled', 'recoveryRequired', 'removing', 'removed', 'purging']),
+    providers: appProviderProfilesSchema.nullable(),
     update: releaseSchema.nullable(),
     previous: releaseSchema.nullable(),
+})
+
+/** One installation the Rust app manager checked against a target platform release. */
+const targetInstallationSchema = releaseSchema.extend({
+    installationId: appRecordId,
+    appId: appIdSchema,
+    state: z.enum(['running', 'disabled', 'recoveryRequired']),
+    providers: appProviderProfilesSchema.nullable(),
+    target: z.enum(['compatible', 'incompatible', 'unknown']),
+})
+
+export const catalogTargetCheckSchema = z.strictObject({
+    installations: z
+        .array(targetInstallationSchema)
+        .max(256)
+        .refine(
+            (rows) => new Set(rows.map(({ installationId }) => installationId)).size === rows.length,
+        ),
 })
 
 const lifecycleInput = z.strictObject({

@@ -62,7 +62,64 @@
         "recoveryTitle": "Ripristino in caso di aggiornamento non riuscito",
         "recovery": "Ripristina il backup precedente all’aggiornamento su un volume nuovo usando il digest esatto dell’immagine sorgente e gli strumenti di ripristino di quella release sorgente. Non avviare mai un’immagine precedente su un volume già migrato da una versione più recente. Il ripristino sostituisce i dati di destinazione; seleziona con attenzione progetto e backup.",
         "restoreValidation": "Gli strumenti di ripristino convalidano il backup e l’identità sorgente. La cronologia di migrazione v4 supportata deve essere un prefisso esatto e non vuoto della cronologia di destinazione, incluse posizioni, hash SHA-256 e timestamp. I formati precedenti, le cronologie divergenti e i downgrade vengono rifiutati. Conserva privatamente i segreti di distribuzione insieme al backup; non sono inclusi nel manifesto. Esamina i CIDR di origine e dei proxy attendibili prima di qualsiasi modifica intenzionale alla distribuzione.",
-        "resume": "Se il ripristino si interrompe dopo l’inizio della sostituzione, il journal persistente blocca l’avvio. Arresta eventuali appliance avviate manualmente e riesegui lo stesso backup con --resume --confirm-replace. Lo stesso backup viene convalidato di nuovo e la sostituzione viene ripetuta; un altro backup viene rifiutato finché il journal è in sospeso."
+        "resume": "Se il ripristino si interrompe dopo l’inizio della sostituzione, il journal persistente blocca l’avvio. Arresta eventuali appliance avviate manualmente e riesegui lo stesso backup con --resume --confirm-replace. Lo stesso backup viene convalidato di nuovo e la sostituzione viene ripetuta; un altro backup viene rifiutato finché il journal è in sospeso.",
+        "preview": {
+            "title": "App e funzionalità integrate",
+            "loading": "Verifica delle app installate e delle funzionalità integrate rispetto alla release di destinazione…",
+            "none": "nessuna",
+            "requirements": {
+                "pending": "La release di destinazione non ha ancora pubblicato i requisiti delle app, quindi non è possibile un'anteprima della compatibilità di app e funzionalità integrate.",
+                "invalid": "I requisiti delle app della release di destinazione non sono validi. Non usare questa destinazione finché la release non viene corretta.",
+                "unavailable": "Impossibile caricare i requisiti delle app della release di destinazione. Ricontrolla prima di aggiornare."
+            },
+            "status": {
+                "forbidden": "Solo i proprietari possono verificare le app installate e le funzionalità integrate.",
+                "unavailable": "Impossibile verificare le app installate e le funzionalità integrate. Ricontrolla prima di aggiornare.",
+                "ready": "Ogni app installata funziona con la release di destinazione e nessuna funzionalità integrata in uso viene ritirata.",
+                "incomplete": "Non è stata trovata alcuna incompatibilità, ma non è stato possibile verificare tutte le app installate rispetto alla release di destinazione.",
+                "blocked": "La release di destinazione non può eseguire questa combinazione. Risolvi prima i problemi seguenti; fino ad allora il riferimento all'immagine resta nascosto."
+            },
+            "issuesTitle": "Combinazioni incompatibili",
+            "issues": {
+                "app-incompatible": "{{app}} {{version}} non funziona con la release di destinazione. Aggiornala a una versione compatibile o disinstallala prima dell'aggiornamento.",
+                "feature-retired-without-app": "La release di destinazione non include più la funzionalità integrata {{feature}}. Installa prima una di queste app e completa il suo trasferimento: {{apps}}.",
+                "feature-handoff-pending": "La release di destinazione non include più la funzionalità integrata {{feature}} e le sue impostazioni non sono ancora state trasferite all'app installata. Completa prima il trasferimento; se questa versione non può trasferirle, aggiorna tramite una release intermedia che possa farlo."
+            },
+            "featuresTitle": "Funzionalità integrate",
+            "features": {
+                "monitoring": "Monitoraggio",
+                "docker-discovery": "Rilevamento Docker",
+                "load-balancer": "Bilanciatore di carico",
+                "dns": "DNS",
+                "oidc": "Accesso OIDC",
+                "crowdsec": "CrowdSec"
+            },
+            "target": {
+                "built-in": "Resta integrata nella release di destinazione",
+                "retired": "Nella release di destinazione è fornita solo da un'app"
+            },
+            "owner": {
+                "platform": "Gestita dalla piattaforma",
+                "handoff": "Trasferimento in corso",
+                "app": "Trasferita a un'app"
+            },
+            "configured": {
+                "yes": "configurata",
+                "no": "non configurata",
+                "unknown": "configurazione non ancora ispezionabile"
+            },
+            "references": "Riferimenti",
+            "requiredApps": "App per questa funzionalità",
+            "providedBy": "Fornita da app installate",
+            "appsTitle": "App installate",
+            "appsUnavailable": "Il runtime delle app non è disponibile, quindi non è stato possibile verificare le app installate.",
+            "noApps": "Nessuna app installata.",
+            "apps": {
+                "compatible": "Funziona con la release di destinazione.",
+                "incompatible": "Non funziona con la release di destinazione.",
+                "unknown": "Impossibile verificare: il catalogo delle app non elenca più esattamente questa release."
+            }
+        }
     },
     "toast": {
         "notification": "Notifica",

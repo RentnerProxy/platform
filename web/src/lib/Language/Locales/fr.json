@@ -62,7 +62,64 @@
         "recoveryTitle": "Récupération en cas d’échec de la mise à jour",
         "recovery": "Restaurez la sauvegarde précédant la mise à niveau sur un volume neuf, avec le digest exact de l’image source et les outils de restauration de cette version source. Ne démarrez jamais une image plus ancienne sur un volume déjà migré par une version plus récente. La restauration remplace les données cibles ; sélectionnez soigneusement le projet et la sauvegarde.",
         "restoreValidation": "Les outils de restauration valident la sauvegarde et l’identité source. L’historique de migration v4 pris en charge doit être un préfixe exact non vide de l’historique cible, positions, empreintes SHA-256 et horodatages compris. Les anciens formats, les historiques divergents et les rétrogradations sont rejetés. Conservez en privé les secrets de déploiement avec la sauvegarde ; ils sont absents de son manifeste. Vérifiez les CIDR d’origine et des proxys de confiance avant tout changement volontaire du déploiement.",
-        "resume": "Si la restauration est interrompue après le début du remplacement, le journal persistant bloque le démarrage. Arrêtez toute appliance démarrée manuellement et relancez la même sauvegarde avec --resume --confirm-replace. La même sauvegarde est validée à nouveau et le remplacement recommence ; une autre sauvegarde est rejetée tant que le journal est en attente."
+        "resume": "Si la restauration est interrompue après le début du remplacement, le journal persistant bloque le démarrage. Arrêtez toute appliance démarrée manuellement et relancez la même sauvegarde avec --resume --confirm-replace. La même sauvegarde est validée à nouveau et le remplacement recommence ; une autre sauvegarde est rejetée tant que le journal est en attente.",
+        "preview": {
+            "title": "Apps et fonctionnalités intégrées",
+            "loading": "Vérification des apps installées et des fonctionnalités intégrées par rapport à la version cible…",
+            "none": "aucune",
+            "requirements": {
+                "pending": "La version cible n’a pas encore publié ses exigences relatives aux apps ; la compatibilité des apps et des fonctionnalités intégrées ne peut donc pas être prévisualisée.",
+                "invalid": "Les exigences relatives aux apps de la version cible sont invalides. N’utilisez pas cette cible avant la correction de la version.",
+                "unavailable": "Les exigences relatives aux apps de la version cible n’ont pas pu être chargées. Vérifiez à nouveau avant la mise à jour."
+            },
+            "status": {
+                "forbidden": "Seuls les propriétaires peuvent examiner les apps installées et les fonctionnalités intégrées.",
+                "unavailable": "Les apps installées et les fonctionnalités intégrées n’ont pas pu être vérifiées. Vérifiez à nouveau avant la mise à jour.",
+                "ready": "Chaque app installée fonctionne avec la version cible, et aucune fonctionnalité intégrée utilisée n’est retirée.",
+                "incomplete": "Aucune incompatibilité n’a été trouvée, mais toutes les apps installées n’ont pas pu être vérifiées par rapport à la version cible.",
+                "blocked": "La version cible ne peut pas exécuter cette combinaison. Résolvez d’abord les points ci-dessous ; la référence d’image reste masquée jusque-là."
+            },
+            "issuesTitle": "Combinaisons incompatibles",
+            "issues": {
+                "app-incompatible": "{{app}} {{version}} ne fonctionne pas avec la version cible. Mettez-la à jour vers une version compatible ou désinstallez-la avant la mise à jour.",
+                "feature-retired-without-app": "La version cible n’inclut plus la fonctionnalité intégrée {{feature}}. Installez d’abord l’une de ces apps et terminez son transfert : {{apps}}.",
+                "feature-handoff-pending": "La version cible n’inclut plus la fonctionnalité intégrée {{feature}}, et ses paramètres n’ont pas encore été transférés à l’app installée. Terminez d’abord le transfert ; si cette version ne peut pas le transférer, passez par une version intermédiaire qui le peut."
+            },
+            "featuresTitle": "Fonctionnalités intégrées",
+            "features": {
+                "monitoring": "Surveillance",
+                "docker-discovery": "Découverte Docker",
+                "load-balancer": "Répartiteur de charge",
+                "dns": "DNS",
+                "oidc": "Connexion OIDC",
+                "crowdsec": "CrowdSec"
+            },
+            "target": {
+                "built-in": "Reste intégrée à la version cible",
+                "retired": "Fournie uniquement par une app dans la version cible"
+            },
+            "owner": {
+                "platform": "Gérée par la plateforme",
+                "handoff": "Transfert en cours",
+                "app": "Transférée à une app"
+            },
+            "configured": {
+                "yes": "configurée",
+                "no": "non configurée",
+                "unknown": "configuration pas encore inspectable"
+            },
+            "references": "Références",
+            "requiredApps": "Apps pour cette fonctionnalité",
+            "providedBy": "Fournie par des apps installées",
+            "appsTitle": "Apps installées",
+            "appsUnavailable": "L’environnement d’exécution des apps n’est pas disponible ; les apps installées n’ont donc pas pu être vérifiées.",
+            "noApps": "Aucune app n’est installée.",
+            "apps": {
+                "compatible": "Fonctionne avec la version cible.",
+                "incompatible": "Ne fonctionne pas avec la version cible.",
+                "unknown": "Vérification impossible : le catalogue d’apps ne répertorie plus exactement cette version."
+            }
+        }
     },
     "toast": {
         "notification": "Notification",

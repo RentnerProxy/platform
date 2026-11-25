@@ -11,7 +11,17 @@ export interface PublishedUpdateRelease {
     readonly publishedAt: string
     readonly notes: string | null
     readonly readinessAssetId: number | null
+    readonly appRequirementsAssetId: number | null
 }
+
+/** The release fields a control asset must repeat exactly. */
+export type ReleaseIdentity = Pick<PublishedUpdateRelease, 'id' | 'tag' | 'channel' | 'publishedAt'>
+
+export type ControlAssetStatus = 'pending' | 'invalid' | 'unavailable'
+
+export type LoadedReleaseAsset =
+    | { readonly status: 'loaded'; readonly raw: unknown }
+    | { readonly status: ControlAssetStatus }
 
 export interface UpdateCheckerDependencies {
     readonly fetcher?: typeof fetch

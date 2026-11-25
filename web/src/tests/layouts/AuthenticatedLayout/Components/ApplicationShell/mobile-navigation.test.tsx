@@ -22,6 +22,7 @@ await mock.module('@/features/QuickSearch/index.tsx', () => ({
 }))
 await mock.module('@/features/ApplicationVersion/middleware.ts', () => ({
     getApplicationUpdateHandler: async () => updateResult,
+    getApplicationUpgradePreviewHandler: async () => ({ status: 'unavailable' }),
 }))
 
 const { act } = await import('react')
@@ -258,6 +259,7 @@ for (const checkFailed of [false, true])
                     minimumVersion: null,
                     intermediateVersion: null,
                 },
+                appRequirements: { status: 'pending', environment: null, features: [] },
             },
         }
         if (checkFailed)
