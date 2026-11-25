@@ -197,6 +197,7 @@ fn seals_chunked_envelopes_that_match_an_independent_implementation() {
     .unwrap();
     let sealed = fs::read(&large_encrypted).unwrap();
     assert_eq!(sealed.len(), 135_693);
+    // SHA-256 of the same envelope sealed by Node's AES-256-GCM and HKDF.
     assert_eq!(
         hex(digest::digest(&digest::SHA256, &sealed).as_ref()),
         "6d80e8fd4d752afb797794ab219b52cfd959ca0a2456f58940b72a7fd495d100",
@@ -212,6 +213,48 @@ fn seals_chunked_envelopes_that_match_an_independent_implementation() {
     )
     .unwrap();
     assert_restored(&large_restored, &large);
+
+    // An artifact that ends exactly on a chunk boundary, in a payload that is an exact
+    // multiple of 64 KiB: two full chunks, the second one final, and no empty third chunk.
+    let aligned: Vec<Vec<u8>> = [1, 3, 65_532, 65_535, 1]
+        .iter()
+        .enumerate()
+        .map(|(index, size)| {
+            (0..*size)
+                .map(|offset| ((offset * 11 + index * 17) % 253) as u8)
+                .collect()
+        })
+        .collect();
+    let aligned_source = temp.path().join("aligned");
+    write_entries(&aligned_source, &aligned);
+    let (_, aligned_seal, aligned_open) = frames(2, [61; 32], 83, &aligned);
+    let aligned_encrypted = temp.path().join("aligned.rpba");
+    transform(
+        "seal",
+        &aligned_source,
+        &aligned_encrypted,
+        &aligned_seal,
+        Vec::new(),
+    )
+    .unwrap();
+    let aligned_sealed = fs::read(&aligned_encrypted).unwrap();
+    assert_eq!(aligned_sealed.len(), HEADER_BYTES + 2 * (CHUNK_BYTES + TAG_BYTES));
+    // Node's OpenSSL and Bun's BoringSSL both produce this envelope.
+    assert_eq!(
+        hex(digest::digest(&digest::SHA256, &aligned_sealed).as_ref()),
+        "a232c1fc061e18caf6c8068f59f8c5f8066e8ade487963aba90c2b39f228e59e",
+    );
+    let aligned_restored = temp.path().join("aligned-restored");
+    fs::create_dir(&aligned_restored).unwrap();
+    transform(
+        "open",
+        &aligned_encrypted,
+        &aligned_restored,
+        &aligned_open,
+        Vec::new(),
+    )
+    .unwrap();
+    assert_restored(&aligned_restored, &aligned);
 
     // Altered, reordered or resealed chunks never authenticate.
     let sealed_chunk = CHUNK_BYTES + TAG_BYTES;

@@ -132,8 +132,15 @@ async function fixture(
 /**
  * Seal `bodies` in the given format independently of the module under test: v1 as one
  * AES-256-GCM stream, v2 as HKDF-keyed 64 KiB chunks with counter and final-chunk nonces.
+ * `unterminated` seals the last v2 chunk as if more chunks followed.
  */
-function sealEnvelope(format: 1 | 2, recoveryKey: string, template: Buffer, bodies: Buffer[]) {
+function sealEnvelope(
+    format: 1 | 2,
+    recoveryKey: string,
+    template: Buffer,
+    bodies: Buffer[],
+    unterminated = false,
+) {
     const key = Buffer.from(recoveryKey, 'base64')
     const header = Buffer.from(template.subarray(0, 96))
     header[8] = format
@@ -154,7 +161,7 @@ function sealEnvelope(format: 1 | 2, recoveryKey: string, template: Buffer, bodi
     for (let index = 0; index < count; index++) {
         const nonce = Buffer.alloc(12)
         nonce.writeBigUInt64BE(BigInt(index), 3)
-        nonce[11] = index + 1 === count ? 1 : 0
+        nonce[11] = index + 1 === count && !unterminated ? 1 : 0
         const cipher = createCipheriv('aes-256-gcm', subkey, nonce, { authTagLength: 16 })
         cipher.setAAD(header)
         parts.push(
@@ -262,7 +269,15 @@ test('tampering, truncation, appended bytes and a wrong key expose no plaintext 
             original.subarray(96, 96 + sealedChunk),
             original.subarray(96 + 2 * sealedChunk),
         ])
+        const bodies = await Promise.all(names.map((name) => readFile(join(source, name))))
+        const payload = bodies.reduce((sum, body) => sum + body.length, 0)
+        // A v2 envelope relabelled as v1 and cut to the v1 size, and a final chunk that
+        // claims more chunks follow.
+        const downgraded = Buffer.from(original.subarray(0, 96 + payload + 16))
+        downgraded[8] = 1
         const candidates = [
+            downgraded,
+            sealEnvelope(2, key, original, bodies, true),
             altered(12),
             altered(24),
             altered(96),
