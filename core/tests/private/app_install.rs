@@ -504,6 +504,186 @@ fn target_check_reads_installed_manifests_from_the_accepted_catalog() {
 }
 
 #[test]
+fn engine_providers_require_the_engine_capability_that_applies_them() {
+    let installer = manager(Path::new("unused"));
+    let all = ["caddy.load-balancing.v1", "caddy.crowdsec.v1"];
+    for (providers, required, offered, compatible) in [
+        // Other profiles never change the engine.
+        (json!(["monitoring", "dns"]), json!([]), &[][..], true),
+        (
+            json!(["load-balancer"]),
+            json!(["caddy.load-balancing.v1"]),
+            &all[..1],
+            true,
+        ),
+        (
+            json!(["monitoring", "crowdsec"]),
+            json!(["caddy.crowdsec.v1"]),
+            &all[1..],
+            true,
+        ),
+        (
+            json!(["load-balancer", "crowdsec"]),
+            json!(all),
+            &all[..],
+            true,
+        ),
+        // The manifest contract admits these; the engine could not apply their contributions on
+        // a platform without the capability, and no preflight would notice.
+        (json!(["load-balancer"]), json!([]), &all[..], false),
+        (
+            json!(["crowdsec"]),
+            json!(["caddy.load-balancing.v1"]),
+            &all[..],
+            false,
+        ),
+        (
+            json!(["load-balancer", "crowdsec"]),
+            json!(["caddy.crowdsec.v1"]),
+            &all[..],
+            false,
+        ),
+        // A declared requirement still needs an engine that offers it.
+        (
+            json!(["crowdsec"]),
+            json!(["caddy.crowdsec.v1"]),
+            &all[..1],
+            false,
+        ),
+    ] {
+        let mut manifest = manifest();
+        manifest["providers"] = providers;
+        manifest["requires"]["engineCapabilities"] = required;
+        let result = installer.check_environment(
+            &manifest,
+            &rentnerproxy_app_contracts::ManifestEnvironment {
+                target: TARGET,
+                runtime_profile: super::RUNTIME_PROFILE,
+                platform_api: super::PROTOCOL_VERSION,
+                app_protocol: super::PROTOCOL_VERSION,
+                ui_bridge: None,
+                engine_capabilities: offered,
+            },
+        );
+        if compatible {
+            result.unwrap();
+        } else {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "incompatibleManifest",
+                "{manifest}"
+            );
+        }
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[test]
+fn engine_capability_changes_are_preflighted_for_engine_providers() {
+    use super::{InstalledRelease, target::TargetSupport};
+
+    let store = tempfile::tempdir().unwrap();
+    let fixtures = [(); 2].map(|()| tempfile::tempdir().unwrap());
+    let mut installer = manager(store.path());
+    let mut files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
+    refresh(&installer, &files, now()).unwrap();
+    // 1.0.0 contributes load balancing without requiring the engine capability; 1.1.0 is the
+    // CrowdSec provider as the official profile declares it.
+    let mut unpaired = manifest();
+    unpaired["providers"] = json!(["load-balancer"]);
+    unpaired["requires"]["engineCapabilities"] = json!([]);
+    let (unpaired, unpaired_archive) = archive_fixture(fixtures[0].path(), unpaired, fixture_elf());
+    let mut paired = manifest();
+    paired["version"] = json!("1.1.0");
+    paired["providers"] = json!(["crowdsec"]);
+    paired["requires"]["engineCapabilities"] = json!(["caddy.crowdsec.v1"]);
+    let (paired, archive) = archive_fixture(fixtures[1].path(), paired, fixture_elf());
+    files.extend(update(
+        &files,
+        json!({"formatVersion":1,"revision":2,"releases":[unpaired, paired],"revocations":[]}),
+        &Files::new(),
+    ));
+    let catalog = refresh(&installer, &files, now()).unwrap();
+    let availability = |installer: &Installer, version: &str| {
+        installer
+            .catalog_entries(&catalog)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.version == version)
+            .map(|entry| serde_json::to_value(entry).unwrap()["availability"].clone())
+            .unwrap()
+    };
+    let (unpaired_hash, archive_hash) = (digest(&unpaired_archive), digest(&archive));
+    let all = json!(["caddy.load-balancing.v1", "caddy.crowdsec.v1"]);
+    let support = |installer: &Installer, version: &str, archive_sha256: &str, offered: &Value| {
+        installer
+            .check_target(
+                &target_environment(json!({ "engineCapabilities": offered })),
+                &[InstalledRelease {
+                    app_id: ID,
+                    version,
+                    archive_sha256,
+                }],
+            )
+            .unwrap()[0]
+            .support
+    };
+
+    // The engine offers load balancing, but this release never asked for it.
+    assert_eq!(availability(&installer, VERSION), "incompatible");
+    assert_eq!(
+        support(&installer, VERSION, &unpaired_hash, &all),
+        TargetSupport::Incompatible
+    );
+    // This engine does not apply CrowdSec contributions: listed, never downloaded.
+    assert_eq!(availability(&installer, "1.1.0"), "incompatible");
+    let error = installer
+        .prepare::<io::Empty>(&catalog, ID, "1.1.0", PackageSource::Catalog(None), |_| {
+            panic!("an engine provider reached the download boundary")
+        })
+        .unwrap_err();
+    assert_eq!(error.to_string(), "incompatibleManifest");
+
+    installer
+        .config
+        .engine_capabilities
+        .push("caddy.crowdsec.v1".into());
+    assert_eq!(availability(&installer, "1.1.0"), "available");
+    installer
+        .prepare(&catalog, ID, "1.1.0", PackageSource::Catalog(None), |_| {
+            Ok(archive.as_slice())
+        })
+        .unwrap();
+    installer.recover(ID, "1.1.0", &archive_hash).unwrap();
+
+    // A target release whose engine drops the capability blocks the update preview.
+    assert_eq!(
+        support(&installer, "1.1.0", &archive_hash, &all),
+        TargetSupport::Compatible
+    );
+    assert_eq!(
+        support(
+            &installer,
+            "1.1.0",
+            &archive_hash,
+            &json!(["caddy.load-balancing.v1"])
+        ),
+        TargetSupport::Incompatible
+    );
+    // An image that dropped it anyway refuses to launch the installed provider.
+    installer
+        .config
+        .engine_capabilities
+        .retain(|capability| capability != "caddy.crowdsec.v1");
+    let error = installer.recover(ID, "1.1.0", &archive_hash).unwrap_err();
+    assert_eq!(error.to_string(), "incompatibleManifest");
+    assert_eq!(availability(&installer, "1.1.0"), "incompatible");
+}
+
+#[test]
 fn persisted_roles_protect_against_rollback_expiry_and_partial_metadata() {
     let temp = tempfile::tempdir().unwrap();
     let installer = manager(temp.path());
