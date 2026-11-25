@@ -72,16 +72,20 @@ const legacyDatabaseGuard = [
     'CHECK_APP_INVENTORY',
 ].join('\n')
 
-const checkFreshPortableDatabase = [
-    'if [[ ! -s /var/lib/rentnerproxy/postgres-data/PG_VERSION ]]; then',
-    '    if [[ -e /var/lib/rentnerproxy/postgres-data || -L /var/lib/rentnerproxy/postgres-data ]]; then',
-    '        [[ -d /var/lib/rentnerproxy/postgres-data && ! -L /var/lib/rentnerproxy/postgres-data ]]',
-    '        entry=$(find /var/lib/rentnerproxy/postgres-data -mindepth 1 -maxdepth 1 -print -quit)',
-    '        [[ -z $entry ]]',
-    '    fi',
-    '    exit 0',
-    'fi',
-].join('\n')
+// A target without a cluster has no app database. The backup itself is still verified.
+function verifyPortableWithoutCluster(verify: string): string {
+    return [
+        'if [[ ! -s /var/lib/rentnerproxy/postgres-data/PG_VERSION ]]; then',
+        '    if [[ -e /var/lib/rentnerproxy/postgres-data || -L /var/lib/rentnerproxy/postgres-data ]]; then',
+        '        [[ -d /var/lib/rentnerproxy/postgres-data && ! -L /var/lib/rentnerproxy/postgres-data ]]',
+        '        entry=$(find /var/lib/rentnerproxy/postgres-data -mindepth 1 -maxdepth 1 -print -quit)',
+        '        [[ -z $entry ]]',
+        '    fi',
+        '    ' + verify,
+        '    exit 0',
+        'fi',
+    ].join('\n')
+}
 
 export function postgresCommand(
     operation: boolean | 'inventory' | 'portable-apps' | 'restored',
@@ -97,6 +101,8 @@ export function postgresCommand(
     // After every restore step, compare the applied app rows with the restored journal.
     const restored = operation === 'restored'
     const portablePath = backupDirectory + '/' + portableAppStateName
+    // With the cluster running, verification also checks that installed apps can be replaced.
+    const verifyPortable = appBackupCommand + ' --app-backup verify-portable ' + portablePath
     if (restoreApps && !portable) throw new Error('Portable application backup required')
     if (((inventory && appAware) || restored) && !/^[a-f0-9]{64}$/u.test(snapshotId ?? ''))
         throw new Error('Missing verified app backup identity')
@@ -109,22 +115,24 @@ export function postgresCommand(
         'trap \'status=$?; printf "RESTORE_PHASE=%s\\n" "$restore_phase" >&2; exit "$status"\' ERR',
         'restore_directory=""; rendered_sql_path=""; restore_sql_path=""',
         ...(inventory
-            ? [
-                  portable
-                      ? appBackupCommand + ' --app-backup verify-portable ' + portablePath
-                      : appAware
-                        ? appBackupCommand +
-                          ' --app-backup verify ' +
-                          backupDirectory +
-                          '/' +
-                          appStateName
-                        : legacyFilesGuard,
-                  appAware
-                      ? portable && !resume
-                          ? checkFreshPortableDatabase
-                          : 'test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION'
-                      : '[[ -s /var/lib/rentnerproxy/postgres-data/PG_VERSION ]] || exit 0',
-              ]
+            ? portable
+                ? [
+                      resume
+                          ? 'test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION'
+                          : verifyPortableWithoutCluster(verifyPortable),
+                  ]
+                : [
+                      appAware
+                          ? appBackupCommand +
+                            ' --app-backup verify ' +
+                            backupDirectory +
+                            '/' +
+                            appStateName
+                          : legacyFilesGuard,
+                      appAware
+                          ? 'test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION'
+                          : '[[ -s /var/lib/rentnerproxy/postgres-data/PG_VERSION ]] || exit 0',
+                  ]
             : []),
         validateOnly
             ? 'data_directory=/tmp/backup-postgres; socket_directory=/tmp/backup-postgres-socket'
@@ -160,18 +168,27 @@ export function postgresCommand(
             ? ['gosu postgres createdb --host="$socket_directory" --username=postgres rentnerproxy']
             : []),
         ...(inventory
-            ? [
-                  appAware
-                      ? 'bun --no-env-file /opt/rentnerproxy/web/backup-export.js ' +
-                        (portable
-                            ? '--check-portable-app-restore-inventory '
-                            : '--check-app-restore-inventory ') +
-                        backupDirectory +
-                        ' ' +
-                        snapshotId +
-                        (portable ? ' ' + resume : '')
-                      : legacyDatabaseGuard,
-              ]
+            ? portable
+                ? [
+                      'portable_destination=$(' + verifyPortable + ')',
+                      // The database is replaced, and installed apps are either retired or already
+                      // match this backup. Only a target without them needs the database checks.
+                      'case $portable_destination in replace | restored) ;; *) bun --no-env-file /opt/rentnerproxy/web/backup-export.js --check-portable-app-restore-inventory ' +
+                          backupDirectory +
+                          ' ' +
+                          snapshotId +
+                          ' ' +
+                          resume +
+                          ' ;; esac',
+                  ]
+                : [
+                      appAware
+                          ? 'bun --no-env-file /opt/rentnerproxy/web/backup-export.js --check-app-restore-inventory ' +
+                            backupDirectory +
+                            ' ' +
+                            snapshotId
+                          : legacyDatabaseGuard,
+                  ]
             : []),
         ...(restoreApps
             ? [

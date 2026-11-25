@@ -72,7 +72,7 @@ const phaseFile = join(controlRoot, 'restore-progress.json')
 
 export class PortableBackupRequiresOfflineRestore extends Error {
     constructor() {
-        super('Portable application backup requires offline restore to a fresh application target')
+        super('Portable application backup requires an offline restore')
     }
 }
 

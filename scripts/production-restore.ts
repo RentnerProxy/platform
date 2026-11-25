@@ -242,7 +242,7 @@ async function restore(): Promise<void> {
             if (inventory !== 'accepted')
                 throw new Error(
                     portable
-                        ? 'Portable application restore requires verified releases and a fresh application target or the same interrupted restore'
+                        ? 'Portable application restore requires verified releases and an application target that it can replace or the same interrupted restore'
                         : 'Could not check target application inventory',
                 )
         } catch (error) {

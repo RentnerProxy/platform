@@ -1,4 +1,6 @@
--- The caller has durably reserved this UID against an empty target.
+-- The caller has durably reserved this UID against an empty target, or the journal
+-- owns it and the portable restore marker records its retirement. Without `apply`,
+-- only check that the identities could be dropped.
 WITH roles AS (
     SELECT r.* FROM pg_authid r WHERE r.rolname IN (:'role', :'owner')
 ), target AS (
@@ -45,6 +47,7 @@ SELECT 1 / (
     )
 )::int;
 
+\if :apply
 SELECT format('ALTER ROLE %I NOLOGIN', rolname) FROM pg_roles WHERE rolname IN (:'role', :'owner')
 \gexec
 SELECT pg_terminate_backend(pid, 5000) FROM pg_stat_activity WHERE usename IN (:'role', :'owner');
@@ -54,3 +57,4 @@ BEGIN;
 DROP ROLE IF EXISTS :"role";
 DROP ROLE IF EXISTS :"owner";
 COMMIT;
+\endif

@@ -431,6 +431,16 @@ impl Journal {
             return Err(bad("Portable recovery requires an empty manager journal"));
         }
         validate_installations(&installations)?;
+        self.replace_installations(installations)
+    }
+
+    /// Forgets every installation after a portable restore retired its storage and databases.
+    pub(super) fn retire_installations(&mut self) -> io::Result<()> {
+        self.writable()?;
+        self.replace_installations(BTreeMap::new())
+    }
+
+    fn replace_installations(&mut self, installations: BTreeMap<String, Slot>) -> io::Result<()> {
         let next = State {
             format_version: 1,
             installations,

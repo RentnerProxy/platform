@@ -8,7 +8,7 @@ use marketplace_artifacts::read_file;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     fs::{self, File},
     io,
     os::unix::fs::MetadataExt,
@@ -95,22 +95,34 @@ impl Inventory {
         Ok(())
     }
 
+    /// Locks the writer of every captured UID and every UID that a replacing
+    /// restore retires. A new target also needs each captured UID unused,
+    /// apart from the persistent storage that the restore retires first.
     pub fn lock_writers(
         &self,
         backup: &BackupJournal,
-        fresh: bool,
+        retiring: &BTreeSet<u32>,
+        vacant: bool,
     ) -> io::Result<BTreeMap<u32, File>> {
-        self.0
+        let mut writers = BTreeMap::new();
+        for uid in self
+            .0
             .values()
-            .map(|slot| {
-                let lock = backup.0.writer(slot.uid)?;
-                verify_uid_stopped(slot.uid)?;
-                if fresh && !runtime::uid_available(slot.uid)? {
-                    return Err(bad("Restored application UID is already in use"));
-                }
-                Ok((slot.uid, lock))
-            })
-            .collect()
+            .map(|slot| slot.uid)
+            .chain(retiring.iter().copied())
+        {
+            if let Entry::Vacant(entry) = writers.entry(uid) {
+                let lock = backup.0.writer(uid)?;
+                verify_uid_stopped(uid)?;
+                entry.insert(lock);
+            }
+        }
+        for slot in self.0.values() {
+            if vacant && !runtime::uid_reusable(slot.uid, retiring.contains(&slot.uid))? {
+                return Err(bad("Restored application UID is already in use"));
+            }
+        }
+        Ok(writers)
     }
 
     pub fn claim_storage(&self, uid: u32) -> io::Result<PathBuf> {
@@ -147,9 +159,11 @@ pub(crate) async fn provision_database(uid: u32, writer: &File) -> io::Result<()
 
 pub(crate) struct BackupJournal(Journal);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Destination {
     Fresh,
+    /// Installed apps are retired before the backup is restored.
+    Replacing,
     Resuming,
     Published,
 }
@@ -159,6 +173,38 @@ pub(crate) enum Destination {
 struct RestoreMarker {
     digest: String,
     complete: bool,
+    // Older markers have no retirement in progress.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    retiring: bool,
+}
+
+fn destination(
+    marker: Option<&RestoreMarker>,
+    digest: &str,
+    installed: bool,
+    published: bool,
+) -> io::Result<Destination> {
+    match marker {
+        // An interrupted retirement continues for the backup that authorized it.
+        Some(marker) if marker.digest == digest && marker.retiring => Ok(Destination::Replacing),
+        Some(marker) if marker.digest == digest && !installed && !marker.complete => {
+            Ok(Destination::Resuming)
+        }
+        // The journal is published last. A crash before marking completion
+        // must not cause us to rewrite a database that is already consistent.
+        // A completed restore of this backup that no app has changed since is
+        // also left as it is, so a lost maintenance response can be retried.
+        Some(marker) if marker.digest == digest && published => Ok(Destination::Published),
+        Some(marker) if marker.digest == digest && !marker.complete => {
+            Err(bad("Portable restore journal has changed"))
+        }
+        Some(marker) if !marker.complete => Err(bad(
+            "Portable recovery requires the same interrupted backup",
+        )),
+        // A completed earlier restore leaves no obligation on this target.
+        _ if installed => Ok(Destination::Replacing),
+        _ => Ok(Destination::Fresh),
+    }
 }
 
 fn marker_path() -> PathBuf {
@@ -178,19 +224,22 @@ fn read_marker() -> io::Result<Option<RestoreMarker>> {
         Err(error) => return Err(error),
     }
     let marker: RestoreMarker = serde_json::from_slice(&read_file(&path, 1024)?)?;
-    if !crate::app_backup::valid_portable_digest(&marker.digest) {
+    if !crate::app_backup::valid_portable_digest(&marker.digest)
+        || (marker.retiring && marker.complete)
+    {
         return Err(bad("Invalid portable restore marker"));
     }
     Ok(Some(marker))
 }
 
-fn write_marker(digest: &str, complete: bool) -> io::Result<()> {
+fn write_marker(digest: &str, complete: bool, retiring: bool) -> io::Result<()> {
     let mut marker = tempfile::NamedTempFile::new_in(MANAGER)?;
     serde_json::to_writer(
         marker.as_file_mut(),
         &RestoreMarker {
             digest: digest.to_owned(),
             complete,
+            retiring,
         },
     )?;
     marker.as_file().sync_all()?;
@@ -220,33 +269,53 @@ impl BackupJournal {
     }
 
     pub fn destination(&self, digest: &str, inventory: &Inventory) -> io::Result<Destination> {
-        match read_marker()? {
-            None if self.0.slots().is_empty() => Ok(Destination::Fresh),
-            Some(marker) if marker.digest == digest => {
-                if self.0.slots().is_empty() && !marker.complete {
-                    return Ok(Destination::Resuming);
-                }
-                // The journal is published last. A crash before marking completion
-                // must not cause us to rewrite a database that is already consistent.
-                if serde_json::to_value(self.0.slots())? == inventory.metadata()? {
-                    return Ok(Destination::Published);
-                }
-                Err(bad("Portable restore journal has changed"))
-            }
-            _ => Err(bad(
-                "Portable recovery requires an empty target or the same interrupted backup",
-            )),
-        }
+        let slots = self.0.slots();
+        let published = serde_json::to_value(slots)? == inventory.metadata()?;
+        destination(
+            read_marker()?.as_ref(),
+            digest,
+            !slots.is_empty(),
+            published,
+        )
+    }
+
+    /// The UIDs of every installation that a replacing restore retires.
+    pub fn installed_uids(&self) -> BTreeSet<u32> {
+        self.0.slots().values().map(|slot| slot.uid).collect()
+    }
+
+    pub fn check_retirement(&self) -> io::Result<()> {
+        storage::retire(self.0.slots(), false)
+    }
+
+    /// Records the retirement before any installed app storage or database changes,
+    /// so an interrupted restore resumes it only for the same backup.
+    pub fn begin_retirement(&self, digest: &str) -> io::Result<()> {
+        write_marker(digest, false, true)
+    }
+
+    pub fn retire_storage(&self) -> io::Result<()> {
+        storage::retire(self.0.slots(), true)
+    }
+
+    /// Forgets the retired installations, then resumes the restore as for an empty target.
+    pub fn finish_retirement(&mut self, digest: &str) -> io::Result<()> {
+        self.0.retire_installations()?;
+        write_marker(digest, false, false)
     }
 
     pub fn begin(&self, digest: &str) -> io::Result<()> {
-        write_marker(digest, false)
+        write_marker(digest, false, false)
     }
 
     pub fn finish(&mut self, digest: &str, inventory: Inventory) -> io::Result<()> {
         if self.0.slots().is_empty() {
             self.0.restore_installations(inventory.0)?;
         }
-        write_marker(digest, true)
+        write_marker(digest, true, false)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/private/app_manager/portable_backup.rs"]
+mod tests;
