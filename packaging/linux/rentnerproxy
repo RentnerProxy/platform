@@ -35,10 +35,10 @@ Proxy: TCP 80/443 and UDP 443. Management: http://127.0.0.1:81 only.
 Persistent state stays in the Podman volume rentnerproxy-data. Package removal
 preserves that volume and /etc/rentnerproxy. purge-data is explicitly destructive.
 
-Before upgrading, create and retain an external v4 backup. APT/DNF upgrades
+Before upgrading, create and retain an external backup. APT/DNF upgrades
 restart an already-running appliance and preserve configuration and data.
 For rollback, stop the appliance, install the exact previous signed package,
-then restore its compatible v4 backup. An image-only downgrade is not a database
+then restore its compatible backup. An image-only downgrade is not a database
 rollback. Failed or interrupted restores remain stopped; resume the SAME backup.
 Restore needs free disk for a private snapshot under /var/tmp and validation database.
 Use Admin > Backups for online managed backups and restore. The commands above
@@ -185,7 +185,7 @@ maintenance() {
         rmdir -- "$temporary"
         temporary=''
         sync --file-system "$path"
-        printf 'Production v4 backup created: %s\n' "$destination"
+        printf 'Production backup created: %s\n' "$destination"
     else
         systemctl stop "$service"
         [[ -z $(podman ps --filter "volume=$volume" --format '{{.Names}}') ]] || fail 'A running container still uses the appliance volume.'
@@ -203,7 +203,7 @@ maintenance() {
         maintenance_name=''
         systemctl start "$service"
         wait_ready
-        printf '%s\n' 'Production v4 restore completed.'
+        printf '%s\n' 'Production restore completed.'
     fi
 }
 
@@ -225,7 +225,7 @@ case "$action" in
     logs) [[ $# == 1 ]] || fail 'Unexpected arguments.'; journalctl --unit "$service" --no-pager --lines 100 ;;
     backup) [[ $# == 2 ]] || fail 'Usage: rentnerproxy backup /absolute/private/directory'; maintenance backup "$2" ;;
     restore)
-        [[ $# -ge 3 && $# -le 5 ]] || fail 'Restore requires a v4 backup and --confirm-replace.'
+        [[ $# -ge 3 && $# -le 5 ]] || fail 'Restore requires a backup and --confirm-replace.'
         input="$2"; shift 2
         confirmed=false
         for option in "$@"; do

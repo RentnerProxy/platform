@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { encodeCapturedInstallations } from '../../../../scripts/backup/captured-inventory.ts'
+import { portableAppState } from '@/tests/Helpers/portableAppStateFixture.ts'
 
 const root = resolve(import.meta.dir, '../../../..')
 
@@ -27,6 +29,7 @@ async function backup(scenario: string) {
     const compose = join(directory, 'compose.yml')
     await writeFile(compose, 'fixture only; docker is replaced')
     await writeFile(join(directory, 'archive.tar'), directoryArchive())
+    if (scenario === 'apps') await writeFile(join(directory, 'app-state'), portableAppState().snapshot)
     await writeFile(
         join(directory, 'clock.ts'),
         `let calls = 0; const now = performance.now.bind(performance); Object.defineProperty(performance, 'now', { value: () => new Error().stack?.includes('appliance-readiness.ts') ? (calls++ < 3 ? 0 : 200_000) : now() });`,
@@ -79,6 +82,8 @@ if (command.includes('config --format=json')) {
     }
     if (scenario === 'early-failure') process.exit(1)
     process.stdout.write('A'.repeat(43) + '=\\n')
+} else if (command.includes('--app-backup capture-portable')) {
+    if (existsSync(directory + '/app-state')) process.stdout.write(readFileSync(directory + '/app-state'))
 } else if (command.includes('pg_dump')) {
     process.stdout.write(scenario === 'large-dump' ? Buffer.alloc(6 * 1024 ** 2, 97) : 'fixture-dump')
 } else if (command.includes('--entrypoint tar')) {
@@ -126,11 +131,17 @@ if (command.includes('config --format=json')) {
                     await readFile(join(output, name, 'metadata.json'), 'utf8'),
                 )
                 expect(metadata.format).toBe('rentnerproxy-production-backup')
-                expect(metadata.version).toBe(4)
+                expect(metadata.version).toBe(scenario === 'apps' ? 6 : 4)
                 return metadata
             }),
         )
-        return { exit, stdout, stderr, calls, backups, metadataFiles }
+        const published = await Promise.all(
+            backups.map(async (name) => ({
+                files: (await readdir(join(output, name))).toSorted(),
+                controller: await readFile(join(output, name, 'controller-state.tar')),
+            })),
+        )
+        return { exit, stdout, stderr, calls, backups, metadataFiles, published }
     } finally {
         await rm(directory, { recursive: true, force: true })
     }
@@ -149,6 +160,43 @@ describe.skipIf(process.platform === 'win32')(
                     .digest('hex'),
             )
         })
+        test('writes a portable backup that checks the dump against the captured apps', async () => {
+            const result = await backup('apps')
+            const { snapshot, applications } = portableAppState()
+            expect(result.exit, result.stderr).toBe(0)
+            expect(result.metadataFiles[0].applications).toEqual(applications)
+            expect(result.published[0]!.files).toEqual([
+                'app-encryption-key',
+                'controller-state.tar',
+                'crowdsec-state.tar',
+                'metadata.json',
+                'postgres.dump',
+            ])
+            expect(result.published[0]!.controller.includes(snapshot)).toBe(true)
+            // Logged shell scripts span several lines; their order still follows the calls.
+            const calls = result.calls.join('\n')
+            const capture = calls.indexOf('--app-backup capture-portable')
+            expect(capture).toBeGreaterThan(calls.indexOf('export-app-key'))
+            expect(calls.indexOf('pg_dump --host')).toBeGreaterThan(capture)
+            expect(calls).toContain(
+                '--check-live-app-inventory ' +
+                    encodeCapturedInstallations(applications.installations) +
+                    '\ngosu postgres pg_dump --host',
+            )
+            expect(calls).not.toContain('--app-backup empty')
+        })
+
+        test('keeps a v4 backup and its app guards when no app state is captured', async () => {
+            const result = await backup('stopped')
+            const calls = result.calls.join('\n')
+            expect(result.metadataFiles[0].applications).toBeUndefined()
+            expect(result.published[0]!.files).toHaveLength(5)
+            const capture = calls.indexOf('--app-backup capture-portable')
+            expect(capture).toBeGreaterThan(0)
+            expect(calls.indexOf('--app-backup empty')).toBeGreaterThan(capture)
+            expect(calls).not.toContain('--check-live-app-inventory')
+        })
+
         test('waits for real readiness after restarting an originally running appliance', async () => {
             const result = await backup('warming')
             expect(result.exit).toBe(0)
