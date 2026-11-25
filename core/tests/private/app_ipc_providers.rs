@@ -76,11 +76,6 @@ fn empty_reply(status: StatusCode) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
-fn active_lease() -> Response<Full<Bytes>> {
-    Response::new(Full::new(Bytes::from(
-        lease_expiry(Duration::from_secs(60)).to_string(),
-    )))
-}
 
 fn verify_authority_request(parts: hyper::http::request::Parts, body: Bytes) {
     assert_eq!(parts.method, Method::POST);
@@ -91,7 +86,6 @@ fn verify_authority_request(parts: hyper::http::request::Parts, body: Bytes) {
         "generation": 9, "uid": uid()});
     assert_eq!(body["identity"], identity);
     match parts.uri.path() {
-        LEASE => assert_eq!(body, json!({"identity": identity})),
         AUTHORIZE => {
             assert_eq!(body.as_object().unwrap().len(), 2);
             assert!(matches!(
@@ -183,6 +177,10 @@ async fn rejects_unregistered_and_invalid_invocations_before_contacting_peers() 
     wrong_generation
         .headers_mut()
         .insert("x-app-generation", HeaderValue::from_static("8"));
+    let mut wrong_installation = invocation(MONITOR, &monitoring(2));
+    wrong_installation
+        .headers_mut()
+        .insert("x-app-installation", HeaderValue::from_static("other"));
     // A provider-only app has no UI bridge, so the broker never relays UI operations to it.
     let ui_operation = request(
         Method::POST,
@@ -218,13 +216,15 @@ async fn rejects_unregistered_and_invalid_invocations_before_contacting_peers() 
         "unsupportedMediaType",
     )
     .await;
-    assert_provider_problem(
-        &core,
-        wrong_generation,
-        StatusCode::FORBIDDEN,
-        "installationContextRejected",
-    )
-    .await;
+    for request in [wrong_generation, wrong_installation] {
+        assert_provider_problem(
+            &core,
+            request,
+            StatusCode::FORBIDDEN,
+            "installationContextRejected",
+        )
+        .await;
+    }
     for peer in [authority, app] {
         assert!(
             timeout(Duration::from_millis(10), peer.accept())
@@ -255,20 +255,20 @@ async fn invokes_only_granted_providers_and_releases_only_matching_results() {
     let authority = serve_replies(
         &scratch.path("authority.sock"),
         vec![
-            // Successful monitoring and DNS invocations, each with a final lease check.
+            // Successful monitoring and DNS invocations, each authorized again before release.
             granted(monitor()),
-            active_lease(),
+            granted(monitor()),
             granted(dns()),
-            active_lease(),
+            granted(dns()),
             // Results for another resource, action or with too many items, and invalid ones.
             granted(dns()),
             granted(dns()),
             granted(monitor()),
             granted(monitor()),
             granted(monitor()),
-            // An app conflict is released only while the lease is live.
+            // An app conflict is released only while the provider is still authorized.
             granted(monitor()),
-            active_lease(),
+            granted(monitor()),
             granted(monitor()),
             // Authority decisions.
             empty_reply(StatusCode::NOT_FOUND),
@@ -276,9 +276,11 @@ async fn invokes_only_granted_providers_and_releases_only_matching_results() {
             granted(dns()),
             json_reply(StatusCode::OK, &json!({"id": "monitor-main"})),
             empty_reply(StatusCode::SERVICE_UNAVAILABLE),
-            // A lease that ends while the app answers withholds the result.
+            // A generation fenced or a grant revoked while the app answers withholds the result.
             granted(monitor()),
             empty_reply(StatusCode::UNAUTHORIZED),
+            granted(monitor()),
+            empty_reply(StatusCode::NOT_FOUND),
         ],
         verify_authority_request,
     );
@@ -294,6 +296,7 @@ async fn invokes_only_granted_providers_and_releases_only_matching_results() {
             json_reply(StatusCode::OK, &dns_check("challenge-1")),
             empty_reply(StatusCode::CONFLICT),
             empty_reply(StatusCode::INTERNAL_SERVER_ERROR),
+            json_reply(StatusCode::OK, &samples(1)),
             json_reply(StatusCode::OK, &samples(1)),
         ],
         verify_app_request,
@@ -376,11 +379,19 @@ async fn invokes_only_granted_providers_and_releases_only_matching_results() {
         )
         .await;
     }
+    // The generation was fenced, then the grant was revoked, while the app answered.
     assert_provider_problem(
         &core,
         invocation(MONITOR, &monitoring(2)),
         StatusCode::FORBIDDEN,
         "installationContextRejected",
+    )
+    .await;
+    assert_provider_problem(
+        &core,
+        invocation(MONITOR, &monitoring(2)),
+        StatusCode::NOT_FOUND,
+        "operationNotFound",
     )
     .await;
     timeout(TEST_WAIT, app).await.unwrap().unwrap();

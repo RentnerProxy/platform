@@ -435,8 +435,9 @@ async fn invoke_provider(
     let (response, _connection) = send_to_peer(&target.socket, generation.uid, outgoing)
         .await
         .map_err(|_| Problem::Unavailable)?;
+    // A grant revoked or a generation replaced while the app answered withholds its answer.
     if response.status() == StatusCode::CONFLICT {
-        require_lease(generation).await?;
+        generation.authorize_provider(provider).await?;
         return Response::builder()
             .status(StatusCode::CONFLICT)
             .body(Body::empty())
@@ -461,7 +462,7 @@ async fn invoke_provider(
     {
         return Err(Problem::Unavailable);
     }
-    require_lease(generation).await?;
+    generation.authorize_provider(provider).await?;
     Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(result))
@@ -778,6 +779,13 @@ pub(super) async fn app_ready(
             Ok(Err(Failure::Retry)) | Err(_) => sleep(READY_RETRY_DELAY).await,
         }
     };
+    // A generation that serves providers needs the contract validators. Compile them now
+    // and fail its start loudly instead of answering every invocation with 503.
+    if !providers.is_empty() && CONTRACTS.is_none() {
+        return Err(io::Error::other(
+            "App provider contract validators are unavailable",
+        ));
+    }
     // The first validated advertisement is final for this generation. A retry after a
     // lost confirmation repeats exactly that list instead of probing the app again.
     while !providers.is_empty() {
