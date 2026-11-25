@@ -259,7 +259,10 @@ async function openChunks(
             decipher.setAAD(header)
             decipher.setAuthTag(sealed.subarray(plain))
             // final() throws for an altered chunk before any of its plaintext is written.
-            const data = Buffer.concat([decipher.update(sealed.subarray(0, plain)), decipher.final()])
+            const data = Buffer.concat([
+                decipher.update(sealed.subarray(0, plain)),
+                decipher.final(),
+            ])
             let position = 0
             while (position < data.length) {
                 if (!output) {

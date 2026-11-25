@@ -36,7 +36,9 @@ fn frames(
     entries: &[Vec<u8>],
 ) -> ([u8; HEADER_BYTES], Vec<u8>, Vec<u8>) {
     let mut header = [0; HEADER_BYTES];
-    header[..12].copy_from_slice(&[b'R', b'P', b'B', b'A', b'K', b'E', b'N', b'C', format, 1, 0, 0]);
+    header[..12].copy_from_slice(&[
+        b'R', b'P', b'B', b'A', b'K', b'E', b'N', b'C', format, 1, 0, 0,
+    ]);
     header[12..24].fill(salt);
     header[24..56].copy_from_slice(digest::digest(&digest::SHA256, &key).as_ref());
     let mut hashes = Vec::new();

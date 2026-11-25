@@ -148,7 +148,10 @@ fn transform(
     }
 }
 
-fn verify_header(header: &[u8; HEADER_BYTES], key: &[u8; 32]) -> io::Result<(u8, [u64; NAMES.len()])> {
+fn verify_header(
+    header: &[u8; HEADER_BYTES],
+    key: &[u8; 32],
+) -> io::Result<(u8, [u64; NAMES.len()])> {
     let format = header[8];
     if &header[..8] != b"RPBAKENC"
         || !matches!(format, STREAM_FORMAT | CHUNKED_FORMAT)
@@ -306,7 +309,9 @@ fn open(
             let Some((output, remaining)) = current.as_mut() else {
                 return Err(invalid());
             };
-            let part = data.len().min(usize::try_from(*remaining).unwrap_or(usize::MAX));
+            let part = data
+                .len()
+                .min(usize::try_from(*remaining).unwrap_or(usize::MAX));
             output.write_all(&data[..part])?;
             *remaining -= part as u64;
             data = &data[part..];
