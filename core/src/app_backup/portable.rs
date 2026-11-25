@@ -12,7 +12,7 @@ use envelope::{Kind, Member};
 use marketplace_artifacts::{file_identity, invalid};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, DirEntry, File},
     io,
     os::unix::fs::MetadataExt,
@@ -24,7 +24,7 @@ const APPLIANCE: &str = "/var/lib/rentnerproxy";
 pub(super) fn capture() -> io::Result<()> {
     let journal = BackupJournal::open()?;
     let inventory = journal.capture()?;
-    let _writers = inventory.lock_writers(&journal, false)?;
+    let _writers = inventory.lock_writers(&journal, &BTreeSet::new(), false)?;
     let roots = checked_app_roots(Path::new(APPS), &inventory.metadata()?, None, true)?;
     if inventory.is_empty() {
         return Ok(());
@@ -99,16 +99,33 @@ pub(super) fn recover(input: &Path, apply: bool) -> io::Result<()> {
     let scratch = scratch()?;
     let backup = envelope::read(input, Some(scratch.path()))?;
     let destination = journal.destination(&backup.digest, &backup.inventory)?;
-    let fresh = destination == Destination::Fresh;
-    let writers = backup.inventory.lock_writers(&journal, fresh)?;
-    let metadata = if fresh {
-        Value::Object(Default::default())
+    let replacing = destination == Destination::Replacing;
+    let retiring = if replacing {
+        journal.installed_uids()
     } else {
-        backup.inventory.metadata()?
+        BTreeSet::new()
     };
+    let writers = backup.inventory.lock_writers(
+        &journal,
+        &retiring,
+        matches!(destination, Destination::Fresh | Destination::Replacing),
+    )?;
     let stage = format!(".app-restore-{}", backup.digest);
-    let resume_stage = (destination == Destination::Resuming).then_some(stage.as_str());
-    let roots = checked_app_roots(Path::new(APPS), &metadata, resume_stage, true)?;
+    let roots = if replacing {
+        // Retirement leaves no app storage or database behind. Check now that
+        // it can remove exactly the journal installations, before any change.
+        journal.check_retirement()?;
+        database::check_retirement(&retiring)?;
+        BTreeMap::new()
+    } else {
+        let metadata = if destination == Destination::Fresh {
+            Value::Object(Default::default())
+        } else {
+            backup.inventory.metadata()?
+        };
+        let resume_stage = (destination == Destination::Resuming).then_some(stage.as_str());
+        checked_app_roots(Path::new(APPS), &metadata, resume_stage, true)?
+    };
     if roots.keys().any(|uid| !backup.data.contains_key(uid)) {
         return Err(invalid(
             "Target app storage does not match the recovery inventory",
@@ -134,10 +151,30 @@ pub(super) fn recover(input: &Path, apply: bool) -> io::Result<()> {
         database::verify_archive(uid, path)?;
     }
     if !apply {
+        // The caller skips its empty-target database checks when the installed
+        // apps are replaced or already match this backup.
+        match destination {
+            Destination::Replacing => println!("replace"),
+            Destination::Published => {
+                // Applying only completes the restore, so its databases must already match.
+                database::verify_inventory(&backup.inventory.databases())?;
+                println!("restored");
+            }
+            Destination::Fresh | Destination::Resuming => {}
+        }
         return Ok(());
     }
 
     match destination {
+        Destination::Replacing => {
+            journal.begin_retirement(&backup.digest)?;
+            for &uid in &retiring {
+                database::reset(uid)?;
+            }
+            journal.retire_storage()?;
+            database::verify_inventory(&[])?;
+            journal.finish_retirement(&backup.digest)?;
+        }
         Destination::Fresh => {
             database::verify_inventory(&[])?;
             journal.begin(&backup.digest)?;

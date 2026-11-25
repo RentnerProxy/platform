@@ -39,8 +39,8 @@ Before upgrading, create and retain an external backup. APT/DNF upgrades
 restart an already-running appliance and preserve configuration and data.
 For rollback, stop the appliance, install the exact previous signed package,
 then restore its compatible backup. A backup that contains installed apps
-restores only into an empty data volume; restoring it over existing app state
-is refused and leaves that state unchanged. An image-only downgrade is not a database
+replaces the installed apps, their data and databases only after the backup and
+the existing app state are verified. An image-only downgrade is not a database
 rollback. Failed or interrupted restores remain stopped; resume the SAME backup.
 Restore needs free disk for a private snapshot under /var/tmp and validation database.
 Use Admin > Backups for online managed backups and restore. The commands above
