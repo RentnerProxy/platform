@@ -581,8 +581,7 @@ async fn privileged_published_greeting_distribution_gates() {
     let current_row = running_installation(&ready, &installation_id);
     assert_eq!(current_row["generation"], new_generation);
     assert_eq!(current_row["update"], Value::Null);
-    let (status, _) =
-        refused_escalation(&ready, &installation_id, store, &escalated_target).await;
+    let (status, _) = refused_escalation(&ready, &installation_id, store, &escalated_target).await;
     escalation_refusals.push(status);
 
     // No request carried credentials, and no asset of the escalated release was requested.
