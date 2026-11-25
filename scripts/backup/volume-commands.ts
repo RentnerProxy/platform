@@ -8,6 +8,8 @@ import {
 } from './app-state.ts'
 import { stateArchiveExclusions } from './controller-state-archive.ts'
 import { PORTABLE_APP_BACKUP_VERSION } from '../../web/src/config/compatibility.config.ts'
+import { encodeCapturedInstallations } from './captured-inventory.ts'
+import type { CapturedInstallations } from './Types/captured-inventory.types.ts'
 
 export function postgresRestoreCommand(validateOnly: boolean, backupDirectory = '/backup'): string {
     if (!/^\/[A-Za-z0-9_./-]+$/u.test(backupDirectory))
@@ -262,21 +264,46 @@ export function crowdSecRestoreCommand(): string {
     ].join('\n')
 }
 
-export function postgresDumpCommand(): string {
+// Starts the stopped appliance's cluster on its private admin socket for one offline step.
+const maintenancePostgres =
+    postgresShutdownScript() +
+    '; test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION; install -d -m 0700 -o postgres -g postgres /var/run/postgresql; chmod 00700 /var/run/postgresql; gosu postgres postgres -D /var/lib/rentnerproxy/postgres-data -c listen_addresses= -c unix_socket_directories=/var/run/postgresql >&2 & postgres_pid=$!; cleanup() { stop_postgres; }; trap cleanup EXIT; ready=false; for attempt in $(seq 1 60); do if gosu postgres pg_isready --host=/var/run/postgresql --username=' +
+    'rentnerproxy' +
+    ' --dbname=' +
+    'rentnerproxy' +
+    ' >/dev/null 2>&1; then ready=true; break; fi; kill -0 "$postgres_pid" 2>/dev/null || exit 1; sleep 1; done; "$ready"; socket_directory=/var/run/postgresql; '
+
+/**
+ * Dumps the main database. Without an inventory, the appliance must not hold app state. With the
+ * inventory of a captured portable app state, every app row must match that captured journal.
+ */
+export function postgresDumpCommand(installations?: CapturedInstallations): string {
     return (
         'set -Eeuo pipefail; ' +
-        legacyFilesGuard +
-        '; ' +
-        postgresShutdownScript() +
-        '; test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION; install -d -m 0700 -o postgres -g postgres /var/run/postgresql; chmod 00700 /var/run/postgresql; gosu postgres postgres -D /var/lib/rentnerproxy/postgres-data -c listen_addresses= -c unix_socket_directories=/var/run/postgresql >&2 & postgres_pid=$!; cleanup() { stop_postgres; }; trap cleanup EXIT; ready=false; for attempt in $(seq 1 60); do if gosu postgres pg_isready --host=/var/run/postgresql --username=' +
-        'rentnerproxy' +
-        ' --dbname=' +
-        'rentnerproxy' +
-        ' >/dev/null 2>&1; then ready=true; break; fi; kill -0 "$postgres_pid" 2>/dev/null || exit 1; sleep 1; done; "$ready"; socket_directory=/var/run/postgresql; ' +
-        legacyDatabaseGuard +
+        (installations ? '' : legacyFilesGuard + '; ') +
+        maintenancePostgres +
+        (installations
+            ? 'bun --no-env-file /opt/rentnerproxy/web/backup-export.js --check-live-app-inventory ' +
+              encodeCapturedInstallations(installations)
+            : legacyDatabaseGuard) +
         '\ngosu postgres pg_dump --host=/var/run/postgresql --format=custom --no-owner --no-acl --username=' +
         'rentnerproxy' +
         ' --dbname=' +
         'rentnerproxy'
+    )
+}
+
+/**
+ * Streams the portable app state of a stopped appliance. It writes nothing when the appliance has
+ * no app storage or its journal records no installation, so the backup stays v4.
+ */
+export function portableAppCaptureCommand(): string {
+    return (
+        'set -Eeuo pipefail; ' +
+        'for path in /var/lib/rentnerproxy/apps /var/lib/rentnerproxy/app-manager; do if [[ -e $path || -L $path ]]; then app_storage=true; fi; done; ' +
+        '[[ ${app_storage:-false} == true ]] || exit 0; ' +
+        maintenancePostgres +
+        appBackupCommand +
+        ' --app-backup capture-portable'
     )
 }
