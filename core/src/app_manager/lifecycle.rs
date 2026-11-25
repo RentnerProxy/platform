@@ -235,6 +235,12 @@ impl fmt::Display for IncompatibleData {
 
 impl std::error::Error for IncompatibleData {}
 
+pub(super) fn incompatible(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<IncompatibleData>())
+}
+
 fn conflict() -> io::Error {
     io::Error::new(
         io::ErrorKind::AlreadyExists,

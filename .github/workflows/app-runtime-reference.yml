@@ -4,6 +4,7 @@ on:
     pull_request:
         paths:
             - .github/workflows/app-runtime-reference.yml
+            - .github/scripts/ci/fixtures/app-data-migrations.sh
             - .github/scripts/ci/fixtures/app-image-comparison.sh
             - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
             - .github/scripts/ci/fixtures/app-greeting-native.sh
@@ -23,12 +24,14 @@ on:
             - 'core/tests/private/app_install/**'
             - core/tests/private/app_manager.rs
             - core/tests/private/app_manager/lifecycle.rs
+            - core/tests/private/app_manager/migration.rs
             - 'core/tests/private/app_manager/lifecycle/**'
             - core/tests/private/app_ui.rs
             - 'core/tests/fixtures/app-manager/**'
             - 'core/tests/fixtures/app-runtime-reference/**'
             - docker/production/Dockerfile
             - docker/production/entrypoint.sh
+            - docker/production/tests/app-provision.sh
             - docker/production/verify-platform.sh
             - docker/production/apps/catalog/root.json
             - docker/production/apps/pg_hba.conf
@@ -44,6 +47,7 @@ on:
         branches: [main]
         paths:
             - .github/workflows/app-runtime-reference.yml
+            - .github/scripts/ci/fixtures/app-data-migrations.sh
             - .github/scripts/ci/fixtures/app-image-comparison.sh
             - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
             - .github/scripts/ci/fixtures/app-greeting-native.sh
@@ -63,12 +67,14 @@ on:
             - 'core/tests/private/app_install/**'
             - core/tests/private/app_manager.rs
             - core/tests/private/app_manager/lifecycle.rs
+            - core/tests/private/app_manager/migration.rs
             - 'core/tests/private/app_manager/lifecycle/**'
             - core/tests/private/app_ui.rs
             - 'core/tests/fixtures/app-manager/**'
             - 'core/tests/fixtures/app-runtime-reference/**'
             - docker/production/Dockerfile
             - docker/production/entrypoint.sh
+            - docker/production/tests/app-provision.sh
             - docker/production/verify-platform.sh
             - docker/production/apps/catalog/root.json
             - docker/production/apps/pg_hba.conf
@@ -172,6 +178,10 @@ jobs:
             - name: Verify provider registration across signed lifecycle generations
               shell: bash
               run: bash .github/scripts/ci/fixtures/app-provider-lifecycle.sh
+
+            - name: Verify app database provisioning and data migrations
+              shell: bash
+              run: bash .github/scripts/ci/fixtures/app-data-migrations.sh
 
             - name: Set up Buildx for the native appliance
               uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

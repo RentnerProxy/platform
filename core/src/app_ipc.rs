@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{timeout, timeout_at};
 
 pub use process::run_app_watchdog;
+pub(crate) use process::{has_exited, restrict_child};
+pub(crate) use provision::existing_database_password;
 pub use provision::run_app_provision;
 
 pub(crate) const APP_ROOT: &str = "/run/rentnerproxy/apps";
