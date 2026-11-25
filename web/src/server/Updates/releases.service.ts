@@ -7,6 +7,10 @@ import type {
 import type { ReleaseReadiness } from '@/lib/ApplicationVersion/Types/release-readiness.types.ts'
 import { isReleaseMetadataCompatible } from '@/lib/ApplicationVersion/releaseMetadata.ts'
 import { READINESS_ASSET, RELEASE_REPOSITORY } from '@/config/compatibility.config.ts'
+import {
+    APP_REQUIREMENTS_ASSET,
+    APP_REQUIREMENTS_MAX_BYTES,
+} from '@/config/app-requirements.config.ts'
 import { getUpgradeCompatibility } from '@/lib/ApplicationVersion/upgradeCompatibility.ts'
 import {
     compareReleaseVersions,
@@ -15,9 +19,12 @@ import {
 } from '@/lib/ApplicationVersion/releaseVersion.ts'
 import type {
     CachedUpdate,
+    ControlAssetStatus,
+    LoadedReleaseAsset,
     PublishedUpdateRelease,
     UpdateCheckerDependencies,
 } from './Types/releases.types.ts'
+import { parseReleaseAppRequirements } from './app-requirements.ts'
 import { readBoundedText } from './http.ts'
 import { verifyReleaseImage } from './image.service.ts'
 import { parseReleaseReadiness, RELEASE_API } from './readiness.ts'
@@ -54,6 +61,12 @@ const headers = {
 const successCacheMs = 60 * 60 * 1000
 const retryCacheMs = 5 * 60 * 1000
 const releasePageLimit = 5
+const readinessMaxBytes = 32_768
+const noAppRequirements: ApplicationUpdate['appRequirements'] = {
+    status: 'unavailable',
+    environment: null,
+    features: [],
+}
 const readinessRedirectHosts = new Set([
     'api.github.com',
     'github.com',
@@ -120,8 +133,6 @@ async function newestPublishedRelease(
               )
             : undefined
         if (release && (latest === null || compareReleaseVersions(version!, latest.version) > 0)) {
-            const readinessAssets = release.assets.filter((asset) => asset.name === READINESS_ASSET)
-            const asset = readinessAssets.length === 1 ? readinessAssets[0] : undefined
             latest = {
                 id: release.id,
                 tag: release.tag_name,
@@ -129,10 +140,12 @@ async function newestPublishedRelease(
                 channel: parseReleaseVersion(release.tag_name)!.channel,
                 publishedAt: release.published_at!,
                 notes: release.body?.slice(0, 60_000) || null,
-                readinessAssetId:
-                    asset?.state === 'uploaded' && asset.size > 0 && asset.size <= 32_768
-                        ? asset.id
-                        : null,
+                readinessAssetId: uploadedAsset(release.assets, READINESS_ASSET, readinessMaxBytes),
+                appRequirementsAssetId: uploadedAsset(
+                    release.assets,
+                    APP_REQUIREMENTS_ASSET,
+                    APP_REQUIREMENTS_MAX_BYTES,
+                ),
             }
         }
         if (releases.length < 100) return latest
@@ -141,16 +154,26 @@ async function newestPublishedRelease(
     throw new Error('Release pagination limit reached')
 }
 
-async function loadReadiness(
-    release: PublishedUpdateRelease,
+/** A control asset counts only when exactly one upload carries its name and fits its bound. */
+function uploadedAsset(
+    assets: z.infer<typeof releasesSchema>[number]['assets'],
+    name: string,
+    maxBytes: number,
+): number | null {
+    const matches = assets.filter((asset) => asset.name === name)
+    const asset = matches.length === 1 ? matches[0] : undefined
+    return asset?.state === 'uploaded' && asset.size > 0 && asset.size <= maxBytes ? asset.id : null
+}
+
+/** Download one bounded JSON control asset through the validated GitHub redirect chain. */
+async function loadReleaseAsset(
+    assetId: number | null,
+    maxBytes: number,
     fetcher: typeof fetch,
     signal: AbortSignal,
-): Promise<{
-    readonly readiness: ReleaseReadiness | null
-    readonly status: 'pending' | 'invalid' | 'unavailable'
-}> {
-    if (release.readinessAssetId === null) return { readiness: null, status: 'pending' }
-    let url = `${RELEASE_API}/assets/${release.readinessAssetId}`
+): Promise<LoadedReleaseAsset> {
+    if (assetId === null) return { status: 'pending' }
+    let url = `${RELEASE_API}/assets/${assetId}`
     for (let redirects = 0; redirects <= 3; redirects++) {
         const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(5_000)])
         // oxlint-disable-next-line no-await-in-loop -- Follow at most three validated asset redirects.
@@ -162,7 +185,7 @@ async function loadReadiness(
         })
         if ([301, 302, 303, 307, 308].includes(response.status)) {
             const location = response.headers.get('location')
-            if (!location) return { readiness: null, status: 'invalid' }
+            if (!location) return { status: 'invalid' }
             const next = new URL(location, url)
             if (
                 next.protocol !== 'https:' ||
@@ -171,25 +194,64 @@ async function loadReadiness(
                 next.password ||
                 (next.port && next.port !== '443')
             )
-                return { readiness: null, status: 'invalid' }
+                return { status: 'invalid' }
             void response.body?.cancel().catch(() => {})
             url = next.href
             continue
         }
-        if (response.status === 404) return { readiness: null, status: 'pending' }
-        if (!response.ok) return { readiness: null, status: 'unavailable' }
+        if (response.status === 404) return { status: 'pending' }
+        if (!response.ok) return { status: 'unavailable' }
         // oxlint-disable-next-line no-await-in-loop -- The final asset body is small and bounded.
-        const text = await readBoundedText(response, 32_768, requestSignal)
-        let raw: unknown
+        const text = await readBoundedText(response, maxBytes, requestSignal)
         try {
-            raw = JSON.parse(text)
+            return { status: 'loaded', raw: JSON.parse(text) }
         } catch {
-            return { readiness: null, status: 'invalid' }
+            return { status: 'invalid' }
         }
-        const readiness = parseReleaseReadiness(raw, release)
-        return { readiness, status: readiness ? 'pending' : 'invalid' }
     }
-    return { readiness: null, status: 'invalid' }
+    return { status: 'invalid' }
+}
+
+async function loadReadiness(
+    release: PublishedUpdateRelease,
+    fetcher: typeof fetch,
+    signal: AbortSignal,
+): Promise<{
+    readonly readiness: ReleaseReadiness | null
+    readonly status: ControlAssetStatus
+}> {
+    const loaded = await loadReleaseAsset(
+        release.readinessAssetId,
+        readinessMaxBytes,
+        fetcher,
+        signal,
+    )
+    if (loaded.status !== 'loaded') return { readiness: null, status: loaded.status }
+    const readiness = parseReleaseReadiness(loaded.raw, release)
+    return { readiness, status: readiness ? 'pending' : 'invalid' }
+}
+
+async function loadAppRequirements(
+    release: PublishedUpdateRelease,
+    readiness: ReleaseReadiness,
+    fetcher: typeof fetch,
+    signal: AbortSignal,
+): Promise<ApplicationUpdate['appRequirements']> {
+    const loaded = await loadReleaseAsset(
+        release.appRequirementsAssetId,
+        APP_REQUIREMENTS_MAX_BYTES,
+        fetcher,
+        signal,
+    )
+    if (loaded.status !== 'loaded') return { ...noAppRequirements, status: loaded.status }
+    const requirements = parseReleaseAppRequirements(loaded.raw, release, readiness)
+    return requirements
+        ? {
+              status: 'verified',
+              environment: requirements.environment,
+              features: requirements.features,
+          }
+        : { ...noAppRequirements, status: 'invalid' }
 }
 
 function runtimePlatform(): string {
@@ -223,14 +285,23 @@ export function createUpdateChecker({
                 digest: null,
                 platform,
             }
+            let appRequirements: ApplicationUpdate['appRequirements'] = noAppRequirements
             try {
                 const loaded = await loadReadiness(release, fetcher, signal)
                 readiness = loaded.readiness
+                appRequirements = { ...noAppRequirements, status: loaded.status }
                 image = readiness
                     ? await verifyReleaseImage(readiness, platform, fetcher, signal)
                     : { ...image, status: loaded.status }
             } catch {
                 // Retain the known published release, but never retain a stale verification.
+            }
+            if (readiness) {
+                try {
+                    appRequirements = await loadAppRequirements(release, readiness, fetcher, signal)
+                } catch {
+                    appRequirements = noAppRequirements
+                }
             }
             return {
                 ...resultBase,
@@ -247,6 +318,7 @@ export function createUpdateChecker({
                         release.version,
                         readiness,
                     ),
+                    appRequirements,
                 },
             }
         } catch {
@@ -261,8 +333,11 @@ export function createUpdateChecker({
         if (cached?.version === currentVersion && now() < cached.expiresAt) return cached.result
         if (pending?.version === currentVersion) return pending.promise
         const promise = check(currentVersion).then((result) => {
+            // A verified image without verified app requirements would hide the preview for an hour.
             const complete =
-                result.status === 'current' || result.latest?.image.status === 'verified'
+                result.status === 'current' ||
+                (result.latest?.image.status === 'verified' &&
+                    result.latest.appRequirements.status === 'verified')
             cached = {
                 version: currentVersion,
                 result,

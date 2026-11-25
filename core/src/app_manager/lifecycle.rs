@@ -8,7 +8,7 @@ use super::{
     journal::{ReleaseSelection, Removal, Slot},
     valid_id,
 };
-use crate::app_install::CatalogEntry;
+use crate::app_install::{CatalogEntry, InstalledRelease, TargetCheck};
 
 #[cfg(test)]
 #[path = "../../tests/private/app_manager/catalog_lifecycle.rs"]
@@ -96,8 +96,65 @@ pub(super) struct Installation {
     #[serde(flatten)]
     release: ReleaseSelection,
     state: InstallationState,
+    /// Provider profiles of this exact release in the catalog listing; absent if it is unlisted.
+    providers: Option<Vec<String>>,
     update: Option<ReleaseSelection>,
     previous: Option<ReleaseSelection>,
+}
+
+/// One installation checked against a target platform release.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TargetInstallation<'a> {
+    installation_id: &'a str,
+    app_id: &'a str,
+    #[serde(flatten)]
+    release: &'a ReleaseSelection,
+    state: InstallationState,
+    #[serde(flatten)]
+    check: TargetCheck,
+}
+
+/// Check every installation the platform may start again; removed releases never start.
+/// `check` answers for each release in order, normally `Installer::check_target`.
+pub(super) fn check_target<'a>(
+    installations: &'a [Installation],
+    check: impl FnOnce(&[InstalledRelease<'_>]) -> io::Result<Vec<TargetCheck>>,
+) -> io::Result<Vec<TargetInstallation<'a>>> {
+    use InstallationState as State;
+
+    let installed: Vec<_> = installations
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.state,
+                State::Running | State::Disabled | State::RecoveryRequired
+            )
+        })
+        .collect();
+    let releases: Vec<_> = installed
+        .iter()
+        .map(|row| InstalledRelease {
+            app_id: &row.app_id,
+            version: &row.release.version,
+            archive_sha256: &row.release.archive_sha256,
+        })
+        .collect();
+    let checks = check(&releases)?;
+    if checks.len() != installed.len() {
+        return Err(io::Error::other("Target check result is incomplete"));
+    }
+    Ok(installed
+        .into_iter()
+        .zip(checks)
+        .map(|(row, check)| TargetInstallation {
+            installation_id: &row.installation_id,
+            app_id: &row.app_id,
+            release: &row.release,
+            state: row.state,
+            check,
+        })
+        .collect())
 }
 
 impl Installation {
@@ -132,6 +189,7 @@ impl Installation {
             generation: slot.generation,
             release,
             state,
+            providers: None,
             update: None,
             previous: slot.previous.as_ref().map(Into::into),
         })
@@ -139,6 +197,18 @@ impl Installation {
 
     pub(super) fn id(&self) -> &str {
         &self.installation_id
+    }
+
+    /// Copy the provider profiles of the exact installed release from the signed listing.
+    pub(super) fn set_providers(&mut self, entries: &[CatalogEntry]) {
+        self.providers = entries
+            .iter()
+            .find(|entry| {
+                entry.app_id == self.app_id
+                    && entry.version == self.release.version
+                    && entry.archive_sha256 == self.release.archive_sha256
+            })
+            .map(|entry| entry.providers.clone());
     }
 
     pub(super) fn set_update(&mut self, entries: &[CatalogEntry]) {

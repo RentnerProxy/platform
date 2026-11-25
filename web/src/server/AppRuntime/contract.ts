@@ -1,8 +1,14 @@
 import { z } from 'zod'
 import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
-import { appRecordId } from '@/lib/AppUi/identifiers.ts'
+import { appProviderProfileSchema, appRecordId } from '@/lib/AppUi/identifiers.ts'
 
-export { appIdSchema, appRecordId } from '@/lib/AppUi/identifiers.ts'
+export {
+    appIdSchema,
+    appProviderProfiles,
+    appProviderProfileSchema,
+    appProviderProfilesSchema,
+    appRecordId,
+} from '@/lib/AppUi/identifiers.ts'
 
 // Platform's request schemas follow the Marketplace App API v1 contract.
 export const appRpcLimits = {
@@ -47,20 +53,6 @@ export const appCapabilitySchema = z.discriminatedUnion('id', [
     }),
 ])
 
-export const appProviderProfiles = [
-    'monitoring',
-    'docker-discovery',
-    'load-balancer',
-    'dns',
-    'oidc',
-    'crowdsec',
-] as const
-export const appProviderProfileSchema = z.enum(appProviderProfiles)
-/** Signed-manifest `providers`: the profiles one generation may register. */
-export const appProviderProfilesSchema = z
-    .array(appProviderProfileSchema)
-    .max(appProviderProfiles.length)
-    .refine((profiles) => new Set(profiles).size === profiles.length)
 export const appProviderRegistrationSchema = z.strictObject({
     id: appRecordId,
     profile: appProviderProfileSchema,

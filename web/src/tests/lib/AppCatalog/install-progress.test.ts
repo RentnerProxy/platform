@@ -49,6 +49,7 @@ describe('catalog installation progress', () => {
             generation: 1,
             installationId: 'greeting-test',
             state: 'running' as const,
+            providers: null,
             previous: null,
             update: null,
         }

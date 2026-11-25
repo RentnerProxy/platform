@@ -19,6 +19,9 @@ pub(crate) struct CatalogEntry {
     summary: String,
     publisher: String,
     has_ui: bool,
+    /// Provider profiles from the signed manifest.
+    #[cfg_attr(test, serde(default))]
+    pub(crate) providers: Vec<String>,
     availability: Availability,
 }
 
@@ -97,6 +100,7 @@ impl Installer {
                 summary: field(&manifest["display"], "summary")?.to_owned(),
                 publisher: field(&release["publisher"], "name")?.to_owned(),
                 has_ui: manifest["ui"].is_object(),
+                providers: super::target::providers(manifest),
                 availability,
             });
         }

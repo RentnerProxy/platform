@@ -348,6 +348,161 @@ pub(crate) fn revoke_lifecycle_release(config: &Path, version: &str) {
     refresh(&installer, &files, signed_at).unwrap();
 }
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn target_environment(overrides: Value) -> super::TargetEnvironment {
+    let mut value = json!({
+        "runtimeProfile": "rentnerproxy-linux-v1",
+        "platformApi": "1.4.0",
+        "appProtocol": "1.0.0",
+        "uiBridge": "1.0.0",
+        "engineCapabilities": ["caddy.load-balancing.v1"],
+    });
+    for (field, setting) in overrides.as_object().unwrap() {
+        value[field] = setting.clone();
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[test]
+fn target_environment_admits_bounded_protocol_versions_and_names() {
+    for accepted in [
+        json!({}),
+        json!({"uiBridge": null}),
+        json!({"engineCapabilities": ["caddy.crowdsec.v1", "caddy.future-engine.v2"]}),
+        json!({"runtimeProfile": "rentnerproxy-linux-v2", "platformApi": "2.10.0"}),
+    ] {
+        assert!(target_environment(accepted.clone()).valid(), "{accepted}");
+    }
+    for rejected in [
+        json!({"runtimeProfile": ""}),
+        json!({"runtimeProfile": "RentnerProxy-linux-v1"}),
+        json!({"runtimeProfile": "rentnerproxy.linux"}),
+        json!({"runtimeProfile": "-rentnerproxy"}),
+        json!({"runtimeProfile": "r".repeat(65)}),
+        json!({"platformApi": "1.0"}),
+        json!({"platformApi": "01.0.0"}),
+        json!({"appProtocol": "1.0.0-beta.1"}),
+        json!({"uiBridge": "1.0.0+build"}),
+        json!({"platformApi": format!("1.0.{}", "9".repeat(30))}),
+        json!({"engineCapabilities": ["caddy"]}),
+        json!({"engineCapabilities": ["Caddy.crowdsec.v1"]}),
+        json!({"engineCapabilities": ["caddy..v1"]}),
+        json!({"engineCapabilities": ["caddy.crowdsec.v1", "caddy.crowdsec.v1"]}),
+        json!({"engineCapabilities": (0..17).map(|index| format!("engine.c{index}")).collect::<Vec<_>>()}),
+    ] {
+        assert!(!target_environment(rejected.clone()).valid(), "{rejected}");
+    }
+    let mut unknown = json!({
+        "runtimeProfile": "rentnerproxy-linux-v1", "platformApi": "1.0.0", "appProtocol": "1.0.0",
+        "uiBridge": null, "engineCapabilities": [], "providers": [],
+    });
+    assert!(serde_json::from_value::<super::TargetEnvironment>(unknown.clone()).is_err());
+    unknown.as_object_mut().unwrap().remove("providers");
+    unknown.as_object_mut().unwrap().remove("appProtocol");
+    assert!(serde_json::from_value::<super::TargetEnvironment>(unknown).is_err());
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[test]
+fn target_check_reads_installed_manifests_from_the_accepted_catalog() {
+    use super::{InstalledRelease, TargetCheck, target::TargetSupport};
+
+    fn installed(archive_sha256: &str) -> [InstalledRelease<'_>; 1] {
+        [InstalledRelease {
+            app_id: ID,
+            version: VERSION,
+            archive_sha256,
+        }]
+    }
+
+    let store = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir().unwrap();
+    let installer = manager(store.path());
+    let unknown = TargetCheck {
+        providers: None,
+        support: TargetSupport::Unknown,
+    };
+    let missing = "f".repeat(64);
+    assert_eq!(
+        installer
+            .check_target(&target_environment(json!({})), &installed(&missing))
+            .unwrap(),
+        [unknown]
+    );
+
+    let mut files = bootstrap_catalog(PIN, &keys(), now()).unwrap();
+    refresh(&installer, &files, now()).unwrap();
+    let mut provider = manifest();
+    provider["providers"] = json!(["monitoring", "dns"]);
+    let (release, archive) = archive_fixture(fixture.path(), provider, fixture_elf());
+    let next = update(
+        &files,
+        json!({"formatVersion":1,"revision":2,"releases":[release],"revocations":[]}),
+        &Files::new(),
+    );
+    files.extend(next);
+    let catalog = refresh(&installer, &files, now()).unwrap();
+    let entries = installer.catalog_entries(&catalog).unwrap();
+    assert_eq!(entries[0].providers, ["monitoring", "dns"]);
+    assert_eq!(
+        serde_json::to_value(&entries).unwrap()[0]["providers"],
+        json!(["monitoring", "dns"])
+    );
+
+    let archive_hash = digest(&archive);
+    let check = |overrides| {
+        let mut checks = installer
+            .check_target(&target_environment(overrides), &installed(&archive_hash))
+            .unwrap();
+        assert_eq!(checks.len(), 1);
+        checks.remove(0)
+    };
+    let providers = Some(vec!["monitoring".to_owned(), "dns".to_owned()]);
+    let compatible = check(json!({}));
+    assert_eq!(
+        compatible,
+        TargetCheck {
+            providers: providers.clone(),
+            support: TargetSupport::Compatible,
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&compatible).unwrap(),
+        json!({"providers":["monitoring","dns"],"target":"compatible"})
+    );
+    for incompatible in [
+        json!({"platformApi": "2.0.0"}),
+        json!({"appProtocol": "0.9.0"}),
+        json!({"runtimeProfile": "rentnerproxy-linux-v2"}),
+        json!({"engineCapabilities": ["caddy.crowdsec.v1"]}),
+    ] {
+        assert_eq!(
+            check(incompatible.clone()),
+            TargetCheck {
+                providers: providers.clone(),
+                support: TargetSupport::Incompatible,
+            },
+            "{incompatible}"
+        );
+    }
+    // The same version under another archive digest is not the installed release.
+    let checks = installer
+        .check_target(&target_environment(json!({})), &installed(&missing))
+        .unwrap();
+    assert_eq!(checks[0].support, TargetSupport::Unknown);
+    assert_eq!(checks[0].providers, None);
+}
+
 #[test]
 fn persisted_roles_protect_against_rollback_expiry_and_partial_metadata() {
     let temp = tempfile::tempdir().unwrap();

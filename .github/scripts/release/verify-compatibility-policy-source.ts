@@ -10,6 +10,9 @@ export const POLICY_SOURCE_PATHS = [
     'web/src/lib/ApplicationVersion/legacyUpgradeContract.ts',
     'web/src/lib/ApplicationVersion/upgradeCompatibility.ts',
     'web/src/lib/ApplicationVersion/releaseVersion.ts',
+    // The app requirements asset describes the target from these files, never from target code.
+    'web/src/config/app-requirements.config.ts',
+    'docker/production/apps/catalog/installer.json',
 ] as const
 const MAX_POLICY_BYTES = 65_536
 const execute = promisify(execFile)
