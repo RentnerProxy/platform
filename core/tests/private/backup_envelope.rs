@@ -32,7 +32,8 @@ fn unhex(text: &str) -> Vec<u8> {
 /// A known-answer vector produced by an independent implementation. The vectors are
 /// data, read at run time, and never stand for a real key or salt.
 fn vector(name: &str) -> Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/backup-envelope-vectors.json");
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/backup-envelope-vectors.json");
     let vectors: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     vectors[name].clone()
 }
@@ -126,8 +127,7 @@ fn opens_existing_v1_stream_envelopes_but_never_seals_one() {
     fs::create_dir(&restored).unwrap();
     let stream = vector("v1Stream");
     let key = vector_bytes(&stream, "key");
-    let (header, seal_frame, open_frame) =
-        frames(1, key, vector_bytes(&stream, "salt"), &entries);
+    let (header, seal_frame, open_frame) = frames(1, key, vector_bytes(&stream, "salt"), &entries);
     // The OpenSSL AES-256-GCM stream of a v1 envelope from earlier releases.
     let payload = unhex(stream["payload"].as_str().unwrap());
     let envelope = temp.path().join("v1.rpba");
@@ -271,7 +271,10 @@ fn seals_chunked_envelopes_that_match_an_independent_implementation() {
     )
     .unwrap();
     let aligned_sealed = fs::read(&aligned_encrypted).unwrap();
-    assert_eq!(aligned_sealed.len(), HEADER_BYTES + 2 * (CHUNK_BYTES + TAG_BYTES));
+    assert_eq!(
+        aligned_sealed.len(),
+        HEADER_BYTES + 2 * (CHUNK_BYTES + TAG_BYTES)
+    );
     // Node's OpenSSL and Bun's BoringSSL both produce this envelope.
     assert_eq!(
         hex(digest::digest(&digest::SHA256, &aligned_sealed).as_ref()),
