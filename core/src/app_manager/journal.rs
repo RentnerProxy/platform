@@ -103,7 +103,12 @@ impl Data {
                     && *next > f64::from(current)
                     && *next <= f64::from(self.target_version)
             })? as u32;
-            steps.push(step["path"].as_str().filter(|path| sql_step(path))?.to_owned());
+            steps.push(
+                step["path"]
+                    .as_str()
+                    .filter(|path| sql_step(path))?
+                    .to_owned(),
+            );
             current = next;
         }
         (!steps.is_empty()).then_some(Migration {

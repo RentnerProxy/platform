@@ -351,11 +351,8 @@ impl Manager {
         // Only a migration changes the recorded version, and none runs while this generation
         // lives, so reading it before the fence lets an incompatible release leave it running.
         let recorded = if slot.database_provisioned {
-            self.during(
-                Operation::Launch(id),
-                migration::recorded_version(slot.uid),
-            )
-            .await?
+            self.during(Operation::Launch(id), migration::recorded_version(slot.uid))
+                .await?
         } else {
             None
         };
@@ -612,13 +609,8 @@ impl Manager {
                     .candidate
                     .clone()
                     .ok_or_else(|| bad("No staged candidate"))?;
-                self.switch(
-                    &installation_id,
-                    target,
-                    Some(&grants),
-                    DataPolicy::Migrate,
-                )
-                .await?;
+                self.switch(&installation_id, target, Some(&grants), DataPolicy::Migrate)
+                    .await?;
             }
             Command::Rollback { installation_id } => {
                 let target = self

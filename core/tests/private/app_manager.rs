@@ -238,7 +238,10 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
         Some(DataChange::Migrate(journal::Migration {
             from,
             to,
-            steps: steps.iter().map(|step| format!("migrations/{step}")).collect(),
+            steps: steps
+                .iter()
+                .map(|step| format!("migrations/{step}"))
+                .collect(),
         }))
     };
 

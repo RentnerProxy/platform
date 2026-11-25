@@ -172,7 +172,10 @@ async fn privileged_app_data_migrations() {
     apply(UID, package.path(), &migration(2, 3, &["shell.sql"]))
         .await
         .unwrap();
-    assert_eq!(fs::read_to_string(&witness).unwrap().trim(), UID.to_string());
+    assert_eq!(
+        fs::read_to_string(&witness).unwrap().trim(),
+        UID.to_string()
+    );
     assert_eq!(recorded_version(UID).await.unwrap(), Some(3));
     assert_released().await;
 
