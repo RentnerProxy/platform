@@ -120,8 +120,11 @@ async fn refused_submission(path: &str, request: &Value) -> u16 {
     status
 }
 
-fn grants_record() -> PathBuf {
-    Path::new(APP_API_SOCKET).with_file_name("last-grants-generation")
+/// The authority fixture records the generation of the last grant publication and rejects
+/// any non-empty grant set for Greeting. Updates and restarts keep the approved grants.
+fn grants_record() -> String {
+    fs::read_to_string(Path::new(APP_API_SOCKET).with_file_name("last-grants-generation"))
+        .unwrap()
 }
 
 /// Fetch the UI entry document of `generation` and compare it with its staged package.
@@ -176,9 +179,7 @@ impl ActiveApp {
         assert_eq!(read_greeting(id, generation).await, PERSISTED_GREETING);
         let archive_sha256 = row["archiveSha256"].as_str().unwrap();
         let (_, ui) = served_ui(id, generation, store, archive_sha256).await;
-        // The authority fixture rejects any non-empty grant set for Greeting.
-        let grants_generation = fs::read_to_string(grants_record()).unwrap();
-        assert_eq!(grants_generation, generation.to_string());
+        let grants_generation = grants_record();
         Self {
             installation: json!({
                 "generation": row["generation"],
@@ -361,6 +362,8 @@ async fn privileged_published_greeting_distribution_gates() {
         "Hello from RentnerProxy!"
     );
     save_greeting(&installation_id, first_generation, PERSISTED_GREETING).await;
+    // The catalog install published Greeting's empty grant set for its first generation.
+    assert_eq!(grants_record(), first_generation.to_string());
 
     let ready = wait_catalog_state("ready").await;
     let active = running_installation(&ready, &installation_id);
@@ -466,10 +469,8 @@ async fn privileged_published_greeting_distribution_gates() {
         read_greeting(&installation_id, new_generation).await,
         PERSISTED_GREETING
     );
-    assert_eq!(
-        fs::read_to_string(grants_record()).unwrap(),
-        new_generation.to_string()
-    );
+    // The update keeps the grants approved at install and publishes none of its own.
+    assert_eq!(grants_record(), first_generation.to_string());
     // UI documents and API calls bound to the replaced generation are rejected.
     let stale_generation = format!("/v1/apps/{installation_id}/{old_generation}");
     let stale_calls = [
