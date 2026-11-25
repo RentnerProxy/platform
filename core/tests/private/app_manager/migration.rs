@@ -196,4 +196,30 @@ async fn privileged_app_data_migrations() {
     assert_eq!(recorded_version(UID).await.unwrap(), Some(3));
     assert_eq!(query(&missing("slow")).await, "t");
     assert_released().await;
+
+    // A cancelled activation drops the migration with its whole process group. The next fence
+    // withdraws the grant and ends the session it left behind.
+    write(
+        "cancelled.sql",
+        "\\! sleep 60 &\nCREATE TABLE cancelled (entry text);\nSELECT pg_sleep(30);\n",
+    );
+    let cancelled = migration(3, 4, &["cancelled.sql"]);
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        apply(UID, package.path(), &cancelled),
+    )
+    .await
+    .unwrap_err();
+    wait_stopped(UID).await.unwrap();
+    assert_eq!(
+        query(&format!(
+            "SELECT pg_catalog.pg_has_role('rp_app_{UID}', 'rp_migrate_{UID}', 'SET');"
+        ))
+        .await,
+        "t"
+    );
+    runtime::fence_database(UID).await.unwrap();
+    assert_released().await;
+    assert_eq!(recorded_version(UID).await.unwrap(), Some(3));
+    assert_eq!(query(&missing("cancelled")).await, "t");
 }

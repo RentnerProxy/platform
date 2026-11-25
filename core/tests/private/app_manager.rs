@@ -202,24 +202,24 @@ fn data_changes_preserve_every_possible_written_version_or_require_recovery() {
     let source = read_data(&manifest).unwrap();
     let next = release("2");
     let keep = Some(DataChange::Keep);
-    assert_eq!(Slot::default().plan(&next, None, None), keep);
-    assert_eq!(Slot::default().plan(&next, Some(&source), None), keep);
+    assert_eq!(Slot::default().plan(&next, None, None, true), keep);
+    assert_eq!(Slot::default().plan(&next, Some(&source), None, true), keep);
     let slot = Slot {
         active: Some(release("1")),
         written: Some(source.clone()),
         ..Default::default()
     };
     let mut target = source.clone();
-    assert_eq!(slot.plan(&next, Some(&target), None), keep);
+    assert_eq!(slot.plan(&next, Some(&target), None, true), keep);
     target.write_versions.retain(|v| *v != 3);
-    assert_eq!(slot.plan(&next, Some(&target), None), None);
+    assert_eq!(slot.plan(&next, Some(&target), None, true), None);
     target = source.clone();
     target.read_versions.retain(|v| *v != 3);
-    assert_eq!(slot.plan(&next, Some(&target), None), None);
+    assert_eq!(slot.plan(&next, Some(&target), None, true), None);
     target = source.clone();
     target.target_version = 3;
-    assert_eq!(slot.plan(&next, Some(&target), None), None);
-    assert_eq!(slot.plan(&next, None, None), None);
+    assert_eq!(slot.plan(&next, Some(&target), None, true), None);
+    assert_eq!(slot.plan(&next, None, None, true), None);
 }
 
 #[test]
@@ -247,11 +247,11 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
 
     // A fresh installation runs the whole chain from version zero.
     assert_eq!(
-        Slot::default().plan(&release("1"), Some(&v1), None),
+        Slot::default().plan(&release("1"), Some(&v1), None, true),
         migrate(0, 1, &["initialize.sql"])
     );
     assert_eq!(
-        Slot::default().plan(&release("2"), Some(&v2), None),
+        Slot::default().plan(&release("2"), Some(&v2), None, true),
         migrate(0, 2, &["initialize.sql", "v2/upgrade.sql"])
     );
 
@@ -264,30 +264,66 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
     };
     for recorded in [Some(1), None] {
         assert_eq!(
-            installed.plan(&release("2"), Some(&v2), recorded),
+            installed.plan(&release("2"), Some(&v2), recorded, true),
             migrate(1, 2, &["v2/upgrade.sql"])
         );
     }
 
     // Migrated data opens only in releases that read and write its exact version.
     assert_eq!(
-        installed.plan(&release("2"), Some(&v2), Some(2)),
+        installed.plan(&release("2"), Some(&v2), Some(2), true),
         Some(DataChange::Keep)
     );
-    assert_eq!(installed.plan(&release("1"), Some(&v1), Some(2)), None);
+    assert_eq!(installed.plan(&release("1"), Some(&v1), Some(2), true), None);
     let mut tolerant = v1.clone();
     tolerant.read_versions.push(2);
     tolerant.write_versions.push(2);
     assert_eq!(
-        installed.plan(&release("1"), Some(&tolerant), Some(2)),
+        installed.plan(&release("1"), Some(&tolerant), Some(2), true),
         Some(DataChange::Keep)
     );
-    assert_eq!(installed.plan(&release("3"), None, Some(2)), None);
+    assert_eq!(installed.plan(&release("3"), None, Some(2), true), None);
+
+    // Restarts, rollbacks and recovery never migrate. They open data the release can already
+    // read and write, also below its target when it declares that version.
+    assert_eq!(
+        installed.plan(&release("2"), Some(&v2), Some(1), false),
+        None
+    );
+    assert_eq!(
+        installed.plan(&release("2"), Some(&v2), None, false),
+        None
+    );
+    assert_eq!(Slot::default().plan(&release("1"), Some(&v1), None, false), None);
+    let mut forward = v2.clone();
+    forward.write_versions.push(1);
+    for may_migrate in [false, true] {
+        let expected = if may_migrate {
+            migrate(1, 2, &["v2/upgrade.sql"])
+        } else {
+            Some(DataChange::Keep)
+        };
+        assert_eq!(
+            installed.plan(&release("2"), Some(&forward), Some(1), may_migrate),
+            expected
+        );
+    }
+    forward.migrations.remove(1);
+    assert_eq!(
+        installed.plan(&release("2"), Some(&forward), Some(1), true),
+        Some(DataChange::Keep)
+    );
+
+    // Only the activation that started a migration may later be finished by recovery.
+    let mut migrating = installed.clone();
+    migrating.migrating = Some((&release("2")).into());
+    migrating.commit_release(release("2"));
+    assert_eq!(migrating.migrating, None);
 
     // Only SQL steps on a complete forward chain inside migrations/ can run.
     let mut gap = v2.clone();
     gap.migrations.remove(1);
-    assert_eq!(installed.plan(&release("2"), Some(&gap), Some(1)), None);
+    assert_eq!(installed.plan(&release("2"), Some(&gap), Some(1), true), None);
     for path in [
         "migrations/v2/upgrade.json",
         "migrations/../upgrade.sql",
@@ -302,7 +338,7 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
         let mut unsafe_step = v2.clone();
         unsafe_step.migrations[1]["path"] = path.into();
         assert_eq!(
-            installed.plan(&release("2"), Some(&unsafe_step), Some(1)),
+            installed.plan(&release("2"), Some(&unsafe_step), Some(1), true),
             None,
             "{path}"
         );
@@ -315,9 +351,9 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
     };
     let mut undeclared = v1.clone();
     undeclared.migrations.clear();
-    assert_eq!(dataless.plan(&release("1"), Some(&undeclared), None), None);
+    assert_eq!(dataless.plan(&release("1"), Some(&undeclared), None, true), None);
     assert_eq!(
-        dataless.plan(&release("1"), Some(&v1), None),
+        dataless.plan(&release("1"), Some(&v1), None, true),
         migrate(0, 1, &["initialize.sql"])
     );
 }

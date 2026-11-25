@@ -65,8 +65,15 @@ pub(super) async fn fence_database(uid: u32) -> io::Result<()> {
     let roles = format!("'rp_app_{uid}', 'rp_migrate_{uid}'");
     // psql commits NOLOGIN before the DO statement. Its statement_timeout bounds
     // the entire signal-and-confirm phase regardless of the number of sessions.
+    // An interrupted data migration may have left the owner role granted to the runtime role.
     let sql = format!(
         r"SELECT format('ALTER ROLE %I NOLOGIN', rolname) FROM pg_roles WHERE rolname IN ({roles})
+\gexec
+SELECT format('REVOKE %I FROM %I', o.rolname, r.rolname)
+FROM pg_auth_members m
+JOIN pg_roles o ON o.oid = m.roleid
+JOIN pg_roles r ON r.oid = m.member
+WHERE o.rolname = 'rp_migrate_{uid}' AND r.rolname = 'rp_app_{uid}'
 \gexec
 DO $fence$
 BEGIN

@@ -19,7 +19,7 @@ use crate::appliance_process::{SCAN_BUDGET, uid_in_use, verify_uid_stopped};
 use control::Command;
 pub use control::run_app_control;
 use gateway::{Gateway, identity, lease};
-use journal::{Data, DataChange, Grant, Journal, Release, Removal, Slot};
+use journal::{Data, DataChange, Grant, Journal, Release, ReleaseSelection, Removal, Slot};
 use runtime::Running;
 use serde_json::{Value, json};
 use service::Operation;
@@ -348,8 +348,8 @@ impl Manager {
             })
             .await?;
         let data = package.manifest.get("data").map(read_data).transpose()?;
-        // Only a migration changes the recorded version, and none runs while this generation
-        // lives, so reading it before the fence lets an incompatible release leave it running.
+        // Decide before the fence so that an incompatible release leaves the current one running.
+        // The marker lives in app-owned data: the app can only mislead its own data plan with it.
         let recorded = if slot.database_provisioned {
             self.during(Operation::Launch(id), migration::recorded_version(slot.uid))
                 .await?
@@ -357,8 +357,12 @@ impl Manager {
             None
         };
         let change = slot
-            .plan(&release, data.as_ref(), recorded)
-            .filter(|change| policy == DataPolicy::Migrate || *change == DataChange::Keep)
+            .plan(
+                &release,
+                data.as_ref(),
+                recorded,
+                policy == DataPolicy::Migrate,
+            )
             .ok_or_else(|| io::Error::other(lifecycle::IncompatibleData))?;
         let generation = slot
             .generation
@@ -442,6 +446,9 @@ impl Manager {
             slot.removed_data_required = Some(true);
         }
         if let DataChange::Migrate(steps) = &change {
+            // Recovery may finish only this activation once its migration might have committed.
+            slot.migrating = Some((&release).into());
+            self.journal.save(id, slot.clone())?;
             // A failed step leaves the data untouched, so the fallback can restart the old release.
             self.during(
                 Operation::Launch(id),
@@ -640,14 +647,17 @@ impl Manager {
                     .active
                     .clone()
                     .ok_or_else(|| bad("No committed release"))?;
-                let candidate = slot.candidate.clone();
+                // A migration that committed before its activation failed leaves data only the
+                // staged release can open. Recovery finishes exactly that activation, never one
+                // the operator did not start, and does not migrate again.
+                let candidate = slot.candidate.clone().filter(|candidate| {
+                    slot.migrating.as_ref() == Some(&ReleaseSelection::from(candidate))
+                });
                 let grants = slot.uncertain_grants().then_some([].as_slice());
                 let result = self
                     .switch(&installation_id, target, grants, DataPolicy::OpenOnly)
                     .await;
                 match (result, candidate) {
-                    // A migration that committed before its activation failed leaves data only
-                    // the staged release can open. Recovery finishes that update without migrating.
                     (Err(error), Some(candidate)) if lifecycle::incompatible(&error) => {
                         self.switch(&installation_id, candidate, grants, DataPolicy::OpenOnly)
                             .await?;

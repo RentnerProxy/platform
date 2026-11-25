@@ -34,9 +34,9 @@ fn cutover_keeps_a_readable_prior_release_and_rotates_by_package_identity() {
         write_versions: vec![1],
         migrations: vec![],
     };
-    assert_eq!(slot.plan(&next, Some(&data), None), None);
+    assert_eq!(slot.plan(&next, Some(&data), None, true), None);
     assert_eq!(
-        Slot::default().plan(&next, Some(&data), None),
+        Slot::default().plan(&next, Some(&data), None, true),
         Some(DataChange::Keep)
     );
     slot.commit_release(next.clone());

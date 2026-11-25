@@ -5,18 +5,19 @@
 //! assumes the schema owner only while the platform grants it. The completed version is stored
 //! as the comment on the `app` schema in the same transaction, so a crash between the commit and
 //! the journal update cannot rerun or skip a step. Portable backups carry that comment with the
-//! data it describes.
+//! data it describes. App-authored SQL can keep owner rights through its own routines, so the
+//! marker only steers that app's own data plan; lifecycle decisions rely on the journal.
 
 use std::{
     fs, io,
     os::unix::process::CommandExt as _,
     path::{Path, PathBuf},
-    process::Stdio,
+    process::{ExitStatus, Stdio},
     time::Duration,
 };
 
 use tokio::{
-    process::Command,
+    process::{Child, Command},
     time::{Instant, sleep, timeout},
 };
 
@@ -183,15 +184,11 @@ async fn run(roles: &Roles, steps: &[PathBuf], target: u32, limit: Duration) -> 
             .as_std_mut()
             .pre_exec(move || restrict_child(uid, uid, parent, PROCESS_LIMIT));
     }
-    let mut child = command.spawn()?;
-    let pid = child
-        .id()
-        .ok_or_else(|| bad("App data migration has no process ID"))?;
-    let group = i32::try_from(pid).map_err(io::Error::other)?;
+    let group = Group::spawn(&mut command)?;
     let deadline = Instant::now() + limit;
     let finished = async {
         loop {
-            if has_exited(pid)? {
+            if has_exited(group.pid)? {
                 return Ok(true);
             }
             if Instant::now() >= deadline {
@@ -201,16 +198,7 @@ async fn run(roles: &Roles, steps: &[PathBuf], target: u32, limit: Duration) -> 
         }
     }
     .await;
-    // The unreaped PID still names the group. The sandbox denies setsid and setpgid, so shell
-    // escapes cannot leave it.
-    // SAFETY: kill takes no pointers; the group belongs to this unreaped child.
-    if unsafe { libc::kill(-group, libc::SIGKILL) } != 0 {
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            return Err(error);
-        }
-    }
-    let status = timeout(Duration::from_secs(3), child.wait()).await??;
+    let status = group.stop().await?;
     match (finished?, status.success()) {
         (true, true) => Ok(()),
         (true, false) => Err(bad("App data migration failed")),
@@ -218,6 +206,57 @@ async fn run(roles: &Roles, steps: &[PathBuf], target: u32, limit: Duration) -> 
             io::ErrorKind::TimedOut,
             "App data migration timed out",
         )),
+    }
+}
+
+/// The migration's process group. The sandbox denies setsid and setpgid, so shell escapes cannot
+/// leave it. Until the leader is reaped its PID still names the group, so the group is killed
+/// first, also when a cancelled activation drops the migration.
+struct Group {
+    child: Child,
+    pid: u32,
+    reaped: bool,
+}
+
+impl Group {
+    fn spawn(command: &mut Command) -> io::Result<Self> {
+        let child = command.spawn()?;
+        let pid = child
+            .id()
+            .filter(|pid| i32::try_from(*pid).is_ok())
+            .ok_or_else(|| bad("App data migration has no process ID"))?;
+        Ok(Self {
+            child,
+            pid,
+            reaped: false,
+        })
+    }
+
+    fn kill(&self) -> io::Result<()> {
+        let group = -(self.pid as i32);
+        // SAFETY: kill takes no pointers; the unreaped leader still reserves the group ID.
+        if unsafe { libc::kill(group, libc::SIGKILL) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    async fn stop(mut self) -> io::Result<ExitStatus> {
+        self.kill()?;
+        let status = timeout(Duration::from_secs(3), self.child.wait()).await??;
+        self.reaped = true;
+        Ok(status)
+    }
+}
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        if !self.reaped {
+            let _ = self.kill();
+        }
     }
 }
 

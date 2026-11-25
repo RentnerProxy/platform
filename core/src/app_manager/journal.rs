@@ -182,6 +182,10 @@ pub(super) struct Slot {
     pub removed_release: Option<ReleaseSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub removed_data_required: Option<bool>,
+    /// The release whose data migration may have committed before its activation finished.
+    /// Only the platform records it, unlike the version marker inside the app's own database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migrating: Option<ReleaseSelection>,
 }
 
 impl Slot {
@@ -201,14 +205,16 @@ impl Slot {
     }
 
     /// Decide how `release` opens the stored data, or `None` when it cannot. `recorded` is the
-    /// exact schema version a completed migration stored in the database. Without one, only the
-    /// last release's declaration describes the data, and a package switch keeps the previous
-    /// release able to read it unless a declared migration changes the data.
+    /// schema version the last migration stored in the database. Without one, only the last
+    /// release's declaration describes the data, and a package switch keeps the previous release
+    /// able to read it unless a declared migration changes the data. Without `may_migrate`, the
+    /// release must open the data as it is.
     pub fn plan(
         &self,
         release: &Release,
         next: Option<&Data>,
         recorded: Option<u32>,
+        may_migrate: bool,
     ) -> Option<DataChange> {
         let Some(next) = next else {
             return (self.written.is_none() && recorded.is_none()).then_some(DataChange::Keep);
@@ -217,10 +223,17 @@ impl Slot {
             .active
             .as_ref()
             .is_some_and(|active| !active.same_package(release));
-        let migrate = |version| next.migration_from(version).map(DataChange::Migrate);
+        let migrate = |version| {
+            may_migrate
+                .then(|| next.migration_from(version))
+                .flatten()
+                .map(DataChange::Migrate)
+        };
         match (recorded, &self.written) {
-            (Some(version), _) if version < next.target_version => migrate(version),
-            (Some(version), _) => next.opens(version).then_some(DataChange::Keep),
+            (Some(version), _) => (version < next.target_version)
+                .then(|| migrate(version))
+                .flatten()
+                .or_else(|| next.opens(version).then_some(DataChange::Keep)),
             (None, None) if next.starts_fresh() => migrate(0),
             // Data cannot appear under an existing installation without a declared migration.
             (None, None) => (!switching).then_some(DataChange::Keep),
@@ -248,6 +261,7 @@ impl Slot {
             self.previous = self.active.take();
         }
         self.active = Some(release);
+        self.migrating = None;
     }
 }
 
