@@ -193,22 +193,36 @@ describe('portable application restore commands', () => {
         expect(postgresCommand(true)).not.toContain('PORTABLE_RESTORE_CAPACITY=')
     })
 
-    test('verifies the package before touching the target and passes explicit resume evidence', () => {
+    test('verifies the package and skips empty-target checks only for a target it replaces', () => {
         const backupId = 'a'.repeat(64)
         const version = PORTABLE_APP_BACKUP_VERSION
+        const verify =
+            '/usr/local/bin/rentnerproxy-controller --app-backup verify-portable /backup/.rentnerproxy-app-state-v2'
         const preflight = postgresCommand('inventory', '/backup', version, backupId)
         const resumed = postgresCommand('inventory', '/backup', version, backupId, true)
-        expect(
-            preflight.indexOf('verify-portable /backup/.rentnerproxy-app-state-v2'),
-        ).toBeLessThan(preflight.indexOf('postgres -D'))
-        expect(preflight).toContain(
-            '--check-portable-app-restore-inventory /backup ' + backupId + ' false',
+        // Without a cluster there is no app database to replace; only the package is verified.
+        expect(preflight.slice(0, preflight.indexOf('postgres -D'))).toContain(
+            '    ' + verify + '\n    exit 0\nfi',
         )
-        expect(resumed).toContain(
-            '--check-portable-app-restore-inventory /backup ' + backupId + ' true',
-        )
+        expect(resumed.slice(0, resumed.indexOf('postgres -D'))).not.toContain(verify)
         expect(resumed).toContain('test -s /var/lib/rentnerproxy/postgres-data/PG_VERSION')
-        expect(preflight).not.toContain('restore-portable')
+        for (const [command, resume] of [
+            [preflight, false],
+            [resumed, true],
+        ] as const) {
+            // With the cluster running, verification also checks that installed apps can be retired.
+            expect(command.indexOf('portable_destination=$(' + verify + ')')).toBeGreaterThan(
+                command.indexOf('"$ready"'),
+            )
+            expect(command).toContain(
+                '\ncase $portable_destination in replace | restored) ;; *) bun --no-env-file /opt/rentnerproxy/web/backup-export.js --check-portable-app-restore-inventory /backup ' +
+                    backupId +
+                    ' ' +
+                    resume +
+                    ' ;; esac',
+            )
+            expect(command).not.toContain('restore-portable')
+        }
         expect(() => postgresCommand('inventory', '/backup', version)).toThrow()
     })
 

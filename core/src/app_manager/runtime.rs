@@ -25,7 +25,17 @@ use tokio::{
 const USERS: &str = "/var/lib/rentnerproxy/apps";
 
 pub(super) fn uid_available(uid: u32) -> io::Result<bool> {
-    for root in [USERS, "/run/rentnerproxy/apps"] {
+    uid_reusable(uid, false)
+}
+
+/// A portable restore may reuse a UID whose persistent storage it retires first.
+pub(super) fn uid_reusable(uid: u32, retiring: bool) -> io::Result<bool> {
+    let roots: &[&str] = if retiring {
+        &["/run/rentnerproxy/apps"]
+    } else {
+        &[USERS, "/run/rentnerproxy/apps"]
+    };
+    for root in roots {
         match fs::symlink_metadata(Path::new(root).join(uid.to_string())) {
             Ok(_) => return Ok(false),
             Err(e) if e.kind() == io::ErrorKind::NotFound => (),

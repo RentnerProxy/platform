@@ -1,6 +1,7 @@
 use super::{bad, journal::Slot};
 use crate::app_ipc::filesystem::require_safe_parents;
 use std::{
+    collections::BTreeMap,
     ffi::CString,
     fs::{self, File, OpenOptions},
     io::{self, Write},
@@ -252,9 +253,81 @@ pub(super) fn finish_unclaim(id: &str, slot: &Slot) -> io::Result<()> {
     }
 }
 
+fn purge_path(uid: u32) -> PathBuf {
+    Path::new(ROOT).join(format!(".purge-{uid}"))
+}
+
+fn retired_uid(name: &str) -> Option<u32> {
+    let digits = name
+        .strip_prefix(".purge-")
+        .or_else(|| name.strip_prefix(".unclaim-"))
+        .unwrap_or(name);
+    digits
+        .parse::<u32>()
+        .ok()
+        .filter(|uid| uid.to_string() == digits)
+}
+
+/// Checks, and with `apply` removes, the persistent storage of every journal
+/// installation that a portable restore replaces. Storage of any other UID is
+/// never removed: its presence rejects the restore before anything changes.
+pub(super) fn retire(slots: &BTreeMap<String, Slot>, apply: bool) -> io::Result<()> {
+    let root = Path::new(ROOT);
+    require_safe_parents(root, 0)?;
+    match fs::symlink_metadata(root) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+        Ok(_) => validate_root(root)?,
+    }
+    let owners: BTreeMap<u32, (&str, &Slot)> = slots
+        .iter()
+        .map(|(id, slot)| (slot.uid, (id.as_str(), slot)))
+        .collect();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let (uid, (id, slot)) = entry
+            .file_name()
+            .to_str()
+            .and_then(retired_uid)
+            .and_then(|uid| owners.get_key_value(&uid))
+            .ok_or_else(|| bad("Untracked installation data"))?;
+        if !slot_directory(&entry.path(), *uid)? {
+            return Err(bad("Invalid persistent installation slot"));
+        }
+        // Interrupted purges and unclaims are already detached from their owner.
+        if entry.path() == directory(*uid) {
+            owner_marker(&entry.path(), id, slot)?;
+        }
+    }
+    if !apply {
+        return Ok(());
+    }
+    let parent = File::open(root)?;
+    for (&uid, &(id, slot)) in &owners {
+        let tombstone = purge_path(uid);
+        for detached in [&tombstone, &unclaim_path(uid)] {
+            if slot_directory(detached, uid)? {
+                fs::remove_dir_all(detached)?;
+                parent.sync_all()?;
+            }
+        }
+        // Detach the tree before erasing it so an interrupted retry never sees a
+        // live slot without its ownership marker.
+        if owned(root, id, slot)? {
+            rename_new(&directory(uid), &tombstone)?;
+            parent.sync_all()?;
+            fs::remove_dir_all(&tombstone)?;
+            parent.sync_all()?;
+        }
+    }
+    // A retry after an unsynced removal finds nothing left to remove. Make the
+    // removals durable before the caller forgets the installations.
+    parent.sync_all()
+}
+
 pub(super) fn purge(id: &str, slot: &Slot) -> io::Result<()> {
     let root = Path::new(ROOT);
-    let retired = root.join(format!(".purge-{}", slot.uid));
+    let retired = purge_path(slot.uid);
     if owned(root, id, slot)? {
         // Publish a private tombstone before erasing any part of the tree, including the ownership marker.
         rename_new(&directory(slot.uid), &retired)?;

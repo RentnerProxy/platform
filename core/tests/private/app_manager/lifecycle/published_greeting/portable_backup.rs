@@ -224,7 +224,7 @@ async fn privileged_restore_published_greeting() {
     let socket_permissions = fs::metadata(app_socket).unwrap().permissions();
     fs::set_permissions(app_socket, fs::Permissions::from_mode(0o700)).unwrap();
     let interrupted = backup_status(&controller, config, "restore-portable", &bundle).await;
-    fs::set_permissions(app_socket, socket_permissions).unwrap();
+    fs::set_permissions(app_socket, socket_permissions.clone()).unwrap();
     assert!(!interrupted);
     assert_eq!(fs::read(&checkpoint).unwrap(), earlier_checkpoint);
     let app_root = Path::new("/var/lib/rentnerproxy/apps").join(uid.to_string());
@@ -264,6 +264,13 @@ async fn privileged_restore_published_greeting() {
         "target retry witness",
         "a completed recovery must preserve subsequent writes on retry"
     );
+    let verified = backup_command(&controller, config, "verify-portable")
+        .arg(&bundle)
+        .output()
+        .await
+        .unwrap();
+    assert!(verified.status.success());
+    assert_eq!(verified.stdout, b"restored\n");
 
     let installation_id = format!(
         "app-{}",
@@ -328,6 +335,144 @@ async fn privileged_restore_published_greeting() {
     );
     assert_database(uid).await;
     halt(&mut manager).await;
+
+    // Restoring the backup over the app that has run since replaces it with the
+    // captured release, files and database. Untracked storage blocks it first.
+    // Like every offline restore, it starts without the app's runtime sockets.
+    let runtime = Path::new("/run/rentnerproxy/apps").join(uid.to_string());
+    if runtime.exists() {
+        fs::remove_dir_all(runtime).unwrap();
+    }
+    postgres(
+        uid,
+        &format!(
+            "SET ROLE rp_app_{uid}; INSERT INTO app.recovery_sentinel VALUES (3, 'replaced');"
+        ),
+    )
+    .await;
+    let untracked = Path::new("/var/lib/rentnerproxy/apps/.untracked");
+    fs::create_dir(untracked).unwrap();
+    assert!(!backup_status(&controller, config, "verify-portable", &bundle).await);
+    assert!(!backup_status(&controller, config, "restore-portable", &bundle).await);
+    fs::remove_dir(untracked).unwrap();
+    assert!(app_root.join("data").is_dir());
+    let marker: Value = serde_json::from_slice(
+        &fs::read("/var/lib/rentnerproxy/app-manager/portable-restore.json").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        marker["complete"], true,
+        "a rejected replacement changes nothing"
+    );
+    assert!(marker.get("retiring").is_none());
+
+    // A session the retirement does not own interrupts it after the marker
+    // records it. The installed app remains until the same backup resumes.
+    let mut session = Process::new("gosu")
+        .args([
+            "postgres",
+            "/usr/lib/postgresql/18/bin/psql",
+            "--no-psqlrc",
+            "--no-password",
+            "--host=/var/run/postgresql",
+            "--username=postgres",
+            "--quiet",
+        ])
+        .arg(format!("--dbname=rp_app_{uid}"))
+        .args(["--command", "SELECT pg_sleep(600);"])
+        .stdout(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let sessions = "SELECT count(*) FROM pg_stat_activity \
+                    WHERE datname = current_database() AND pid <> pg_backend_pid();";
+    for attempt in 0.. {
+        if postgres(uid, sessions).await == "1" {
+            break;
+        }
+        assert!(
+            attempt < 200,
+            "the foreign app database session did not start"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(!backup_status(&controller, config, "restore-portable", &bundle).await);
+    session.kill().await.unwrap();
+    let marker: Value = serde_json::from_slice(
+        &fs::read("/var/lib/rentnerproxy/app-manager/portable-restore.json").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marker["retiring"], true);
+    assert_eq!(marker["complete"], false);
+    let journal: Value = serde_json::from_slice(
+        &fs::read("/var/lib/rentnerproxy/app-manager/journal.json").unwrap(),
+    )
+    .unwrap();
+    assert!(journal["installations"].get(&installation_id).is_some());
+    assert!(app_root.join("data").is_dir());
+    // The server keeps sleeping after its client exits, so end the backend itself.
+    postgres(
+        uid,
+        "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity \
+         WHERE datname = current_database() AND pid <> pg_backend_pid();",
+    )
+    .await;
+    for attempt in 0.. {
+        if postgres(uid, sessions).await == "0" {
+            break;
+        }
+        assert!(
+            attempt < 200,
+            "the foreign app database session did not end"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let verified = backup_command(&controller, config, "verify-portable")
+        .arg(&bundle)
+        .output()
+        .await
+        .unwrap();
+    assert!(verified.status.success());
+    assert_eq!(verified.stdout, b"replace\n");
+
+    // Interrupt the replay after the retirement. The resumed restore continues
+    // for the same backup as on an empty target.
+    fs::set_permissions(app_socket, fs::Permissions::from_mode(0o700)).unwrap();
+    let interrupted = backup_status(&controller, config, "restore-portable", &bundle).await;
+    fs::set_permissions(app_socket, socket_permissions).unwrap();
+    assert!(!interrupted);
+    let journal: Value = serde_json::from_slice(
+        &fs::read("/var/lib/rentnerproxy/app-manager/journal.json").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(journal["installations"], json!({}));
+    assert!(backup_status(&controller, config, "restore-portable", &bundle).await);
+    assert_database(uid).await;
+    assert_eq!(
+        postgres(
+            uid,
+            &format!("SET ROLE rp_app_{uid}; SELECT count(*) FROM app.recovery_sentinel;")
+        )
+        .await,
+        "1",
+        "a replaced app keeps none of the writes made after the backup"
+    );
+    manager = start_manager(
+        &controller,
+        config,
+        &installer.token,
+        Some(&installation_id),
+    )
+    .await;
+    let replaced = manager_status().await.unwrap()[&installation_id].clone();
+    assert_eq!(replaced["active"], second["version"]);
+    let replaced_generation = replaced["generation"].as_u64().unwrap();
+    assert_eq!(
+        read_greeting(&installation_id, replaced_generation).await,
+        PERSISTED_GREETING
+    );
+    assert_database(uid).await;
+    halt(&mut manager).await;
     authority.kill().await.unwrap();
 
     let architecture = if cfg!(target_arch = "x86_64") {
@@ -363,6 +508,15 @@ async fn privileged_restore_published_greeting() {
         "restarted": {
             "version": first["version"],
             "generation": rolled_back_generation + 1,
+            "greetingVerified": true,
+            "databaseVerified": true,
+        },
+        "replaced": {
+            "untrackedStorageRejected": true,
+            "interruptedRetirementResumed": true,
+            "interruptedReplacementResumed": true,
+            "version": second["version"],
+            "generation": replaced_generation,
             "greetingVerified": true,
             "databaseVerified": true,
         },
