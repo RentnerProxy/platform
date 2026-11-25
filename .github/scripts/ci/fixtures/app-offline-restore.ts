@@ -326,9 +326,18 @@ try {
         ) + '\n',
     )
 } finally {
+    const leftovers: string[] = []
     for (const target of targets)
         await target.compose(['down', '--volumes', '--remove-orphans'], 180_000).catch(
-            (error: unknown) => console.error('Could not remove ' + target.project + ': ' + error),
+            (error: unknown) => leftovers.push(target.project + ': ' + String(error)),
         )
-    await rm(root, { force: true, recursive: true })
+    // The backup holds the disposable appliance's keys and is never needed for cleanup.
+    await rm(join(root, 'backups'), { force: true, recursive: true })
+    if (leftovers.length === 0) await rm(root, { force: true, recursive: true })
+    else {
+        // Keep the Compose files to remove what is left. A teardown failure fails the
+        // probe without hiding an earlier error.
+        console.error('Could not remove ' + leftovers.join('\n') + '\nCompose files: ' + root)
+        process.exitCode = 1
+    }
 }
