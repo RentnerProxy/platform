@@ -6,6 +6,7 @@ import {
     inspectPortableAppStateFile,
 } from '../../../scripts/backup/app-state.ts'
 import { checkLiveAppDatabase } from './app-database.ts'
+import { decodeCapturedInstallations } from '../../../scripts/backup/captured-inventory.ts'
 import { readSnapshotMetadata } from '../../../scripts/backup/restore-snapshot.ts'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -288,6 +289,14 @@ if (import.meta.main) {
                 controller.signal,
                 resume ? 'portable-resume' : 'portable-fresh',
                 resume ? 'journal' : 'installations',
+            )
+        } else if (args.length === 2 && args[0] === '--check-live-app-inventory') {
+            // An offline backup dumps only a database whose app rows match its captured journal.
+            await checkLiveAppDatabase(
+                decodeCapturedInstallations(args[1]!),
+                controller.signal,
+                'portable',
+                'journal',
             )
         } else if (args.length === 3 && args[0] === '--check-restored-app-inventory') {
             // The applied restore must leave app rows that its own installation journal governs.

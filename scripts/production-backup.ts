@@ -1,10 +1,15 @@
 import type { CommandOptions } from './backup/Types/production-backup.types.ts'
-import { CURRENT_COMPATIBILITY_PROFILE } from '../web/src/config/compatibility.config.ts'
+import {
+    CURRENT_COMPATIBILITY_PROFILE,
+    PORTABLE_APP_BACKUP_VERSION,
+} from '../web/src/config/compatibility.config.ts'
 import { BACKUP_RUNTIME_POLICY } from '../web/src/config/backup-runtime.config.ts'
 import { readDeploymentEnvironmentVariable } from '../web/src/lib/Environment/deployment-environment.ts'
 import { createMaintenanceCommands } from './backup/maintenance-commands.ts'
 import { commandOption, composeArguments, readComposeProject } from './backup/compose.ts'
-import { postgresDumpCommand } from './backup/volume-commands.ts'
+import { portableAppCaptureCommand, postgresDumpCommand } from './backup/volume-commands.ts'
+import { inspectPortableAppStateFile, portableAppStateName } from './backup/app-state.ts'
+import { appendPortableAppState } from './backup/portable-app-archive.ts'
 import { waitForApplianceReadiness } from './backup/appliance-readiness.ts'
 import { stateArchiveExclusions } from './backup/controller-state-archive.ts'
 import { crowdSecArchiveExclusions, validateStateArchiveFile } from './backup/format.ts'
@@ -60,6 +65,21 @@ async function validateArchive(path: string, kind: 'controller' | 'crowdsec'): P
     const file = await open(path, 'r')
     try {
         await validateStateArchiveFile(file, kind)
+    } finally {
+        await file.close()
+    }
+}
+
+async function inspectCapturedAppState(
+    path: string,
+    captured: Readonly<{ bytes: number; sha256: string }>,
+) {
+    const file = await open(path, 'r')
+    try {
+        const applications = await inspectPortableAppStateFile(file)
+        if (applications.bytes !== captured.bytes || applications.sha256 !== captured.sha256)
+            throw new Error('Captured application state changed before publication')
+        return applications
     } finally {
         await file.close()
     }
@@ -134,6 +154,7 @@ async function backup(): Promise<void> {
     const dumpPath = join(stagingPath, 'postgres.dump')
     const stateArchivePath = join(stagingPath, stateArchiveName)
     const crowdSecArchivePath = join(stagingPath, 'crowdsec-state.tar')
+    const appStatePath = join(stagingPath, portableAppStateName)
     await chmod(stagingPath, 0o700)
     let restartAppliance = false
     let backupPublished = false
@@ -178,6 +199,28 @@ async function backup(): Promise<void> {
             'export application encryption key',
         )
 
+        const appState = await runCommandFile(
+            [
+                ...compose,
+                'run',
+                '--no-TTY',
+                '--rm',
+                '--no-deps',
+                '--entrypoint',
+                'bash',
+                applianceService,
+                '-c',
+                portableAppCaptureCommand(),
+            ],
+            appStatePath,
+            'capture application state',
+            { timeoutMs: BACKUP_RUNTIME_POLICY.captureTimeoutMs },
+        )
+        const applications = appState.bytes
+            ? await inspectCapturedAppState(appStatePath, appState)
+            : undefined
+        if (!applications) await rm(appStatePath)
+
         const dump = await runCommandFile(
             [
                 ...compose,
@@ -189,14 +232,14 @@ async function backup(): Promise<void> {
                 'bash',
                 applianceService,
                 '-c',
-                postgresDumpCommand(),
+                postgresDumpCommand(applications?.installations),
             ],
             dumpPath,
             'create PostgreSQL dump',
             { timeoutMs: BACKUP_RUNTIME_POLICY.captureTimeoutMs },
         )
 
-        const stateArchive = await runCommandFile(
+        const controllerArchive = await runCommandFile(
             [
                 ...compose,
                 'run',
@@ -219,6 +262,10 @@ async function backup(): Promise<void> {
             { timeoutMs: BACKUP_RUNTIME_POLICY.captureTimeoutMs },
         )
         await validateArchive(stateArchivePath, 'controller')
+        const stateArchive = applications
+            ? await appendPortableAppState(stateArchivePath, appStatePath, applications)
+            : controllerArchive
+        if (applications) await rm(appStatePath)
 
         const crowdSec = await runCommandFile(
             [
@@ -269,7 +316,9 @@ async function backup(): Promise<void> {
                 user: databaseUser,
             },
             redis: 'excluded',
-            version: CURRENT_COMPATIBILITY_PROFILE.backup.writtenVersion,
+            ...(applications
+                ? { version: PORTABLE_APP_BACKUP_VERSION, applications }
+                : { version: CURRENT_COMPATIBILITY_PROFILE.backup.writtenVersion }),
         }
         await publishProductionBackup(stagingPath, finalPath, metadata)
         backupPublished = true
