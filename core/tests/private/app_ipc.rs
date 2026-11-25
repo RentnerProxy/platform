@@ -953,9 +953,10 @@ fn provider_results_must_answer_their_invocation() {
             request,
             json!({"samples": observed(3)})
         ));
-        let discovery: Value =
-            serde_json::from_str(&format!(r#"{{"connectionId":"docker-one","limit":{limit}}}"#))
-                .unwrap();
+        let discovery: Value = serde_json::from_str(&format!(
+            r#"{{"connectionId":"docker-one","limit":{limit}}}"#
+        ))
+        .unwrap();
         assert!(pair(
             "docker-discovery",
             discovery.clone(),
