@@ -65,8 +65,15 @@ pub(super) async fn fence_database(uid: u32) -> io::Result<()> {
     let roles = format!("'rp_app_{uid}', 'rp_migrate_{uid}'");
     // psql commits NOLOGIN before the DO statement. Its statement_timeout bounds
     // the entire signal-and-confirm phase regardless of the number of sessions.
+    // An interrupted data migration may have left the owner role granted to the runtime role.
     let sql = format!(
         r"SELECT format('ALTER ROLE %I NOLOGIN', rolname) FROM pg_roles WHERE rolname IN ({roles})
+\gexec
+SELECT format('REVOKE %I FROM %I', o.rolname, r.rolname)
+FROM pg_auth_members m
+JOIN pg_roles o ON o.oid = m.roleid
+JOIN pg_roles r ON r.oid = m.member
+WHERE o.rolname = 'rp_migrate_{uid}' AND r.rolname = 'rp_app_{uid}'
 \gexec
 DO $fence$
 BEGIN
@@ -82,7 +89,12 @@ $fence$;"
     control_sql(&sql).await.map(drop)
 }
 
-async fn control_sql(sql: &str) -> io::Result<Vec<u8>> {
+pub(super) async fn control_sql(sql: &str) -> io::Result<Vec<u8>> {
+    control_sql_in("postgres", sql).await
+}
+
+/// Run trusted administrative SQL in `database`. Qualify catalog names in app databases.
+pub(super) async fn control_sql_in(database: &str, sql: &str) -> io::Result<Vec<u8>> {
     let mut child = Command::new("/usr/local/bin/gosu")
         .args([
             "postgres",
@@ -94,9 +106,9 @@ async fn control_sql(sql: &str) -> io::Result<Vec<u8>> {
             "--no-align",
             "--host=/var/run/postgresql",
             "--username=postgres",
-            "--dbname=postgres",
             "--set=ON_ERROR_STOP=1",
         ])
+        .arg(format!("--dbname={database}"))
         .env_clear()
         .env(
             "PGOPTIONS",
