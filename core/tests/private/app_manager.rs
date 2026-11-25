@@ -167,7 +167,6 @@ mod retirement;
 async fn privileged_signed_lifecycle() {
     lifecycle::exercise().await;
 }
-use crate::app_manager::journal::compatible;
 
 #[test]
 fn installation_id_cannot_select_a_path_or_escape_an_identity() {
@@ -187,26 +186,137 @@ fn installation_id_cannot_select_a_path_or_escape_an_identity() {
     assert!(valid_id("instance_1-test"));
 }
 
+fn release(version: &str) -> Release {
+    Release {
+        version: version.into(),
+        archive_sha256: "a".repeat(64),
+        manifest_sha256: "b".repeat(64),
+        catalog_revision: 1,
+    }
+}
+
 #[test]
 fn data_changes_preserve_every_possible_written_version_or_require_recovery() {
     let manifest =
         json!({"targetVersion":2.0,"readVersions":[1,2.0,3],"writeVersions":[2,3],"migrations":[]});
     let source = read_data(&manifest).unwrap();
+    let next = release("2");
+    let keep = Some(DataChange::Keep);
+    assert_eq!(Slot::default().plan(&next, None, None), keep);
+    assert_eq!(Slot::default().plan(&next, Some(&source), None), keep);
+    let slot = Slot {
+        active: Some(release("1")),
+        written: Some(source.clone()),
+        ..Default::default()
+    };
     let mut target = source.clone();
-    assert!(compatible(None, None));
-    assert!(compatible(None, Some(&source)));
-    assert!(compatible(Some(&source), Some(&target)));
+    assert_eq!(slot.plan(&next, Some(&target), None), keep);
     target.write_versions.retain(|v| *v != 3);
-    assert!(!compatible(Some(&source), Some(&target)));
+    assert_eq!(slot.plan(&next, Some(&target), None), None);
     target = source.clone();
     target.read_versions.retain(|v| *v != 3);
-    assert!(!compatible(Some(&source), Some(&target)));
+    assert_eq!(slot.plan(&next, Some(&target), None), None);
     target = source.clone();
     target.target_version = 3;
-    assert!(!compatible(Some(&source), Some(&target)));
-    assert!(!compatible(Some(&source), None));
-    target.migrations = vec![json!({"fromVersion":0,"toVersion":3,"path":"migrations/start.sql"})];
-    assert!(!compatible(None, Some(&target)));
+    assert_eq!(slot.plan(&next, Some(&target), None), None);
+    assert_eq!(slot.plan(&next, None, None), None);
+}
+
+#[test]
+fn declared_sql_migrations_advance_data_that_restarts_only_open() {
+    let data = |target: u32, read: &[u32], write: &[u32], steps: Value| Data {
+        target_version: target,
+        read_versions: read.to_vec(),
+        write_versions: write.to_vec(),
+        migrations: steps.as_array().unwrap().clone(),
+    };
+    let initialize = json!({"fromVersion":0,"toVersion":1,"path":"migrations/initialize.sql"});
+    let upgrade = json!({"fromVersion":1,"toVersion":2,"path":"migrations/v2/upgrade.sql"});
+    let v1 = data(1, &[1], &[1], json!([initialize.clone()]));
+    let v2 = data(2, &[1, 2], &[2], json!([initialize, upgrade]));
+    let migrate = |from, to, steps: &[&str]| {
+        Some(DataChange::Migrate(journal::Migration {
+            from,
+            to,
+            steps: steps.iter().map(|step| format!("migrations/{step}")).collect(),
+        }))
+    };
+
+    // A fresh installation runs the whole chain from version zero.
+    assert_eq!(
+        Slot::default().plan(&release("1"), Some(&v1), None),
+        migrate(0, 1, &["initialize.sql"])
+    );
+    assert_eq!(
+        Slot::default().plan(&release("2"), Some(&v2), None),
+        migrate(0, 2, &["initialize.sql", "v2/upgrade.sql"])
+    );
+
+    // An update continues from the recorded version, or from the older declaration.
+    let installed = Slot {
+        active: Some(release("1")),
+        written: Some(v1.clone()),
+        database_provisioned: true,
+        ..Default::default()
+    };
+    for recorded in [Some(1), None] {
+        assert_eq!(
+            installed.plan(&release("2"), Some(&v2), recorded),
+            migrate(1, 2, &["v2/upgrade.sql"])
+        );
+    }
+
+    // Migrated data opens only in releases that read and write its exact version.
+    assert_eq!(
+        installed.plan(&release("2"), Some(&v2), Some(2)),
+        Some(DataChange::Keep)
+    );
+    assert_eq!(installed.plan(&release("1"), Some(&v1), Some(2)), None);
+    let mut tolerant = v1.clone();
+    tolerant.read_versions.push(2);
+    tolerant.write_versions.push(2);
+    assert_eq!(
+        installed.plan(&release("1"), Some(&tolerant), Some(2)),
+        Some(DataChange::Keep)
+    );
+    assert_eq!(installed.plan(&release("3"), None, Some(2)), None);
+
+    // Only SQL steps on a complete forward chain inside migrations/ can run.
+    let mut gap = v2.clone();
+    gap.migrations.remove(1);
+    assert_eq!(installed.plan(&release("2"), Some(&gap), Some(1)), None);
+    for path in [
+        "migrations/v2/upgrade.json",
+        "migrations/../upgrade.sql",
+        "migrations/.upgrade.sql",
+        "migrations/up..grade.sql",
+        "migrations//upgrade.sql",
+        "migrations/upgrade.sql/",
+        "migrations/up grade.sql",
+        "other/upgrade.sql",
+        "/migrations/upgrade.sql",
+    ] {
+        let mut unsafe_step = v2.clone();
+        unsafe_step.migrations[1]["path"] = path.into();
+        assert_eq!(
+            installed.plan(&release("2"), Some(&unsafe_step), Some(1)),
+            None,
+            "{path}"
+        );
+    }
+
+    // Data cannot appear under an existing installation without a declared migration.
+    let dataless = Slot {
+        active: Some(release("0")),
+        ..Default::default()
+    };
+    let mut undeclared = v1.clone();
+    undeclared.migrations.clear();
+    assert_eq!(dataless.plan(&release("1"), Some(&undeclared), None), None);
+    assert_eq!(
+        dataless.plan(&release("1"), Some(&v1), None),
+        migrate(0, 1, &["initialize.sql"])
+    );
 }
 
 #[test]

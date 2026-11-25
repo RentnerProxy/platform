@@ -78,21 +78,77 @@ pub(super) struct Data {
     pub migrations: Vec<serde_json::Value>,
 }
 
-pub(super) fn compatible(written: Option<&Data>, next: Option<&Data>) -> bool {
-    match (written, next) {
-        (None, None) => true,
-        (None, Some(next)) => !next
-            .migrations
-            .iter()
-            .any(|m| m["fromVersion"].as_f64() == Some(0.0)),
-        (Some(a), Some(b)) => {
-            a.target_version == b.target_version
-                && a.write_versions
-                    .iter()
-                    .all(|v| b.read_versions.contains(v) && b.write_versions.contains(v))
-        }
-        (Some(_), None) => false,
+impl Data {
+    fn opens(&self, version: u32) -> bool {
+        self.read_versions.contains(&version) && self.write_versions.contains(&version)
     }
+
+    fn starts_fresh(&self) -> bool {
+        self.migrations
+            .iter()
+            .any(|step| step["fromVersion"].as_f64() == Some(0.0))
+    }
+
+    /// Follow the declared forward steps from `version` to the target. The platform only runs SQL.
+    fn migration_from(&self, version: u32) -> Option<Migration> {
+        let mut current = version;
+        let mut steps = Vec::new();
+        while current < self.target_version {
+            let step = self
+                .migrations
+                .iter()
+                .find(|step| step["fromVersion"].as_f64() == Some(f64::from(current)))?;
+            let next = step["toVersion"].as_f64().filter(|next| {
+                next.fract() == 0.0
+                    && *next > f64::from(current)
+                    && *next <= f64::from(self.target_version)
+            })? as u32;
+            steps.push(step["path"].as_str().filter(|path| sql_step(path))?.to_owned());
+            current = next;
+        }
+        (!steps.is_empty()).then_some(Migration {
+            from: version,
+            to: current,
+            steps,
+        })
+    }
+}
+
+/// A package-relative `migrations/**.sql` path in the contract's file name alphabet.
+fn sql_step(path: &str) -> bool {
+    path.strip_prefix("migrations/")
+        .and_then(|path| path.strip_suffix(".sql"))
+        .is_some_and(|path| {
+            path.split('/').all(|segment| {
+                segment.split('.').all(|part| {
+                    !part.is_empty()
+                        && part
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                })
+            })
+        })
+}
+
+/// Whether `next` reads and writes every version the last release may have written.
+fn keeps(written: &Data, next: &Data) -> bool {
+    written.target_version == next.target_version
+        && written.write_versions.iter().all(|v| next.opens(*v))
+}
+
+/// What activating a release does to the installation's durable data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum DataChange {
+    Keep,
+    Migrate(Migration),
+}
+
+/// Declared SQL steps that run in order inside one transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Migration {
+    pub from: u32,
+    pub to: u32,
+    pub steps: Vec<String>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -139,13 +195,36 @@ impl Slot {
         self.authority_recorded = Some(true);
     }
 
-    pub fn accepts(&self, release: &Release, data: Option<&Data>) -> bool {
-        compatible(self.written.as_ref(), data)
-            && (self
-                .active
-                .as_ref()
-                .is_none_or(|active| active.same_package(release))
-                || compatible(data, self.written.as_ref()))
+    /// Decide how `release` opens the stored data, or `None` when it cannot. `recorded` is the
+    /// exact schema version a completed migration stored in the database. Without one, only the
+    /// last release's declaration describes the data, and a package switch keeps the previous
+    /// release able to read it unless a declared migration changes the data.
+    pub fn plan(
+        &self,
+        release: &Release,
+        next: Option<&Data>,
+        recorded: Option<u32>,
+    ) -> Option<DataChange> {
+        let Some(next) = next else {
+            return (self.written.is_none() && recorded.is_none()).then_some(DataChange::Keep);
+        };
+        let switching = self
+            .active
+            .as_ref()
+            .is_some_and(|active| !active.same_package(release));
+        let migrate = |version| next.migration_from(version).map(DataChange::Migrate);
+        match (recorded, &self.written) {
+            (Some(version), _) if version < next.target_version => migrate(version),
+            (Some(version), _) => next.opens(version).then_some(DataChange::Keep),
+            (None, None) if next.starts_fresh() => migrate(0),
+            // Data cannot appear under an existing installation without a declared migration.
+            (None, None) => (!switching).then_some(DataChange::Keep),
+            (None, Some(written)) if written.target_version < next.target_version => {
+                migrate(written.target_version)
+            }
+            (None, Some(written)) => (keeps(written, next) && (!switching || keeps(next, written)))
+                .then_some(DataChange::Keep),
+        }
     }
 
     pub fn commit_release(&mut self, release: Release) {
