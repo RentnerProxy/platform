@@ -1,4 +1,4 @@
-FROM mirror.gcr.io/library/debian:13.7
+FROM mirror.gcr.io/library/debian:13.8
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         bash ca-certificates coreutils curl dbus gnupg gpgv iproute2 nftables podman procps python3 skopeo systemd systemd-sysv util-linux \
