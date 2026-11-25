@@ -203,7 +203,7 @@ jobs:
                       type=registry,ref=ghcr.io/rentnerproxy/platform-build-cache:production-${{ matrix.architecture }}
                       type=gha,version=2,scope=dependency-audit-appliance-${{ matrix.architecture }}-v1,timeout=2m
 
-            - name: Verify published Greeting lifecycle and portable offline recovery
+            - name: Verify published Greeting lifecycle, distribution gates and portable offline recovery
               shell: bash
               env:
                   GREETING_APPLIANCE_IMAGE_ID: ${{ steps.appliance.outputs.imageid }}
@@ -254,4 +254,5 @@ jobs:
                       ${{ runner.temp }}/app-runtime-reference/greeting.json
                       ${{ runner.temp }}/app-runtime-reference/greeting-browser.json
                       ${{ runner.temp }}/app-runtime-reference/greeting-lifecycle.json
+                      ${{ runner.temp }}/app-runtime-reference/greeting-gates.json
                       ${{ runner.temp }}/app-runtime-reference/greeting-recovery.json
