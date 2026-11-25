@@ -13,7 +13,11 @@ use std::{
 
 use aead_gcm_stream::AesGcm;
 use aes::Aes256;
-use aws_lc_rs::{constant_time::verify_slices_are_equal, digest};
+use aws_lc_rs::{
+    aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey},
+    constant_time::verify_slices_are_equal,
+    digest, hkdf,
+};
 use zeroize::Zeroizing;
 
 const NAMES: [&str; 5] = [
@@ -36,6 +40,11 @@ const TAG_BYTES: usize = 16;
 const CHUNK_BYTES: usize = 65_536;
 const RESERVE_BYTES: u128 = 2 * 1024_u128.pow(3);
 const CHECK_INTERVAL: u64 = 16 * 1024 * 1024;
+/// v1 encrypts all artifacts as one AES-256-GCM stream. It is only opened.
+const STREAM_FORMAT: u8 = 1;
+/// v2 seals each 64 KiB chunk of the artifacts on its own with AES-256-GCM.
+const CHUNKED_FORMAT: u8 = 2;
+const PAYLOAD_KEY_INFO: &[u8] = b"RPBAKENC/2 AES-256-GCM payload key";
 type CapacityCheck = fn(&File) -> io::Result<()>;
 
 pub fn run_backup_envelope(mut arguments: impl Iterator<Item = String>) -> ExitCode {
@@ -46,7 +55,8 @@ pub fn run_backup_envelope(mut arguments: impl Iterator<Item = String>) -> ExitC
         if arguments.next().is_some() {
             return ExitCode::FAILURE;
         }
-        println!("RPBAKENC/1");
+        // Sealing writes v2. Opening also accepts v1 envelopes.
+        println!("RPBAKENC/2");
         return ExitCode::SUCCESS;
     }
     let (Some(source), Some(target), None) = (arguments.next(), arguments.next(), arguments.next())
@@ -106,33 +116,44 @@ fn transform(
     request.read_exact(key.as_mut())?;
     let mut header = [0; HEADER_BYTES];
     request.read_exact(&mut header)?;
-    let lengths = verify_header(&header, &key)?;
-    let mut cipher = AesGcm::<Aes256>::new((&*key).into(), &header[12..24]);
-    cipher.set_aad(&header);
-    match operation {
-        "seal" => {
+    let (format, lengths) = verify_header(&header, &key)?;
+    match (operation, format) {
+        // New envelopes are always chunked.
+        ("seal", CHUNKED_FORMAT) => {
             let mut hashes = [[0; 32]; NAMES.len()];
             for sha256 in &mut hashes {
                 request.read_exact(sha256)?;
             }
             eof(&mut request)?;
-            let (length, hash) = seal(source, target, &header, lengths, hashes, cipher, check)?;
+            let payload = payload_key(&key, &header)?;
+            let (length, hash) = seal(source, target, &header, lengths, hashes, &payload, check)?;
             serde_json::to_writer(
                 &mut response,
                 &serde_json::json!({"bytes": length, "sha256": hash}),
             )
             .map_err(io::Error::other)
         }
-        "open" => {
+        ("open", CHUNKED_FORMAT) => {
             eof(&mut request)?;
-            open(source, target, &header, lengths, cipher, check)
+            let payload = payload_key(&key, &header)?;
+            open(source, target, &header, lengths, &payload, check)
+        }
+        ("open", STREAM_FORMAT) => {
+            eof(&mut request)?;
+            let mut cipher = AesGcm::<Aes256>::new((&*key).into(), &header[12..24]);
+            cipher.set_aad(&header);
+            open_stream(source, target, &header, lengths, cipher, check)
         }
         _ => Err(invalid()),
     }
 }
 
-fn verify_header(header: &[u8; HEADER_BYTES], key: &[u8; 32]) -> io::Result<[u64; NAMES.len()]> {
-    if &header[..12] != b"RPBAKENC\x01\x01\x00\x00" {
+fn verify_header(header: &[u8; HEADER_BYTES], key: &[u8; 32]) -> io::Result<(u8, [u64; NAMES.len()])> {
+    let format = header[8];
+    if &header[..8] != b"RPBAKENC"
+        || !matches!(format, STREAM_FORMAT | CHUNKED_FORMAT)
+        || header[9..12] != [1, 0, 0]
+    {
         return Err(invalid());
     }
     verify_slices_are_equal(
@@ -149,7 +170,35 @@ fn verify_header(header: &[u8; HEADER_BYTES], key: &[u8; 32]) -> io::Result<[u64
         }
         lengths[index] = length;
     }
-    Ok(lengths)
+    Ok((format, lengths))
+}
+
+/// Derive the envelope's own AES-256-GCM key from the recovery key and the header's
+/// random salt. Chunk nonces are counters, so they never repeat under one payload key.
+fn payload_key(key: &[u8; 32], header: &[u8; HEADER_BYTES]) -> io::Result<LessSafeKey> {
+    let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &header[12..24]).extract(key);
+    let okm = prk
+        .expand(&[PAYLOAD_KEY_INFO], &AES_256_GCM)
+        .map_err(|_| invalid())?;
+    Ok(LessSafeKey::new(UnboundKey::from(okm)))
+}
+
+/// Chunk `index` uses a 64-bit big-endian counter, and its last byte marks the final
+/// chunk, so reordered, dropped or truncated chunks never authenticate.
+fn chunk_nonce(index: u64, last: bool) -> Nonce {
+    let mut nonce = [0; NONCE_LEN];
+    nonce[3..11].copy_from_slice(&index.to_be_bytes());
+    nonce[11] = u8::from(last);
+    Nonce::assume_unique_for_key(nonce)
+}
+
+fn chunks(payload: u64) -> u64 {
+    payload.div_ceil(CHUNK_BYTES as u64)
+}
+
+fn sealed_bytes(lengths: [u64; NAMES.len()]) -> u64 {
+    let payload = lengths.into_iter().sum::<u64>();
+    HEADER_BYTES as u64 + payload + chunks(payload) * TAG_BYTES as u64
 }
 
 fn seal(
@@ -158,13 +207,14 @@ fn seal(
     header: &[u8; HEADER_BYTES],
     lengths: [u64; NAMES.len()],
     hashes: [[u8; 32]; NAMES.len()],
-    mut cipher: AesGcm<Aes256>,
+    key: &LessSafeKey,
     check: CapacityCheck,
 ) -> io::Result<(u64, String)> {
     let mut output = new_private_file(target)?;
     output.write_all(header)?;
     let mut checksum = digest::Context::new(&digest::SHA256);
     checksum.update(header);
+    let mut chunk = Chunks::new(lengths);
     for ((name, expected_length), expected_hash) in NAMES.into_iter().zip(lengths).zip(hashes) {
         let path = source_directory.join(name);
         let (mut input, before) = marketplace_artifacts::open_regular(&path, expected_length)?;
@@ -172,33 +222,152 @@ fn seal(
             return Err(invalid());
         }
         let mut artifact = digest::Context::new(&digest::SHA256);
-        transfer(&mut input, &mut output, expected_length, check, |data| {
+        let mut remaining = expected_length;
+        while remaining > 0 {
+            let space = chunk.space().min(remaining);
+            let data = chunk.fill(space);
+            input.read_exact(data)?;
             artifact.update(data);
-            cipher.encrypt(data);
-            checksum.update(data);
-        })?;
+            remaining -= space;
+            let last = chunk.done();
+            if let Some((sealed, index)) = chunk.full() {
+                if (index * CHUNK_BYTES as u64).is_multiple_of(CHECK_INTERVAL) {
+                    check(&output)?;
+                }
+                let tag = key
+                    .seal_in_place_separate_tag(chunk_nonce(index, last), Aad::from(header), sealed)
+                    .map_err(|_| invalid())?;
+                output.write_all(sealed)?;
+                output.write_all(tag.as_ref())?;
+                checksum.update(sealed);
+                checksum.update(tag.as_ref());
+                chunk.next();
+            }
+        }
         eof(&mut input)?;
         if input.metadata()?.len() != before.len() || artifact.finish().as_ref() != expected_hash {
             return Err(invalid());
         }
     }
-    let tag = cipher.finish();
-    output.write_all(&tag)?;
     output.sync_all()?;
-    checksum.update(&tag);
     let hash = checksum
         .finish()
         .as_ref()
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    Ok((
-        HEADER_BYTES as u64 + lengths.into_iter().sum::<u64>() + TAG_BYTES as u64,
-        hash,
-    ))
+    Ok((sealed_bytes(lengths), hash))
 }
 
 fn open(
+    source: &Path,
+    target_directory: &Path,
+    expected_header: &[u8; HEADER_BYTES],
+    lengths: [u64; NAMES.len()],
+    key: &LessSafeKey,
+    check: CapacityCheck,
+) -> io::Result<()> {
+    let size = sealed_bytes(lengths);
+    let (mut input, before) = marketplace_artifacts::open_regular(source, size)?;
+    if before.len() != size {
+        return Err(invalid());
+    }
+    let mut header = [0; HEADER_BYTES];
+    input.read_exact(&mut header)?;
+    if &header != expected_header {
+        return Err(invalid());
+    }
+    let payload = lengths.into_iter().sum::<u64>();
+    let count = chunks(payload);
+    let directory = File::open(target_directory)?;
+    let mut buffer = Zeroizing::new(vec![0; CHUNK_BYTES + TAG_BYTES]);
+    let mut artifacts = NAMES.into_iter().zip(lengths);
+    let mut current: Option<(File, u64)> = None;
+    for index in 0..count {
+        if (index * CHUNK_BYTES as u64).is_multiple_of(CHECK_INTERVAL) {
+            check(&directory)?;
+        }
+        let plain = (payload - index * CHUNK_BYTES as u64).min(CHUNK_BYTES as u64) as usize;
+        let sealed = &mut buffer[..plain + TAG_BYTES];
+        input.read_exact(sealed)?;
+        // Plaintext reaches the staging files only after its chunk authenticated.
+        let mut data = &*key
+            .open_in_place(
+                chunk_nonce(index, index + 1 == count),
+                Aad::from(header),
+                sealed,
+            )
+            .map_err(|_| invalid())?;
+        while !data.is_empty() {
+            if current.is_none() {
+                let (name, length) = artifacts.next().ok_or_else(invalid)?;
+                current = Some((new_private_file(&target_directory.join(name))?, length));
+            }
+            let Some((output, remaining)) = current.as_mut() else {
+                return Err(invalid());
+            };
+            let part = data.len().min(usize::try_from(*remaining).unwrap_or(usize::MAX));
+            output.write_all(&data[..part])?;
+            *remaining -= part as u64;
+            data = &data[part..];
+            if *remaining == 0 {
+                output.sync_all()?;
+                current = None;
+            }
+        }
+    }
+    if current.is_some() || artifacts.next().is_some() {
+        return Err(invalid());
+    }
+    eof(&mut input)
+}
+
+/// The chunk being filled from consecutive artifacts while sealing.
+struct Chunks {
+    buffer: Zeroizing<Vec<u8>>,
+    filled: usize,
+    index: u64,
+    remaining: u64,
+}
+
+impl Chunks {
+    fn new(lengths: [u64; NAMES.len()]) -> Self {
+        Self {
+            buffer: Zeroizing::new(vec![0; CHUNK_BYTES]),
+            filled: 0,
+            index: 0,
+            remaining: lengths.into_iter().sum(),
+        }
+    }
+
+    fn space(&self) -> u64 {
+        (CHUNK_BYTES - self.filled) as u64
+    }
+
+    fn fill(&mut self, bytes: u64) -> &mut [u8] {
+        let start = self.filled;
+        self.filled += bytes as usize;
+        self.remaining -= bytes;
+        &mut self.buffer[start..self.filled]
+    }
+
+    /// A chunk is complete when it is full or holds the payload's last byte.
+    fn full(&mut self) -> Option<(&mut [u8], u64)> {
+        (self.filled == CHUNK_BYTES || self.remaining == 0)
+            .then(|| (&mut self.buffer[..self.filled], self.index))
+    }
+
+    fn done(&self) -> bool {
+        self.remaining == 0
+    }
+
+    fn next(&mut self) {
+        self.filled = 0;
+        self.index += 1;
+    }
+}
+
+fn open_stream(
     source: &Path,
     target_directory: &Path,
     expected_header: &[u8; HEADER_BYTES],

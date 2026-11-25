@@ -1,6 +1,6 @@
 // oxlint-disable no-await-in-loop -- Exercise each independent corruption and filesystem failure.
 import assert from 'node:assert/strict'
-import { createCipheriv, createHash } from 'node:crypto'
+import { createCipheriv, createHash, hkdfSync } from 'node:crypto'
 import * as filesystem from 'node:fs/promises'
 import {
     link,
@@ -129,6 +129,43 @@ async function fixture(
     }
 }
 
+/**
+ * Seal `bodies` in the given format independently of the module under test: v1 as one
+ * AES-256-GCM stream, v2 as HKDF-keyed 64 KiB chunks with counter and final-chunk nonces.
+ */
+function sealEnvelope(format: 1 | 2, recoveryKey: string, template: Buffer, bodies: Buffer[]) {
+    const key = Buffer.from(recoveryKey, 'base64')
+    const header = Buffer.from(template.subarray(0, 96))
+    header[8] = format
+    bodies.forEach((body, index) => header.writeBigUInt64BE(BigInt(body.length), 56 + index * 8))
+    const payload = Buffer.concat(bodies)
+    if (format === 1) {
+        const cipher = createCipheriv('aes-256-gcm', key, header.subarray(12, 24), {
+            authTagLength: 16,
+        })
+        cipher.setAAD(header)
+        return Buffer.concat([header, cipher.update(payload), cipher.final(), cipher.getAuthTag()])
+    }
+    const subkey = Buffer.from(
+        hkdfSync('sha256', key, header.subarray(12, 24), 'RPBAKENC/2 AES-256-GCM payload key', 32),
+    )
+    const parts = [header]
+    const count = Math.ceil(payload.length / 65_536)
+    for (let index = 0; index < count; index++) {
+        const nonce = Buffer.alloc(12)
+        nonce.writeBigUInt64BE(BigInt(index), 3)
+        nonce[11] = index + 1 === count ? 1 : 0
+        const cipher = createCipheriv('aes-256-gcm', subkey, nonce, { authTagLength: 16 })
+        cipher.setAAD(header)
+        parts.push(
+            cipher.update(payload.subarray(index * 65_536, (index + 1) * 65_536)),
+            cipher.final(),
+            cipher.getAuthTag(),
+        )
+    }
+    return Buffer.concat(parts)
+}
+
 async function assertNoStaging(directory: string) {
     assert.deepEqual(
         (await readdir(directory)).filter((name) => name.startsWith('.rentnerproxy-')),
@@ -184,6 +221,28 @@ test('encrypts and restores all five complete v4 artifacts into a fresh private 
         await assertNoStaging(directory)
     }))
 
+test('new backups are chunked v2 envelopes, and v1 envelopes of earlier releases still restore', () =>
+    fixture(async (directory, source) => {
+        const key = createRecoveryKey()
+        const encrypted = join(directory, 'backup.encrypted')
+        await encryptBackup(source, encrypted, key)
+        const ciphertext = await readFile(encrypted)
+        const bodies = await Promise.all(names.map((name) => readFile(join(source, name))))
+        const payload = bodies.reduce((sum, body) => sum + body.length, 0)
+        assert.equal(ciphertext[8], 2)
+        assert.equal(ciphertext.length, 96 + payload + 16 * Math.ceil(payload / 65_536))
+        // The module matches the independent reference of the format byte for byte.
+        assert.deepEqual(sealEnvelope(2, key, ciphertext, bodies), ciphertext)
+
+        const legacy = join(directory, 'legacy.encrypted')
+        const restored = join(directory, 'legacy-restored')
+        await writeFile(legacy, sealEnvelope(1, key, ciphertext, bodies))
+        await decryptBackup(legacy, restored, key)
+        for (const [index, name] of names.entries())
+            assert.deepEqual(await readFile(join(restored, name)), bodies[index])
+        await assertNoStaging(directory)
+    }))
+
 test('tampering, truncation, appended bytes and a wrong key expose no plaintext and preserve the encrypted input', () =>
     fixture(async (directory, source) => {
         const key = createRecoveryKey()
@@ -195,11 +254,21 @@ test('tampering, truncation, appended bytes and a wrong key expose no plaintext 
             copy[offset] = copy[offset]! ^ 1
             return copy
         }
+        // Two full sealed chunks of 64 KiB plus their tags, exchanged.
+        const sealedChunk = 65_536 + 16
+        const swapped = Buffer.concat([
+            original.subarray(0, 96),
+            original.subarray(96 + sealedChunk, 96 + 2 * sealedChunk),
+            original.subarray(96, 96 + sealedChunk),
+            original.subarray(96 + 2 * sealedChunk),
+        ])
         const candidates = [
             altered(12),
             altered(24),
             altered(96),
+            altered(96 + sealedChunk + 7),
             altered(original.length - 1),
+            swapped,
             original.subarray(0, 70),
             original.subarray(0, -1),
             Buffer.concat([original, Buffer.from([0])]),
@@ -247,7 +316,13 @@ test.skipIf(process.platform !== 'linux' || !(await Bun.file(testController).exi
             await decryptBackup(nativeFile, fallbackRestore, key)
             await encryptBackup(source, fallbackFile, key)
             await nativeEnvelope.decryptBackup(fallbackFile, nativeRestore, key)
-            for (const destination of [fallbackRestore, nativeRestore]) {
+            // The native controller still opens v1 envelopes of earlier releases.
+            const bodies = await Promise.all(names.map((name) => readFile(join(source, name))))
+            const legacyFile = join(directory, 'legacy.encrypted')
+            const legacyRestore = join(directory, 'legacy-restore')
+            await writeFile(legacyFile, sealEnvelope(1, key, encrypted, bodies))
+            await nativeEnvelope.decryptBackup(legacyFile, legacyRestore, key)
+            for (const destination of [fallbackRestore, nativeRestore, legacyRestore]) {
                 await verifyPublishedBackup(destination)
                 for (const name of names) {
                     assert.deepEqual(
@@ -312,28 +387,18 @@ test('authenticated plaintext still must pass the complete backup metadata and a
         const header = (await readFile(encrypted)).subarray(0, 96)
         const bodies = await Promise.all(names.map((name) => readFile(join(source, name))))
         bodies[2]![0] = bodies[2]![0]! ^ 1
-        // Use the platform cipher independently to produce a valid tag for inconsistent backup contents.
-        const cipher = createCipheriv(
-            'aes-256-gcm',
-            Buffer.from(key, 'base64'),
-            header.subarray(12, 24),
-            { authTagLength: 16 },
-        )
-        cipher.setAAD(header)
-        const bytes = Buffer.concat([
-            header,
-            cipher.update(Buffer.concat(bodies)),
-            cipher.final(),
-            cipher.getAuthTag(),
-        ])
-        await writeFile(encrypted, bytes)
-        await assert.rejects(
-            decryptBackup(encrypted, join(directory, 'restored'), key),
-            /checksum mismatch/,
-        )
-        await assert.rejects(stat(join(directory, 'restored')), /ENOENT/)
-        assert.deepEqual(await readFile(encrypted), bytes)
-        await assertNoStaging(directory)
+        // Produce validly authenticated envelopes of both formats for inconsistent contents.
+        for (const format of [1, 2] as const) {
+            const bytes = sealEnvelope(format, key, header, bodies)
+            await writeFile(encrypted, bytes)
+            await assert.rejects(
+                decryptBackup(encrypted, join(directory, 'restored'), key),
+                /checksum mismatch/,
+            )
+            await assert.rejects(stat(join(directory, 'restored')), /ENOENT/)
+            assert.deepEqual(await readFile(encrypted), bytes)
+            await assertNoStaging(directory)
+        }
     }))
 
 test('rejects unexpected source entries, invalid artifacts and reuse of the application encryption key', () =>
@@ -371,30 +436,16 @@ test('authenticated archives with traversal paths are rejected before publishing
         }
         bodies[0] = Buffer.from(JSON.stringify(metadata))
         bodies[3] = archive
-        bodies.forEach((body, index) =>
-            header.writeBigUInt64BE(BigInt(body.length), 56 + index * 8),
-        )
-        const cipher = createCipheriv(
-            'aes-256-gcm',
-            Buffer.from(key, 'base64'),
-            header.subarray(12, 24),
-            { authTagLength: 16 },
-        )
-        cipher.setAAD(header)
-        const bytes = Buffer.concat([
-            header,
-            cipher.update(Buffer.concat(bodies)),
-            cipher.final(),
-            cipher.getAuthTag(),
-        ])
-        await writeFile(encrypted, bytes)
-        await assert.rejects(
-            decryptBackup(encrypted, join(directory, 'restored'), key),
-            /unsafe state archive path/,
-        )
-        await assert.rejects(stat(join(directory, 'restored')), /ENOENT/)
-        await assert.rejects(stat(join(directory, 'escape')), /ENOENT/)
-        await assertNoStaging(directory)
+        for (const format of [1, 2] as const) {
+            await writeFile(encrypted, sealEnvelope(format, key, header, bodies))
+            await assert.rejects(
+                decryptBackup(encrypted, join(directory, 'restored'), key),
+                /unsafe state archive path/,
+            )
+            await assert.rejects(stat(join(directory, 'restored')), /ENOENT/)
+            await assert.rejects(stat(join(directory, 'escape')), /ENOENT/)
+            await assertNoStaging(directory)
+        }
     }))
 
 test('encryption enforces metadata and application-key limits before processing backup contents', () =>

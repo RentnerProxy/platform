@@ -3,6 +3,7 @@ import {
     createCipheriv,
     createDecipheriv,
     createHash,
+    hkdfSync,
     randomBytes,
     timingSafeEqual,
 } from 'node:crypto'
@@ -30,9 +31,16 @@ import { assertBackupCapacity, backupCapacityGuard } from '../capacity.ts'
 import { runMaintenanceProcess } from '../maintenance-process.ts'
 import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 
-// v1 has a fixed 96-byte AAD header and exactly five concatenated artifact bodies,
-// followed by the 16-byte GCM tag. No names or paths are accepted from the envelope.
+// Both formats have a fixed 96-byte AAD header and exactly five artifact bodies in order.
+// No names or paths are accepted from the envelope.
+// - v1 (read only) encrypts the concatenated bodies as one AES-256-GCM stream with one tag.
+// - v2 derives a payload key with HKDF-SHA256 from the recovery key and the header salt,
+//   then seals every 64 KiB chunk of the bodies on its own. The nonce holds the chunk
+//   counter and marks the final chunk, so no unauthenticated plaintext is ever written.
 const magic = Buffer.from('RPBAKENC', 'ascii')
+const streamFormat = 1
+const chunkedFormat = 2
+const payloadKeyInfo = 'RPBAKENC/2 AES-256-GCM payload key'
 const headerBytes = 96
 const tagBytes = 16
 const chunkBytes = 65_536
@@ -53,6 +61,24 @@ const limits = [
 const maximumPayloadBytes = limits.reduce((sum, bytes) => sum + bytes, 0)
 const nativeController = '/usr/local/bin/rentnerproxy-controller'
 
+const chunkCount = (payloadBytes: number) => Math.ceil(payloadBytes / chunkBytes)
+
+function envelopeBytes(format: number, payloadBytes: number): number {
+    const tags = format === chunkedFormat ? chunkCount(payloadBytes) : 1
+    return headerBytes + payloadBytes + tags * tagBytes
+}
+
+function payloadKey(key: Buffer, header: Buffer): Buffer {
+    return Buffer.from(hkdfSync('sha256', key, header.subarray(12, 24), payloadKeyInfo, 32))
+}
+
+function chunkNonce(index: number, last: boolean): Buffer {
+    const nonce = Buffer.alloc(12)
+    nonce.writeBigUInt64BE(BigInt(index), 3)
+    nonce[11] = last ? 1 : 0
+    return nonce
+}
+
 async function hasNativeEnvelope(signal: AbortSignal): Promise<boolean> {
     if (process.platform !== 'linux' || !(await Bun.file(nativeController).exists())) return false
     try {
@@ -70,7 +96,8 @@ async function hasNativeEnvelope(signal: AbortSignal): Promise<boolean> {
         return (
             result.stopped &&
             !result.failed &&
-            Buffer.from(result.stdout).toString('ascii') === 'RPBAKENC/1\n'
+            // A v2 controller seals v2 and opens both formats.
+            Buffer.from(result.stdout).toString('ascii') === 'RPBAKENC/2\n'
         )
     } catch {
         signal.throwIfAborted()
@@ -178,10 +205,11 @@ async function regularFile(path: string, maximum: number): Promise<FileHandle> {
     }
 }
 
-function payloadLengths(header: Buffer): number[] {
+function payloadLengths(header: Buffer): { format: number; lengths: number[] } {
+    const format = header[8]!
     if (
         !header.subarray(0, 8).equals(magic) ||
-        header[8] !== 1 ||
+        (format !== streamFormat && format !== chunkedFormat) ||
         header[9] !== 1 ||
         header.readUInt16BE(10) !== 0
     )
@@ -194,7 +222,71 @@ function payloadLengths(header: Buffer): number[] {
     })
     if (lengths.reduce((sum, bytes) => sum + bytes, 0) > maximumPayloadBytes)
         throw new Error('encrypted backup exceeds total size limit')
-    return lengths
+    return { format, lengths }
+}
+
+/** Open a v2 envelope chunk by chunk and stage each chunk only after it authenticated. */
+async function openChunks(
+    input: FileHandle,
+    staging: string,
+    header: Buffer,
+    key: Buffer,
+    lengths: number[],
+    checkCapacity: () => Promise<void>,
+    signal?: AbortSignal,
+): Promise<void> {
+    const payloadBytes = lengths.reduce((sum, bytes) => sum + bytes, 0)
+    const count = chunkCount(payloadBytes)
+    const subkey = payloadKey(key, header)
+    let output: FileHandle | undefined
+    let artifact = 0
+    let remaining = 0
+    let inputOffset = headerBytes
+    try {
+        for (let index = 0; index < count; index++) {
+            if ((index * chunkBytes) % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0)
+                await checkCapacity()
+            signal?.throwIfAborted()
+            const plain = Math.min(chunkBytes, payloadBytes - index * chunkBytes)
+            const sealed = await readFileRange(input, inputOffset, plain + tagBytes)
+            inputOffset += plain + tagBytes
+            const decipher = createDecipheriv(
+                'aes-256-gcm',
+                subkey,
+                chunkNonce(index, index + 1 === count),
+                { authTagLength: tagBytes },
+            )
+            decipher.setAAD(header)
+            decipher.setAuthTag(sealed.subarray(plain))
+            // final() throws for an altered chunk before any of its plaintext is written.
+            const data = Buffer.concat([decipher.update(sealed.subarray(0, plain)), decipher.final()])
+            let position = 0
+            while (position < data.length) {
+                if (!output) {
+                    const name = names[artifact]
+                    if (!name) throw new Error('invalid encrypted backup payload')
+                    output = await open(join(staging, name), 'wx', 0o600)
+                    await output.chmod(0o600)
+                    remaining = lengths[artifact]!
+                }
+                const part = Math.min(remaining, data.length - position)
+                await writeFileChunk(output, data.subarray(position, position + part))
+                position += part
+                remaining -= part
+                if (remaining === 0) {
+                    await output.sync()
+                    await output.close()
+                    output = undefined
+                    artifact += 1
+                }
+            }
+            data.fill(0)
+        }
+        if (artifact !== names.length) throw new Error('invalid encrypted backup payload')
+    } finally {
+        subkey.fill(0)
+        await output?.close()
+    }
 }
 
 async function independentKey(file: FileHandle, key: Buffer, signal?: AbortSignal): Promise<void> {
@@ -241,16 +333,13 @@ export async function encryptBackup(
         const verified = await verifyPublishedBackup(directory, signal)
         await independentKey(files[1]!, key, signal)
         const lengths = await Promise.all(files.map(async (file) => (await file.stat()).size))
-        await assertBackupCapacity([
-            {
-                path: dirname(resolve(outputFile)),
-                bytes: headerBytes + tagBytes + lengths.reduce((sum, length) => sum + length, 0),
-            },
-        ])
+        const payloadBytes = lengths.reduce((sum, length) => sum + length, 0)
+        const sealedBytes = envelopeBytes(chunkedFormat, payloadBytes)
+        await assertBackupCapacity([{ path: dirname(resolve(outputFile)), bytes: sealedBytes }])
         const checkCapacity = backupCapacityGuard([dirname(resolve(outputFile))])
         const header = Buffer.alloc(headerBytes)
         magic.copy(header)
-        header[8] = 1
+        header[8] = chunkedFormat
         header[9] = 1 // AES-256-GCM with a full 128-bit authentication tag.
         randomBytes(12).copy(header, 12)
         const keyId = createHash('sha256').update(key).digest('hex')
@@ -282,8 +371,7 @@ export async function encryptBackup(
                     typeof receipt !== 'object' ||
                     receipt === null ||
                     !('bytes' in receipt) ||
-                    receipt.bytes !==
-                        headerBytes + tagBytes + lengths.reduce((sum, bytes) => sum + bytes, 0) ||
+                    receipt.bytes !== sealedBytes ||
                     !('sha256' in receipt) ||
                     typeof receipt.sha256 !== 'string' ||
                     !/^[a-f0-9]{64}$/u.test(receipt.sha256)
@@ -315,10 +403,6 @@ export async function encryptBackup(
             ownsOutput = false
             return result
         }
-        const cipher = createCipheriv('aes-256-gcm', key, header.subarray(12, 24), {
-            authTagLength: tagBytes,
-        })
-        cipher.setAAD(header)
         output = await open(outputFile, 'wx', 0o600)
         ownsOutput = true
         await output.chmod(0o600)
@@ -330,27 +414,55 @@ export async function encryptBackup(
             bytes += chunk.length
         }
         await write(header)
-        for (const [index, file] of files.entries()) {
-            const artifactHash = createHash('sha256')
-            for (let offset = 0; offset < lengths[index]!; offset += chunkBytes) {
-                if (offset % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0) await checkCapacity()
+        const subkey = payloadKey(key, header)
+        try {
+            const count = chunkCount(payloadBytes)
+            let index = 0
+            let pending: Buffer[] = []
+            let pendingBytes = 0
+            const seal = async () => {
+                if ((index * chunkBytes) % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0)
+                    await checkCapacity()
                 signal?.throwIfAborted()
-                const chunk = await readFileRange(
-                    file,
-                    offset,
-                    Math.min(chunkBytes, lengths[index]! - offset),
+                const cipher = createCipheriv(
+                    'aes-256-gcm',
+                    subkey,
+                    chunkNonce(index, index + 1 === count),
+                    { authTagLength: tagBytes },
                 )
-                artifactHash.update(chunk)
-                await write(cipher.update(chunk))
+                cipher.setAAD(header)
+                const plaintext = Buffer.concat(pending)
+                await write(
+                    Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]),
+                )
+                for (const part of [plaintext, ...pending]) part.fill(0)
+                pending = []
+                pendingBytes = 0
+                index += 1
             }
-            if (
-                (await file.stat()).size !== lengths[index] ||
-                artifactHash.digest('hex') !== expected[index]
-            )
-                throw new Error('backup changed during encryption')
+            for (const [artifact, file] of files.entries()) {
+                const artifactHash = createHash('sha256')
+                let offset = 0
+                while (offset < lengths[artifact]!) {
+                    const take = Math.min(chunkBytes - pendingBytes, lengths[artifact]! - offset)
+                    const chunk = await readFileRange(file, offset, take)
+                    artifactHash.update(chunk)
+                    pending.push(chunk)
+                    pendingBytes += take
+                    offset += take
+                    if (pendingBytes === chunkBytes) await seal()
+                }
+                if (
+                    (await file.stat()).size !== lengths[artifact] ||
+                    artifactHash.digest('hex') !== expected[artifact]
+                )
+                    throw new Error('backup changed during encryption')
+            }
+            if (pendingBytes > 0) await seal()
+            if (index !== count) throw new Error('backup changed during encryption')
+        } finally {
+            subkey.fill(0)
         }
-        await write(cipher.final())
-        await write(cipher.getAuthTag())
         await output.sync()
         await output.close()
         output = undefined
@@ -388,11 +500,12 @@ export async function decryptBackup(
         if (destination === parse(destination).root) throw new Error('invalid backup destination')
         await safeDirectory(dirname(destination))
         await absent(destination)
-        input = await regularFile(inputFile, headerBytes + maximumPayloadBytes + tagBytes)
+        input = await regularFile(inputFile, envelopeBytes(chunkedFormat, maximumPayloadBytes))
         const header = await readFileRange(input, 0, headerBytes)
-        const lengths = payloadLengths(header)
+        const { format, lengths } = payloadLengths(header)
         const payloadBytes = lengths.reduce((sum, bytes) => sum + bytes, 0)
-        if ((await input.stat()).size !== headerBytes + payloadBytes + tagBytes)
+        const sealedBytes = envelopeBytes(format, payloadBytes)
+        if ((await input.stat()).size !== sealedBytes)
             throw new Error('truncated or trailing encrypted backup data')
         if (!timingSafeEqual(header.subarray(24, 56), createHash('sha256').update(key).digest()))
             throw new Error('encrypted backup recovery key does not match')
@@ -408,6 +521,8 @@ export async function decryptBackup(
                 Buffer.concat([key, header]),
                 signal,
             )
+        } else if (format === chunkedFormat) {
+            await openChunks(input, staging, header, key, lengths, checkCapacity, signal)
         } else {
             const decipher = createDecipheriv('aes-256-gcm', key, header.subarray(12, 24), {
                 authTagLength: tagBytes,
@@ -437,7 +552,7 @@ export async function decryptBackup(
             }
             if (decipher.final().length !== 0) throw new Error('invalid encrypted backup payload')
         }
-        if ((await input.stat()).size !== headerBytes + payloadBytes + tagBytes)
+        if ((await input.stat()).size !== sealedBytes)
             throw new Error('encrypted backup changed during decryption')
         signal?.throwIfAborted()
         await verifyPublishedBackup(staging, signal)
