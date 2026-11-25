@@ -73,6 +73,8 @@ if [[ ${1:-} == --privileged-app-ipc ]]; then
         --tmpfs /var/lib/rentnerproxy:rw,mode=0755,size=64m \
         --tmpfs /tmp:rw,mode=01777,size=128m \
         --mount "type=bind,source=$PWD/docker/production/tests/app-provision.sh,target=/app-provision.sh,readonly" \
+        --mount "type=bind,source=$PWD/docker/production/apps/pg_hba.conf,target=/fixture/pg_hba.conf,readonly" \
+        --mount "type=bind,source=$PWD/docker/production/apps/pg_ident.conf,target=/fixture/pg_ident.conf,readonly" \
         --entrypoint /bin/bash \
         mirror.gcr.io/library/postgres:18.7-trixie \
         /app-provision.sh

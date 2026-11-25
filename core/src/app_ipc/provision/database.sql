@@ -14,6 +14,8 @@ SELECT format('CREATE ROLE %I', :'migration_role') WHERE NOT EXISTS
 ALTER ROLE :"role" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT CONNECTION LIMIT 4 PASSWORD :'app_password';
 \unset app_password
 ALTER ROLE :"migration_role" WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
+-- An interrupted data migration may have left the runtime role able to assume the schema owner.
+REVOKE :"migration_role" FROM :"role";
 SELECT format('CREATE DATABASE %I OWNER postgres', :'role') WHERE NOT EXISTS
     (SELECT FROM pg_database WHERE datname = :'role')
 \gexec
