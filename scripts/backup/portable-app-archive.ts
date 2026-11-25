@@ -42,10 +42,8 @@ export async function appendPortableAppState(
     expected: Readonly<{ bytes: number; sha256: string }>,
     signal?: AbortSignal,
 ): Promise<{ bytes: number; sha256: string }> {
-    const archive = await open(
-        archivePath,
-        constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW,
-    )
+    // Windows refuses to truncate through an append-only handle, so writes use explicit offsets.
+    const archive = await open(archivePath, constants.O_RDWR | constants.O_NOFOLLOW)
     try {
         const state = await open(statePath, constants.O_RDONLY | constants.O_NOFOLLOW)
         try {
@@ -79,9 +77,11 @@ export async function appendPortableAppState(
                 )
             }
             await archive.truncate(end)
+            let position = end
             const append = async (chunk: Buffer) => {
                 archiveHash.update(chunk)
-                await writeFileChunk(archive, chunk)
+                await writeFileChunk(archive, chunk, position)
+                position += chunk.length
             }
             await append(memberHeader(info.size))
             const stateHash = createHash('sha256')
