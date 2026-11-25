@@ -8,9 +8,7 @@ use super::{
     journal::{ReleaseSelection, Removal, Slot},
     valid_id,
 };
-use crate::app_install::{
-    CatalogEntry, InstalledRelease, Installer, TargetCheck, TargetEnvironment,
-};
+use crate::app_install::{CatalogEntry, InstalledRelease, TargetCheck};
 
 #[cfg(test)]
 #[path = "../../tests/private/app_manager/catalog_lifecycle.rs"]
@@ -118,10 +116,10 @@ pub(super) struct TargetInstallation<'a> {
 }
 
 /// Check every installation the platform may start again; removed releases never start.
+/// `check` answers for each release in order, normally `Installer::check_target`.
 pub(super) fn check_target<'a>(
     installations: &'a [Installation],
-    installer: &Installer,
-    environment: &TargetEnvironment,
+    check: impl FnOnce(&[InstalledRelease<'_>]) -> io::Result<Vec<TargetCheck>>,
 ) -> io::Result<Vec<TargetInstallation<'a>>> {
     use InstallationState as State;
 
@@ -142,7 +140,7 @@ pub(super) fn check_target<'a>(
             archive_sha256: &row.release.archive_sha256,
         })
         .collect();
-    let checks = installer.check_target(environment, &releases)?;
+    let checks = check(&releases)?;
     if checks.len() != installed.len() {
         return Err(io::Error::other("Target check result is incomplete"));
     }

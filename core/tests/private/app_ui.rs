@@ -598,6 +598,28 @@ async fn assert_catalog_requests(
         .request("POST", INSTALL, JSON, &[b' '; MAX_INSTALL_BYTES + 1])
         .await
         .assert(413);
+    let target = "/v1/catalog/target-check";
+    client.request("POST", target, "", b"{}").await.assert(400);
+    client.request("POST", target, JSON, b"{").await.assert(400);
+    client
+        .request("POST", target, JSON, &[b' '; MAX_INSTALL_BYTES + 1])
+        .await
+        .assert(413);
+    let mut environment = value!({
+        "runtimeProfile": "rentnerproxy-linux-v1", "platformApi": "1.1.0",
+        "appProtocol": "1.0.0", "uiBridge": null, "engineCapabilities": [],
+    });
+    environment["engineCapabilities"] = value!(["Caddy.crowdsec.v1"]);
+    client
+        .request("POST", target, JSON, &serde_json::to_vec(&environment).unwrap())
+        .await
+        .assert(400);
+    environment["engineCapabilities"] = value!([]);
+    // The fixture endpoint has no installer configuration, so no accepted catalog can answer.
+    client
+        .request("POST", target, JSON, &serde_json::to_vec(&environment).unwrap())
+        .await
+        .assert(503);
     let lifecycle = "/v1/catalog/lifecycle";
     client
         .request("POST", lifecycle, JSON, b"{}")

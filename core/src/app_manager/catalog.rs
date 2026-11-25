@@ -210,7 +210,9 @@ impl Endpoint {
 
         let published = Arc::clone(&self.state()?.installations);
         let installer = Installer::open_appliance(self.config.as_deref())?;
-        let installations = lifecycle::check_target(&published, &installer, environment)?;
+        let installations = lifecycle::check_target(&published, |releases| {
+            installer.check_target(environment, releases)
+        })?;
         Ok(serde_json::to_vec(&TargetView { installations })?)
     }
 

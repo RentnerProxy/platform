@@ -42,7 +42,10 @@ export function buildReleaseAppRequirements(
         },
         features: BUILT_IN_FEATURE_TRANSITIONS,
     })
-    if (Buffer.byteLength(serializeReleaseAppRequirements(requirements)) > APP_REQUIREMENTS_MAX_BYTES)
+    if (
+        Buffer.byteLength(serializeReleaseAppRequirements(requirements)) >
+        APP_REQUIREMENTS_MAX_BYTES
+    )
         throw new Error('App requirements exceed the reader size limit')
     return requirements
 }

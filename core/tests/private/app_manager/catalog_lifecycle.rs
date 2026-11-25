@@ -110,6 +110,65 @@ fn installations_report_the_providers_of_their_exact_listed_release() {
 }
 
 #[test]
+fn target_checks_cover_only_installations_the_platform_may_start_again() {
+    use crate::app_install::TargetSupport;
+
+    let mut disabled = committed();
+    disabled.desired_running = false;
+    let mut removed = committed();
+    removed.removal = Removal::Removed;
+    removed.removed_release = Some(ReleaseSelection::from(&release("1.8.7", 'b')));
+    let rows = [
+        Installation::new("running-app", &committed(), true).unwrap(),
+        Installation::new("removed-app", &removed, false).unwrap(),
+        Installation::new("disabled-app", &disabled, false).unwrap(),
+    ];
+    let checked = check_target(&rows, |releases| {
+        let seen: Vec<_> = releases
+            .iter()
+            .map(|release| (release.app_id, release.version, release.archive_sha256))
+            .collect();
+        let digest = "a".repeat(64);
+        assert_eq!(
+            seen,
+            [(APP, "1.9.2", digest.as_str()), (APP, "1.9.2", digest.as_str())]
+        );
+        Ok(vec![
+            TargetCheck {
+                providers: Some(vec!["monitoring".into()]),
+                support: TargetSupport::Incompatible,
+            },
+            TargetCheck {
+                providers: None,
+                support: TargetSupport::Unknown,
+            },
+        ])
+    })
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&checked).unwrap(),
+        json!([
+            {
+                "installationId": "running-app", "appId": APP, "version": "1.9.2",
+                "archiveSha256": "a".repeat(64), "state": "running",
+                "providers": ["monitoring"], "target": "incompatible",
+            },
+            {
+                "installationId": "disabled-app", "appId": APP, "version": "1.9.2",
+                "archiveSha256": "a".repeat(64), "state": "disabled",
+                "providers": null, "target": "unknown",
+            },
+        ])
+    );
+    let incomplete = check_target(&rows, |_| Ok(Vec::new())).err().unwrap();
+    assert_eq!(incomplete.to_string(), "Target check result is incomplete");
+    let failed = check_target(&rows, |_| Err(io::Error::other("catalog unavailable")))
+        .err()
+        .unwrap();
+    assert_eq!(failed.to_string(), "catalog unavailable");
+}
+
+#[test]
 fn lifecycle_admission_checks_generation_release_state_and_rollback_identity() {
     let mut slot = committed();
     let running = Installation::new(ID, &slot, true).unwrap();
