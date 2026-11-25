@@ -219,7 +219,12 @@ async fn privileged_app_data_migrations() {
         ),
     );
     write("split.sql", "CREATE TABLE split (entry text);\nCOMMIT;\n");
-    for step in ["shell.sql", "split.sql"] {
+    // Without standard_conforming_strings psql reads one literal here and would run the COMMIT.
+    write(
+        "desync.sql",
+        "SET standard_conforming_strings = off;\nSELECT 'x\\'';\nCOMMIT;\nSELECT '';\n",
+    );
+    for step in ["shell.sql", "split.sql", "desync.sql"] {
         apply(UID, package.path(), &migration(2, 3, &["audit.sql", step]))
             .await
             .unwrap_err();
