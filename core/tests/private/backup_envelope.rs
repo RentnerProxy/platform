@@ -332,7 +332,11 @@ fn seals_chunked_envelopes_that_match_an_independent_implementation() {
         // A rejected first chunk or size stages nothing. Later failures may leave earlier,
         // authenticated chunks staged, but the envelope is still rejected.
         if matches!(case, "swapped" | "short" | "trailing") {
-            assert_eq!(fs::read_dir(&target).unwrap().count(), 0, "{case} staged plaintext");
+            assert_eq!(
+                fs::read_dir(&target).unwrap().count(),
+                0,
+                "{case} staged plaintext"
+            );
         }
         assert!(
             !target.join(NAMES[4]).exists(),
