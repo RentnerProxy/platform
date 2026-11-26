@@ -608,7 +608,22 @@ async fn privileged_published_greeting_distribution_gates() {
     halt(&mut manager).await;
     manager = start_manager(&controller, config, token, Some(&installation_id)).await;
     let offline = wait_catalog_state("stale").await;
-    assert_eq!(offline["entries"], ready["entries"]);
+    let uncached = |view: &Value| -> Value {
+        let mut entries = view["entries"].clone();
+        for entry in entries.as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("cached");
+        }
+        entries
+    };
+    assert_eq!(uncached(&offline), uncached(&ready));
+    // Both downloaded releases stay installable from the store; the escalated one never was.
+    for (version, stored) in [
+        (first.version, true),
+        (second.version, true),
+        (ESCALATED_VERSION, false),
+    ] {
+        assert_eq!(entry(&offline, version)["cached"], stored, "{version}");
+    }
     let restarted = running_installation(&offline, &installation_id);
     let restarted_generation = new_generation + 1;
     assert_eq!(restarted["generation"], restarted_generation);
