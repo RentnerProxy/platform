@@ -1,103 +1,11 @@
 name: App Runtime Reference
 
 on:
+    # Every pull request reports this check so it can be required. The change detector skips the
+    # work when no app runtime input changed.
     pull_request:
-        paths:
-            - .github/workflows/app-runtime-reference.yml
-            - .github/scripts/ci/fixtures/app-data-migrations.sh
-            - .github/scripts/ci/fixtures/app-offline-restore.ts
-            - .github/scripts/ci/fixtures/app-image-comparison.sh
-            - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
-            - .github/scripts/ci/fixtures/app-greeting-native.sh
-            - .github/scripts/ci/fixtures/app-provider-lifecycle.sh
-            - '.github/scripts/ci/fixtures/app-runtime-reference/**'
-            - 'core/src/app_backup.rs'
-            - 'core/src/app_backup/**'
-            - 'core/src/app_install.rs'
-            - 'core/src/app_install/**'
-            - 'core/src/app_ipc.rs'
-            - 'core/src/app_ipc/**'
-            - 'core/src/app_manager.rs'
-            - 'core/src/app_manager/**'
-            - core/Cargo.lock
-            - core/Cargo.toml
-            - 'core/tests/private/app_install.rs'
-            - 'core/tests/private/app_install/**'
-            - core/tests/private/app_manager.rs
-            - core/tests/private/app_manager/lifecycle.rs
-            - core/tests/private/app_manager/migration.rs
-            - 'core/tests/private/app_manager/lifecycle/**'
-            - core/tests/private/app_ui.rs
-            - 'core/tests/fixtures/app-manager/**'
-            - 'core/tests/fixtures/app-runtime-reference/**'
-            - docker/production/Dockerfile
-            - docker/production/entrypoint.sh
-            - docker/production/tests/app-provision.sh
-            - docker/production/verify-platform.sh
-            - docker/production/apps/catalog/root.json
-            - docker/production/apps/pg_hba.conf
-            - docker/production/apps/pg_ident.conf
-            - docker-compose.yml
-            - scripts/production-backup.ts
-            - scripts/production-restore.ts
-            - 'scripts/backup/**'
-            - scripts/smoke/wait.ts
-            - 'web/src/lib/AppCatalog/**'
-            - 'web/src/lib/AppUi/**'
-            - web/src/server/security-headers.ts
-            - 'web/src/tests/fixtures/app-runtime-reference/**'
-            - 'web/src/tests/fixtures/app-template/**'
-            - bun.lock
-            - package.json
     push:
         branches: [main]
-        paths:
-            - .github/workflows/app-runtime-reference.yml
-            - .github/scripts/ci/fixtures/app-data-migrations.sh
-            - .github/scripts/ci/fixtures/app-offline-restore.ts
-            - .github/scripts/ci/fixtures/app-image-comparison.sh
-            - .github/scripts/ci/fixtures/app-greeting-lifecycle.sh
-            - .github/scripts/ci/fixtures/app-greeting-native.sh
-            - .github/scripts/ci/fixtures/app-provider-lifecycle.sh
-            - '.github/scripts/ci/fixtures/app-runtime-reference/**'
-            - 'core/src/app_backup.rs'
-            - 'core/src/app_backup/**'
-            - 'core/src/app_install.rs'
-            - 'core/src/app_install/**'
-            - 'core/src/app_ipc.rs'
-            - 'core/src/app_ipc/**'
-            - 'core/src/app_manager.rs'
-            - 'core/src/app_manager/**'
-            - core/Cargo.lock
-            - core/Cargo.toml
-            - 'core/tests/private/app_install.rs'
-            - 'core/tests/private/app_install/**'
-            - core/tests/private/app_manager.rs
-            - core/tests/private/app_manager/lifecycle.rs
-            - core/tests/private/app_manager/migration.rs
-            - 'core/tests/private/app_manager/lifecycle/**'
-            - core/tests/private/app_ui.rs
-            - 'core/tests/fixtures/app-manager/**'
-            - 'core/tests/fixtures/app-runtime-reference/**'
-            - docker/production/Dockerfile
-            - docker/production/entrypoint.sh
-            - docker/production/tests/app-provision.sh
-            - docker/production/verify-platform.sh
-            - docker/production/apps/catalog/root.json
-            - docker/production/apps/pg_hba.conf
-            - docker/production/apps/pg_ident.conf
-            - docker-compose.yml
-            - scripts/production-backup.ts
-            - scripts/production-restore.ts
-            - 'scripts/backup/**'
-            - scripts/smoke/wait.ts
-            - 'web/src/lib/AppCatalog/**'
-            - 'web/src/lib/AppUi/**'
-            - web/src/server/security-headers.ts
-            - 'web/src/tests/fixtures/app-runtime-reference/**'
-            - 'web/src/tests/fixtures/app-template/**'
-            - bun.lock
-            - package.json
     workflow_dispatch:
 
 permissions:
@@ -108,8 +16,13 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
+    changes:
+        uses: ./.github/workflows/detect-changes.yml
+
     native:
         name: Native app runtime reference (${{ matrix.architecture }})
+        needs: changes
+        if: ${{ !cancelled() }}
         runs-on: ${{ matrix.runner }}
         timeout-minutes: 45
         strategy:
@@ -124,14 +37,26 @@ jobs:
                       host: Linux/aarch64
         env:
             ARCHITECTURE: ${{ matrix.architecture }}
+            RUN_CHECK: ${{ needs.changes.outputs.app_runtime != 'false' }}
         steps:
+            - name: Require successful change detection
+              env:
+                  CHANGE_RESULT: ${{ needs.changes.result }}
+              run: test "$CHANGE_RESULT" = success
+
+            - name: Report unaffected check
+              if: env.RUN_CHECK != 'true'
+              run: echo 'No app runtime input changed; this check does not need to run.'
+
             - name: Check out exact tested commit
+              if: env.RUN_CHECK == 'true'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
                   ref: ${{ github.sha }}
 
             - name: Require native Linux and Docker execution
+              if: env.RUN_CHECK == 'true'
               shell: bash
               env:
                   EXPECTED_HOST: ${{ matrix.host }}
@@ -140,11 +65,13 @@ jobs:
                   test "$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" = "linux/$ARCHITECTURE"
 
             - name: Set up Bun
+              if: env.RUN_CHECK == 'true'
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: 1.4.5
 
             - name: Install locked browser fixture dependencies and Chromium
+              if: env.RUN_CHECK == 'true'
               shell: bash
               working-directory: web/src/tests/fixtures/app-runtime-reference
               # Hosted AMD64 runners already ship Chromium's system libraries, but refreshing their many
@@ -158,6 +85,7 @@ jobs:
                   fi
 
             - name: Verify the native app runtime reference
+              if: env.RUN_CHECK == 'true'
               shell: bash
               run: |
                   bun --no-env-file --no-orphans .github/scripts/ci/fixtures/app-runtime-reference/run.ts "$ARCHITECTURE" "$RUNNER_TEMP/app-runtime-reference"
@@ -165,12 +93,14 @@ jobs:
                   test -s "$RUNNER_TEMP/app-runtime-reference/browser.json"
 
             - name: Set up the controller Rust toolchain
+              if: env.RUN_CHECK == 'true'
               shell: bash
               run: |
                   rustup toolchain install 1.99.1 --profile minimal
                   rustup override set 1.99.1
 
             - name: Restore Cargo dependency cache
+              if: env.RUN_CHECK == 'true'
               uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: |
@@ -181,6 +111,7 @@ jobs:
                   key: ${{ runner.os }}-cargo-1.99.1-${{ hashFiles('core/Cargo.lock') }}
 
             - name: Verify synthetic Greeting packages and browser fixture
+              if: env.RUN_CHECK == 'true'
               shell: bash
               env:
                   REPOSITORY_ID: ${{ github.repository_id }}
@@ -188,17 +119,26 @@ jobs:
                   bun install --no-env-file --frozen-lockfile --ignore-scripts
                   bash .github/scripts/ci/fixtures/app-greeting-native.sh "$RUNNER_TEMP/app-runtime-reference" "$REPOSITORY_ID"
             - name: Verify provider registration across signed lifecycle generations
+              if: env.RUN_CHECK == 'true'
               shell: bash
               run: bash .github/scripts/ci/fixtures/app-provider-lifecycle.sh
 
+            - name: Verify privileged app IPC and UI boundaries natively
+              if: env.RUN_CHECK == 'true'
+              shell: bash
+              run: bash .github/scripts/ci/fixtures/app-ipc-boundaries.sh
+
             - name: Verify app database provisioning and data migrations
+              if: env.RUN_CHECK == 'true'
               shell: bash
               run: bash .github/scripts/ci/fixtures/app-data-migrations.sh
 
             - name: Set up Buildx for the native appliance
+              if: env.RUN_CHECK == 'true'
               uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
             - name: Build the production appliance from this revision
+              if: env.RUN_CHECK == 'true'
               id: appliance
               uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
               env:
@@ -216,19 +156,21 @@ jobs:
                       type=gha,version=2,scope=dependency-audit-appliance-${{ matrix.architecture }}-v1,timeout=2m
 
             - name: Verify published Greeting lifecycle, distribution gates and portable offline recovery
+              if: env.RUN_CHECK == 'true'
               shell: bash
               env:
                   GREETING_APPLIANCE_IMAGE_ID: ${{ steps.appliance.outputs.imageid }}
               run: bash .github/scripts/ci/fixtures/app-greeting-lifecycle.sh "$RUNNER_TEMP/app-runtime-reference"
 
             - name: Verify an offline restore of an installed catalog app
+              if: env.RUN_CHECK == 'true'
               shell: bash
               env:
                   APPLIANCE_IMAGE_ID: ${{ steps.appliance.outputs.imageid }}
               run: bun --no-env-file --no-orphans .github/scripts/ci/fixtures/app-offline-restore.ts "$APPLIANCE_IMAGE_ID" "$RUNNER_TEMP/app-runtime-reference"
 
             - name: Check out the comparison baseline
-              if: github.event_name == 'pull_request'
+              if: env.RUN_CHECK == 'true' && github.event_name == 'pull_request'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   ref: ${{ github.event.pull_request.base.sha }}
@@ -236,7 +178,7 @@ jobs:
                   persist-credentials: false
 
             - name: Build the previous production appliance
-              if: github.event_name == 'pull_request'
+              if: env.RUN_CHECK == 'true' && github.event_name == 'pull_request'
               id: previous-appliance
               uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
               env:
@@ -254,13 +196,14 @@ jobs:
                       type=gha,version=2,scope=dependency-audit-appliance-${{ matrix.architecture }}-v1,timeout=2m
 
             - name: Compare the images and verify the same-volume upgrade and rollback
-              if: github.event_name == 'pull_request'
+              if: env.RUN_CHECK == 'true' && github.event_name == 'pull_request'
               env:
                   BASELINE_IMAGE_ID: ${{ steps.previous-appliance.outputs.imageid }}
                   CANDIDATE_IMAGE_ID: ${{ steps.appliance.outputs.imageid }}
               run: bash .github/scripts/ci/fixtures/app-image-comparison.sh "$BASELINE_IMAGE_ID" "$CANDIDATE_IMAGE_ID"
 
             - name: Upload native and browser evidence
+              if: env.RUN_CHECK == 'true'
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   name: app-runtime-reference-${{ matrix.architecture }}-${{ github.run_attempt }}
