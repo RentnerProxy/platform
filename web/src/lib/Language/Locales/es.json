@@ -233,6 +233,10 @@
             "version": "Versión {{version}}",
             "updateTo": "Actualizar a {{version}}",
             "reinstall": "Reinstalar {{version}}",
+            "blocked": {
+                "incompatible": "La versión {{version}} es incompatible con este dispositivo, por lo que no se ofrece.",
+                "grantsRequired": "La versión {{version}} requiere permisos adicionales, por lo que no se ofrece."
+            },
             "failed": "No se pudo completar la acción.",
             "states": {
                 "running": "Activa",
@@ -280,7 +284,8 @@
             "errors": {
                 "invalid": "La acción solicitada no es válida.",
                 "forbidden": "Solo los propietarios del dispositivo pueden gestionar aplicaciones.",
-                "conflict": "La aplicación cambió, hay otra acción en curso o una dependencia bloquea esta acción. Actualiza y comprueba la aplicación.",
+                "conflict": "La aplicación cambió o hay otra acción en curso. Actualiza y comprueba la aplicación.",
+                "dependencyBlocked": "Algo todavía depende de esta aplicación, como un host proxy que gestiona, una operación de la aplicación en curso u otra aplicación que usa sus proveedores. Resuelve esa dependencia y vuelve a intentarlo.",
                 "rateLimited": "Demasiadas solicitudes. Espera un momento y vuelve a intentarlo.",
                 "unavailable": "El servicio de aplicaciones no está disponible. Actualiza y vuelve a intentarlo.",
                 "incompatibleData": "La versión seleccionada es incompatible con los datos guardados.",
