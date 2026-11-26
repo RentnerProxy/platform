@@ -100,7 +100,13 @@ export const catalogLifecycleSchema = z
         lifecycleInput.extend({ status: z.literal('succeeded') }),
         lifecycleInput.extend({
             status: z.literal('failed'),
-            error: z.enum(['conflict', 'unavailable', 'incompatibleData', 'operationFailed']),
+            error: z.enum([
+                'conflict',
+                'dependencyBlocked',
+                'unavailable',
+                'incompatibleData',
+                'operationFailed',
+            ]),
         }),
     ])
     .refine(hasExpectedLifecycleTarget)

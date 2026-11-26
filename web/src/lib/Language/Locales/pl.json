@@ -235,6 +235,10 @@
             "version": "Wersja {{version}}",
             "updateTo": "Zaktualizuj do {{version}}",
             "reinstall": "Zainstaluj ponownie {{version}}",
+            "blocked": {
+                "incompatible": "Wersja {{version}} nie jest zgodna z tym urządzeniem, dlatego nie jest oferowana.",
+                "grantsRequired": "Wersja {{version}} wymaga dodatkowych uprawnień, dlatego nie jest oferowana."
+            },
             "failed": "Nie udało się wykonać operacji.",
             "states": {
                 "running": "Aktywna",
@@ -282,7 +286,8 @@
             "errors": {
                 "invalid": "Żądana operacja jest nieprawidłowa.",
                 "forbidden": "Tylko właściciele urządzenia mogą zarządzać aplikacjami.",
-                "conflict": "Aplikacja się zmieniła, trwa inna operacja lub zależność blokuje tę operację. Odśwież i sprawdź aplikację.",
+                "conflict": "Aplikacja się zmieniła lub trwa inna operacja. Odśwież i sprawdź aplikację.",
+                "dependencyBlocked": "Coś nadal zależy od tej aplikacji, na przykład zarządzany przez nią host proxy, trwająca operacja aplikacji lub inna aplikacja korzystająca z jej dostawców. Usuń tę zależność i spróbuj ponownie.",
                 "rateLimited": "Zbyt wiele żądań. Poczekaj chwilę i spróbuj ponownie.",
                 "unavailable": "Usługa aplikacji jest niedostępna. Odśwież i spróbuj ponownie.",
                 "incompatibleData": "Wybrana wersja jest niezgodna z zapisanymi danymi aplikacji.",

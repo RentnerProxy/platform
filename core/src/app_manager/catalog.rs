@@ -74,6 +74,8 @@ pub(super) struct Install {
 #[serde(rename_all = "camelCase")]
 enum LifecycleFailure {
     Conflict,
+    /// A proxy host, an app operation or a provider dependency still needs the installation.
+    DependencyBlocked,
     Unavailable,
     IncompatibleData,
     OperationFailed,
@@ -390,9 +392,8 @@ impl Endpoint {
                     LifecycleFailure::IncompatibleData
                 } else {
                     match error.kind() {
-                        io::ErrorKind::AlreadyExists | io::ErrorKind::ResourceBusy => {
-                            LifecycleFailure::Conflict
-                        }
+                        io::ErrorKind::AlreadyExists => LifecycleFailure::Conflict,
+                        io::ErrorKind::ResourceBusy => LifecycleFailure::DependencyBlocked,
                         io::ErrorKind::WouldBlock
                         | io::ErrorKind::TimedOut
                         | io::ErrorKind::ConnectionRefused => LifecycleFailure::Unavailable,

@@ -231,6 +231,10 @@
             "version": "Version {{version}}",
             "updateTo": "Auf {{version}} aktualisieren",
             "reinstall": "{{version}} erneut installieren",
+            "blocked": {
+                "incompatible": "Version {{version}} ist mit dieser Appliance inkompatibel und wird daher nicht angeboten.",
+                "grantsRequired": "Version {{version}} erfordert zusätzliche Berechtigungen und wird daher nicht angeboten."
+            },
             "failed": "Die App-Aktion konnte nicht abgeschlossen werden.",
             "states": {
                 "running": "Aktiv",
@@ -278,7 +282,8 @@
             "errors": {
                 "invalid": "Die angeforderte App-Aktion ist ungültig.",
                 "forbidden": "Nur Eigentümer der Appliance können Apps verwalten.",
-                "conflict": "Die App hat sich geändert, eine andere Aktion läuft oder eine Abhängigkeit blockiert diese Aktion. Aktualisiere die Ansicht und überprüfe die App.",
+                "conflict": "Die App hat sich geändert oder eine andere Aktion läuft. Aktualisiere die Ansicht und überprüfe die App.",
+                "dependencyBlocked": "Etwas hängt noch von dieser App ab, etwa ein von ihr verwalteter Proxy-Host, ein laufender App-Vorgang oder eine andere App, die ihre Provider nutzt. Löse diese Abhängigkeit und versuche es dann erneut.",
                 "rateLimited": "Zu viele App-Anfragen. Warte kurz und versuche es erneut.",
                 "unavailable": "Der App-Dienst ist nicht verfügbar. Aktualisiere die Ansicht und versuche es erneut.",
                 "incompatibleData": "Die gewählte Version ist mit den gespeicherten App-Daten inkompatibel.",
