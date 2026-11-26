@@ -30,14 +30,26 @@ fn main() {
         let mut line = String::new();
         input.read_line(&mut line).unwrap();
         let health = line.starts_with("GET /app/v1/health ");
+        let provider = line.starts_with("POST /app/v1/providers/fixture-monitor ");
+        let mut length = 0;
         loop {
             line.clear();
             if input.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
                 break;
             }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap();
+            }
         }
+        // Read a provider invocation completely before answering it.
+        let mut request = vec![0; length];
+        input.read_exact(&mut request).unwrap();
         let body = if health {
             r#"{"healthy":true}"#
+        } else if provider {
+            r#"{"profile":"monitoring","payload":{"samples":[]}}"#
         } else {
             r#"{"ready":true,"protocolVersion":"1.0.0","providers":[{"id":"fixture-monitor","profile":"monitoring","version":"1.0.0"}]}"#
         };

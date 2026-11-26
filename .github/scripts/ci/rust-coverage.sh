@@ -47,7 +47,8 @@ if [[ ${1:-} == --privileged-app-ipc ]]; then
         "$native_fixture_image" \
         bash -eu -c '
             /ipc-tests --test-threads=1 app_manager::tests:: app_manager::ui::tests:: \
-                app_ipc::tests::root_ui_ app_install::tests:: app_backup::
+                app_ipc::tests::root_ui_ app_ipc::tests::root_provider_ \
+                app_install::tests:: app_backup::
             /ipc-tests --test-threads=1 --ignored --exact \
                 app_manager::ui::tests::privileged_web_socket_serves_generation_scoped_ui
         '
