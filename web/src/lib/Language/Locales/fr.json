@@ -233,6 +233,10 @@
             "version": "Version {{version}}",
             "updateTo": "Mettre à jour vers {{version}}",
             "reinstall": "Réinstaller {{version}}",
+            "blocked": {
+                "incompatible": "La version {{version}} est incompatible avec cet appareil et n’est donc pas proposée.",
+                "grantsRequired": "La version {{version}} nécessite des autorisations supplémentaires et n’est donc pas proposée."
+            },
             "failed": "L’action n’a pas pu aboutir.",
             "states": {
                 "running": "Active",
@@ -280,7 +284,8 @@
             "errors": {
                 "invalid": "L’action demandée est invalide.",
                 "forbidden": "Seuls les propriétaires de l’appareil peuvent gérer les applications.",
-                "conflict": "L’application a changé, une autre action est en cours ou une dépendance bloque cette action. Actualisez et vérifiez l’application.",
+                "conflict": "L’application a changé ou une autre action est en cours. Actualisez et vérifiez l’application.",
+                "dependencyBlocked": "Un élément dépend encore de cette application, par exemple un hôte proxy qu’elle gère, une opération de l’application en cours ou une autre application qui utilise ses fournisseurs. Résolvez cette dépendance, puis réessayez.",
                 "rateLimited": "Trop de demandes. Patientez un instant, puis réessayez.",
                 "unavailable": "Le service des applications est indisponible. Actualisez et réessayez.",
                 "incompatibleData": "La version sélectionnée est incompatible avec les données enregistrées.",

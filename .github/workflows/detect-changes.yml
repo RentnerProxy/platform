@@ -38,6 +38,9 @@ name: 'Detect affected checks'
             actions:
                 description: 'actions checks are affected'
                 value: '${{ jobs.detect.outputs.actions }}'
+            app_runtime:
+                description: 'app_runtime checks are affected'
+                value: '${{ jobs.detect.outputs.app_runtime }}'
             full:
                 description: 'full checks are affected'
                 value: '${{ jobs.detect.outputs.full }}'
@@ -62,6 +65,7 @@ jobs:
             runtime: '${{ steps.changes.outputs.runtime }}'
             dependencies: '${{ steps.changes.outputs.dependencies }}'
             actions: '${{ steps.changes.outputs.actions }}'
+            app_runtime: '${{ steps.changes.outputs.app_runtime }}'
             full: '${{ steps.changes.outputs.full }}'
             runtime_deferred: '${{ steps.changes.outputs.runtime_deferred }}'
         steps:
