@@ -256,20 +256,126 @@ pub(crate) fn carry(
     .then_some(kept)
 }
 
+/// Carry `approved` like [`carry`], and narrow the result to the release's own `stored`
+/// approval when the installation already holds one: a carried grant never restores what the
+/// Owner's latest decision for that exact release left out.
+pub(crate) fn carry_to(
+    approved: &[Grant],
+    stored: Option<&[Grant]>,
+    requested: &[RequestedGrant],
+    permission_keys: &[String],
+    installation_id: &str,
+) -> Option<Vec<Grant>> {
+    let kept = carry(approved, requested, permission_keys, installation_id)?;
+    let Some(stored) = stored else {
+        return Some(kept);
+    };
+    let narrowed = narrow(kept, requested, stored, installation_id);
+    covered(requested, &narrowed, installation_id).then_some(narrowed)
+}
+
+/// Keep a grant the release requests only if `stored` holds the same capability and resource,
+/// with the narrower service access and the stored permission key.
+fn narrow(
+    grants: Vec<Grant>,
+    requested: &[RequestedGrant],
+    stored: &[Grant],
+    installation_id: &str,
+) -> Vec<Grant> {
+    grants
+        .into_iter()
+        .filter_map(|grant| {
+            if !decides(requested, &grant, installation_id) {
+                return Some(grant);
+            }
+            let own = stored.iter().find(|own| {
+                own.capability == grant.capability && own.resource_id == grant.resource_id
+            })?;
+            Some(Grant {
+                allow_service: grant.allow_service && own.allow_service,
+                permission_key: own.permission_key.clone().or(grant.permission_key),
+                ..grant
+            })
+        })
+        .collect()
+}
+
+/// Apply the Owner's explicit decision for one release to the stored approval of another release
+/// of the same installation, so that a rollback or a later update never widens it again. For
+/// every capability the decided release requests, a grant whose capability and resource the
+/// decision no longer contains is removed, and a kept grant takes the decision's service access
+/// and permission key. Grants the decision could not cover, such as another provider profile or
+/// a secret read, stay as they are.
+pub(crate) fn apply_decision(
+    grants: &mut Vec<Grant>,
+    requested: &[RequestedGrant],
+    decided: &[Grant],
+    installation_id: &str,
+) {
+    grants.retain_mut(|grant| {
+        if !decides(requested, grant, installation_id) {
+            return true;
+        }
+        match decided.iter().find(|decided| {
+            decided.capability == grant.capability && decided.resource_id == grant.resource_id
+        }) {
+            Some(decided) => {
+                grant.allow_service = decided.allow_service;
+                grant.permission_key.clone_from(&decided.permission_key);
+                true
+            }
+            None => false,
+        }
+    });
+}
+
+/// What staging decided for a release.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct Decision {
+    /// The grants the release receives, in a stable order.
+    pub grants: Vec<Grant>,
+    /// What the release requests, when the Owner approved `grants` explicitly. An explicit
+    /// decision also applies to every other stored approval of the installation.
+    pub explicit: Option<Vec<RequestedGrant>>,
+}
+
 /// Decide the grants that a release with the signed `manifest` receives: exactly the Owner's
-/// `approval` when there is one, otherwise the `carried` approval if it still covers the release.
+/// `approval` when there is one, otherwise the `carried` approval if it still covers the
+/// release, narrowed to the release's own `stored` approval. Root's secret reads in `carried`
+/// survive either way, as long as the release still declares their permission key.
 pub(crate) fn approve(
     manifest: &Value,
     approval: Option<&[ApprovedGrant]>,
     carried: &[Grant],
+    stored: Option<&[Grant]>,
     installation_id: &str,
-) -> Result<Vec<Grant>, ApprovalRequired> {
+) -> Result<Decision, ApprovalRequired> {
     let requested = requested(manifest).map_err(|Unapprovable| ApprovalRequired)?;
     let keys = permission_keys(manifest);
-    match approval {
-        Some(approval) => decide(&requested, &keys, approval, installation_id),
-        None => carry(carried, &requested, &keys, installation_id).ok_or(ApprovalRequired),
+    let Some(approval) = approval else {
+        let mut grants = carry_to(carried, stored, &requested, &keys, installation_id)
+            .ok_or(ApprovalRequired)?;
+        grants.sort();
+        return Ok(Decision {
+            grants,
+            explicit: None,
+        });
+    };
+    let mut grants = decide(&requested, &keys, approval, installation_id)?;
+    grants.extend(
+        carried
+            .iter()
+            .filter(|grant| grant.capability.is(SECRET) && declared_key(grant, &keys))
+            .cloned(),
+    );
+    if grants.len() > MAX_GRANTS {
+        return Err(ApprovalRequired);
     }
+    grants.sort();
+    Ok(Decision {
+        grants,
+        explicit: Some(requested),
+    })
 }
 
 /// Whether `grants` stay within what `manifest` requests, as root's control CLI and every launch
@@ -293,6 +399,14 @@ pub(crate) fn within(manifest: &Value, grants: &[Grant], installation_id: &str) 
 /// are; a later contract may let a wider scope cover a narrower one.
 fn covers(approved: &str, requested: &str) -> bool {
     approved == requested
+}
+
+/// Whether a decision about the requested items covers `grant`: the release requests its
+/// capability in a scope it covers, and the grant's resource is one the Owner chose for it.
+fn decides(requested: &[RequestedGrant], grant: &Grant, installation_id: &str) -> bool {
+    requested
+        .iter()
+        .any(|request| serves(request, grant, installation_id))
 }
 
 /// Whether `grant` serves the requested item: the same capability in a scope it covers, a

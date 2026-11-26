@@ -151,7 +151,7 @@ fn capabilities_without_an_approval_flow_cannot_be_approved() {
             json!([]),
         );
         assert_eq!(requested(&manifest), Err(Unapprovable), "{id}");
-        let approval = approve(&manifest, Some(&[]), &[], ID);
+        let approval = approve(&manifest, Some(&[]), &[], None, ID);
         assert_eq!(approval, Err(ApprovalRequired), "{id}");
     }
     assert_eq!(
@@ -385,24 +385,164 @@ fn approved_grants_carry_only_to_releases_that_request_nothing_new() {
 #[test]
 fn staging_approves_exactly_or_carries_and_refuses_otherwise() {
     let full = full_approval();
-    let approved = approve(&monitoring(), Some(&full), &[], ID).unwrap();
-    assert_eq!(approved.len(), 6);
+    let explicit = approve(&monitoring(), Some(&full), &[], None, ID).unwrap();
+    assert_eq!(explicit.grants.len(), 6);
+    assert_eq!(explicit.explicit, Some(requested(&monitoring()).unwrap()));
+    let approved = explicit.grants;
     assert_eq!(
-        approve(&monitoring(), None, &approved, ID).unwrap(),
-        approved
+        approve(&monitoring(), None, &approved, None, ID).unwrap(),
+        Decision {
+            grants: approved.clone(),
+            explicit: None,
+        }
     );
-    assert_eq!(approve(&monitoring(), None, &[], ID), Err(ApprovalRequired));
     assert_eq!(
-        approve(&monitoring(), Some(&full[1..]), &approved, ID),
+        approve(&monitoring(), None, &[], None, ID),
         Err(ApprovalRequired)
     );
     assert_eq!(
-        approve(&manifest(json!([]), json!([])), None, &[], ID),
-        Ok(Vec::new())
+        approve(&monitoring(), Some(&full[1..]), &approved, None, ID),
+        Err(ApprovalRequired)
+    );
+    assert_eq!(
+        approve(&manifest(json!([]), json!([])), None, &[], None, ID),
+        Ok(Decision {
+            grants: Vec::new(),
+            explicit: None,
+        })
     );
     let error = io::Error::from(ApprovalRequired);
     assert!(approval_required(&error));
     assert!(!approval_required(&io::Error::other("other")));
+}
+
+#[test]
+fn root_secret_reads_survive_an_explicit_approval() {
+    let mut keyed = grant("app.secret.read", "secretReferences", "token");
+    keyed.permission_key = Some("manage".into());
+    let mut dropped_key = grant("app.secret.read", "secretReferences", "legacy");
+    dropped_key.permission_key = Some("retired".into());
+    let carried = vec![
+        grant("app.secret.read", "secretReferences", "other"),
+        keyed.clone(),
+        dropped_key,
+        grant("proxy.hosts.read.v1", "proxyHosts", OTHER_HOST),
+    ];
+    let decided = approve(&monitoring(), Some(&full_approval()), &carried, None, ID).unwrap();
+    // Secret reads with a declared permission key are kept, the old host is not.
+    assert_eq!(decided.grants.len(), 8);
+    assert!(decided.grants.contains(&keyed));
+    assert!(decided.grants.contains(&carried[0]));
+    assert!(!decided.grants.contains(&carried[2]));
+    assert!(!decided.grants.contains(&carried[3]));
+    let mut sorted = decided.grants.clone();
+    sorted.sort();
+    assert_eq!(decided.grants, sorted);
+    assert!(within(&monitoring(), &decided.grants, ID));
+    // Carrying keeps them as well, so both paths agree.
+    assert!(
+        approve(&monitoring(), None, &decided.grants, None, ID)
+            .unwrap()
+            .grants
+            .contains(&keyed)
+    );
+    // The secret reads still count toward the limit of one approval.
+    let many: Vec<_> = (0..MAX_GRANTS)
+        .map(|index| grant("app.secret.read", "secretReferences", &format!("s{index}")))
+        .collect();
+    assert_eq!(
+        approve(&monitoring(), Some(&full_approval()), &many, None, ID),
+        Err(ApprovalRequired)
+    );
+}
+
+#[test]
+fn a_carry_never_widens_the_stored_approval_of_its_target() {
+    let requested = requested(&monitoring()).unwrap();
+    let mut approval = full_approval();
+    approval.push(approved(
+        "proxy.hosts.read.v1",
+        "proxyHosts",
+        Some(OTHER_HOST),
+    ));
+    // The running release reads two hosts as a service.
+    let running = decide(&requested, &keys(), &approval, ID).unwrap();
+    // The Owner approved the target for one host, without service access and with a key.
+    let mut narrower = full_approval();
+    narrower[0].allow_service = false;
+    narrower[0].permission_key = Some("view".into());
+    let stored = decide(&requested, &keys(), &narrower, ID).unwrap();
+    let carried = carry_to(&running, Some(&stored), &requested, &keys(), ID).unwrap();
+    assert_eq!(carried.len(), 6);
+    let host = carried
+        .iter()
+        .find(|grant| grant.capability.id == "proxy.hosts.read.v1")
+        .unwrap();
+    assert_eq!(host.resource_id, HOST);
+    assert!(!host.allow_service);
+    assert_eq!(host.permission_key.as_deref(), Some("view"));
+    // A stored approval never widens what is carried.
+    let carried_back = carry_to(&stored, Some(&running), &requested, &keys(), ID).unwrap();
+    assert!(carried_back.iter().all(|grant| stored.contains(grant)));
+    // A target whose stored approval lost every host after a revocation needs an approval.
+    let revoked: Vec<_> = stored
+        .iter()
+        .filter(|grant| grant.capability.id != "proxy.hosts.read.v1")
+        .cloned()
+        .collect();
+    assert_eq!(
+        carry_to(&running, Some(&revoked), &requested, &keys(), ID),
+        None
+    );
+    assert_eq!(
+        approve(&monitoring(), None, &running, Some(&revoked), ID),
+        Err(ApprovalRequired)
+    );
+    assert_eq!(
+        approve(&monitoring(), None, &running, Some(&stored), ID)
+            .unwrap()
+            .grants,
+        carried
+    );
+    // Without a stored approval, the carry is unchanged.
+    assert_eq!(
+        carry_to(&running, None, &requested, &keys(), ID),
+        carry(&running, &requested, &keys(), ID)
+    );
+}
+
+#[test]
+fn an_explicit_decision_narrows_the_approvals_of_other_releases() {
+    // Another release reads two hosts, registers two provider profiles and reads a secret.
+    let mut other = vec![
+        grant("app.audit.record", "installation", ID),
+        grant("app.provider.register", "providerProfiles", "monitoring"),
+        grant("app.provider.register", "providerProfiles", "oidc"),
+        grant("app.secret.read", "secretReferences", "token"),
+        grant("proxy.hosts.read.v1", "proxyHosts", HOST),
+        grant("proxy.hosts.read.v1", "proxyHosts", OTHER_HOST),
+    ];
+    // The Owner now approves one host without service access and with a permission key.
+    let mut approval = full_approval();
+    approval[0].allow_service = false;
+    approval[0].permission_key = Some("view".into());
+    let requested = requested(&monitoring()).unwrap();
+    let decided = decide(&requested, &keys(), &approval, ID).unwrap();
+    apply_decision(&mut other, &requested, &decided, ID);
+    let mut narrowed_host = grant("proxy.hosts.read.v1", "proxyHosts", HOST);
+    narrowed_host.allow_service = false;
+    narrowed_host.permission_key = Some("view".into());
+    assert_eq!(
+        other,
+        [
+            grant("app.audit.record", "installation", ID),
+            grant("app.provider.register", "providerProfiles", "monitoring"),
+            // The decided release does not request this profile or secret reads.
+            grant("app.provider.register", "providerProfiles", "oidc"),
+            grant("app.secret.read", "secretReferences", "token"),
+            narrowed_host,
+        ]
+    );
 }
 
 #[test]

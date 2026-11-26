@@ -1202,10 +1202,22 @@ async fn check_interrupted_transitions(
     let committed = preseed(|slot| {
         slot.candidate = Some(incompatible.clone());
         slot.previous = Some(incompatible.clone());
+        slot.approve(
+            incompatible,
+            vec![serde_json::from_value(monitoring_grant()).unwrap()],
+        );
     });
     let mut manager = mount_manager(controller, config, token, BootState::Running).await;
     let before = installation(controller).await;
     let process = app_process();
+    let stored_approval = || -> Value {
+        let journal = fs::read(Path::new(ROOT).join("journal.json")).unwrap();
+        let state: Value = serde_json::from_slice(&journal).unwrap();
+        state["installations"][ID]["approvals"][&incompatible.archive_sha256].clone()
+    };
+    let approval = stored_approval();
+    assert_eq!(approval["grants"], json!([monitoring_grant()]));
+    // Root's empty set is refused before the fence, so the release keeps the approval it had.
     let error = invoke(controller, &["activate", ID]).await.unwrap_err();
     assert!(
         error
@@ -1213,6 +1225,7 @@ async fn check_interrupted_transitions(
             .contains("Declared data versions require migration or recovery"),
         "{error}"
     );
+    assert_eq!(stored_approval(), approval);
     let view = manager_catalog(None, 200).await;
     let row = catalog_row(&view);
     let rollback = lifecycle_input("rollback", row, Some(&row["previous"]));

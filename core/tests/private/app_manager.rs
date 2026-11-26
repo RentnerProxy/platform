@@ -475,6 +475,174 @@ fn approvals_bind_to_exact_releases_and_follow_the_releases_a_slot_references() 
     assert!(slot.approvals.is_empty());
 }
 
+/// The journal steps that staging, activation and rollback take for one installation whose
+/// releases read proxy hosts.
+struct ApprovalModel {
+    slot: Slot,
+    manifest: Value,
+}
+
+impl ApprovalModel {
+    const ID: &str = "fixture";
+    const X: &str = "0b6f3c0e-8d1a-4f43-9c2e-1d7a5b9e4f21";
+    const Y: &str = "5c1e2f3a-4b5d-4e6f-8a7b-9c0d1e2f3a4b";
+
+    fn new() -> Self {
+        Self {
+            slot: Slot {
+                app_id: "fixture.app".into(),
+                uid: 20_002,
+                ..Default::default()
+            },
+            manifest: json!({
+                "capabilities": [{"id": "proxy.hosts.read.v1", "scope": "proxyHosts"}],
+                "providers": [],
+                "permissions": ["view"],
+            }),
+        }
+    }
+
+    /// An approval of the hosts with their service access, events and the audit trail.
+    fn approval(hosts: &[(&str, bool)]) -> Vec<grants::ApprovedGrant> {
+        let mut items: Vec<Value> = hosts
+            .iter()
+            .map(|(host, service)| {
+                json!({
+                    "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
+                    "resourceId": host,
+                    "allowService": service,
+                })
+            })
+            .collect();
+        for id in ["app.events.subscribe", "app.audit.record"] {
+            items.push(json!({
+                "capability": {"id": id, "scope": "installation"},
+                "allowService": true,
+            }));
+        }
+        serde_json::from_value(Value::Array(items)).unwrap()
+    }
+
+    /// Stage `release` as an update or install does: with the Owner's `approval`, or carrying
+    /// the running release's approval within the target's stored one.
+    fn stage(
+        &mut self,
+        release: &Release,
+        approval: Option<Vec<grants::ApprovedGrant>>,
+    ) -> io::Result<()> {
+        let slot = &self.slot;
+        let carried = slot
+            .active
+            .as_ref()
+            .and_then(|active| slot.approval_for(active).ok().flatten())
+            .unwrap_or_default()
+            .to_vec();
+        let stored = slot
+            .approvals
+            .get(&release.archive_sha256)
+            .map(|approval| approval.grants.clone());
+        let decision = grants::approve(
+            &self.manifest,
+            approval.as_deref(),
+            &carried,
+            stored.as_deref(),
+            Self::ID,
+        )?;
+        self.slot.approval_for(release)?;
+        self.slot.record(release, decision, Self::ID);
+        self.slot.candidate = Some(release.clone());
+        self.slot.prune_approvals();
+        Ok(())
+    }
+
+    /// Activate `release`, as an update, an install or a rollback commits it.
+    fn activate(&mut self, release: &Release) {
+        self.slot.commit_release(release.clone());
+        self.slot.prune_approvals();
+    }
+
+    /// The hosts and service access that a launch of `release` publishes.
+    fn hosts(&self, release: &Release) -> Vec<(String, bool)> {
+        self.slot
+            .approval_for(release)
+            .unwrap()
+            .unwrap()
+            .iter()
+            .filter(|grant| grant.capability.id == "proxy.hosts.read.v1")
+            .map(|grant| (grant.resource_id.clone(), grant.allow_service))
+            .collect()
+    }
+}
+
+#[test]
+fn the_owners_latest_explicit_decision_wins_after_rollback_and_update() {
+    use ApprovalModel as Model;
+    let (a, b) = (signed("1.0.0", 'a'), signed("1.1.0", 'b'));
+    let x = || (Model::X.to_owned(), true);
+
+    // A reads X and Y. The Owner approves B for X only, then rolls back to A.
+    let mut model = Model::new();
+    model
+        .stage(
+            &a,
+            Some(Model::approval(&[(Model::X, true), (Model::Y, true)])),
+        )
+        .unwrap();
+    model.activate(&a);
+    model
+        .stage(&b, Some(Model::approval(&[(Model::X, true)])))
+        .unwrap();
+    model.activate(&b);
+    model.activate(&a);
+    assert_eq!(model.slot.previous, Some(b.clone()));
+    assert_eq!(model.hosts(&a), [x()]);
+    // An update back to B without an approval carries X only and keeps B's decision.
+    model.stage(&b, None).unwrap();
+    assert_eq!(model.hosts(&b), [x()]);
+
+    // Even if root approves Y for A again, the carry cannot overwrite B's stored approval.
+    let mut wider = model.slot.approval_for(&a).unwrap().unwrap().to_vec();
+    wider.push(host_without_key(Model::Y));
+    model.slot.approve(&a, wider);
+    assert_eq!(model.hosts(&a).len(), 2);
+    model.stage(&b, None).unwrap();
+    assert_eq!(model.hosts(&b), [x()]);
+
+    // Narrowing service access survives a rollback as well.
+    let mut model = Model::new();
+    model
+        .stage(&a, Some(Model::approval(&[(Model::X, true)])))
+        .unwrap();
+    model.activate(&a);
+    model
+        .stage(&b, Some(Model::approval(&[(Model::X, false)])))
+        .unwrap();
+    model.activate(&b);
+    model.activate(&a);
+    assert_eq!(model.hosts(&a), [(Model::X.to_owned(), false)]);
+    // A later explicit approval may widen again, because it is the Owner's latest decision.
+    model
+        .stage(
+            &b,
+            Some(Model::approval(&[(Model::X, true), (Model::Y, true)])),
+        )
+        .unwrap();
+    assert_eq!(
+        model.hosts(&b),
+        [(Model::X.to_owned(), true), (Model::Y.to_owned(), true)]
+    );
+    assert_eq!(model.hosts(&a), [(Model::X.to_owned(), true)]);
+}
+
+fn host_without_key(host: &str) -> Grant {
+    serde_json::from_value(json!({
+        "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
+        "resourceId": host,
+        "allowService": true,
+    }))
+    .unwrap()
+}
+
 #[test]
 fn journal_saves_prune_approvals_and_refuse_overflow_without_poisoning() {
     if unsafe { libc::geteuid() } != 0 {

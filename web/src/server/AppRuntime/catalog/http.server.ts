@@ -1,7 +1,10 @@
 import '@tanstack/react-start/server-only'
 
 import type { z } from 'zod'
-import { APP_CATALOG_INSTALL_RATE_LIMIT } from '@/config/app-catalog.config.ts'
+import {
+    APP_CATALOG_INSTALL_RATE_LIMIT,
+    APP_CATALOG_REVOKE_RATE_LIMIT,
+} from '@/config/app-catalog.config.ts'
 import {
     catalogInstallInputSchema,
     catalogLifecycleInputSchema,
@@ -13,6 +16,7 @@ import { requireOwnerSessionService } from '@/server/Auth/Access/authorization.s
 import { isAuthDomainError } from '@/server/Auth/Core/errors.server.ts'
 import { getPublicOrigin } from '@/server/env.server.ts'
 import { consumeRateLimit, RateLimitError } from '@/server/Valkey/rate-limiter.service.ts'
+import type { RateLimitPolicy } from '@/server/Valkey/Types/rate-limiter.types.ts'
 import { appUiEnabled, appUiSignal, readAppUiJson, uiProblems } from '../ui/transport.server.ts'
 import {
     APP_CATALOG_REQUEST_BYTES,
@@ -24,9 +28,16 @@ const defaultDependencies = {
     enabled: appUiEnabled,
     origin: getPublicOrigin,
     ownerId: async () => (await requireOwnerSessionService()).user.id,
-    limit: async (identifier: string) => {
-        await consumeRateLimit({ ...APP_CATALOG_INSTALL_RATE_LIMIT, identifier })
+    limit: async (identifier: string, policy: RateLimitPolicy = APP_CATALOG_INSTALL_RATE_LIMIT) => {
+        await consumeRateLimit({ ...policy, identifier })
     },
+}
+
+/** Revocations count against their own bucket, so installs and updates never delay them. */
+function rateLimitPolicy(input: CatalogInstallInput | CatalogLifecycleInput): RateLimitPolicy {
+    return 'action' in input && input.action === 'revoke'
+        ? APP_CATALOG_REVOKE_RATE_LIMIT
+        : APP_CATALOG_INSTALL_RATE_LIMIT
 }
 
 type CatalogDependencies = typeof defaultDependencies & {
@@ -110,7 +121,7 @@ function createCatalogMutationHandler<
                 await readAppUiJson(request, signal, APP_CATALOG_REQUEST_BYTES),
             )
             if (!input.success) return catalogFailure(uiProblems.invalid, headers)
-            await dependencies.limit(ownerId)
+            await dependencies.limit(ownerId, rateLimitPolicy(input.data))
             if ((await dependencies.ownerId()) !== ownerId)
                 return Response.json({ error: 'forbidden' }, { status: 403, headers })
             signal.throwIfAborted()

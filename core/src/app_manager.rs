@@ -16,7 +16,7 @@ mod ui;
 
 use crate::app_install::{
     Installer, StagedPackage,
-    grants::{self, ApprovedGrant},
+    grants::{self, ApprovedGrant, Decision},
 };
 use crate::appliance_process::{SCAN_BUDGET, uid_in_use, verify_uid_stopped};
 use control::Command;
@@ -90,20 +90,23 @@ enum PackageRequest {
 }
 
 /// Decides from a signed manifest which grants a staged release receives, or refuses it.
-type Gate = Arc<dyn Fn(&Value) -> io::Result<Vec<Grant>> + Send + Sync>;
+type Gate = Arc<dyn Fn(&Value) -> io::Result<Decision> + Send + Sync>;
 
 /// A gate for a release staged for `installation_id`: it receives exactly the Owner's
-/// `approval`, or without one the `carried` grants if they still cover what it requests.
+/// `approval`, or without one the `carried` grants if they still cover what it requests,
+/// narrowed to the release's own `stored` approval.
 fn gate(
     installation_id: String,
     approval: Option<Vec<ApprovedGrant>>,
     carried: Vec<Grant>,
+    stored: Option<Vec<Grant>>,
 ) -> Gate {
     Arc::new(move |manifest| {
         Ok(grants::approve(
             manifest,
             approval.as_deref(),
             &carried,
+            stored.as_deref(),
             &installation_id,
         )?)
     })
@@ -204,7 +207,7 @@ impl Manager {
             return Err(bad("Installation belongs to another app"));
         }
         let package = self.during(Operation::Stage(id), download).await?;
-        let approved = gate.map(|gate| gate(&package.manifest)).transpose()?;
+        let decision = gate.map(|gate| gate(&package.manifest)).transpose()?;
         let mut slot = match self.journal.slots().get(id) {
             Some(s) => s.clone(),
             None => self.allocate(app).await?,
@@ -215,8 +218,10 @@ impl Manager {
             manifest_sha256: package.manifest_sha256,
             catalog_revision: package.catalog_revision,
         };
-        if let Some(grants) = approved {
-            slot.approve(&candidate, grants);
+        if let Some(decision) = decision {
+            // The gate read the stored approval of this archive, which must name this manifest.
+            slot.approval_for(&candidate)?;
+            slot.record(&candidate, decision, id);
         }
         slot.candidate = Some(candidate);
         self.journal.save(id, slot)
@@ -691,10 +696,31 @@ impl Manager {
                 }
                 grants.sort();
                 let mut slot = self.journal.slot(&installation_id)?.clone();
+                let replaced = slot.approvals.get(&target.archive_sha256).cloned();
+                let generation = slot.generation;
                 slot.approve(&target, grants);
                 self.journal.save(&installation_id, slot)?;
-                self.switch(&installation_id, target, None, DataPolicy::Migrate)
-                    .await?;
+                let key = target.archive_sha256.clone();
+                if let Err(error) = self
+                    .switch(&installation_id, target, None, DataPolicy::Migrate)
+                    .await
+                {
+                    // Refused before the fence, the old generation keeps its grants. Restore the
+                    // approval it runs with, so that the journal matches the live authority.
+                    let mut slot = self.journal.slot(&installation_id)?.clone();
+                    if slot.generation == generation {
+                        match replaced {
+                            Some(approval) => slot.approvals.insert(key, approval),
+                            None => slot.approvals.remove(&key),
+                        };
+                        if let Err(restore) = self.journal.save(&installation_id, slot) {
+                            eprintln!(
+                                "Application {installation_id} approval restore failed: {restore}"
+                            );
+                        }
+                    }
+                    return Err(error);
+                }
             }
             Command::Rollback { installation_id } => {
                 let target = self

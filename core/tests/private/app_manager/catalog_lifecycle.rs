@@ -214,6 +214,41 @@ fn updates_that_request_new_grants_need_an_approval_that_receipts_never_repeat()
 }
 
 #[test]
+fn update_offers_stay_within_the_stored_approval_of_their_target() {
+    let target = release("1.10.0", 'c');
+    let listing = [requesting(&target, false)];
+    let update = request("update", Some(&target));
+    let support = || {
+        vec![
+            granted("app.audit.record", "installation", ID),
+            granted("app.events.subscribe", "installation", ID),
+        ]
+    };
+    // The installation approved the target before for the host the running release reads.
+    let mut slot = approved();
+    let mut stored = support();
+    stored.push(granted("proxy.hosts.read.v1", "proxyHosts", HOST));
+    slot.approve(&target, stored);
+    let mut row = Installation::new(ID, &slot, true).unwrap();
+    row.set_update(&listing);
+    assert!(!row.update_requires_approval);
+    assert!(row.approves(&update, &listing));
+    // A revocation left the target's stored approval without any host, so carrying the running
+    // release's host would widen it again. The update needs an approval, as staging decides.
+    slot.approve(&target, support());
+    let mut row = Installation::new(ID, &slot, true).unwrap();
+    assert!(
+        serde_json::to_value(&row)
+            .unwrap()
+            .get("approvals")
+            .is_none()
+    );
+    row.set_update(&listing);
+    assert!(row.update_requires_approval);
+    assert!(!row.approves(&update, &listing));
+}
+
+#[test]
 fn revocations_name_approved_grants_of_an_installed_release() {
     let revoke = |grants: Value| {
         let base = serde_json::to_value(request("deactivate", None)).unwrap();

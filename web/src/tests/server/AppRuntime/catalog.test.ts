@@ -1,4 +1,8 @@
 import { describe, expect, mock, spyOn, test } from 'bun:test'
+import {
+    APP_CATALOG_INSTALL_RATE_LIMIT,
+    APP_CATALOG_REVOKE_RATE_LIMIT,
+} from '@/config/app-catalog.config.ts'
 import { auditEventInputSchema } from '@/features/Admin/AuditLogs/validation.ts'
 import {
     APP_CATALOG_INSTALL_PATH,
@@ -727,4 +731,53 @@ test('maps a native approval refusal and accepts receipts that never repeat the 
     } finally {
         replies.mockRestore()
     }
+})
+
+test('limits revocations in their own bucket so installs and updates never hold them back', async () => {
+    const revoke = {
+        action: 'revoke',
+        installationId: 'greeting-test',
+        expected: operation.expected,
+        grants: [{ capability: approval[1]!.capability, resourceId: host }],
+    } satisfies CatalogLifecycleInput
+    const { grants: _, ...receipt } = revoke
+    const used = new Map<string, number>()
+    const scopes: string[] = []
+    const handle = createCatalogLifecycleHandler({
+        enabled: () => true,
+        origin: () => origin,
+        ownerId: async () => 'owner-id',
+        limit: async (identifier, policy = APP_CATALOG_INSTALL_RATE_LIMIT) => {
+            expect(identifier).toBe('owner-id')
+            scopes.push(policy.scope)
+            const count = (used.get(policy.scope) ?? 0) + 1
+            used.set(policy.scope, count)
+            if (count > policy.limit)
+                throw new RateLimitError(count, policy.limit, policy.windowMs, policy.scope)
+        },
+        lifecycle: async (input) =>
+            input.action === 'revoke' ? { ...receipt, status: 'pending' } : pendingOperation,
+        audit: async () => {},
+    })
+    const post = (input: unknown) =>
+        handle(
+            new Request(origin + APP_CATALOG_LIFECYCLE_PATH, {
+                method: 'POST',
+                headers: { Origin: origin, 'Content-Type': 'application/json' },
+                body: JSON.stringify(input),
+            }),
+        )
+    const { limit } = APP_CATALOG_INSTALL_RATE_LIMIT
+    const updates = await Promise.all(
+        Array.from({ length: limit }, async () => (await post(operation)).status),
+    )
+    expect(updates).toEqual(Array.from({ length: limit }, () => 202))
+    expect((await post(operation)).status).toBe(429)
+    // The install and update bucket is exhausted; a revocation is still admitted.
+    expect((await post(revoke)).status).toBe(202)
+    expect(scopes.at(-1)).toBe(APP_CATALOG_REVOKE_RATE_LIMIT.scope)
+    expect(scopes.filter((scope) => scope === APP_CATALOG_INSTALL_RATE_LIMIT.scope)).toHaveLength(
+        limit + 1,
+    )
+    expect(APP_CATALOG_REVOKE_RATE_LIMIT.scope).not.toBe(APP_CATALOG_INSTALL_RATE_LIMIT.scope)
 })

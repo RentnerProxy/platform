@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, fmt, io, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt, io,
+    sync::Arc,
+};
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -145,6 +149,10 @@ pub(super) struct Installation {
     providers: Option<Vec<String>>,
     /// The grants approved for this exact release; absent if it predates recorded approvals.
     grants: Option<Vec<Grant>>,
+    /// Every stored approval of the installation by archive digest, which bounds what an
+    /// update may carry to a release the installation already approved.
+    #[serde(skip)]
+    approvals: BTreeMap<String, Vec<Grant>>,
     update: Option<ReleaseSelection>,
     /// Whether the offered update requests grants that the current approval does not cover.
     update_requires_approval: bool,
@@ -254,17 +262,24 @@ impl Installation {
             name: None,
             providers: None,
             grants,
+            approvals: slot
+                .approvals
+                .iter()
+                .map(|(archive_sha256, approval)| (archive_sha256.clone(), approval.grants.clone()))
+                .collect(),
             update: None,
             update_requires_approval: false,
             previous: slot.previous.as_ref().map(Into::into),
         })
     }
 
-    /// Whether `entry` needs a new approval, after carrying this installation's approved
-    /// grants. A release approved before approvals were recorded carries none.
+    /// Whether `entry` needs a new approval, after carrying this installation's approved grants
+    /// within the stored approval of that exact release, as staging does. A release approved
+    /// before approvals were recorded carries none.
     fn requires_approval(&self, entry: &CatalogEntry) -> bool {
-        grants::carry(
+        grants::carry_to(
             self.grants.as_deref().unwrap_or_default(),
+            self.approvals.get(&entry.archive_sha256).map(Vec::as_slice),
             &entry.grants,
             &entry.permission_keys,
             &self.installation_id,
@@ -535,7 +550,12 @@ impl Manager {
             }
             .unwrap_or_default()
             .to_vec();
-            let gate = gate(id.clone(), request.approval.clone(), carried);
+            // A target the installation already approved keeps that approval as the upper bound.
+            let stored = slot
+                .approvals
+                .get(&target.archive_sha256)
+                .map(|approval| approval.grants.clone());
+            let gate = gate(id.clone(), request.approval.clone(), carried, stored);
             let download = Self::package(
                 self.config.clone(),
                 app.clone(),

@@ -1,5 +1,5 @@
 use super::{bad, valid_id};
-use crate::app_install::grants::MAX_GRANTS;
+use crate::app_install::grants::{self, Decision, MAX_GRANTS};
 pub(super) use crate::app_install::grants::{Capability, Grant};
 use crate::app_ipc::filesystem::{lock_file, require_safe_parents};
 use serde::{Deserialize, Serialize};
@@ -219,6 +219,25 @@ impl Slot {
                 grants,
             },
         );
+    }
+
+    /// Record what staging decided as the approval of `release`. The Owner's explicit decision
+    /// also narrows every other stored approval, so that the latest decision wins over an older
+    /// approval after a rollback, a restart or a later update.
+    pub fn record(&mut self, release: &Release, decision: Decision, installation_id: &str) {
+        if let Some(requested) = &decision.explicit {
+            for (archive_sha256, approval) in &mut self.approvals {
+                if *archive_sha256 != release.archive_sha256 {
+                    grants::apply_decision(
+                        &mut approval.grants,
+                        requested,
+                        &decision.grants,
+                        installation_id,
+                    );
+                }
+            }
+        }
+        self.approve(release, decision.grants);
     }
 
     /// Remove every grant that `revoked` names from every stored approval, so that neither a

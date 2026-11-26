@@ -531,11 +531,18 @@ impl Manager {
             None,
             true,
         )?;
-        // A new installation receives exactly the Owner's approval. Nothing is carried over.
+        // An installation receives exactly the Owner's approval. Nothing is carried over.
+        let stored = self
+            .journal
+            .slots()
+            .get(&installation_id)
+            .and_then(|slot| slot.approvals.get(&selection.archive_sha256))
+            .map(|approval| approval.grants.clone());
         let gate = gate(
             installation_id.clone(),
             selection.approval.clone(),
             Vec::new(),
+            stored,
         );
         let download = Self::package(
             self.config.clone(),
