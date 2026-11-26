@@ -222,6 +222,7 @@
         "install": "Instalar",
         "retry": "Tentar instalar novamente",
         "installing": "A instalar a aplicação…",
+        "requiresSource": "Não está guardada neste dispositivo. A instalação requer a sua fonte de pacotes.",
         "open": "Abrir aplicação",
         "management": {
             "installed": "Aplicações instaladas",
@@ -232,6 +233,7 @@
             "empty": "Não há aplicações instaladas neste dispositivo.",
             "version": "Versão {{version}}",
             "updateTo": "Atualizar para {{version}}",
+            "updateRequiresSource": "A versão {{version}} não está guardada neste dispositivo. A atualização requer a sua fonte de pacotes.",
             "reinstall": "Reinstalar {{version}}",
             "blocked": {
                 "incompatible": "A versão {{version}} é incompatível com este dispositivo, por isso não é oferecida.",
@@ -288,6 +290,9 @@
                 "dependencyBlocked": "Algo ainda depende desta aplicação, como um host de proxy que ela gere, uma operação da aplicação em curso ou outra aplicação que usa os seus fornecedores. Resolva essa dependência e tente novamente.",
                 "rateLimited": "Demasiados pedidos. Aguarde um momento e volte a tentar.",
                 "unavailable": "O serviço de aplicações está indisponível. Atualize e volte a tentar.",
+                "catalogUnavailable": "Não foi possível aceder ao catálogo de aplicações assinado, por isso não foi possível verificar a versão. A aplicação não foi alterada.",
+                "packageSourceUnavailable": "Não foi possível aceder à fonte de pacotes, por isso não foi possível transferir a versão. A aplicação não foi alterada.",
+                "networkUnavailable": "Não foi possível aceder ao catálogo de aplicações nem à fonte de pacotes. Verifique a ligação à internet deste dispositivo. A aplicação não foi alterada.",
                 "incompatibleData": "A versão selecionada é incompatível com os dados guardados.",
                 "operationFailed": "Verifique o estado atual da aplicação antes de voltar a tentar."
             }
@@ -307,6 +312,9 @@
             "conflict": "A versão mudou ou está em curso outra instalação. Atualize o catálogo e tente novamente.",
             "rateLimited": "Demasiados pedidos de instalação. Aguarde e tente novamente.",
             "unavailable": "O serviço de instalação está indisponível. Tente novamente.",
+            "catalogUnavailable": "Não foi possível aceder ao catálogo de aplicações assinado, por isso não foi possível verificar a versão. Tente novamente quando o catálogo estiver disponível.",
+            "packageSourceUnavailable": "Não foi possível aceder à fonte de pacotes, por isso não foi possível transferir a versão. Tente novamente quando a fonte estiver disponível.",
+            "networkUnavailable": "Não foi possível aceder ao catálogo de aplicações nem à fonte de pacotes. Verifique a ligação à internet deste dispositivo e tente novamente.",
             "installFailed": "A instalação falhou. Pode tentar novamente."
         }
     },

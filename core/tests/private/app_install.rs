@@ -731,6 +731,62 @@ fn persisted_roles_protect_against_rollback_expiry_and_partial_metadata() {
 }
 
 #[test]
+fn catalog_outages_keep_their_source_and_are_told_apart_from_network_outages() {
+    use super::transport::{Source, SourceUnavailable, unreachable_source};
+
+    let temp = tempfile::tempdir().unwrap();
+    let installer = manager(temp.path());
+    let initial = bootstrap_catalog(PIN, &keys(), now()).unwrap();
+    refresh(&installer, &initial, now()).unwrap();
+    let accepted = fs::read(temp.path().join("catalog-checkpoint.json")).unwrap();
+    // The signed-metadata reader keeps only messages. The installer keeps the outage itself.
+    let unanswered = installer
+        .refresh(
+            |_, _| Err(SourceUnavailable::error(Source::Catalog, "no response")),
+            now(),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(unreachable_source(&unanswered), Some(Source::Catalog));
+    let rejected = installer
+        .refresh(|_, _| Err(io::Error::other("rejected")), now())
+        .err()
+        .unwrap();
+    assert_eq!(unreachable_source(&rejected), None);
+    assert_eq!(
+        fs::read(temp.path().join("catalog-checkpoint.json")).unwrap(),
+        accepted
+    );
+
+    let catalog = || SourceUnavailable::error(Source::Catalog, "no response");
+    let source = |error: io::Error| unreachable_source(&error);
+    assert_eq!(
+        source(super::catalog_outage(catalog(), || Some(true))),
+        Some(Source::Catalog)
+    );
+    assert_eq!(
+        source(super::catalog_outage(catalog(), || None)),
+        Some(Source::Catalog)
+    );
+    assert_eq!(
+        source(super::catalog_outage(catalog(), || Some(false))),
+        Some(Source::Network)
+    );
+    let probe = || -> Option<bool> { panic!("only an unreachable catalog needs a probe") };
+    assert_eq!(
+        source(super::catalog_outage(
+            SourceUnavailable::error(Source::Package, "no response"),
+            probe
+        )),
+        Some(Source::Package)
+    );
+    assert_eq!(
+        source(super::catalog_outage(io::Error::other("expired"), probe)),
+        None
+    );
+}
+
+#[test]
 fn startup_refresh_allows_local_readers_and_cannot_replace_a_newer_catalog() {
     let store = tempfile::tempdir().unwrap();
     let installer = manager(store.path());
@@ -971,6 +1027,7 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
     {
         let entries = serde_json::to_value(installer.catalog_entries(&catalog).unwrap()).unwrap();
         assert_eq!(entries[0]["availability"], "incompatible");
+        assert_eq!(entries[0]["cached"], false);
     }
     assert!(
         installer
@@ -1020,6 +1077,15 @@ fn signed_package_stages_and_recovers_offline_with_exact_identities() {
     assert!(!partial.exists());
     assert_eq!(staged.archive_sha256, archive_hash);
     assert_eq!(staged.catalog_revision, 2);
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        // The verified archive is now in the store, so installing needs no package download.
+        let entries = serde_json::to_value(installer.catalog_entries(&catalog).unwrap()).unwrap();
+        assert_eq!(entries[0]["cached"], true);
+    }
     assert_eq!(staged.manifest["resources"]["memoryMiB"], json!(128.0));
     let file = staged.directory.join("bin/app");
     assert_eq!(fs::read(&file).unwrap(), fixture_elf());
