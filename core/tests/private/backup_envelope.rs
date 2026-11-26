@@ -43,9 +43,7 @@ fn vector_bytes<const N: usize>(vector: &Value, field: &str) -> [u8; N] {
 }
 
 fn random<const N: usize>() -> [u8; N] {
-    rand::generate(&rand::SystemRandom::new())
-        .unwrap()
-        .expose()
+    rand::generate(&rand::SystemRandom::new()).unwrap().expose()
 }
 
 /// A header for `format` and the frames that seal (with artifact hashes) and open it.
