@@ -11,6 +11,8 @@ use std::{
 };
 use tokio::process::{Child, Command as Process};
 
+#[path = "published_greeting/data_migrations.rs"]
+mod data_migrations;
 #[path = "published_greeting/distribution.rs"]
 mod distribution;
 #[path = "published_greeting/distribution_gates.rs"]
