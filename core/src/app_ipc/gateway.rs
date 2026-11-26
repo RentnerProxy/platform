@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
-        Arc, LazyLock,
+        Arc, LazyLock, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll},
@@ -24,7 +24,7 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioIo, TokioTimer};
-use rentnerproxy_app_contracts::{HttpDescriptor, HttpMethod, HttpOperation};
+use rentnerproxy_app_contracts::{HttpDescriptor, HttpMethod, HttpOperation, ProtocolContracts};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::{
@@ -52,6 +52,7 @@ const MAX_CONNECTIONS: usize = 32;
 pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const APP_API_PREFIX: &str = "/app/v1/api/";
+pub(crate) const APP_PROVIDER_PREFIX: &str = "/app/v1/providers/";
 pub(crate) const UI_LEASE: &str = "/internal/v1/app-ui/lease";
 const STREAM_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -68,11 +69,15 @@ pub(super) struct Generation {
     identity: Value,
     lease_identity: Bytes,
     app_target: Option<AppTarget>,
+    /// The registrations the authority recorded for this generation, set once at readiness.
+    pub(super) providers: OnceLock<Vec<ProviderRegistration>>,
 }
 
 struct AppTarget {
     socket: PathBuf,
     authorization: HeaderValue,
+    /// Only an app with a UI bridge receives UI operations.
+    ui: bool,
 }
 
 impl Generation {
@@ -102,17 +107,55 @@ impl Generation {
             lease_identity: Bytes::from(json!({ "identity": &identity }).to_string()),
             identity,
             app_target: None,
+            providers: OnceLock::new(),
         })
     }
 
-    pub(super) fn set_app_target(&mut self, socket: PathBuf, credential: &str) -> io::Result<()> {
+    pub(super) fn set_app_target(
+        &mut self,
+        socket: PathBuf,
+        credential: &str,
+        ui: bool,
+    ) -> io::Result<()> {
         let mut authorization = identity_header(&format!("Bearer {credential}"))?;
         authorization.set_sensitive(true);
         self.app_target = Some(AppTarget {
             socket,
             authorization,
+            ui,
         });
         Ok(())
+    }
+
+    /// Ask the authority whether this live generation may still serve the provider.
+    async fn authorize_provider(&self, provider: &ProviderRegistration) -> Result<(), Problem> {
+        let body = json!({"identity": &self.identity, "providerId": provider.id}).to_string();
+        let request = Request::post("/internal/v1/app-generations/provider")
+            .header(header::HOST, "localhost")
+            .header(header::CONNECTION, "close")
+            .header(header::AUTHORIZATION, &self.bridge_auth)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|_| Problem::Unavailable)?;
+        let (response, _connection) = send_to_peer(&self.gateway_socket, self.gateway_uid, request)
+            .await
+            .map_err(|_| Problem::Unavailable)?;
+        match response.status() {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED => return Err(Problem::Identity),
+            StatusCode::NOT_FOUND => return Err(Problem::Route),
+            _ => return Err(Problem::Unavailable),
+        }
+        let body = Limited::new(response.into_body(), 4096)
+            .collect()
+            .await
+            .map_err(|_| Problem::Unavailable)?
+            .to_bytes();
+        // The authority answers for the registration it recorded, which must be this one.
+        match serde_json::from_slice::<ProviderRegistration>(&body) {
+            Ok(recorded) if wire_json::valid(&body) && recorded == *provider => Ok(()),
+            _ => Err(Problem::Unavailable),
+        }
     }
 
     pub(super) async fn lease_expires_at(&self) -> io::Result<Option<u64>> {
@@ -267,7 +310,14 @@ async fn dispatch_app(
             .body(Body::empty())
             .map_err(|_| Problem::Unavailable);
     }
+    if request.method() == Method::POST
+        && let Some(provider) = uri.path().strip_prefix(APP_PROVIDER_PREFIX)
+    {
+        let provider = provider.to_owned();
+        return invoke_provider(generation, target, &provider, request).await;
+    }
     if request.method() != Method::POST
+        || !target.ui
         || !uri
             .path()
             .strip_prefix(APP_API_PREFIX)
@@ -327,6 +377,132 @@ async fn dispatch_app(
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(result))
         .map_err(|_| Problem::Unavailable)
+}
+
+static CONTRACTS: LazyLock<Option<ProtocolContracts>> =
+    LazyLock::new(|| ProtocolContracts::new().ok());
+
+fn contracts() -> Result<&'static ProtocolContracts, Problem> {
+    CONTRACTS.as_ref().ok_or(Problem::Unavailable)
+}
+
+/// Invoke one provider this generation registered, after the authority confirms
+/// that it is still live and granted. Request and result follow the App API contract
+/// and must concern the same profile, action and resource.
+async fn invoke_provider(
+    generation: &Generation,
+    target: &AppTarget,
+    id: &str,
+    request: Request<Incoming>,
+) -> Result<Response<Body>, Problem> {
+    let provider = generation
+        .providers
+        .get()
+        .and_then(|providers| providers.iter().find(|provider| provider.id == id))
+        .ok_or(Problem::Route)?;
+    let (parts, incoming) = request.into_parts();
+    let key = unique_header(&parts.headers, IDEMPOTENCY)?
+        .filter(|value| value.to_str().is_ok_and(record_id))
+        .ok_or(Problem::Request)?;
+    if !unique_header(&parts.headers, header::CONTENT_TYPE.as_str())?
+        .is_some_and(|value| media_type(value, "application/json"))
+    {
+        return Err(Problem::MediaType);
+    }
+    let body = collect(incoming).await?;
+    let invocation: Value = wire_json::valid(&body)
+        .then(|| serde_json::from_slice(&body).ok())
+        .flatten()
+        .ok_or(Problem::Request)?;
+    if contracts()?
+        .validate("ProviderRequest", &invocation)
+        .is_err()
+        || invocation["profile"] != provider.profile.as_str()
+    {
+        return Err(Problem::Request);
+    }
+    generation.authorize_provider(provider).await?;
+    let outgoing = Request::post(parts.uri)
+        .header(header::HOST, "localhost")
+        .header(header::CONNECTION, "close")
+        .header(header::AUTHORIZATION, &target.authorization)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(INSTALLATION, &generation.installation)
+        .header(GENERATION, &generation.generation)
+        .header(IDEMPOTENCY, key)
+        .body(Full::new(body))
+        .map_err(|_| Problem::Request)?;
+    let (response, _connection) = send_to_peer(&target.socket, generation.uid, outgoing)
+        .await
+        .map_err(|_| Problem::Unavailable)?;
+    // A grant revoked or a generation replaced while the app answered withholds its answer.
+    if response.status() == StatusCode::CONFLICT {
+        generation.authorize_provider(provider).await?;
+        return Response::builder()
+            .status(StatusCode::CONFLICT)
+            .body(Body::empty())
+            .map_err(|_| Problem::Unavailable);
+    }
+    if response.status() != StatusCode::OK
+        || !unique_header(response.headers(), header::CONTENT_TYPE.as_str())
+            .map_err(|_| Problem::Unavailable)?
+            .is_some_and(|value| media_type(value, "application/json"))
+    {
+        return Err(Problem::Unavailable);
+    }
+    let result = collect(response.into_body())
+        .await
+        .map_err(|_| Problem::Unavailable)?;
+    let outcome: Value = wire_json::valid(&result)
+        .then(|| serde_json::from_slice(&result).ok())
+        .flatten()
+        .ok_or(Problem::Unavailable)?;
+    if contracts()?.validate("ProviderResult", &outcome).is_err()
+        || !provider_result_matches(&invocation, &outcome)
+    {
+        return Err(Problem::Unavailable);
+    }
+    generation.authorize_provider(provider).await?;
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(result))
+        .map_err(|_| Problem::Unavailable)
+}
+
+/// A schema-valid result still has to answer the invocation: the same profile and
+/// action, the same resource, no more items than requested, and an applied
+/// load-balancer revision only for the revision that was asked for.
+pub(super) fn provider_result_matches(invocation: &Value, outcome: &Value) -> bool {
+    let (request, result) = (&invocation["payload"], &outcome["payload"]);
+    let same = |name: &str| result[name] == request[name];
+    // The contract bounds the limit to an integral 1 to 100, which JSON may also write
+    // as 2.0 or 2e0, so compare it as a number.
+    let within_limit = |name: &str| {
+        result[name]
+            .as_array()
+            .zip(request["limit"].as_f64())
+            .is_some_and(|(items, limit)| items.len() as f64 <= limit)
+    };
+    if invocation["profile"] != outcome["profile"] {
+        return false;
+    }
+    match invocation["profile"].as_str() {
+        Some("monitoring") => within_limit("samples"),
+        Some("docker-discovery") => same("connectionId") && within_limit("observations"),
+        Some("load-balancer") => {
+            let status = &result["revisionStatus"];
+            same("contributionId")
+                && (request["action"] != "apply"
+                    || status["status"] != "applied"
+                    || status["appliedRevision"] == request["revision"])
+        }
+        Some("dns") => same("action") && same("challengeId"),
+        Some("oidc") => same("transactionId"),
+        Some("crowdsec") => {
+            same("action") && (request["action"] != "consumeLogs" || same("batchId"))
+        }
+        _ => false,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -572,9 +748,9 @@ struct AppReady {
 const MAX_PROVIDERS: usize = 32;
 const READY_RETRY_DELAY: Duration = Duration::from_millis(200);
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ProviderRegistration {
+pub(super) struct ProviderRegistration {
     id: String,
     profile: String,
     version: String,
@@ -605,18 +781,25 @@ pub(super) async fn app_ready(
             Ok(Err(Failure::Retry)) | Err(_) => sleep(READY_RETRY_DELAY).await,
         }
     };
-    if providers.is_empty() {
-        return Ok(());
+    // A generation that serves providers needs the contract validators. Compile them now
+    // and fail its start loudly instead of answering every invocation with 503.
+    if !providers.is_empty() && CONTRACTS.is_none() {
+        return Err(io::Error::other(
+            "App provider contract validators are unavailable",
+        ));
     }
     // The first validated advertisement is final for this generation. A retry after a
     // lost confirmation repeats exactly that list instead of probing the app again.
-    loop {
+    while !providers.is_empty() {
         match timeout(RPC_TIMEOUT, generation.register_providers(&providers)).await {
-            Ok(Ok(())) => return Ok(()),
+            Ok(Ok(())) => break,
             Ok(Err(Failure::Fatal(error))) => return Err(error),
             Ok(Err(Failure::Retry)) | Err(_) => sleep(READY_RETRY_DELAY).await,
         }
     }
+    // Invocations reach only registrations the authority recorded for this generation.
+    let _ = generation.providers.set(providers);
+    Ok(())
 }
 
 async fn check_app_ready(

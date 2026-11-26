@@ -286,6 +286,31 @@ async fn authority(
             state.activated = true;
         }
         "renew" => assert!(states.contains_key(&generation)),
+        "provider" => {
+            // Only the live generation serves the provider it recorded.
+            let recorded = states
+                .get(&generation)
+                .filter(|state| state.activated)
+                .and_then(|state| state.providers.as_ref())
+                .and_then(|providers| {
+                    providers
+                        .as_array()?
+                        .iter()
+                        .find(|provider| provider["id"] == value["providerId"])
+                        .cloned()
+                });
+            return Ok(match recorded {
+                Some(provider) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(provider.to_string())))
+                    .unwrap(),
+                None => Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            });
+        }
         "retire" => {
             states.remove(&generation);
         }
@@ -595,6 +620,29 @@ fn lifecycle_input(action: &str, row: &Value, target: Option<&Value>) -> Value {
         request["target"] = target.clone();
     }
     request
+}
+
+/// The restarted generation's provider is invocable over the web socket, through its
+/// broker and the authority, while an unregistered provider ID is not.
+async fn assert_provider_invocation() {
+    async fn call(provider: &str) -> (u16, Value) {
+        let path = format!("/v1/providers/{ID}/{provider}");
+        crate::app_manager::ui::tests::fixture_request(
+            "POST",
+            &path,
+            "Content-Type: application/json\r\nIdempotency-Key: lifecycle-probe\r\n",
+            br#"{"profile":"monitoring","payload":{"limit":1}}"#,
+        )
+        .await
+    }
+    assert_eq!(
+        call("fixture-monitor").await,
+        (
+            200,
+            json!({"profile": "monitoring", "payload": {"samples": []}})
+        )
+    );
+    assert_eq!(call("other-monitor").await.0, 404);
 }
 
 async fn ui_mutate(request: &Value, expected_status: u16) {
@@ -912,6 +960,7 @@ pub(super) async fn exercise() {
         updated["generation"].as_u64().unwrap() + 1
     );
     assert_eq!(fs::read(&note).unwrap(), b"data before update");
+    assert_provider_invocation().await;
     invoke(&controller, &["rollback", ID]).await.unwrap();
     check_process_recovery(&controller, &config, &token, &mut manager).await;
     halt(&mut manager).await;

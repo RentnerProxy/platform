@@ -1,4 +1,5 @@
 mod package;
+mod providers;
 
 use std::{
     collections::BTreeMap,
@@ -40,6 +41,7 @@ use crate::app_ipc::{
 
 use super::{MAX_GENERATION, bad, valid_id};
 pub(super) use package::Package;
+pub(super) use providers::Publication as ProviderPublication;
 
 const SOCKET: &str = "/run/rentnerproxy/app-ui/web.sock";
 const MAX_CONNECTIONS: usize = 16;
@@ -60,6 +62,7 @@ pub(super) mod tests;
 #[derive(Clone, Default)]
 pub(super) struct Registry {
     entries: Arc<Mutex<BTreeMap<String, Arc<Entry>>>>,
+    providers: providers::Registry,
 }
 
 struct Entry {
@@ -77,6 +80,16 @@ pub(super) struct Publication {
 impl Registry {
     pub(super) fn publish(&self, package: Package) -> Option<Publication> {
         self.publish_in(package, Path::new(APP_ROOT))
+    }
+
+    /// Make the providers of an activated generation invocable on the web socket.
+    pub(super) fn publish_providers(
+        &self,
+        installation_id: &str,
+        uid: u32,
+        generation: u64,
+    ) -> Option<ProviderPublication> {
+        self.providers.publish(installation_id, uid, generation)
     }
 
     fn publish_in(&self, package: Package, app_root: &Path) -> Option<Publication> {
@@ -341,6 +354,24 @@ async fn handle(
         };
         *reply.status_mut() = StatusCode::ACCEPTED;
         return Ok(reply);
+    }
+    if let Some(target) = path.strip_prefix("/v1/providers/") {
+        let (installation, provider) = target
+            .split_once('/')
+            .filter(|(installation, provider)| valid_id(installation) && valid_id(provider))
+            .ok_or(StatusCode::NOT_FOUND)?;
+        let idempotency = header_value(&parts.headers, "idempotency-key")
+            .filter(|value| value.to_str().is_ok_and(valid_id))
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        if !header_value(&parts.headers, header::CONTENT_TYPE.as_str()).is_some_and(json_media_type)
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let body = read_body(incoming).await?;
+        return registry
+            .providers
+            .invoke(installation, provider, idempotency, body)
+            .await;
     }
     let (entry, "operations", Some(id)) = selection(&registry, path)? else {
         return Err(StatusCode::NOT_FOUND);
