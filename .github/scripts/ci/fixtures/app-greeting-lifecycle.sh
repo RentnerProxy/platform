@@ -12,7 +12,7 @@ stop_postgres() {
     exit "$status"
 }
 
-if [[ ${1:-} == --container || ${1:-} == --gates || ${1:-} == --restore ]]; then
+if [[ ${1:-} == --container || ${1:-} == --gates || ${1:-} == --migrations || ${1:-} == --restore ]]; then
     postgres=/usr/lib/postgresql/18/bin
     database=/tmp/greeting-postgres
     install -d -m 0700 -o postgres -g postgres "$database" /var/run/postgresql
@@ -30,6 +30,9 @@ if [[ ${1:-} == --container || ${1:-} == --gates || ${1:-} == --restore ]]; then
     elif [[ $1 == --gates ]]; then
         /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::distribution_gates::privileged_published_greeting_distribution_gates --nocapture
         test -s "$RP_GREETING_GATES_REPORT"
+    elif [[ $1 == --migrations ]]; then
+        /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::data_migrations::privileged_published_greeting_data_migrations --nocapture
+        test -s "$RP_GREETING_MIGRATIONS_REPORT"
     else
         /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::portable_backup::privileged_restore_published_greeting --nocapture
         test -s "$RP_GREETING_RECOVERY_REPORT"
@@ -75,7 +78,8 @@ mkdir -p "$output"
 output=$(realpath "$output")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
-rm -f -- "$output/greeting-lifecycle.json" "$output/greeting-gates.json" "$output/greeting-recovery.json"
+rm -f -- "$output/greeting-lifecycle.json" "$output/greeting-gates.json" "$output/greeting-migrations.json" \
+    "$output/greeting-recovery.json"
 mkdir -m 0700 "$work/portable"
 
 download() {
@@ -126,8 +130,12 @@ else
 fi
 
 run_fixture() {
-    local mode=$1
+    local mode=$1 state=1024m
     shift
+    # Four repackaged releases keep their archives and staged packages in the store.
+    if [[ $mode == --migrations ]]; then
+        state=3072m
+    fi
     # Signed metadata and release assets use separate loopback hosts, as in production.
     # Marketplace and GitHub API names point at a stand-in that only counts connections.
     docker run --rm --init --no-healthcheck --network none --read-only --user 0:0 \
@@ -137,7 +145,7 @@ run_fixture() {
         --cap-add SETGID --cap-add SETUID --security-opt no-new-privileges \
         --tmpfs '/run:rw,exec,mode=0755,size=128m' \
         --tmpfs '/tmp:rw,exec,mode=01777,size=1024m' \
-        --tmpfs '/var/lib/rentnerproxy:rw,exec,mode=0711,size=1024m' \
+        --tmpfs "/var/lib/rentnerproxy:rw,exec,mode=0711,size=$state" \
         --mount "type=bind,source=$app_tests,target=/app-tests,readonly" \
         "${controller_mount[@]}" \
         --mount "type=bind,source=$fixture_script,target=/fixture/run.sh,readonly" \
@@ -168,6 +176,14 @@ run_fixture --gates \
     --mount "type=bind,source=$work,target=/greeting,readonly" \
     --env RP_GREETING_FIXTURE=/greeting \
     --env RP_GREETING_GATES_REPORT=/evidence/greeting-gates.json
+
+# Another fresh appliance state migrates app data through repackaged signed releases, refuses
+# a rollback the migrated data no longer supports and recovers a committed migration.
+run_fixture --migrations \
+    --cap-add NET_BIND_SERVICE \
+    --mount "type=bind,source=$work,target=/greeting,readonly" \
+    --env RP_GREETING_FIXTURE=/greeting \
+    --env RP_GREETING_MIGRATIONS_REPORT=/evidence/greeting-migrations.json
 
 # A fresh volume and PostgreSQL cluster have only the backup and an independent public pin.
 run_fixture --restore \
