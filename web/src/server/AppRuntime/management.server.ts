@@ -6,6 +6,8 @@ import {
     deleteAppRuntimeSecretInTransaction,
     putAppRuntimeSecretInTransaction,
     readAppRuntimeLeaseInTransaction,
+    readAppRuntimeProviderInTransaction,
+    resolveAppRuntimePrincipalInTransaction,
 } from './authority.server.ts'
 import {
     appCapabilitySchema,
@@ -49,6 +51,7 @@ const providerUpdate = z.strictObject({
     identity: identitySchema,
     providers: appProviderRegistrationsSchema,
 })
+const providerReference = z.strictObject({ identity: identitySchema, providerId: appRecordId })
 const grantUpdate = z.strictObject({
     identity: identitySchema,
     grants: z
@@ -111,6 +114,20 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
                             transaction,
                             input.identity,
                             input.providers,
+                        )
+                    }
+                    case 'provider': {
+                        // The broker invokes a provider only if the app itself could read it:
+                        // recorded by its live generation, still declared and still granted.
+                        const input = parseAppInput(providerReference, body)
+                        const principal = await resolveAppRuntimePrincipalInTransaction(
+                            transaction,
+                            { identity: input.identity },
+                        )
+                        return readAppRuntimeProviderInTransaction(
+                            transaction,
+                            principal,
+                            input.providerId,
                         )
                     }
                     case 'activate':

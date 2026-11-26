@@ -245,8 +245,13 @@ async fn run_generation(
     };
     let launch_deadline = deadline.min(tokio::time::Instant::now() + LAUNCH_TIMEOUT);
     let (sockets, listener) = filesystem::GenerationSockets::bind(paths.app_root, &config)?;
-    if config.ui_bridge.is_some() {
-        state.set_app_target(sockets.app_socket.clone(), &app_credential)?;
+    // The manager reaches the app for UI operations and for provider invocations.
+    if config.ui_bridge.is_some() || !config.providers.is_empty() {
+        state.set_app_target(
+            sockets.app_socket.clone(),
+            &app_credential,
+            config.ui_bridge.is_some(),
+        )?;
     }
     let state = Arc::new(state);
     let handoff_deadline = process::LaunchDeadline::from_instant(launch_deadline)?;
