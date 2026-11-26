@@ -233,6 +233,10 @@
             "updateTo": "Update to {{version}}",
             "updateRequiresSource": "Version {{version}} is not stored on this appliance. Updating requires its package source.",
             "reinstall": "Reinstall {{version}}",
+            "blocked": {
+                "incompatible": "Version {{version}} is incompatible with this appliance, so it is not offered.",
+                "grantsRequired": "Version {{version}} requires additional grants, so it is not offered."
+            },
             "failed": "The app action could not be completed.",
             "states": {
                 "running": "Active",
@@ -280,7 +284,8 @@
             "errors": {
                 "invalid": "The requested app action is invalid.",
                 "forbidden": "Only appliance owners can manage apps.",
-                "conflict": "The app changed, another action is running, or a dependency is blocking this action. Refresh and check the app before trying again.",
+                "conflict": "The app changed or another action is running. Refresh and check the app before trying again.",
+                "dependencyBlocked": "Something still depends on this app, such as a proxy host it manages, a running app operation or another app that uses its providers. Resolve that dependency, then try again.",
                 "rateLimited": "Too many app requests. Wait a moment and try again.",
                 "unavailable": "The app service is unavailable. Refresh and try again.",
                 "catalogUnavailable": "The signed app catalog could not be reached, so the version could not be verified. The app was not changed.",

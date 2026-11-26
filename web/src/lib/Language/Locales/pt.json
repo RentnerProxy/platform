@@ -235,6 +235,10 @@
             "updateTo": "Atualizar para {{version}}",
             "updateRequiresSource": "A versão {{version}} não está guardada neste dispositivo. A atualização requer a sua fonte de pacotes.",
             "reinstall": "Reinstalar {{version}}",
+            "blocked": {
+                "incompatible": "A versão {{version}} é incompatível com este dispositivo, por isso não é oferecida.",
+                "grantsRequired": "A versão {{version}} requer permissões adicionais, por isso não é oferecida."
+            },
             "failed": "Não foi possível concluir a ação.",
             "states": {
                 "running": "Ativa",
@@ -282,7 +286,8 @@
             "errors": {
                 "invalid": "A ação pedida é inválida.",
                 "forbidden": "Apenas os proprietários do dispositivo podem gerir aplicações.",
-                "conflict": "A aplicação mudou, há outra ação em curso ou uma dependência bloqueia esta ação. Atualize e verifique a aplicação.",
+                "conflict": "A aplicação mudou ou há outra ação em curso. Atualize e verifique a aplicação.",
+                "dependencyBlocked": "Algo ainda depende desta aplicação, como um host de proxy que ela gere, uma operação da aplicação em curso ou outra aplicação que usa os seus fornecedores. Resolva essa dependência e tente novamente.",
                 "rateLimited": "Demasiados pedidos. Aguarde um momento e volte a tentar.",
                 "unavailable": "O serviço de aplicações está indisponível. Atualize e volte a tentar.",
                 "catalogUnavailable": "Não foi possível aceder ao catálogo de aplicações assinado, por isso não foi possível verificar a versão. A aplicação não foi alterada.",

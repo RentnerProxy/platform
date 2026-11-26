@@ -235,6 +235,10 @@
             "updateTo": "Aggiorna alla versione {{version}}",
             "updateRequiresSource": "La versione {{version}} non è salvata su questo dispositivo. L’aggiornamento richiede la sua fonte dei pacchetti.",
             "reinstall": "Reinstalla {{version}}",
+            "blocked": {
+                "incompatible": "La versione {{version}} non è compatibile con questo dispositivo, quindi non viene offerta.",
+                "grantsRequired": "La versione {{version}} richiede autorizzazioni aggiuntive, quindi non viene offerta."
+            },
             "failed": "Impossibile completare l’operazione.",
             "states": {
                 "running": "Attiva",
@@ -282,7 +286,8 @@
             "errors": {
                 "invalid": "L’operazione richiesta non è valida.",
                 "forbidden": "Solo i proprietari del dispositivo possono gestire le app.",
-                "conflict": "L’app è cambiata, è in corso un’altra operazione o una dipendenza blocca questa operazione. Aggiorna e controlla l’app.",
+                "conflict": "L’app è cambiata o è in corso un’altra operazione. Aggiorna e controlla l’app.",
+                "dependencyBlocked": "Qualcosa dipende ancora da questa app, ad esempio un host proxy che gestisce, un’operazione dell’app in corso o un’altra app che usa i suoi provider. Risolvi questa dipendenza e riprova.",
                 "rateLimited": "Troppe richieste. Attendi un momento e riprova.",
                 "unavailable": "Il servizio delle app non è disponibile. Aggiorna e riprova.",
                 "catalogUnavailable": "Il catalogo delle app firmato non è raggiungibile, quindi non è stato possibile verificare la versione. L’app non è stata modificata.",

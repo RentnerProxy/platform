@@ -11,9 +11,15 @@ const checkNames = [
     'runtime',
     'dependencies',
     'actions',
+    'app_runtime',
     'full',
 ] as const
 type CheckSelection = Record<(typeof checkNames)[number], boolean>
+
+// Inputs of the native app runtime reference: the app boundary in the core and its fixtures, the
+// production appliance it builds, and the backup tooling that its offline restore uses.
+const appRuntimeInputs =
+    /^(?:core\/src\/app_|core\/tests\/(?:private\/app_|fixtures\/app-)|core\/(?:Cargo\.(?:toml|lock)|rust-toolchain\.toml)$|docker\/production\/|docker-compose\.yml$|scripts\/(?:production-(?:backup|restore)\.ts$|backup\/|smoke\/wait\.ts$)|web\/src\/(?:lib\/App(?:Catalog|Ui)\/|server\/security-headers\.ts$|tests\/fixtures\/app-)|\.github\/(?:workflows\/app-runtime-reference\.yml$|scripts\/ci\/fixtures\/app-))/u
 
 function selection(value: boolean): CheckSelection {
     return Object.fromEntries(checkNames.map((name) => [name, value])) as CheckSelection
@@ -29,6 +35,7 @@ export function selectChecks(paths: readonly string[]): CheckSelection {
         if (/^\.github\/.*\.md$/u.test(path)) continue
         if (/^\.github\/(?:ISSUE_TEMPLATE\/|assets\/|CODEOWNERS$|release-notes\.json$)/u.test(path))
             continue
+        if (appRuntimeInputs.test(path)) enable('app_runtime')
         if (/^\.github\/(?:workflows\/|actions\/)/u.test(path)) {
             enable('actions', 'web', 'scripts')
             if (

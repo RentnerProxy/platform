@@ -297,6 +297,13 @@ fn privileged_signed_greeting_package() {
     fs::create_dir(&socket).unwrap();
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o700)).unwrap();
     chown(&socket, Some(UID), Some(UID)).unwrap();
+    super::package_rejection::check_app_identity_boundaries(
+        &installer,
+        &store,
+        &data,
+        UID,
+        &second_stage,
+    );
     let first_socket = socket.join("first.sock");
     let app = start(
         &first_stage.directory.join("bin/app"),
@@ -352,7 +359,8 @@ fn privileged_signed_greeting_package() {
             "uiBundleSha256": digest(&fs::read(second_stage.directory.join("ui/app.js")).unwrap()),
             "checks": ["approval-binding", "corrupt-handoff-rejection", "corrupt-download-rejection",
                 "unapproved-version-rejection", "catalog-rollback-rejection", "offline-recover",
-                "packaged-ui", "generation-rejection", "file-persists-through-update"],
+                "packaged-ui", "generation-rejection", "file-persists-through-update",
+                "app-identity-write-boundaries", "package-owner-mode-drift"],
         })
     );
 }

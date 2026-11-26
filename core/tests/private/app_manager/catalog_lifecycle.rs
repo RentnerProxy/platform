@@ -281,6 +281,32 @@ fn offline_management_coalesces_retries_and_serializes_with_catalog_install() {
 }
 
 #[test]
+fn dependency_refusals_are_reported_apart_from_conflicts() {
+    let (endpoint, mut queue, _) = catalog::tests::ready_endpoint();
+    endpoint
+        .publish(vec![Installation::new(ID, &committed(), true).unwrap()])
+        .unwrap();
+    for (kind, reported) in [
+        (io::ErrorKind::ResourceBusy, "dependencyBlocked"),
+        (io::ErrorKind::AlreadyExists, "conflict"),
+    ] {
+        let uninstall = request("uninstall", None);
+        endpoint.submit_lifecycle(uninstall.clone()).unwrap();
+        assert_eq!(
+            queue.try_recv().unwrap(),
+            catalog::Request::Lifecycle(uninstall.clone())
+        );
+        endpoint
+            .finish_lifecycle(uninstall, Err(io::Error::new(kind, "fixture refusal")))
+            .unwrap();
+        let view: Value = serde_json::from_slice(&endpoint.view().unwrap()).unwrap();
+        assert_eq!(view["lifecycle"]["status"], "failed");
+        assert_eq!(view["lifecycle"]["error"], reported);
+        assert_eq!(view["installations"][0]["state"], "running");
+    }
+}
+
+#[test]
 fn source_outages_are_reported_by_the_source_that_did_not_answer() {
     use crate::app_install::{Source, SourceUnavailable};
 

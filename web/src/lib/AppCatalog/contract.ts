@@ -113,6 +113,7 @@ export const catalogLifecycleSchema = z
             status: z.literal('failed'),
             error: z.enum([
                 'conflict',
+                'dependencyBlocked',
                 'unavailable',
                 ...sourceOutages,
                 'incompatibleData',
