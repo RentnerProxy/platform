@@ -28,6 +28,7 @@ const current = {
     installationId: 'greeting-test',
     generation: 1,
     state: 'running',
+    name: null,
     providers: null,
     update: null,
     previous: null,
@@ -44,6 +45,7 @@ const ready: CatalogSnapshot = {
             hasUi: true,
             providers: [],
             availability: 'available',
+            cached: false,
         },
     ],
 }
@@ -337,5 +339,92 @@ test('manages a local app while the catalog is unavailable and confirms retained
     } finally {
         await unmount()
         post.mockRestore()
+    }
+})
+
+test('shows uncached packages as requiring their source after a package source outage', async () => {
+    const listed = ready.entries[0]!
+    const stored = {
+        ...listed,
+        appId: 'example.stored',
+        name: 'Stored app',
+        archiveSha256: 'e'.repeat(64),
+        cached: true,
+    }
+    const requiresSource =
+        'Not stored on this appliance. Installing it requires its package source.'
+    snapshot = {
+        ...ready,
+        entries: [listed, stored],
+        install: { ...selection, status: 'failed', error: 'packageSourceUnavailable' },
+    }
+    apps = []
+    const { container, button, unmount } = await mountCatalog()
+    try {
+        await waitFor(() => button('Retry installation')?.disabled === false)
+        expect(container.textContent).toContain(
+            'The package source could not be reached, so the release could not be downloaded.',
+        )
+        const cards = [...container.querySelectorAll('li')]
+        const card = (name: string) => cards.find((item) => item.textContent?.includes(name))
+        expect(card('Greeting')?.textContent).toContain(requiresSource)
+        expect(card('Stored app')?.textContent).not.toContain(requiresSource)
+        expect(button('Install')?.disabled).toBe(false)
+
+        snapshot = { ...snapshot, state: 'stale', install: null }
+        await act(async () => button('Refresh catalog')!.click())
+        await waitFor(
+            () =>
+                container.textContent?.includes('The catalog is out of date.') === true &&
+                button('Refresh catalog')?.disabled === false,
+        )
+        expect(container.textContent?.split(requiresSource)).toHaveLength(2)
+        expect(button('Install')?.disabled).toBe(true)
+    } finally {
+        await unmount()
+    }
+})
+
+test('names the unreachable sources of a failed update and the verified app name', async () => {
+    const target = { version: '1.1.0', archiveSha256: 'b'.repeat(64) }
+    const update = {
+        action: 'update',
+        installationId: current.installationId,
+        expected: { generation: current.generation, version, archiveSha256 },
+        target,
+    } satisfies CatalogLifecycleInput
+    snapshot = {
+        ...ready,
+        entries: [ready.entries[0]!, { ...ready.entries[0]!, ...target, name: 'Greeting 1.1' }],
+        installations: [{ ...current, name: 'Verified Greeting', update: target }],
+        lifecycle: { ...update, status: 'failed', error: 'networkUnavailable' },
+    }
+    apps = []
+    const { container, button, unmount } = await mountCatalog()
+    try {
+        await waitFor(() => button('Update to 1.1.0')?.disabled === false)
+        expect(container.querySelector('h3')?.textContent).toBe('Verified Greeting')
+        expect(container.textContent).toContain(
+            'Neither the app catalog nor the package source could be reached.',
+        )
+        expect(container.textContent).toContain(
+            'Version 1.1.0 is not stored on this appliance. Updating requires its package source.',
+        )
+
+        snapshot = {
+            ...snapshot,
+            entries: [ready.entries[0]!, { ...ready.entries[0]!, ...target, cached: true }],
+            lifecycle: { ...update, status: 'failed', error: 'catalogUnavailable' },
+        }
+        await act(async () => button('Refresh catalog')!.click())
+        await waitFor(
+            () =>
+                container.textContent?.includes(
+                    'The signed app catalog could not be reached, so the version could not be verified.',
+                ) === true,
+        )
+        expect(container.textContent).not.toContain('Updating requires its package source.')
+    } finally {
+        await unmount()
     }
 })

@@ -222,6 +222,7 @@
         "install": "Instalar",
         "retry": "Reintentar instalación",
         "installing": "Instalando aplicación…",
+        "requiresSource": "No está guardada en este dispositivo. Para instalarla se necesita su fuente de paquetes.",
         "open": "Abrir aplicación",
         "management": {
             "installed": "Aplicaciones instaladas",
@@ -232,6 +233,7 @@
             "empty": "No hay aplicaciones instaladas en este dispositivo.",
             "version": "Versión {{version}}",
             "updateTo": "Actualizar a {{version}}",
+            "updateRequiresSource": "La versión {{version}} no está guardada en este dispositivo. Para actualizar se necesita su fuente de paquetes.",
             "reinstall": "Reinstalar {{version}}",
             "failed": "No se pudo completar la acción.",
             "states": {
@@ -283,6 +285,9 @@
                 "conflict": "La aplicación cambió, hay otra acción en curso o una dependencia bloquea esta acción. Actualiza y comprueba la aplicación.",
                 "rateLimited": "Demasiadas solicitudes. Espera un momento y vuelve a intentarlo.",
                 "unavailable": "El servicio de aplicaciones no está disponible. Actualiza y vuelve a intentarlo.",
+                "catalogUnavailable": "No se pudo acceder al catálogo de aplicaciones firmado, por lo que no se pudo verificar la versión. La aplicación no se modificó.",
+                "packageSourceUnavailable": "No se pudo acceder a la fuente de paquetes, por lo que no se pudo descargar la versión. La aplicación no se modificó.",
+                "networkUnavailable": "No se pudo acceder ni al catálogo de aplicaciones ni a la fuente de paquetes. Comprueba la conexión a internet de este dispositivo. La aplicación no se modificó.",
                 "incompatibleData": "La versión seleccionada es incompatible con los datos guardados.",
                 "operationFailed": "Comprueba el estado actual de la aplicación antes de volver a intentarlo."
             }
@@ -302,6 +307,9 @@
             "conflict": "La versión ha cambiado o hay otra instalación en curso. Actualiza el catálogo y vuelve a intentarlo.",
             "rateLimited": "Hay demasiadas solicitudes de instalación. Espera y vuelve a intentarlo.",
             "unavailable": "El servicio de instalación no está disponible. Vuelve a intentarlo.",
+            "catalogUnavailable": "No se pudo acceder al catálogo de aplicaciones firmado, por lo que no se pudo verificar la versión. Vuelve a intentarlo cuando el catálogo esté disponible.",
+            "packageSourceUnavailable": "No se pudo acceder a la fuente de paquetes, por lo que no se pudo descargar la versión. Vuelve a intentarlo cuando la fuente esté disponible.",
+            "networkUnavailable": "No se pudo acceder ni al catálogo de aplicaciones ni a la fuente de paquetes. Comprueba la conexión a internet de este dispositivo y vuelve a intentarlo.",
             "installFailed": "La instalación ha fallado. Puedes volver a intentarlo."
         }
     },

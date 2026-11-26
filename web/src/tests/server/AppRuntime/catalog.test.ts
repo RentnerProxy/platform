@@ -38,12 +38,14 @@ const entry = {
     hasUi: true,
     providers: ['monitoring' as const],
     availability: 'available' as const,
+    cached: false,
 }
 const installation = {
     ...release,
     generation: 3,
     installationId: 'greeting-test',
     state: 'running' as const,
+    name: 'Greeting',
     providers: null,
     update: null,
     previous: null,
@@ -225,6 +227,45 @@ describe('native signed catalog wire contract', () => {
         const { providers: _, ...unlisted } = installation
         expect(
             catalogSnapshotSchema.safeParse({ ...snapshot, installations: [unlisted] }).success,
+        ).toBe(false)
+    })
+
+    test('carries the local package state, verified names and source outages', () => {
+        const snapshot = {
+            state: 'ready',
+            entries: [entry, { ...entry, version: '1.0.0', cached: true }],
+            install: null,
+            installations: [installation, { ...installation, name: null }],
+            lifecycle: null,
+        }
+        expect(catalogSnapshotSchema.safeParse(snapshot).success).toBe(true)
+        const { cached: _, ...withoutCache } = entry
+        const { name: __, ...withoutName } = installation
+        for (const invalid of [
+            { ...snapshot, entries: [withoutCache] },
+            { ...snapshot, installations: [withoutName] },
+            { ...snapshot, installations: [{ ...installation, name: 'x'.repeat(81) }] },
+        ]) {
+            expect(catalogSnapshotSchema.safeParse(invalid).success).toBe(false)
+        }
+        for (const error of [
+            'catalogUnavailable',
+            'packageSourceUnavailable',
+            'networkUnavailable',
+        ]) {
+            expect(
+                catalogSnapshotSchema.safeParse({
+                    ...snapshot,
+                    install: { ...release, status: 'failed', error },
+                    lifecycle: { ...operation, status: 'failed', error },
+                }).success,
+            ).toBe(true)
+        }
+        expect(
+            catalogSnapshotSchema.safeParse({
+                ...snapshot,
+                install: { ...release, status: 'failed', error: 'sourceUnavailable' },
+            }).success,
         ).toBe(false)
     })
 

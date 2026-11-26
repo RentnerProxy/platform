@@ -189,6 +189,8 @@ pub(super) struct Running {
     child: Child,
     pipe: Option<ChildStdin>,
     renewal: Option<Renewal>,
+    /// Display name from the verified manifest of the running release.
+    pub name: Option<String>,
     pub ui: Option<super::ui::Publication>,
     pub providers: Option<super::ui::ProviderPublication>,
 }
@@ -285,6 +287,7 @@ impl Running {
             child,
             pipe: None,
             renewal: None,
+            name: None,
             ui: None,
             providers: None,
         }
@@ -353,6 +356,7 @@ impl Running {
             child,
             pipe: Some(pipe),
             renewal: Some(renewal),
+            name: m["display"]["name"].as_str().map(str::to_owned),
             ui: None,
             providers: None,
         })

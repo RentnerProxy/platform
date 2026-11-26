@@ -279,3 +279,65 @@ fn offline_management_coalesces_retries_and_serializes_with_catalog_install() {
     assert_eq!(view["installations"][0]["state"], "disabled");
     assert_eq!(view["lifecycle"]["expected"]["generation"], 7);
 }
+
+#[test]
+fn source_outages_are_reported_by_the_source_that_did_not_answer() {
+    use crate::app_install::{Source, SourceUnavailable};
+
+    let (endpoint, mut queue, _) = catalog::tests::ready_endpoint();
+    endpoint
+        .publish(vec![Installation::new(ID, &committed(), true).unwrap()])
+        .unwrap();
+    for (source, reported) in [
+        (Source::Catalog, "catalogUnavailable"),
+        (Source::Package, "packageSourceUnavailable"),
+        (Source::Network, "networkUnavailable"),
+    ] {
+        let deactivate = request("deactivate", None);
+        endpoint.submit_lifecycle(deactivate.clone()).unwrap();
+        assert_eq!(
+            queue.try_recv().unwrap(),
+            catalog::Request::Lifecycle(deactivate.clone())
+        );
+        let outage = SourceUnavailable::error(source, "fixture outage");
+        endpoint.finish_lifecycle(deactivate, Err(outage)).unwrap();
+        let view: Value = serde_json::from_slice(&endpoint.view().unwrap()).unwrap();
+        assert_eq!(view["lifecycle"]["status"], "failed");
+        assert_eq!(view["lifecycle"]["error"], reported);
+        assert_eq!(view["installations"][0]["state"], "running");
+    }
+}
+
+#[test]
+fn installations_carry_the_display_name_of_their_verified_manifest() {
+    let named = |release: &Release, name: &str| {
+        let mut value = serde_json::to_value(entry(release, "available")).unwrap();
+        value["name"] = name.into();
+        serde_json::from_value::<CatalogEntry>(value).unwrap()
+    };
+    let listing = [
+        named(&release("1.9.2", 'd'), "Other digest"),
+        named(&release("1.9.2", 'a'), "Listed Greeting"),
+    ];
+    let row = Installation::new(ID, &committed(), true).unwrap();
+    assert_eq!(serde_json::to_value(&row).unwrap()["name"], Value::Null);
+    let mut listed = row.clone();
+    listed.set_listed_name(&listing);
+    assert_eq!(
+        serde_json::to_value(&listed).unwrap()["name"],
+        "Listed Greeting"
+    );
+    let mut unlisted = row.clone();
+    unlisted.set_listed_name(&listing[..1]);
+    assert_eq!(
+        serde_json::to_value(&unlisted).unwrap()["name"],
+        Value::Null
+    );
+    // The manifest the running generation loaded wins over the listing.
+    let mut loaded = row.with_name(Some("Loaded Greeting".into()));
+    loaded.set_listed_name(&listing);
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap()["name"],
+        "Loaded Greeting"
+    );
+}

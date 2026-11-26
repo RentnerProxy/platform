@@ -27,14 +27,23 @@ const catalogEntrySchema = catalogSelectorSchema.extend({
     hasUi: z.boolean(),
     providers: appProviderProfilesSchema,
     availability: z.enum(['available', 'incompatible', 'grantsRequired']),
+    /** The package store holds this archive, so installing needs no package download. */
+    cached: z.boolean(),
 })
+
+/** Which remote source an installation or update could not reach. */
+const sourceOutages = [
+    'catalogUnavailable',
+    'packageSourceUnavailable',
+    'networkUnavailable',
+] as const
 
 export const catalogInstallSchema = z.discriminatedUnion('status', [
     catalogSelectorSchema.extend({ status: z.literal('installing') }),
     catalogSelectorSchema.extend({ status: z.literal('installed'), installationId: appRecordId }),
     catalogSelectorSchema.extend({
         status: z.literal('failed'),
-        error: z.enum(['conflict', 'unavailable', 'installFailed']).optional(),
+        error: z.enum(['conflict', 'unavailable', ...sourceOutages, 'installFailed']).optional(),
     }),
 ])
 
@@ -46,6 +55,8 @@ const installationSchema = installedReleaseSchema.extend({
     installationId: appRecordId,
     appId: appIdSchema,
     state: z.enum(['running', 'disabled', 'recoveryRequired', 'removing', 'removed', 'purging']),
+    /** Display name from the verified manifest of the installed release, when known. */
+    name: displayText(80).nullable(),
     providers: appProviderProfilesSchema.nullable(),
     update: releaseSchema.nullable(),
     previous: releaseSchema.nullable(),
@@ -100,7 +111,13 @@ export const catalogLifecycleSchema = z
         lifecycleInput.extend({ status: z.literal('succeeded') }),
         lifecycleInput.extend({
             status: z.literal('failed'),
-            error: z.enum(['conflict', 'unavailable', 'incompatibleData', 'operationFailed']),
+            error: z.enum([
+                'conflict',
+                'unavailable',
+                ...sourceOutages,
+                'incompatibleData',
+                'operationFailed',
+            ]),
         }),
     ])
     .refine(hasExpectedLifecycleTarget)
@@ -121,6 +138,11 @@ export type CatalogInstallation = z.infer<typeof installationSchema>
 export type CatalogLifecycleInput = z.infer<typeof catalogLifecycleInputSchema>
 export type CatalogLifecycle = z.infer<typeof catalogLifecycleSchema>
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>
+
+/** Whether an operation failed because the package source, or every source, was unreachable. */
+export function isPackageSourceOutage(error: string | undefined): boolean {
+    return error === 'packageSourceUnavailable' || error === 'networkUnavailable'
+}
 
 export function sameCatalogRelease(left: CatalogSelector, right: CatalogSelector): boolean {
     return (

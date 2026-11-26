@@ -224,6 +224,7 @@
         "install": "Zainstaluj",
         "retry": "Ponów instalację",
         "installing": "Instalowanie aplikacji…",
+        "requiresSource": "Nie jest zapisana na tym urządzeniu. Instalacja wymaga jej źródła pakietów.",
         "open": "Otwórz aplikację",
         "management": {
             "installed": "Zainstalowane aplikacje",
@@ -234,6 +235,7 @@
             "empty": "Na tym urządzeniu nie ma zainstalowanych aplikacji.",
             "version": "Wersja {{version}}",
             "updateTo": "Zaktualizuj do {{version}}",
+            "updateRequiresSource": "Wersja {{version}} nie jest zapisana na tym urządzeniu. Aktualizacja wymaga jej źródła pakietów.",
             "reinstall": "Zainstaluj ponownie {{version}}",
             "failed": "Nie udało się wykonać operacji.",
             "states": {
@@ -285,6 +287,9 @@
                 "conflict": "Aplikacja się zmieniła, trwa inna operacja lub zależność blokuje tę operację. Odśwież i sprawdź aplikację.",
                 "rateLimited": "Zbyt wiele żądań. Poczekaj chwilę i spróbuj ponownie.",
                 "unavailable": "Usługa aplikacji jest niedostępna. Odśwież i spróbuj ponownie.",
+                "catalogUnavailable": "Podpisany katalog aplikacji jest nieosiągalny, więc nie można było zweryfikować wersji. Aplikacja nie została zmieniona.",
+                "packageSourceUnavailable": "Źródło pakietów jest nieosiągalne, więc nie można było pobrać wersji. Aplikacja nie została zmieniona.",
+                "networkUnavailable": "Ani katalog aplikacji, ani źródło pakietów nie są osiągalne. Sprawdź połączenie internetowe tego urządzenia. Aplikacja nie została zmieniona.",
                 "incompatibleData": "Wybrana wersja jest niezgodna z zapisanymi danymi aplikacji.",
                 "operationFailed": "Sprawdź bieżący stan aplikacji i spróbuj ponownie."
             }
@@ -304,6 +309,9 @@
             "conflict": "Wersja uległa zmianie lub trwa inna instalacja. Odśwież katalog i spróbuj ponownie.",
             "rateLimited": "Zbyt wiele żądań instalacji. Odczekaj chwilę i spróbuj ponownie.",
             "unavailable": "Usługa instalacji jest niedostępna. Spróbuj ponownie.",
+            "catalogUnavailable": "Podpisany katalog aplikacji jest nieosiągalny, więc nie można było zweryfikować wersji. Spróbuj ponownie, gdy katalog będzie dostępny.",
+            "packageSourceUnavailable": "Źródło pakietów jest nieosiągalne, więc nie można było pobrać wersji. Spróbuj ponownie, gdy źródło będzie dostępne.",
+            "networkUnavailable": "Ani katalog aplikacji, ani źródło pakietów nie są osiągalne. Sprawdź połączenie internetowe tego urządzenia i spróbuj ponownie.",
             "installFailed": "Instalacja nie powiodła się. Możesz spróbować ponownie."
         }
     },

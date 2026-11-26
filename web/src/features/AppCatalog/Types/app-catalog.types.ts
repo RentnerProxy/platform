@@ -6,6 +6,8 @@ export type CatalogInstallationView = {
     publisher: string | undefined
     canOpen: boolean
     actions: CatalogLifecycleInput[]
+    /** The offered update is not stored locally while its package source is unreachable. */
+    updateRequiresSource: boolean
 }
 
 export type CatalogConfirmation = {

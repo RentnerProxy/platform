@@ -25,7 +25,7 @@ export default function InstalledAppCard({
     onAction: (app: CatalogInstallationView, request: CatalogLifecycleInput) => void
 }) {
     const { t } = useTranslationStore()
-    const { installation, name, publisher, canOpen, actions } = app
+    const { installation, name, publisher, canOpen, actions, updateRequiresSource } = app
 
     return (
         <li className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4 rounded-2xl border border-border bg-surface-subtle p-4 sm:p-5">
@@ -47,6 +47,13 @@ export default function InstalledAppCard({
                             ? t('appCatalog.release', { publisher, version: installation.version })
                             : t('appCatalog.management.version', { version: installation.version })}
                     </p>
+                    {updateRequiresSource && installation.update ? (
+                        <p className="mt-1 text-sm wrap-anywhere text-warning-text">
+                            {t('appCatalog.management.updateRequiresSource', {
+                                version: installation.update.version,
+                            })}
+                        </p>
+                    ) : null}
                 </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">

@@ -220,6 +220,7 @@
         "install": "Install",
         "retry": "Retry installation",
         "installing": "Installing app…",
+        "requiresSource": "Not stored on this appliance. Installing it requires its package source.",
         "open": "Open app",
         "management": {
             "installed": "Installed apps",
@@ -230,6 +231,7 @@
             "empty": "No apps are installed on this appliance.",
             "version": "Version {{version}}",
             "updateTo": "Update to {{version}}",
+            "updateRequiresSource": "Version {{version}} is not stored on this appliance. Updating requires its package source.",
             "reinstall": "Reinstall {{version}}",
             "failed": "The app action could not be completed.",
             "states": {
@@ -281,6 +283,9 @@
                 "conflict": "The app changed, another action is running, or a dependency is blocking this action. Refresh and check the app before trying again.",
                 "rateLimited": "Too many app requests. Wait a moment and try again.",
                 "unavailable": "The app service is unavailable. Refresh and try again.",
+                "catalogUnavailable": "The signed app catalog could not be reached, so the version could not be verified. The app was not changed.",
+                "packageSourceUnavailable": "The package source could not be reached, so the version could not be downloaded. The app was not changed.",
+                "networkUnavailable": "Neither the app catalog nor the package source could be reached. Check this appliance’s internet connection. The app was not changed.",
                 "incompatibleData": "The selected version is incompatible with the app’s stored data.",
                 "operationFailed": "Check the app’s current state before trying again."
             }
@@ -300,6 +305,9 @@
             "conflict": "The release changed or another installation is running. Refresh the catalog and try again.",
             "rateLimited": "Too many installation requests. Please wait and try again.",
             "unavailable": "The app installation service is unavailable. Please try again.",
+            "catalogUnavailable": "The signed app catalog could not be reached, so the release could not be verified. Try again when the catalog is available.",
+            "packageSourceUnavailable": "The package source could not be reached, so the release could not be downloaded. Try again when the source is available.",
+            "networkUnavailable": "Neither the app catalog nor the package source could be reached. Check this appliance’s internet connection, then try again.",
             "installFailed": "Installation failed. You can try again."
         }
     },

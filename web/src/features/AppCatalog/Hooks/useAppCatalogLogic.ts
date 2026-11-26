@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { useAppUi } from '@/features/AppUi/AppUiProvider.tsx'
 import {
+    isPackageSourceOutage,
     sameCatalogLifecycle,
     sameCatalogRelease,
     type CatalogLifecycleInput,
@@ -120,6 +121,12 @@ export default function useAppCatalogLogic() {
         void refreshAppUi?.().catch(() => {})
     }, [lifecycle, refreshAppUi])
 
+    // Without a reachable source, only packages already in the local store can be installed.
+    const sourceUnreachable =
+        status === 'stale' ||
+        status === 'unavailable' ||
+        (install?.status === 'failed' && isPackageSourceOutage(install.error)) ||
+        (lifecycle?.status === 'failed' && isPackageSourceOutage(lifecycle.error))
     const catalogEntries = snapshot?.entries ?? []
     const catalogNames = new Map(catalogEntries.map((entry) => [entry.appId, entry]))
     const availableReleases = new Map<string, CatalogRelease>(
@@ -133,9 +140,17 @@ export default function useAppCatalogLogic() {
         (installation) => {
             const declaredApp = catalogNames.get(installation.appId)
             const app = accessibleApps.get(installation.installationId)
+            const { update } = installation
+            const cachedUpdate =
+                update !== null &&
+                catalogEntries.some(
+                    (entry) =>
+                        entry.cached &&
+                        sameCatalogRelease(entry, { appId: installation.appId, ...update }),
+                )
             return {
                 installation,
-                name: declaredApp?.name ?? app?.name ?? installation.appId,
+                name: installation.name ?? declaredApp?.name ?? app?.name ?? installation.appId,
                 publisher: declaredApp?.publisher,
                 canOpen: installation.state === 'running' && app?.appId === installation.appId,
                 actions: catalogInstallationActions(
@@ -143,6 +158,8 @@ export default function useAppCatalogLogic() {
                     status === 'ready',
                     availableReleases.get(installation.appId),
                 ),
+                updateRequiresSource:
+                    update !== null && status === 'ready' && sourceUnreachable && !cachedUpdate,
             }
         },
     )
@@ -152,6 +169,8 @@ export default function useAppCatalogLogic() {
             entry,
             isRetry: install?.status === 'failed' && sameCatalogRelease(install, entry),
             canInstall: canManage && status === 'ready' && entry.availability === 'available',
+            requiresSource:
+                sourceUnreachable && entry.availability === 'available' && !entry.cached,
         }))
     const retained = installations.filter(
         ({ installation }) => installation.state === 'removed' || installation.state === 'purging',

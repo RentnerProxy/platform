@@ -220,6 +220,7 @@
         "install": "Installieren",
         "retry": "Installation wiederholen",
         "installing": "App wird installiert …",
+        "requiresSource": "Nicht auf dieser Appliance gespeichert. Die Installation benötigt die Paketquelle.",
         "open": "App öffnen",
         "management": {
             "installed": "Installierte Apps",
@@ -230,6 +231,7 @@
             "empty": "Auf dieser Appliance sind keine Apps installiert.",
             "version": "Version {{version}}",
             "updateTo": "Auf {{version}} aktualisieren",
+            "updateRequiresSource": "Version {{version}} ist nicht auf dieser Appliance gespeichert. Das Update benötigt die Paketquelle.",
             "reinstall": "{{version}} erneut installieren",
             "failed": "Die App-Aktion konnte nicht abgeschlossen werden.",
             "states": {
@@ -281,6 +283,9 @@
                 "conflict": "Die App hat sich geändert, eine andere Aktion läuft oder eine Abhängigkeit blockiert diese Aktion. Aktualisiere die Ansicht und überprüfe die App.",
                 "rateLimited": "Zu viele App-Anfragen. Warte kurz und versuche es erneut.",
                 "unavailable": "Der App-Dienst ist nicht verfügbar. Aktualisiere die Ansicht und versuche es erneut.",
+                "catalogUnavailable": "Der signierte App-Katalog war nicht erreichbar, daher konnte die Version nicht geprüft werden. Die App wurde nicht verändert.",
+                "packageSourceUnavailable": "Die Paketquelle war nicht erreichbar, daher konnte die Version nicht heruntergeladen werden. Die App wurde nicht verändert.",
+                "networkUnavailable": "Weder der App-Katalog noch die Paketquelle waren erreichbar. Prüfe die Internetverbindung dieser Appliance. Die App wurde nicht verändert.",
                 "incompatibleData": "Die gewählte Version ist mit den gespeicherten App-Daten inkompatibel.",
                 "operationFailed": "Überprüfe den aktuellen Zustand der App und versuche es erneut."
             }
@@ -300,6 +305,9 @@
             "conflict": "Die Version hat sich geändert oder eine Installation läuft bereits. Aktualisiere den Katalog und versuche es erneut.",
             "rateLimited": "Zu viele Installationsanfragen. Warte kurz und versuche es erneut.",
             "unavailable": "Der Installationsdienst ist nicht verfügbar. Versuche es erneut.",
+            "catalogUnavailable": "Der signierte App-Katalog war nicht erreichbar, daher konnte die Version nicht geprüft werden. Versuche es erneut, sobald der Katalog verfügbar ist.",
+            "packageSourceUnavailable": "Die Paketquelle war nicht erreichbar, daher konnte die Version nicht heruntergeladen werden. Versuche es erneut, sobald die Quelle verfügbar ist.",
+            "networkUnavailable": "Weder der App-Katalog noch die Paketquelle waren erreichbar. Prüfe die Internetverbindung dieser Appliance und versuche es dann erneut.",
             "installFailed": "Die Installation ist fehlgeschlagen. Du kannst es erneut versuchen."
         }
     },
