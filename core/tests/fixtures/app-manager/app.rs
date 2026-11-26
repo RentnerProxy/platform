@@ -13,6 +13,13 @@ fn main() {
     let (socket, _) = suffix.split_once('"').unwrap();
     let listener = UnixListener::bind(socket).unwrap();
     listener.set_nonblocking(true).unwrap();
+    // A marker in the data directory makes only the next start stay alive with an unsupported
+    // protocol, so the platform never sees it ready.
+    let protocol = if fs::remove_file("fixture-never-ready").is_ok() {
+        "9.9.9"
+    } else {
+        "1.0.0"
+    };
     fs::write("app-pid", std::process::id().to_string()).unwrap();
     loop {
         if fs::remove_file("fixture-exit").is_ok() {
@@ -47,11 +54,13 @@ fn main() {
         let mut request = vec![0; length];
         input.read_exact(&mut request).unwrap();
         let body = if health {
-            r#"{"healthy":true}"#
+            r#"{"healthy":true}"#.to_owned()
         } else if provider {
-            r#"{"profile":"monitoring","payload":{"samples":[]}}"#
+            r#"{"profile":"monitoring","payload":{"samples":[]}}"#.to_owned()
         } else {
-            r#"{"ready":true,"protocolVersion":"1.0.0","providers":[{"id":"fixture-monitor","profile":"monitoring","version":"1.0.0"}]}"#
+            format!(
+                r#"{{"ready":true,"protocolVersion":"{protocol}","providers":[{{"id":"fixture-monitor","profile":"monitoring","version":"1.0.0"}}]}}"#
+            )
         };
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
     }
