@@ -492,6 +492,12 @@ impl Manager {
         slot.grants_uncertain = None;
         self.journal.save(id, slot)?;
         live.ui = ui_package.and_then(|package| self.ui.publish(package));
+        if package.manifest["providers"]
+            .as_array()
+            .is_some_and(|providers| !providers.is_empty())
+        {
+            live.providers = self.ui.publish_providers(id, uid, generation);
+        }
         self.running.insert(id.to_owned(), live);
         Ok(())
     }
