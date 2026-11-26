@@ -2,9 +2,9 @@
 //!
 //! One fresh appliance state walks through expired trust metadata, unreachable release
 //! assets, unreachable distribution, an expired metadata successor during an offered update,
-//! a signed release that requests a new capability, the authentic update with
-//! generation-bound UI and API calls, and a restart without any network. Marketplace and
-//! GitHub API endpoints stay blocked throughout.
+//! a signed release that requests a new capability, the authentic update with coalesced
+//! retries and generation-bound UI and API calls, and a restart without any network.
+//! Marketplace and GitHub API endpoints stay blocked throughout.
 
 use super::distribution::{
     self, Distribution, Files, METADATA_HOST, RELEASE_HOST, Served, release_path,
@@ -543,8 +543,40 @@ async fn privileged_published_greeting_distribution_gates() {
         &first.archive_sha256,
     )
     .await;
+    // Greeting 1.0.0 declares no native view. The platform supplies one for its digests.
+    let (status, old_metadata) = send_ui(
+        "GET",
+        &format!("/v1/apps/{installation_id}/{old_generation}/metadata"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{old_metadata}");
+    assert!(
+        old_metadata.get("nativePresentation").is_none(),
+        "{old_metadata}"
+    );
+    let update = lifecycle_request("update", before, Some(&offered));
     let since = hosts.requests().len();
-    post_lifecycle(&lifecycle_request("update", before, Some(&offered))).await;
+    post_lifecycle(&update).await;
+    // Repeated clicks while the update runs return the same pending operation. A different
+    // lifecycle action or an installation is refused until the update has finished.
+    let mut repeated_statuses = Vec::new();
+    for _ in 0..2 {
+        let (status, body) = send_ui("POST", "/v1/catalog/lifecycle", Some(&update)).await;
+        assert_eq!(status, 202, "{body}");
+        assert_eq!(body["status"], "pending", "{body}");
+        assert_eq!(body["expected"], update["expected"], "{body}");
+        assert_eq!(body["target"], offered, "{body}");
+        repeated_statuses.push(status);
+    }
+    let concurrent_refusals = [
+        refused_submission(
+            "/v1/catalog/lifecycle",
+            &lifecycle_request("deactivate", before, None),
+        )
+        .await,
+        refused_submission("/v1/catalog/install", &install).await,
+    ];
     let updated_view = wait_lifecycle("update", "succeeded").await;
     let updated = running_installation(&updated_view, &installation_id);
     assert_eq!(updated["version"], second.version);
@@ -562,6 +594,25 @@ async fn privileged_published_greeting_distribution_gates() {
         &second.archive_sha256,
     )
     .await;
+    // Greeting 1.0.1 changes only its API document, so its entry document is byte-identical.
+    // The new generation's metadata carries the native view that 1.0.1 declares.
+    let ui_entry_changed = ui != previous_ui;
+    assert!(!ui_entry_changed);
+    let (status, new_metadata) = send_ui(
+        "GET",
+        &format!("/v1/apps/{installation_id}/{new_generation}/metadata"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{new_metadata}");
+    let presentation = &new_metadata["nativePresentation"];
+    assert_eq!(presentation["formatVersion"], 1, "{new_metadata}");
+    assert!(
+        presentation["pages"]
+            .as_array()
+            .is_some_and(|pages| !pages.is_empty()),
+        "{new_metadata}"
+    );
     assert_eq!(
         read_greeting(&installation_id, new_generation).await,
         PERSISTED_GREETING
@@ -693,7 +744,11 @@ async fn privileged_published_greeting_distribution_gates() {
             "generations": {"replaced": old_generation, "active": new_generation},
             "uiEntry": ui_entry,
             "uiEntrySha256": marketplace_artifacts::digest(&ui),
-            "uiEntryChanged": ui != previous_ui,
+            "uiEntryChanged": ui_entry_changed,
+            "nativePresentation": {"replaced": false, "active": true},
+            "repeatedSubmissions": repeated_statuses,
+            "concurrentRefusals": concurrent_refusals,
+            "archiveDeliveries": 1,
             "staleGenerationCalls": stale_calls,
         },
         "offlineRestart": {

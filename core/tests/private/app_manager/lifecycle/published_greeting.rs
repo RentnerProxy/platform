@@ -376,6 +376,55 @@ async fn privileged_published_greeting_lifecycle() {
         PERSISTED_GREETING
     );
 
+    // Uninstalling keeps the app data, and reinstalling a listed release opens it again.
+    let retained_uid = manager_status().await.unwrap()[&installation_id]["uid"].clone();
+    let retained_data = PathBuf::from(format!(
+        "/var/lib/rentnerproxy/apps/{}/data/greeting.json",
+        retained_uid.as_u64().unwrap()
+    ));
+    let data_before_removal = fs::read(&retained_data).unwrap();
+    post_lifecycle(&lifecycle_request("uninstall", first_install, None)).await;
+    let uninstalled_view = wait_lifecycle("uninstall", "succeeded").await;
+    let uninstalled = uninstalled_view["installations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["installationId"] == installation_id)
+        .expect("Greeting keeps an installation row with its retained data");
+    assert_eq!(uninstalled["state"], "removed", "{uninstalled}");
+    assert_eq!(uninstalled["version"], first.version);
+    assert_eq!(uninstalled["archiveSha256"], first.archive_sha256);
+    assert_eq!(fs::read(&retained_data).unwrap(), data_before_removal);
+    wait_catalog_state("ready").await;
+    let reinstall_target = json!({
+        "version": first.version,
+        "archiveSha256": first.archive_sha256,
+    });
+    post_lifecycle(&lifecycle_request(
+        "reinstall",
+        uninstalled,
+        Some(&reinstall_target),
+    ))
+    .await;
+    let reinstalled_view = wait_lifecycle("reinstall", "succeeded").await;
+    let reinstalled = running_installation(&reinstalled_view, &installation_id);
+    assert_eq!(reinstalled["version"], first.version);
+    assert_eq!(reinstalled["archiveSha256"], first.archive_sha256);
+    assert_eq!(reinstalled["previous"], Value::Null);
+    let reinstalled_generation = reinstalled["generation"].as_u64().unwrap();
+    assert!(reinstalled_generation > first_generation);
+    assert_eq!(
+        manager_status().await.unwrap()[&installation_id]["uid"],
+        retained_uid
+    );
+    assert_eq!(
+        read_greeting(&installation_id, reinstalled_generation).await,
+        PERSISTED_GREETING,
+        "reinstalling must open the retained greeting"
+    );
+    let removed_generation = first_generation;
+    let first_generation = reinstalled_generation;
+
     let ready = wait_catalog_state("ready").await;
     let before_update = running_installation(&ready, &installation_id);
     assert_eq!(before_update["generation"], first_generation);
@@ -575,6 +624,38 @@ async fn privileged_published_greeting_lifecycle() {
         read_greeting(&installation_id, restarted_generation).await,
         PERSISTED_GREETING
     );
+
+    // Uninstall and the separately requested data purge are local and work offline.
+    let restarted = running_installation(&offline_listing, &installation_id);
+    post_lifecycle(&lifecycle_request("uninstall", restarted, None)).await;
+    let removed_view = wait_lifecycle("uninstall", "succeeded").await;
+    let removed = removed_view["installations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["installationId"] == installation_id)
+        .expect("Greeting keeps an installation row with its retained data");
+    assert_eq!(removed["state"], "removed", "{removed}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&data_path).unwrap()).unwrap()["greeting"],
+        PERSISTED_GREETING
+    );
+    post_lifecycle(&lifecycle_request("purge", removed, None)).await;
+    let purged_view = wait_lifecycle("purge", "succeeded").await;
+    assert!(
+        purged_view["installations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["installationId"] != installation_id),
+        "{purged_view}"
+    );
+    let app_directory = data_path.ancestors().nth(2).unwrap();
+    assert_eq!(
+        app_directory,
+        Path::new(&format!("/var/lib/rentnerproxy/apps/{uid}"))
+    );
+    assert!(!app_directory.exists(), "purge must erase the app data");
     halt(&mut manager).await;
     authority.kill().await.unwrap();
 
@@ -611,6 +692,8 @@ async fn privileged_published_greeting_lifecycle() {
         "operations": [
             {"action": "catalog-install", "version": first.version, "result": "installed"},
             {"action": "greeting-save", "result": "visible"},
+            {"action": "catalog-uninstall", "version": first.version, "result": "data-retained"},
+            {"action": "catalog-reinstall", "version": first.version, "result": "greeting-restored"},
             {"action": "ui-update", "version": second.version, "result": "updated"},
             {"action": "catalog-tls-server", "result": "stopped-before-rollback"},
             {"action": "ui-rollback", "version": first.version, "result": "rolled-back-offline"},
@@ -618,6 +701,8 @@ async fn privileged_published_greeting_lifecycle() {
             {"action": "manager-restart", "result": "restored-offline"},
             {"action": "catalog-listing-after-restart", "result": "served-from-checkpoint"},
             {"action": "greeting-after-restart", "result": "visible-and-persisted"},
+            {"action": "offline-uninstall", "result": "data-retained"},
+            {"action": "offline-purge", "result": "data-erased"},
         ],
         "updateFailures": update_failures,
         "authenticatedUpdateRetry": {
@@ -627,7 +712,8 @@ async fn privileged_published_greeting_lifecycle() {
         },
         "persistedGreeting": PERSISTED_GREETING,
         "generations": {
-            "installed": first_generation,
+            "installed": removed_generation,
+            "reinstalled": first_generation,
             "updated": updated_generation,
             "rolledBack": rollback_generation,
             "restarted": restarted_generation,
