@@ -96,6 +96,9 @@ pub(super) struct Installation {
     #[serde(flatten)]
     release: ReleaseSelection,
     state: InstallationState,
+    /// Display name from the verified manifest of this exact release, when the running
+    /// generation loaded it or the signed listing still names it.
+    name: Option<String>,
     /// Provider profiles of this exact release in the catalog listing; absent if it is unlisted.
     providers: Option<Vec<String>>,
     update: Option<ReleaseSelection>,
@@ -189,6 +192,7 @@ impl Installation {
             generation: slot.generation,
             release,
             state,
+            name: None,
             providers: None,
             update: None,
             previous: slot.previous.as_ref().map(Into::into),
@@ -197,6 +201,28 @@ impl Installation {
 
     pub(super) fn id(&self) -> &str {
         &self.installation_id
+    }
+
+    /// Keep the display name of the manifest that the running generation verified and loaded.
+    pub(super) fn with_name(mut self, name: Option<String>) -> Self {
+        self.name = name;
+        self
+    }
+
+    /// Without a loaded manifest, take the display name of the exact release from the signed
+    /// listing. Its manifest digest is bound to the same archive.
+    pub(super) fn set_listed_name(&mut self, entries: &[CatalogEntry]) {
+        if self.name.is_some() {
+            return;
+        }
+        self.name = entries
+            .iter()
+            .find(|entry| {
+                entry.app_id == self.app_id
+                    && entry.version == self.release.version
+                    && entry.archive_sha256 == self.release.archive_sha256
+            })
+            .map(|entry| entry.name.clone());
     }
 
     /// Copy the provider profiles of the exact installed release from the signed listing.
@@ -323,7 +349,11 @@ impl Manager {
         self.journal
             .slots()
             .iter()
-            .filter_map(|(id, slot)| Installation::new(id, slot, self.running.contains_key(id)))
+            .filter_map(|(id, slot)| {
+                let live = self.running.get(id);
+                Installation::new(id, slot, live.is_some())
+                    .map(|row| row.with_name(live.and_then(|live| live.name.clone())))
+            })
             .collect()
     }
 

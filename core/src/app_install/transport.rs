@@ -1,4 +1,6 @@
 use std::{
+    error::Error,
+    fmt,
     io::{self, Read},
     time::{Duration, Instant},
 };
@@ -8,12 +10,64 @@ use rentnerproxy_app_contracts::DownloadAsset;
 use reqwest::{
     StatusCode, Url,
     blocking::{Client, Response},
+    header::RANGE,
     redirect::Policy,
 };
 
 #[cfg(test)]
 #[path = "../../tests/private/app_install_transport.rs"]
 mod tests;
+
+/// A remote source the installer could not reach.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Source {
+    /// The signed catalog metadata.
+    Catalog,
+    /// The release assets of approved packages.
+    Package,
+    /// Neither the catalog nor the package source.
+    Network,
+}
+
+/// No response arrived from a source, or it answered with a server error.
+#[derive(Debug)]
+pub(crate) struct SourceUnavailable {
+    unreachable: Source,
+    detail: String,
+}
+
+impl SourceUnavailable {
+    pub(crate) fn error(unreachable: Source, detail: impl fmt::Display) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::NotConnected,
+            Self {
+                unreachable,
+                detail: detail.to_string(),
+            },
+        )
+    }
+}
+
+impl fmt::Display for SourceUnavailable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let source = match self.unreachable {
+            Source::Catalog => "Catalog source",
+            Source::Package => "Package source",
+            Source::Network => "Catalog and package sources",
+        };
+        write!(formatter, "{source} unreachable: {}", self.detail)
+    }
+}
+
+impl Error for SourceUnavailable {}
+
+/// The source an installer error could not reach, if that caused it.
+pub(crate) fn unreachable_source(error: &io::Error) -> Option<Source> {
+    error
+        .get_ref()?
+        .downcast_ref::<SourceUnavailable>()
+        .map(|cause| cause.unreachable)
+}
 
 pub(super) fn repository_url(value: &str) -> io::Result<Url> {
     let url = Url::parse(value).map_err(|_| invalid("Invalid app catalog URL"))?;
@@ -83,9 +137,12 @@ impl Http {
             .get(url)
             .timeout(remaining.min(Duration::from_secs(20)))
             .send()
-            .map_err(network)?;
+            .map_err(|error| unreachable(Source::Catalog, error))?;
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
+        }
+        if response.status().is_server_error() {
+            return Err(SourceUnavailable::error(Source::Catalog, response.status()));
         }
         if response.status() != StatusCode::OK
             || response
@@ -108,7 +165,10 @@ impl Http {
             .get(&asset.url)
             .timeout(Duration::from_secs(180))
             .send()
-            .map_err(network)?;
+            .map_err(|error| unreachable(Source::Package, error))?;
+        if response.status().is_server_error() {
+            return Err(SourceUnavailable::error(Source::Package, response.status()));
+        }
         if response.status() != StatusCode::OK
             || response
                 .content_length()
@@ -117,6 +177,17 @@ impl Http {
             return Err(invalid("Package server returned an invalid response"));
         }
         Ok(response)
+    }
+
+    /// Whether the package source answers a request for `asset`. Only the response head is
+    /// read, so a reachable source transfers at most the requested first byte.
+    pub(super) fn package_source_answers(&self, asset: &DownloadAsset<'_>) -> bool {
+        self.package_client
+            .get(&asset.url)
+            .header(RANGE, "bytes=0-0")
+            .timeout(Duration::from_secs(20))
+            .send()
+            .is_ok_and(|response| !response.status().is_server_error())
     }
 }
 
@@ -138,4 +209,13 @@ fn release_redirect_allowed(url: &Url, previous_requests: usize) -> bool {
 
 fn network(error: reqwest::Error) -> io::Error {
     io::Error::other(error.without_url())
+}
+
+/// A request that got no response did not reach `source`. A refused redirect or an invalid
+/// request is a local decision, not an outage.
+fn unreachable(source: Source, error: reqwest::Error) -> io::Error {
+    if error.is_redirect() || error.is_builder() {
+        return network(error);
+    }
+    SourceUnavailable::error(source, error.without_url())
 }

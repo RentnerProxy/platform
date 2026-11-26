@@ -6,7 +6,7 @@ use marketplace_artifacts::{digest, invalid, read_file};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use super::{Installer, filesystem};
+use super::{Installer, filesystem, transport};
 
 const METADATA_BUDGET: usize = 64 * 1024 * 1024;
 const MAX_FILES: usize = 5300;
@@ -29,14 +29,21 @@ fn read(
 ) -> io::Result<TrustedPackageCatalog> {
     let mut remaining = METADATA_BUDGET;
     let mut requests = 0;
-    read_package_catalog(
+    // The catalog reader keeps only messages. Keep the first outage so callers can tell it apart.
+    let mut unreachable = None;
+    let result = read_package_catalog(
         |name, limit| {
             requests += 1;
             if requests > MAX_FILES {
                 return Err(CatalogError::new("Catalog exceeds its file budget"));
             }
-            let bytes = fetch(name, limit.min(remaining))
-                .map_err(|error| CatalogError::new(error.to_string()))?;
+            let bytes = fetch(name, limit.min(remaining)).map_err(|error| {
+                let message = CatalogError::new(error.to_string());
+                if transport::unreachable_source(&error).is_some() {
+                    unreachable.get_or_insert(error);
+                }
+                message
+            })?;
             if let Some(bytes) = &bytes {
                 if bytes.len() > limit.min(remaining) {
                     return Err(CatalogError::new("Catalog exceeds its byte budget"));
@@ -48,8 +55,8 @@ fn read(
         pin,
         now,
         previous,
-    )
-    .map_err(|error| invalid(error.to_string()))
+    );
+    result.map_err(|error| unreachable.unwrap_or_else(|| invalid(error.to_string())))
 }
 
 impl Installer {

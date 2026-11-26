@@ -1,4 +1,4 @@
-use std::io;
+use std::{fs, io};
 
 use marketplace_app_catalog::TrustedPackageCatalog;
 use marketplace_artifacts::{invalid, parse_json};
@@ -15,7 +15,8 @@ pub(crate) struct CatalogEntry {
     pub(crate) app_id: String,
     pub(crate) version: String,
     pub(crate) archive_sha256: String,
-    name: String,
+    /// Display name from the signed manifest.
+    pub(crate) name: String,
     summary: String,
     publisher: String,
     has_ui: bool,
@@ -23,6 +24,10 @@ pub(crate) struct CatalogEntry {
     #[cfg_attr(test, serde(default))]
     pub(crate) providers: Vec<String>,
     availability: Availability,
+    /// Whether the package store already holds this archive, so installing it needs fresh
+    /// signed metadata but no download from the package source.
+    #[cfg_attr(test, serde(default))]
+    cached: bool,
 }
 
 #[derive(Serialize)]
@@ -92,19 +97,33 @@ impl Installer {
             } else {
                 Availability::Available
             };
+            let archive_sha256 = field(&package["archive"], "sha256")?;
             entries.push(CatalogEntry {
                 app_id: field(release, "appId")?.to_owned(),
                 version: field(release, "version")?.to_owned(),
-                archive_sha256: field(&package["archive"], "sha256")?.to_owned(),
+                archive_sha256: archive_sha256.to_owned(),
                 name: field(&manifest["display"], "name")?.to_owned(),
                 summary: field(&manifest["display"], "summary")?.to_owned(),
                 publisher: field(&release["publisher"], "name")?.to_owned(),
                 has_ui: manifest["ui"].is_object(),
                 providers: super::target::providers(manifest),
                 availability,
+                cached: self
+                    .archive_cached(archive_sha256, package["archive"]["sizeBytes"].as_u64()),
             });
         }
         Ok(entries)
+    }
+}
+
+impl Installer {
+    /// The signed catalog validated `sha256` as a lowercase digest, so it names one store entry.
+    /// Staging still verifies the archive bytes before it uses a cached copy.
+    fn archive_cached(&self, sha256: &str, size_bytes: Option<u64>) -> bool {
+        size_bytes.is_some_and(|size_bytes| {
+            fs::symlink_metadata(self.config.store_directory.join("archives").join(sha256))
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() == size_bytes)
+        })
     }
 }
 

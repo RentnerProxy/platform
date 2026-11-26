@@ -60,6 +60,17 @@ pub(crate) use target::TargetSupport;
 ))]
 pub(crate) use target::{InstalledRelease, TargetCheck, TargetEnvironment};
 use time::OffsetDateTime;
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) use transport::SourceUnavailable;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) use transport::{Source, unreachable_source};
 
 /// The app runtime this platform release offers. The release requirements asset publishes the
 /// same values (`web/src/config/app-requirements.config.ts`), so an older platform can check
@@ -159,10 +170,20 @@ impl Installer {
     ) -> io::Result<StagedPackage> {
         let _lock = self.lock()?;
         let transport = transport::Http::new(&self.config.repository_url)?;
-        let catalog = self.refresh(
-            |path, limit| transport.metadata(path, limit),
-            OffsetDateTime::now_utc(),
-        )?;
+        let catalog = self
+            .refresh(
+                |path, limit| transport.metadata(path, limit),
+                OffsetDateTime::now_utc(),
+            )
+            .map_err(|error| {
+                catalog_outage(error, || {
+                    // Ask the package source for the release that the accepted catalog lists.
+                    let (_, accepted) = self.checkpoint().ok()??;
+                    let document = parse_json(accepted.catalog_bytes()).ok()?;
+                    let (package, _) = self.signed_package(&document, app_id, version).ok()?;
+                    Some(transport.package_source_answers(&package.release_assets().archive))
+                })
+            })?;
         self.prepare(
             &catalog,
             app_id,
@@ -320,6 +341,18 @@ fn catalog_revision(document: &Value) -> io::Result<u64> {
         .as_f64()
         .map(|revision| revision as u64)
         .ok_or_else(|| invalid("Missing catalog revision"))
+}
+
+/// Tell a catalog outage from a full network outage. `package_answers` probes the package
+/// source and returns `None` when no listed release names one.
+fn catalog_outage(error: io::Error, package_answers: impl FnOnce() -> Option<bool>) -> io::Error {
+    if transport::unreachable_source(&error) != Some(transport::Source::Catalog) {
+        return error;
+    }
+    match package_answers() {
+        Some(false) => transport::SourceUnavailable::error(transport::Source::Network, error),
+        _ => error,
+    }
 }
 
 fn requires_grants(manifest: &Value) -> bool {

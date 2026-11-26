@@ -147,7 +147,7 @@ export default function AppCatalogPage() {
                 </div>
                 {state.entries.length > 0 ? (
                     <ul className="grid gap-4 lg:grid-cols-2">
-                        {state.entries.map(({ entry, isRetry, canInstall }) => (
+                        {state.entries.map(({ entry, isRetry, canInstall, requiresSource }) => (
                             <li
                                 key={`${entry.appId}@${entry.version}`}
                                 className="flex min-w-0 flex-col gap-4 rounded-2xl border border-border bg-surface-subtle p-5"
@@ -166,6 +166,11 @@ export default function AppCatalogPage() {
                                 <p className="text-sm wrap-anywhere text-ink-soft">
                                     {entry.summary}
                                 </p>
+                                {requiresSource ? (
+                                    <p className="text-sm wrap-anywhere text-warning-text">
+                                        {t('appCatalog.requiresSource')}
+                                    </p>
+                                ) : null}
                                 <div className="mt-auto">
                                     {entry.availability === 'available' ? (
                                         <button
