@@ -33,7 +33,7 @@ fn native_envelope_cli_negotiates_its_format_and_publishes_only_complete_bytes()
         .output()
         .unwrap();
     assert!(result.status.success());
-    assert_eq!(result.stdout, b"RPBAKENC/1\n");
+    assert_eq!(result.stdout, b"RPBAKENC/2\n");
     assert!(
         !isolated_command()
             .args(["--backup-envelope", "version", "extra"])
@@ -56,7 +56,7 @@ fn native_envelope_cli_negotiates_its_format_and_publishes_only_complete_bytes()
     ];
     let key = [33_u8; 32];
     let mut header = [0_u8; 96];
-    header[..12].copy_from_slice(b"RPBAKENC\x01\x01\x00\x00");
+    header[..12].copy_from_slice(b"RPBAKENC\x02\x01\x00\x00");
     header[12..24].fill(41);
     header[24..56].copy_from_slice(digest::digest(&digest::SHA256, &key).as_ref());
     let mut hashes = Vec::new();
