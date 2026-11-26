@@ -45,7 +45,7 @@ use marketplace_artifacts::{invalid, parse_json, read_file};
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub(crate) use package::{UI_ASSET_LIMIT, UI_DOCUMENT_LIMIT, parse_ui_api};
-use rentnerproxy_app_contracts::{Contracts, ManifestEnvironment};
+use rentnerproxy_app_contracts::{ContractError, Contracts, ManifestEnvironment};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(all(
@@ -276,8 +276,43 @@ impl Installer {
     ) -> io::Result<()> {
         self.contracts
             .check_manifest_compatibility(manifest, environment)
-            .map_err(invalid_contract)
+            .map_err(invalid_contract)?;
+        if declares_engine_providers(manifest, environment) {
+            Ok(())
+        } else {
+            Err(invalid_contract(ContractError::IncompatibleManifest))
+        }
     }
+}
+
+/// Provider profiles whose results change the native proxy engine, with the engine capability
+/// that applies them. The official profiles pair them, but the manifest contract does not require
+/// it. A provider without its capability would pass every compatibility check, including the
+/// upgrade preflight, and then meet an engine that cannot apply or enforce its contributions.
+const ENGINE_PROVIDERS: [(&str, &str); 2] = [
+    ("load-balancer", "caddy.load-balancing.v1"),
+    ("crowdsec", "caddy.crowdsec.v1"),
+];
+
+/// Every engine provider the manifest declares also requires its engine capability, and the
+/// environment offers it.
+fn declares_engine_providers(manifest: &Value, environment: &ManifestEnvironment<'_>) -> bool {
+    fn strings(value: &Value) -> impl Iterator<Item = &str> {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+    }
+    strings(&manifest["providers"]).all(|profile| {
+        ENGINE_PROVIDERS
+            .iter()
+            .filter(|(provider, _)| *provider == profile)
+            .all(|(_, capability)| {
+                strings(&manifest["requires"]["engineCapabilities"]).any(|name| name == *capability)
+                    && environment.engine_capabilities.contains(capability)
+            })
+    })
 }
 
 fn catalog_revision(document: &Value) -> io::Result<u64> {
