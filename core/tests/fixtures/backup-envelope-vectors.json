@@ -1,0 +1,26 @@
+{
+    "v1Stream": {
+        "source": "OpenSSL AES-256-GCM stream of a v1 envelope from earlier releases",
+        "key": "2525252525252525252525252525252525252525252525252525252525252525",
+        "salt": "1d1d1d1d1d1d1d1d1d1d1d1d",
+        "payload": "d2bbebb10e3dbf3e53b3a79ec707c750da88c3c687b007d3f81dad18d195e6aa22075d835ef22eaad63c91bd81ce0c8c29c6f12e3462f64cd61e8fd25463831e1cbd43ba61f0c12715dd297def648253d7136bfb2382508f973d1f5586e4277b1890ae0684789ec14ca2"
+    },
+    "small": {
+        "source": "v2 sealed by Node's AES-256-GCM and HKDF-SHA256",
+        "key": "2525252525252525252525252525252525252525252525252525252525252525",
+        "salt": "1d1d1d1d1d1d1d1d1d1d1d1d",
+        "payload": "4708715453e17467d6d26180ce9818d8753e9ede08f533a2dc37f60235d6b092f831400a9fb5eac640c4c6332dd30cb47eb2a3be0565c3af6cfd68f8c39e52074bada2080cc37bfdbfdeb14557844589705b175d46bab097081051cd1f491d8e9d41c47601a5396e1ef9"
+    },
+    "large": {
+        "source": "v2 sealed by Node's AES-256-GCM and HKDF-SHA256; artifacts cross chunk boundaries",
+        "key": "3535353535353535353535353535353535353535353535353535353535353535",
+        "salt": "474747474747474747474747",
+        "sha256": "6d80e8fd4d752afb797794ab219b52cfd959ca0a2456f58940b72a7fd495d100"
+    },
+    "aligned": {
+        "source": "v2 sealed by Node's OpenSSL and Bun's BoringSSL; an artifact ends on a chunk boundary",
+        "key": "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d",
+        "salt": "535353535353535353535353",
+        "sha256": "a232c1fc061e18caf6c8068f59f8c5f8066e8ade487963aba90c2b39f228e59e"
+    }
+}
