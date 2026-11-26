@@ -14,7 +14,7 @@ const EXPECTED: &str = "expected.json";
 const EARLIER_CHECKPOINT: &str = "earlier-checkpoint.json";
 const SENTINEL: &str = "original Greeting app database";
 
-async fn postgres(uid: u32, sql: &str) -> String {
+pub(super) async fn postgres(uid: u32, sql: &str) -> String {
     assert!((20_000..=59_999).contains(&uid));
     let output = Process::new("gosu")
         .args([
