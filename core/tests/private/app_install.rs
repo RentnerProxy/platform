@@ -267,13 +267,19 @@ pub(crate) fn lifecycle_packages(
     refresh(&installer, &files, signed_at).unwrap();
     let mut releases = Vec::new();
     let mut archives = Vec::new();
-    let versions = ["1.0.0", "1.1.0", "1.1.0-rc.1"];
+    let versions = ["1.0.0", "1.1.0", "1.1.0-rc.1", "1.1.0-rc.2"];
     for version in versions {
         let mut m = manifest();
         m["version"] = version.into();
         m["target"] = target.into();
         m["resources"]["startupTimeoutMs"] = 2000.into();
         m["providers"] = json!(["monitoring"]);
+        if version == versions[3] {
+            // Declares data that the dataless releases never wrote, without a migration.
+            m["data"] = json!({
+                "targetVersion": 1, "readVersions": [1], "writeVersions": [1], "migrations": []
+            });
+        }
         let work = root.join(version);
         fs::create_dir(&work).unwrap();
         let binary = if version == versions[2] {
