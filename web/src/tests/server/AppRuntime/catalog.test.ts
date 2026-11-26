@@ -204,6 +204,20 @@ describe('native signed catalog wire contract', () => {
                 install: { ...release, status: 'installed' },
             }).success,
         ).toBe(false)
+        const failedOperation = { ...operation, status: 'failed', error: 'dependencyBlocked' }
+        expect(
+            catalogSnapshotSchema.safeParse({
+                ...snapshot,
+                installations: [installation],
+                lifecycle: failedOperation,
+            }).success,
+        ).toBe(true)
+        expect(
+            catalogSnapshotSchema.safeParse({
+                ...snapshot,
+                lifecycle: { ...failedOperation, error: 'dependency' },
+            }).success,
+        ).toBe(false)
     })
 
     test('carries signed provider profiles for listed releases and installations', () => {

@@ -32,6 +32,9 @@ mod greeting;
 #[path = "app_install/published_greeting.rs"]
 pub(crate) mod published_greeting;
 
+#[path = "app_install/package_rejection.rs"]
+mod package_rejection;
+
 const PIN: &[u8] = include_bytes!("../fixtures/app-install/1.root.json");
 const ID: &str = "example.probe";
 const VERSION: &str = "1.0.0";

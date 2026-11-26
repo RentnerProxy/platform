@@ -339,3 +339,97 @@ test('manages a local app while the catalog is unavailable and confirms retained
         post.mockRestore()
     }
 })
+
+test('explains newer releases that the appliance cannot offer for an installed app', async () => {
+    const listed = ready.entries[0]!
+    const offered = { version: '1.0.1', archiveSha256: 'b'.repeat(64) }
+    snapshot = {
+        ...ready,
+        entries: [
+            listed,
+            { ...listed, ...offered },
+            {
+                ...listed,
+                version: '1.0.2',
+                archiveSha256: 'c'.repeat(64),
+                availability: 'grantsRequired',
+            },
+        ],
+        installations: [{ ...current, update: offered }],
+    }
+    apps = []
+    const { container, button, unmount } = await mountCatalog()
+    try {
+        await waitFor(() => button('Update to 1.0.1')?.disabled === false)
+        expect(container.textContent).toContain(
+            'Version 1.0.2 requires additional grants, so it is not offered.',
+        )
+        expect(button('Install')).toBeUndefined()
+
+        snapshot = {
+            ...snapshot,
+            entries: [
+                listed,
+                {
+                    ...listed,
+                    version: '2.0.0',
+                    archiveSha256: 'd'.repeat(64),
+                    availability: 'incompatible',
+                },
+            ],
+            installations: [current],
+        }
+        await act(async () => button('Refresh catalog')!.click())
+        await waitFor(
+            () =>
+                container.textContent?.includes(
+                    'Version 2.0.0 is incompatible with this appliance, so it is not offered.',
+                ) === true,
+        )
+        expect(button('Update to 1.0.1')).toBeUndefined()
+        expect(container.textContent).not.toContain('requires additional grants')
+    } finally {
+        await unmount()
+    }
+})
+
+test('reports a dependency that blocks an uninstall apart from a conflict', async () => {
+    const uninstall = {
+        action: 'uninstall',
+        installationId: current.installationId,
+        expected: { generation: current.generation, version, archiveSha256 },
+    } satisfies CatalogLifecycleInput
+    snapshot = { ...ready, installations: [current] }
+    apps = []
+    const post = spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        Response.json({ ...uninstall, status: 'pending' }, { status: 202 }),
+    )
+    const { container, button, unmount } = await mountCatalog()
+    try {
+        await waitFor(() => button('Uninstall')?.disabled === false)
+        await act(async () => button('Uninstall')!.click())
+        const confirm = [
+            ...(document.querySelector('[role="dialog"]')?.querySelectorAll('button') ?? []),
+        ].find((candidate) => candidate.textContent === 'Uninstall')
+        expect(confirm).toBeDefined()
+        snapshot = {
+            ...snapshot,
+            lifecycle: { ...uninstall, status: 'failed', error: 'dependencyBlocked' },
+        }
+        await act(async () => confirm!.click())
+        await waitFor(
+            () => container.textContent?.includes('Something still depends on this app') === true,
+        )
+        expect(container.textContent).toContain('The app action could not be completed.')
+        expect(container.textContent).not.toContain('another action is running')
+        expect(post).toHaveBeenCalledTimes(1)
+        expect(post).toHaveBeenCalledWith(
+            APP_CATALOG_LIFECYCLE_PATH,
+            expect.objectContaining({ body: JSON.stringify(uninstall) }),
+        )
+        await waitFor(() => button('Uninstall')?.disabled === false)
+    } finally {
+        await unmount()
+        post.mockRestore()
+    }
+})

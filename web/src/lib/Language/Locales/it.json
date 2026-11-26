@@ -233,6 +233,10 @@
             "version": "Versione {{version}}",
             "updateTo": "Aggiorna alla versione {{version}}",
             "reinstall": "Reinstalla {{version}}",
+            "blocked": {
+                "incompatible": "La versione {{version}} non è compatibile con questo dispositivo, quindi non viene offerta.",
+                "grantsRequired": "La versione {{version}} richiede autorizzazioni aggiuntive, quindi non viene offerta."
+            },
             "failed": "Impossibile completare l’operazione.",
             "states": {
                 "running": "Attiva",
@@ -280,7 +284,8 @@
             "errors": {
                 "invalid": "L’operazione richiesta non è valida.",
                 "forbidden": "Solo i proprietari del dispositivo possono gestire le app.",
-                "conflict": "L’app è cambiata, è in corso un’altra operazione o una dipendenza blocca questa operazione. Aggiorna e controlla l’app.",
+                "conflict": "L’app è cambiata o è in corso un’altra operazione. Aggiorna e controlla l’app.",
+                "dependencyBlocked": "Qualcosa dipende ancora da questa app, ad esempio un host proxy che gestisce, un’operazione dell’app in corso o un’altra app che usa i suoi provider. Risolvi questa dipendenza e riprova.",
                 "rateLimited": "Troppe richieste. Attendi un momento e riprova.",
                 "unavailable": "Il servizio delle app non è disponibile. Aggiorna e riprova.",
                 "incompatibleData": "La versione selezionata non è compatibile con i dati salvati.",
