@@ -134,4 +134,20 @@ fn a_failed_install_releases_the_queue_and_reports_a_safe_failure() {
         assert_eq!(view["install"]["status"], "failed");
         assert_eq!(view["install"]["error"], failure);
     }
+    for (source, failure) in [
+        (Source::Catalog, "catalogUnavailable"),
+        (Source::Package, "packageSourceUnavailable"),
+        (Source::Network, "networkUnavailable"),
+    ] {
+        endpoint.submit(selection.clone()).unwrap();
+        assert_eq!(
+            requests.try_recv().unwrap(),
+            Request::Install(selection.clone())
+        );
+        let outage = crate::app_install::SourceUnavailable::error(source, "fixture outage");
+        endpoint.finish(selection.clone(), Err(outage)).unwrap();
+        let view: serde_json::Value = serde_json::from_slice(&endpoint.view().unwrap()).unwrap();
+        assert_eq!(view["install"]["status"], "failed");
+        assert_eq!(view["install"]["error"], failure);
+    }
 }

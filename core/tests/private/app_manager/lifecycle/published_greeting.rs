@@ -600,7 +600,24 @@ async fn privileged_published_greeting_lifecycle() {
     let restarted_generation = rollback_generation + 1;
     assert_eq!(after_restart["generation"], restarted_generation);
     let offline_listing = wait_catalog_state("stale").await;
-    assert_eq!(offline_listing["entries"], listing["entries"]);
+    // The checkpoint keeps the listing. Both archives are now in the store, so both are cached.
+    let cached = |view: &Value| -> Vec<Value> {
+        let entries = view["entries"].as_array().unwrap();
+        entries
+            .iter()
+            .map(|entry| entry["cached"].clone())
+            .collect()
+    };
+    let uncached = |view: &Value| -> Value {
+        let mut entries = view["entries"].clone();
+        for entry in entries.as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("cached");
+        }
+        entries
+    };
+    assert_eq!(uncached(&offline_listing), uncached(&listing));
+    assert_eq!(cached(&listing), [false, false]);
+    assert_eq!(cached(&offline_listing), [true, true]);
     assert_eq!(
         read_greeting(&installation_id, restarted_generation).await,
         PERSISTED_GREETING

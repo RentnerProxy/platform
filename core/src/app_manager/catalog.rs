@@ -14,7 +14,7 @@ use super::{
     journal::{Grant, Release, Removal},
     lifecycle,
 };
-use crate::app_install::{CatalogEntry, Installer, TargetEnvironment};
+use crate::app_install::{CatalogEntry, Installer, Source, TargetEnvironment, unreachable_source};
 
 #[cfg(test)]
 #[path = "../../tests/private/app_manager/catalog.rs"]
@@ -41,6 +41,12 @@ impl Selection {
 pub(super) enum Failure {
     Conflict,
     Unavailable,
+    /// The signed catalog metadata could not be reached, but the package source answered.
+    CatalogUnavailable,
+    /// Fresh signed metadata arrived, but the package source did not answer.
+    PackageSourceUnavailable,
+    /// Neither the catalog nor the package source answered.
+    NetworkUnavailable,
     InstallFailed,
 }
 
@@ -77,8 +83,21 @@ enum LifecycleFailure {
     /// A proxy host, an app operation or a provider dependency still needs the installation.
     DependencyBlocked,
     Unavailable,
+    CatalogUnavailable,
+    PackageSourceUnavailable,
+    NetworkUnavailable,
     IncompatibleData,
     OperationFailed,
+}
+
+impl LifecycleFailure {
+    fn outage(error: &io::Error) -> Option<Self> {
+        Some(match unreachable_source(error)? {
+            Source::Catalog => Self::CatalogUnavailable,
+            Source::Package => Self::PackageSourceUnavailable,
+            Source::Network => Self::NetworkUnavailable,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -189,6 +208,7 @@ impl Endpoint {
         for installation in &mut installations {
             // A stale listing is still signed; only update offers need a fresh one.
             installation.set_providers(entries);
+            installation.set_listed_name(entries);
             if status == CatalogStatus::Ready {
                 installation.set_update(entries);
             }
@@ -323,10 +343,15 @@ impl Endpoint {
             Err(error) => {
                 eprintln!("Catalog application installation failed: {error}");
                 InstallStatus::Failed {
-                    error: match error.kind() {
-                        io::ErrorKind::AlreadyExists => Failure::Conflict,
-                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Failure::Unavailable,
-                        _ => Failure::InstallFailed,
+                    error: match (unreachable_source(&error), error.kind()) {
+                        (Some(Source::Catalog), _) => Failure::CatalogUnavailable,
+                        (Some(Source::Package), _) => Failure::PackageSourceUnavailable,
+                        (Some(Source::Network), _) => Failure::NetworkUnavailable,
+                        (None, io::ErrorKind::AlreadyExists) => Failure::Conflict,
+                        (None, io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                            Failure::Unavailable
+                        }
+                        (None, _) => Failure::InstallFailed,
                     },
                 }
             }
@@ -390,6 +415,8 @@ impl Endpoint {
                 );
                 let error = if lifecycle::incompatible(&error) {
                     LifecycleFailure::IncompatibleData
+                } else if let Some(outage) = LifecycleFailure::outage(&error) {
+                    outage
                 } else {
                     match error.kind() {
                         io::ErrorKind::AlreadyExists => LifecycleFailure::Conflict,

@@ -12,6 +12,7 @@ const installation = {
     archiveSha256: 'a'.repeat(64),
     generation: 2,
     state: 'running',
+    name: null,
     providers: null,
     update: null,
     previous: null,
@@ -32,6 +33,7 @@ function entry(
         hasUi: true,
         providers: [],
         availability,
+        cached: false,
     }
 }
 

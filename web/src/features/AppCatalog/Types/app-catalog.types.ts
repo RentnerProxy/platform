@@ -9,6 +9,8 @@ export type CatalogInstallationView = {
     actions: CatalogLifecycleInput[]
     /** The newest listed release the appliance cannot offer, with the reason. */
     blockedRelease: CatalogBlockedRelease | undefined
+    /** The offered update is not stored locally while its package source is unreachable. */
+    updateRequiresSource: boolean
 }
 
 export type CatalogConfirmation = {

@@ -228,13 +228,13 @@ impl ActiveApp {
     }
 }
 
-/// Post the offered update and require an explicit failure that leaves the app untouched.
+/// Post the offered update and require an explicit `error` that leaves the app untouched.
 async fn refused_update(
     hosts: &Distribution,
     request: &Value,
     before: &ActiveApp,
     store: &Path,
-    fault: &str,
+    (fault, error): (&str, &str),
 ) -> (Value, Vec<Served>) {
     let id = request["installationId"].as_str().unwrap();
     let since = hosts.requests().len();
@@ -242,7 +242,7 @@ async fn refused_update(
     let view = wait_lifecycle("update", "failed").await;
     let failed = &view["lifecycle"];
     assert_eq!(failed["target"], request["target"], "{fault}");
-    assert_eq!(failed["error"], "operationFailed", "{fault}: {failed}");
+    assert_eq!(failed["error"], error, "{fault}: {failed}");
     assert_eq!(
         &ActiveApp::observe(&view, id, store).await,
         before,
@@ -416,7 +416,7 @@ async fn privileged_published_greeting_distribution_gates() {
     post_install(&install).await;
     let unreachable_install = wait_install("failed").await;
     assert_eq!(
-        unreachable_install["install"]["error"], "installFailed",
+        unreachable_install["install"]["error"], "packageSourceUnavailable",
         "{unreachable_install}"
     );
     assert_eq!(unreachable_install["installations"], json!([]));
@@ -473,7 +473,7 @@ async fn privileged_published_greeting_distribution_gates() {
         &update,
         &baseline,
         store,
-        "release-assets-unreachable",
+        ("release-assets-unreachable", "packageSourceUnavailable"),
     )
     .await;
     assert!(metadata_refreshed(&requests, true), "{requests:?}");
@@ -484,6 +484,7 @@ async fn privileged_published_greeting_distribution_gates() {
     );
 
     // 5. Signed metadata becomes unreachable as well. The refresh fails before any download.
+    // One unanswered probe of the listed archive tells a full outage from a catalog outage.
     wait_catalog_state("ready").await;
     hosts.set_metadata_available(false);
     let (distribution_outage, requests) = refused_update(
@@ -491,11 +492,15 @@ async fn privileged_published_greeting_distribution_gates() {
         &update,
         &baseline,
         store,
-        "distribution-unreachable",
+        ("distribution-unreachable", "networkUnavailable"),
     )
     .await;
     assert!(metadata_refreshed(&requests, false), "{requests:?}");
-    assert!(release_requests(&requests).is_empty(), "{requests:?}");
+    assert_eq!(
+        release_requests(&requests),
+        [(second_path.as_str(), false)],
+        "{requests:?}"
+    );
 
     // 6. During an offered update, the repository serves a newer revision whose online
     // roles expired before it was served. Restart for a listing verified while reachable.
@@ -516,7 +521,7 @@ async fn privileged_published_greeting_distribution_gates() {
         &update,
         &baseline,
         store,
-        "expired-metadata-successor",
+        ("expired-metadata-successor", "operationFailed"),
     )
     .await;
     assert!(metadata_refreshed(&requests, true), "{requests:?}");
@@ -654,7 +659,22 @@ async fn privileged_published_greeting_distribution_gates() {
     halt(&mut manager).await;
     manager = start_manager(&controller, config, token, Some(&installation_id)).await;
     let offline = wait_catalog_state("stale").await;
-    assert_eq!(offline["entries"], ready["entries"]);
+    let uncached = |view: &Value| -> Value {
+        let mut entries = view["entries"].clone();
+        for entry in entries.as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("cached");
+        }
+        entries
+    };
+    assert_eq!(uncached(&offline), uncached(&ready));
+    // Both downloaded releases stay installable from the store; the escalated one never was.
+    for (version, stored) in [
+        (first.version, true),
+        (second.version, true),
+        (ESCALATED_VERSION, false),
+    ] {
+        assert_eq!(entry(&offline, version)["cached"], stored, "{version}");
+    }
     let restarted = running_installation(&offline, &installation_id);
     let restarted_generation = new_generation + 1;
     assert_eq!(restarted["generation"], restarted_generation);
