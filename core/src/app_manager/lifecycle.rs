@@ -1,14 +1,19 @@
-use std::{fmt, io};
+use std::{collections::BTreeSet, fmt, io, sync::Arc};
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use super::{
-    Command, MAX_GENERATION, Manager, PackageRequest,
-    journal::{ReleaseSelection, Removal, Slot},
+    Command, MAX_GENERATION, Manager, PackageRequest, gate,
+    gateway::identity,
+    journal::{Grant, ReleaseSelection, Removal, Slot},
     valid_id,
 };
-use crate::app_install::{CatalogEntry, InstalledRelease, TargetCheck};
+use crate::app_install::{
+    CatalogEntry, InstalledRelease, TargetCheck,
+    grants::{self, ApprovedGrant, Capability, MAX_GRANTS},
+};
 
 #[cfg(test)]
 #[path = "../../tests/private/app_manager/catalog_lifecycle.rs"]
@@ -25,6 +30,8 @@ enum Action {
     Rollback,
     Reinstall,
     Purge,
+    /// Withdraw approved grants from the installation without a restart.
+    Revoke,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -35,6 +42,20 @@ struct Expected {
     archive_sha256: String,
 }
 
+/// One approved grant the Owner revokes.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct RevokedGrant {
+    capability: Capability,
+    resource_id: String,
+}
+
+impl RevokedGrant {
+    fn names(&self, grant: &Grant) -> bool {
+        grant.capability == self.capability && grant.resource_id == self.resource_id
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Request {
@@ -43,6 +64,12 @@ pub(super) struct Request {
     expected: Expected,
     #[serde(skip_serializing_if = "Option::is_none")]
     target: Option<ReleaseSelection>,
+    /// The Owner's approval for an update or reinstall. Receipts never repeat it.
+    #[serde(default, skip_serializing)]
+    approval: Option<Vec<ApprovedGrant>>,
+    /// The grants a revocation withdraws. Receipts never repeat them.
+    #[serde(default, skip_serializing)]
+    grants: Option<Vec<RevokedGrant>>,
 }
 
 impl Request {
@@ -57,6 +84,21 @@ impl Request {
                 (Action::Update | Action::Rollback | Action::Reinstall, None) | (_, Some(_)) => {
                     false
                 }
+                (_, None) => true,
+            }
+            && match (&self.action, &self.approval) {
+                (Action::Update | Action::Reinstall, Some(approval)) => {
+                    approval.len() <= MAX_GRANTS
+                }
+                (_, Some(_)) => false,
+                (_, None) => true,
+            }
+            && match (&self.action, &self.grants) {
+                (Action::Revoke, Some(grants)) => {
+                    (1..=MAX_GRANTS).contains(&grants.len())
+                        && grants.iter().collect::<BTreeSet<_>>().len() == grants.len()
+                }
+                (Action::Revoke, None) | (_, Some(_)) => false,
                 (_, None) => true,
             }
     }
@@ -101,7 +143,11 @@ pub(super) struct Installation {
     name: Option<String>,
     /// Provider profiles of this exact release in the catalog listing; absent if it is unlisted.
     providers: Option<Vec<String>>,
+    /// The grants approved for this exact release; absent if it predates recorded approvals.
+    grants: Option<Vec<Grant>>,
     update: Option<ReleaseSelection>,
+    /// Whether the offered update requests grants that the current approval does not cover.
+    update_requires_approval: bool,
     previous: Option<ReleaseSelection>,
 }
 
@@ -182,9 +228,22 @@ impl Installation {
             Removal::Purging => State::Purging,
             Removal::Purged => return None,
         };
-        let release = match state {
-            State::Removed | State::Purging => slot.removed_release.clone()?,
-            _ => slot.active.as_ref()?.into(),
+        let (release, grants) = match state {
+            State::Removed | State::Purging => {
+                let removed = slot.removed_release.clone()?;
+                // A removed release has no manifest digest. Reinstalling decides again from
+                // the target's signed manifest.
+                let grants = slot
+                    .approvals
+                    .get(&removed.archive_sha256)
+                    .map(|approval| approval.grants.clone());
+                (removed, grants)
+            }
+            _ => {
+                let active = slot.active.as_ref()?;
+                let grants = slot.approval_for(active).ok().flatten().map(<[_]>::to_vec);
+                (active.into(), grants)
+            }
         };
         Some(Self {
             installation_id: id.to_owned(),
@@ -194,8 +253,36 @@ impl Installation {
             state,
             name: None,
             providers: None,
+            grants,
             update: None,
+            update_requires_approval: false,
             previous: slot.previous.as_ref().map(Into::into),
+        })
+    }
+
+    /// Whether `entry` needs a new approval, after carrying this installation's approved
+    /// grants. A release approved before approvals were recorded carries none.
+    fn requires_approval(&self, entry: &CatalogEntry) -> bool {
+        grants::carry(
+            self.grants.as_deref().unwrap_or_default(),
+            &entry.grants,
+            &entry.permission_keys,
+            &self.installation_id,
+        )
+        .is_none()
+    }
+
+    /// The listed entry of `target` for this app.
+    fn listed<'a>(
+        &self,
+        target: &ReleaseSelection,
+        entries: &'a [CatalogEntry],
+    ) -> Option<&'a CatalogEntry> {
+        entries.iter().find(|entry| {
+            entry.is_available()
+                && entry.app_id == self.app_id
+                && entry.version == target.version
+                && entry.archive_sha256 == target.archive_sha256
         })
     }
 
@@ -244,7 +331,7 @@ impl Installation {
         let Ok(active) = self.release.version.parse::<Version>() else {
             return;
         };
-        self.update = entries
+        let offered = entries
             .iter()
             .filter(|entry| entry.app_id == self.app_id && entry.is_available())
             .filter_map(|entry| {
@@ -255,10 +342,12 @@ impl Installation {
                     .then_some((version, entry))
             })
             .max_by(|(first, _), (second, _)| first.cmp_precedence(second))
-            .map(|(_, entry)| ReleaseSelection {
-                version: entry.version.clone(),
-                archive_sha256: entry.archive_sha256.clone(),
-            });
+            .map(|(_, entry)| entry);
+        self.update_requires_approval = offered.is_some_and(|entry| self.requires_approval(entry));
+        self.update = offered.map(|entry| ReleaseSelection {
+            version: entry.version.clone(),
+            archive_sha256: entry.archive_sha256.clone(),
+        });
     }
 
     pub(super) fn permits(&self, request: &Request) -> bool {
@@ -293,6 +382,19 @@ impl Installation {
                 }
                 Action::Reinstall => self.state == State::Removed && request.target.is_some(),
                 Action::Purge => matches!(self.state, State::Removed | State::Purging),
+                Action::Revoke => {
+                    matches!(
+                        self.state,
+                        State::Running | State::Disabled | State::RecoveryRequired
+                    ) && request.grants.as_ref().is_some_and(|revoked| {
+                        revoked.iter().all(|revoked| {
+                            self.grants
+                                .iter()
+                                .flatten()
+                                .any(|grant| revoked.names(grant))
+                        })
+                    })
+                }
             }
     }
 
@@ -300,16 +402,37 @@ impl Installation {
         self.permits(request)
             && match request.action {
                 Action::Update => self.update.as_ref() == request.target.as_ref(),
-                Action::Reinstall => request.target.as_ref().is_some_and(|target| {
-                    entries.iter().any(|entry| {
-                        entry.is_available()
-                            && entry.app_id == self.app_id
-                            && entry.version == target.version
-                            && entry.archive_sha256 == target.archive_sha256
-                    })
-                }),
+                Action::Reinstall => request
+                    .target
+                    .as_ref()
+                    .is_some_and(|target| self.listed(target, entries).is_some()),
                 _ => true,
             }
+    }
+
+    /// Whether the listed target of an offered update or reinstall receives an approval: the
+    /// request's own, which must match the target exactly, or the carried one.
+    pub(super) fn approves(&self, request: &Request, entries: &[CatalogEntry]) -> bool {
+        if !matches!(request.action, Action::Update | Action::Reinstall) {
+            return true;
+        }
+        let Some(entry) = request
+            .target
+            .as_ref()
+            .and_then(|target| self.listed(target, entries))
+        else {
+            return false;
+        };
+        match &request.approval {
+            Some(approval) => grants::decide(
+                &entry.grants,
+                &entry.permission_keys,
+                approval,
+                &self.installation_id,
+            )
+            .is_ok(),
+            None => !self.requires_approval(entry),
+        }
     }
 }
 
@@ -360,7 +483,8 @@ impl Manager {
     pub(super) async fn manage_lifecycle(&mut self, request: &Request) -> io::Result<()> {
         let id = &request.installation_id;
         let command = match request.action {
-            Action::Update | Action::Reinstall => Command::Activate {
+            // Admission only: these actions run their own steps below.
+            Action::Update | Action::Reinstall | Action::Revoke => Command::Activate {
                 installation_id: id.clone(),
                 grants: Vec::new(),
             },
@@ -386,23 +510,80 @@ impl Manager {
         if request.action == Action::Deactivate && current.state == InstallationState::Disabled {
             return Ok(());
         }
+        if request.action == Action::Revoke {
+            return self
+                .revoke(id, request.grants.as_deref().unwrap_or_default())
+                .await;
+        }
         if matches!(request.action, Action::Update | Action::Reinstall) {
             let target = request.target.as_ref().ok_or_else(conflict)?;
             let app = current.app_id;
+            // Without the Owner's approval, an update carries the running release's approval
+            // and a reinstall the removed release's, if it still covers the target. A release
+            // approved before approvals were recorded carries none.
+            let slot = self.journal.slot(id)?;
+            let carried = match request.action {
+                Action::Update => slot
+                    .active
+                    .as_ref()
+                    .and_then(|active| slot.approval_for(active).ok().flatten()),
+                _ => slot
+                    .removed_release
+                    .as_ref()
+                    .and_then(|removed| slot.approvals.get(&removed.archive_sha256))
+                    .map(|approval| approval.grants.as_slice()),
+            }
+            .unwrap_or_default()
+            .to_vec();
+            let gate = gate(id.clone(), request.approval.clone(), carried);
             let download = Self::package(
                 self.config.clone(),
                 app.clone(),
                 target.version.clone(),
-                PackageRequest::Selected(target.archive_sha256.clone()),
+                PackageRequest::Selected(target.archive_sha256.clone(), Arc::clone(&gate)),
             );
-            self.stage(id, app, target.version.clone(), download)
+            self.stage(id, app, target.version.clone(), download, Some(gate))
                 .await?;
             self.check_exits(None)?;
             self.lifecycle_installation(request)?;
-            let grants = (request.action == Action::Reinstall).then_some([].as_slice());
-            return self.activate_catalog(id, grants).await;
+            return self.activate_catalog(id).await;
         }
         self.execute(command).await?;
+        Ok(())
+    }
+
+    /// Withdraw `revoked` from every stored approval, then from the live generation, so that its
+    /// next call is refused. If the live generation cannot drop them, it is fenced: an app never
+    /// keeps a grant that the Owner revoked. A crash before the publication leaves the boot to
+    /// fence the generation and start it with the reduced approval.
+    async fn revoke(&mut self, id: &str, revoked: &[RevokedGrant]) -> io::Result<()> {
+        let mut slot = self.journal.slot(id)?.clone();
+        slot.revoke(|grant| revoked.iter().any(|revoked| revoked.names(grant)));
+        self.journal.save(id, slot)?;
+        if !self.running.contains_key(id) {
+            return Ok(());
+        }
+        let slot = self.journal.slot(id)?;
+        let remaining = match &slot.active {
+            Some(active) => slot
+                .approval_for(active)
+                .map(|approved| approved.unwrap_or_default().to_vec()),
+            None => Ok(Vec::new()),
+        };
+        let published = match remaining {
+            Ok(grants) => {
+                let body = json!({"identity": identity(id, slot), "grants": grants});
+                self.gateway.post("grants", body).await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = published {
+            let mut slot = self.journal.slot(id)?.clone();
+            slot.require_recovery();
+            self.journal.save(id, slot)?;
+            self.fence(id).await?;
+            return Err(error);
+        }
         Ok(())
     }
 

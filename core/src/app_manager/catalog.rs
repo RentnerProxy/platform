@@ -10,11 +10,15 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::{
-    Command, Manager, PackageRequest,
-    journal::{Grant, Release, Removal},
+    Command, Manager, PackageRequest, gate,
+    journal::{Release, Removal},
     lifecycle,
 };
-use crate::app_install::{CatalogEntry, Installer, Source, TargetEnvironment, unreachable_source};
+use crate::app_install::{
+    CatalogEntry, Installer, Source, TargetEnvironment,
+    grants::{self, ApprovedGrant, MAX_GRANTS},
+    unreachable_source,
+};
 
 #[cfg(test)]
 #[path = "../../tests/private/app_manager/catalog.rs"]
@@ -28,11 +32,25 @@ pub(super) struct Selection {
     app_id: String,
     version: String,
     archive_sha256: String,
+    /// The Owner's approval of the grants this release requests. Receipts never repeat it.
+    #[serde(default, skip_serializing)]
+    approval: Option<Vec<ApprovedGrant>>,
 }
 
 impl Selection {
     fn matches(&self, release: &Release) -> bool {
         release.version == self.version && release.archive_sha256 == self.archive_sha256
+    }
+
+    /// The installation ID a first catalog install of this app receives.
+    fn installation_id(&self) -> String {
+        format!("app-{}", &digest(self.app_id.as_bytes())[..32])
+    }
+
+    pub(super) fn valid(&self) -> bool {
+        self.approval
+            .as_ref()
+            .is_none_or(|approval| approval.len() <= MAX_GRANTS)
     }
 }
 
@@ -40,6 +58,8 @@ impl Selection {
 #[serde(rename_all = "camelCase")]
 pub(super) enum Failure {
     Conflict,
+    /// The release needs an approval of exactly the grants it requests.
+    ApprovalRequired,
     Unavailable,
     /// The signed catalog metadata could not be reached, but the package source answered.
     CatalogUnavailable,
@@ -80,6 +100,8 @@ pub(super) struct Install {
 #[serde(rename_all = "camelCase")]
 enum LifecycleFailure {
     Conflict,
+    /// The target release needs an approval of exactly the grants it requests.
+    ApprovalRequired,
     /// A proxy host, an app operation or a provider dependency still needs the installation.
     DependencyBlocked,
     Unavailable,
@@ -314,14 +336,23 @@ impl Endpoint {
             };
         }
         let entries = state.entries.as_deref().ok_or(Failure::Unavailable)?;
-        if !entries.iter().any(|entry| {
-            entry.is_available()
-                && entry.app_id == selection.app_id
-                && entry.version == selection.version
-                && entry.archive_sha256 == selection.archive_sha256
-        }) {
-            return Err(Failure::Conflict);
-        }
+        let entry = entries
+            .iter()
+            .find(|entry| {
+                entry.is_available()
+                    && entry.app_id == selection.app_id
+                    && entry.version == selection.version
+                    && entry.archive_sha256 == selection.archive_sha256
+            })
+            .ok_or(Failure::Conflict)?;
+        // A quick check against the signed listing. Staging decides again from fresh metadata.
+        grants::decide(
+            &entry.grants,
+            &entry.permission_keys,
+            selection.approval.as_deref().unwrap_or_default(),
+            &selection.installation_id(),
+        )
+        .map_err(|_| Failure::ApprovalRequired)?;
         self.requests
             .try_send(Request::Install(selection.clone()))
             .map_err(|_| Failure::Unavailable)?;
@@ -344,6 +375,7 @@ impl Endpoint {
                 eprintln!("Catalog application installation failed: {error}");
                 InstallStatus::Failed {
                     error: match (unreachable_source(&error), error.kind()) {
+                        _ if grants::approval_required(&error) => Failure::ApprovalRequired,
                         (Some(Source::Catalog), _) => Failure::CatalogUnavailable,
                         (Some(Source::Package), _) => Failure::PackageSourceUnavailable,
                         (Some(Source::Network), _) => Failure::NetworkUnavailable,
@@ -390,6 +422,10 @@ impl Endpoint {
         if !current.offers(&request, entries) {
             return Err(Failure::Conflict);
         }
+        // A quick check against the signed listing. Staging decides again from fresh metadata.
+        if !current.approves(&request, entries) {
+            return Err(Failure::ApprovalRequired);
+        }
         self.requests
             .try_send(Request::Lifecycle(request.clone()))
             .map_err(|_| Failure::Unavailable)?;
@@ -415,6 +451,8 @@ impl Endpoint {
                 );
                 let error = if lifecycle::incompatible(&error) {
                     LifecycleFailure::IncompatibleData
+                } else if grants::approval_required(&error) {
+                    LifecycleFailure::ApprovalRequired
                 } else if let Some(outage) = LifecycleFailure::outage(&error) {
                     outage
                 } else {
@@ -437,7 +475,7 @@ impl Endpoint {
 
 impl Manager {
     pub(super) async fn install_catalog(&mut self, selection: &Selection) -> io::Result<String> {
-        let mut installation_id = format!("app-{}", &digest(selection.app_id.as_bytes())[..32]);
+        let mut installation_id = selection.installation_id();
         let conflict = || {
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -493,28 +531,32 @@ impl Manager {
             None,
             true,
         )?;
+        // A new installation receives exactly the Owner's approval. Nothing is carried over.
+        let gate = gate(
+            installation_id.clone(),
+            selection.approval.clone(),
+            Vec::new(),
+        );
         let download = Self::package(
             self.config.clone(),
             selection.app_id.clone(),
             selection.version.clone(),
-            PackageRequest::Selected(selection.archive_sha256.clone()),
+            PackageRequest::Selected(selection.archive_sha256.clone(), Arc::clone(&gate)),
         );
         self.stage(
             &installation_id,
             selection.app_id.clone(),
             selection.version.clone(),
             download,
+            Some(gate),
         )
         .await?;
-        self.activate_catalog(&installation_id, Some(&[])).await?;
+        self.activate_catalog(&installation_id).await?;
         Ok(installation_id)
     }
 
-    pub(super) async fn activate_catalog(
-        &mut self,
-        id: &str,
-        grants: Option<&[Grant]>,
-    ) -> io::Result<()> {
+    /// Activate the staged candidate with the approval that staging recorded for it.
+    pub(super) async fn activate_catalog(&mut self, id: &str) -> io::Result<()> {
         self.settle_exit(id).await?;
         let slot = self.journal.slot(id)?;
         let candidate = slot
@@ -530,7 +572,8 @@ impl Manager {
             slot.removed_data_required = Some(false);
             self.journal.save(id, slot)?;
         }
-        self.switch(id, candidate, grants, super::DataPolicy::Migrate)
+        // Catalog staging records the candidate's approval. A release without one gets no grants.
+        self.switch(id, candidate, Some(&[]), super::DataPolicy::Migrate)
             .await
     }
 }

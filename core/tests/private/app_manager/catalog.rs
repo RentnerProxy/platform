@@ -7,6 +7,7 @@ fn greeting() -> Selection {
         app_id: "rentnerproxy.greeting".into(),
         version: "1.0.0".into(),
         archive_sha256: "a".repeat(64),
+        approval: None,
     }
 }
 
@@ -83,6 +84,100 @@ fn accepts_only_listed_packages_and_coalesces_identical_requests() {
     assert_eq!(view["state"], "ready");
     assert_eq!(view["install"]["status"], "installed");
     assert_eq!(view["install"]["installationId"], "greeting-test");
+}
+
+/// A listed release that requests events, an audit trail and one provider profile.
+fn requesting(selection: &Selection) -> CatalogEntry {
+    let mut value = serde_json::to_value(entry(selection, "available")).unwrap();
+    value["grants"] = json!([
+        {"capability": {"id": "app.provider.register", "scope": "providerProfiles"},
+         "resourceId": "monitoring", "allowService": true},
+        {"capability": {"id": "app.events.subscribe", "scope": "installation"}, "allowService": true},
+    ]);
+    value["permissionKeys"] = json!(["view"]);
+    serde_json::from_value(value).unwrap()
+}
+
+fn approving(selection: &Selection, approval: serde_json::Value) -> Selection {
+    let mut value = serde_json::to_value(selection).unwrap();
+    value["approval"] = approval;
+    serde_json::from_value(value).unwrap()
+}
+
+#[test]
+fn installs_need_an_exact_approval_that_receipts_never_repeat() {
+    let (endpoint, mut requests) = Endpoint::new(None);
+    let plain = greeting();
+    endpoint
+        .finish_refresh(Ok(vec![requesting(&plain)]))
+        .unwrap();
+    let exact = json!([
+        {"capability": {"id": "app.provider.register", "scope": "providerProfiles"},
+         "resourceId": "monitoring", "allowService": false, "permissionKey": "view"},
+        {"capability": {"id": "app.events.subscribe", "scope": "installation"}, "allowService": true},
+    ]);
+    let mut extra = exact.clone();
+    extra.as_array_mut().unwrap().push(json!(
+        {"capability": {"id": "app.audit.record", "scope": "installation"}, "allowService": true}
+    ));
+    let mut partial = exact.clone();
+    partial.as_array_mut().unwrap().pop();
+    // Without an approval, or with one that differs from the request, nothing is admitted.
+    for refused in [
+        plain.clone(),
+        approving(&plain, extra),
+        approving(&plain, partial),
+    ] {
+        assert!(matches!(
+            endpoint.submit(refused),
+            Err(Failure::ApprovalRequired)
+        ));
+    }
+    assert!(requests.try_recv().is_err());
+
+    let approved = approving(&plain, exact.clone());
+    assert!(approved.valid());
+    let accepted = endpoint.submit(approved.clone()).unwrap();
+    let receipt = serde_json::to_value(&accepted).unwrap();
+    assert_eq!(receipt["status"], "installing");
+    assert!(receipt.get("approval").is_none(), "{receipt}");
+    // The identical approval coalesces. Another approval for the same release is a conflict.
+    assert!(endpoint.submit(approved.clone()).is_ok());
+    let mut other = exact.clone();
+    other[0]["allowService"] = json!(true);
+    assert!(matches!(
+        endpoint.submit(approving(&plain, other)),
+        Err(Failure::Conflict)
+    ));
+    assert_eq!(
+        requests.try_recv().unwrap(),
+        Request::Install(approved.clone())
+    );
+    assert!(requests.try_recv().is_err());
+    let view: serde_json::Value = serde_json::from_slice(&endpoint.view().unwrap()).unwrap();
+    assert!(view["install"].get("approval").is_none(), "{view}");
+    assert_eq!(view["entries"][0]["grants"][0]["resourceId"], "monitoring");
+    assert!(view["entries"][0]["grants"][1].get("resourceId").is_none());
+    assert_eq!(view["entries"][0]["permissionKeys"], json!(["view"]));
+
+    // Staging decides again from fresh metadata and reports a refusal as such.
+    endpoint
+        .finish(
+            approved,
+            Err(io::Error::from(
+                crate::app_install::grants::ApprovalRequired,
+            )),
+        )
+        .unwrap();
+    let view: serde_json::Value = serde_json::from_slice(&endpoint.view().unwrap()).unwrap();
+    assert_eq!(view["install"]["status"], "failed");
+    assert_eq!(view["install"]["error"], "approvalRequired");
+
+    let oversized = approving(
+        &plain,
+        serde_json::Value::Array(vec![exact[1].clone(); MAX_GRANTS + 1]),
+    );
+    assert!(!oversized.valid());
 }
 
 #[test]

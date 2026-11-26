@@ -254,7 +254,8 @@
                 "recover": "Retry activation",
                 "rollback": "Roll back",
                 "purge": "Delete retained data",
-                "reinstall": "Reinstall"
+                "reinstall": "Reinstall",
+                "revoke": "Revoke grants"
             },
             "pending": {
                 "update": "Updating app…",
@@ -264,7 +265,8 @@
                 "recover": "Retrying activation…",
                 "rollback": "Rolling back app…",
                 "purge": "Deleting retained data…",
-                "reinstall": "Reinstalling app…"
+                "reinstall": "Reinstalling app…",
+                "revoke": "Revoking grants…"
             },
             "succeeded": {
                 "update": "App updated.",
@@ -274,7 +276,8 @@
                 "recover": "App activated.",
                 "rollback": "App rolled back.",
                 "purge": "Retained app data deleted.",
-                "reinstall": "App reinstalled."
+                "reinstall": "App reinstalled.",
+                "revoke": "Grants revoked."
             },
             "confirm": {
                 "uninstall": "Uninstall {{name}}? The app will be removed and its data will be kept for reinstallation.",
@@ -292,7 +295,8 @@
                 "packageSourceUnavailable": "The package source could not be reached, so the version could not be downloaded. The app was not changed.",
                 "networkUnavailable": "Neither the app catalog nor the package source could be reached. Check this appliance’s internet connection. The app was not changed.",
                 "incompatibleData": "The selected version is incompatible with the app’s stored data.",
-                "operationFailed": "Check the app’s current state before trying again."
+                "operationFailed": "Check the app’s current state before trying again.",
+                "approvalRequired": "The selected version requests grants that have not been approved. The app was not changed."
             }
         },
         "status": {
@@ -313,7 +317,8 @@
             "catalogUnavailable": "The signed app catalog could not be reached, so the release could not be verified. Try again when the catalog is available.",
             "packageSourceUnavailable": "The package source could not be reached, so the release could not be downloaded. Try again when the source is available.",
             "networkUnavailable": "Neither the app catalog nor the package source could be reached. Check this appliance’s internet connection, then try again.",
-            "installFailed": "Installation failed. You can try again."
+            "installFailed": "Installation failed. You can try again.",
+            "approvalRequired": "This release requests grants that have not been approved, so it was not installed."
         }
     },
     "appUi": {
@@ -2837,7 +2842,8 @@
                     "crowdsec": "CrowdSec",
                     "npm-import": "NPM import",
                     "config-import": "Configuration import",
-                    "config-export": "Configuration export"
+                    "config-export": "Configuration export",
+                    "app-grants": "App grants"
                 }
             },
             "metadata": {
@@ -2855,7 +2861,9 @@
                 "eventId": "Event ID",
                 "certificateStage": "Certificate stage",
                 "occurredAt": "Occurred at",
-                "certificateErrorCode": "Certificate error code"
+                "certificateErrorCode": "Certificate error code",
+                "appId": "App ID",
+                "installationId": "App installation"
             },
             "details": {
                 "noMetadata": "No additional safe metadata."

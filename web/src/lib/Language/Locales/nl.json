@@ -235,7 +235,8 @@
                 "recover": "Activering opnieuw proberen",
                 "rollback": "Vorige versie herstellen",
                 "purge": "Bewaarde gegevens wissen",
-                "reinstall": "Opnieuw installeren"
+                "reinstall": "Opnieuw installeren",
+                "revoke": "Machtigingen intrekken"
             },
             "pending": {
                 "update": "App bijwerken…",
@@ -245,7 +246,8 @@
                 "recover": "Activering opnieuw proberen…",
                 "rollback": "Vorige versie herstellen…",
                 "purge": "Bewaarde gegevens wissen…",
-                "reinstall": "App opnieuw installeren…"
+                "reinstall": "App opnieuw installeren…",
+                "revoke": "Machtigingen worden ingetrokken…"
             },
             "succeeded": {
                 "update": "App bijgewerkt.",
@@ -255,7 +257,8 @@
                 "recover": "App geactiveerd.",
                 "rollback": "Vorige versie hersteld.",
                 "purge": "Bewaarde appgegevens gewist.",
-                "reinstall": "App opnieuw geïnstalleerd."
+                "reinstall": "App opnieuw geïnstalleerd.",
+                "revoke": "Machtigingen ingetrokken."
             },
             "confirm": {
                 "uninstall": "{{name}} verwijderen? De app wordt verwijderd en de gegevens blijven bewaard voor een herinstallatie.",
@@ -273,7 +276,8 @@
                 "packageSourceUnavailable": "De pakketbron is niet bereikbaar, waardoor de versie niet kon worden gedownload. De app is niet gewijzigd.",
                 "networkUnavailable": "De appcatalogus en de pakketbron zijn allebei niet bereikbaar. Controleer de internetverbinding van dit apparaat. De app is niet gewijzigd.",
                 "incompatibleData": "De geselecteerde versie is incompatibel met de opgeslagen appgegevens.",
-                "operationFailed": "Controleer de huidige status van de app voordat je het opnieuw probeert."
+                "operationFailed": "Controleer de huidige status van de app voordat je het opnieuw probeert.",
+                "approvalRequired": "De geselecteerde versie vraagt machtigingen aan die niet zijn goedgekeurd. De app is niet gewijzigd."
             }
         },
         "status": {
@@ -294,7 +298,8 @@
             "catalogUnavailable": "De ondertekende appcatalogus is niet bereikbaar, waardoor de versie niet kon worden gecontroleerd. Probeer het opnieuw zodra de catalogus beschikbaar is.",
             "packageSourceUnavailable": "De pakketbron is niet bereikbaar, waardoor de versie niet kon worden gedownload. Probeer het opnieuw zodra de bron beschikbaar is.",
             "networkUnavailable": "De appcatalogus en de pakketbron zijn allebei niet bereikbaar. Controleer de internetverbinding van dit apparaat en probeer het daarna opnieuw.",
-            "installFailed": "De installatie is mislukt. Je kunt het opnieuw proberen."
+            "installFailed": "De installatie is mislukt. Je kunt het opnieuw proberen.",
+            "approvalRequired": "Deze versie vraagt machtigingen aan die niet zijn goedgekeurd en is daarom niet geïnstalleerd."
         }
     },
     "appUi": {
@@ -2818,7 +2823,8 @@
                     "crowdsec": "CrowdSec",
                     "npm-import": "NPM-import",
                     "config-import": "Configuratie importeren",
-                    "config-export": "Configuratie exporteren"
+                    "config-export": "Configuratie exporteren",
+                    "app-grants": "App-machtigingen"
                 }
             },
             "metadata": {
@@ -2836,7 +2842,9 @@
                 "eventId": "Gebeurtenis-ID",
                 "certificateStage": "Certificaatfase",
                 "occurredAt": "Tijdstip",
-                "certificateErrorCode": "Certificaatfoutcode"
+                "certificateErrorCode": "Certificaatfoutcode",
+                "appId": "App-ID",
+                "installationId": "App-installatie"
             },
             "details": {
                 "noMetadata": "Geen aanvullende veilige metagegevens."

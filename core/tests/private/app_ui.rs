@@ -622,9 +622,22 @@ async fn assert_catalog_requests(
         .await
         .assert(400);
     client
-        .request("POST", INSTALL, JSON, &[b' '; MAX_INSTALL_BYTES + 1])
+        .request(
+            "POST",
+            INSTALL,
+            JSON,
+            &[b' '; MAX_CATALOG_REQUEST_BYTES + 1],
+        )
         .await
         .assert(413);
+    // An approval of up to 128 grants fits. A malformed approval is refused before admission.
+    let mut malformed = serde_json::to_value(&release).unwrap();
+    malformed["approval"] = value!([{"capability": {"id": "app.audit.record"}}]);
+    let malformed = serde_json::to_vec(&malformed).unwrap();
+    client
+        .request("POST", INSTALL, JSON, &malformed)
+        .await
+        .assert(400);
     let target = "/v1/catalog/target-check";
     client.request("POST", target, "", b"{}").await.assert(400);
     client.request("POST", target, JSON, b"{").await.assert(400);

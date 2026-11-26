@@ -216,16 +216,22 @@ async fn staging_services_status_and_publishes_candidate_while_retirement_is_bus
     let (endpoint, mut requests) = catalog::Endpoint::new(None);
     let drive_manager = async {
         manager
-            .stage("staged", "fixture.staged".into(), "2.0.0".into(), async {
-                downloaded.await.map_err(io::Error::other)?;
-                Ok(StagedPackage {
-                    directory: dir.path().into(),
-                    manifest: json!({}),
-                    archive_sha256: "c".repeat(64),
-                    manifest_sha256: "d".repeat(64),
-                    catalog_revision: 2,
-                })
-            })
+            .stage(
+                "staged",
+                "fixture.staged".into(),
+                "2.0.0".into(),
+                async {
+                    downloaded.await.map_err(io::Error::other)?;
+                    Ok(StagedPackage {
+                        directory: dir.path().into(),
+                        manifest: json!({}),
+                        archive_sha256: "c".repeat(64),
+                        manifest_sha256: "d".repeat(64),
+                        catalog_revision: 2,
+                    })
+                },
+                None,
+            )
             .await
             .unwrap();
         let slot = manager.journal.slot("staged").unwrap();

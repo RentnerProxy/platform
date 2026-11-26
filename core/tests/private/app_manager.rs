@@ -367,6 +367,157 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
     );
 }
 
+/// A release whose archive and manifest digests derive from `digest`.
+fn signed(version: &str, digest: char) -> Release {
+    Release {
+        version: version.into(),
+        archive_sha256: digest.to_string().repeat(64),
+        manifest_sha256: digest.to_ascii_uppercase().to_string().repeat(64),
+        catalog_revision: 1,
+    }
+}
+
+fn audit(installation_id: &str) -> Grant {
+    serde_json::from_value(json!({
+        "capability": {"id": "app.audit.record", "scope": "installation"},
+        "resourceId": installation_id,
+        "allowService": true,
+    }))
+    .unwrap()
+}
+
+fn host_grant(host: &str) -> Grant {
+    serde_json::from_value(json!({
+        "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
+        "resourceId": host,
+        "allowService": true,
+        "permissionKey": "view",
+    }))
+    .unwrap()
+}
+
+#[test]
+fn approvals_bind_to_exact_releases_and_follow_the_releases_a_slot_references() {
+    // A journal entry written before approvals were recorded parses without any.
+    let legacy = Slot {
+        app_id: "fixture.app".into(),
+        uid: 20_000,
+        generation: 2,
+        active: Some(signed("1.0.0", 'a')),
+        ..Default::default()
+    };
+    let stored = serde_json::to_value(&legacy).unwrap();
+    assert!(stored.get("approvals").is_none(), "{stored}");
+    let mut slot: Slot = serde_json::from_value(stored).unwrap();
+    assert!(slot.approvals.is_empty());
+    let active = signed("1.0.0", 'a');
+    assert!(slot.approval_for(&active).unwrap().is_none());
+
+    // An approval binds the archive and the manifest digest.
+    slot.approve(&active, vec![audit("fixture"), host_grant("h1")]);
+    assert_eq!(slot.approval_for(&active).unwrap().unwrap().len(), 2);
+    let stored = serde_json::to_value(&slot).unwrap();
+    assert_eq!(
+        stored["approvals"]["a".repeat(64)]["manifestSha256"],
+        "A".repeat(64)
+    );
+    let mut altered = active.clone();
+    altered.manifest_sha256 = "f".repeat(64);
+    let error = slot.approval_for(&altered).unwrap_err();
+    assert!(error.get_ref().unwrap().is::<journal::ApprovalMismatch>());
+    let reparsed: Slot = serde_json::from_value(stored).unwrap();
+    assert_eq!(reparsed.approvals, slot.approvals);
+
+    // Revoking removes a grant from every stored approval.
+    let (previous, candidate, unrelated) = (
+        signed("0.9.0", 'b'),
+        signed("1.1.0", 'c'),
+        signed("0.1.0", 'd'),
+    );
+    slot.previous = Some(previous.clone());
+    slot.candidate = Some(candidate.clone());
+    for release in [&previous, &candidate, &unrelated] {
+        slot.approve(
+            release,
+            vec![audit("fixture"), host_grant("h1"), host_grant("h2")],
+        );
+    }
+    slot.revoke(|grant| grant == &host_grant("h1"));
+    for release in [&active, &previous, &candidate, &unrelated] {
+        let grants = &slot.approvals[&release.archive_sha256].grants;
+        assert!(!grants.contains(&host_grant("h1")));
+        assert!(grants.contains(&audit("fixture")));
+    }
+
+    // Only the releases the slot can still start or reinstall keep an approval.
+    slot.prune_approvals();
+    let kept = |slot: &Slot| {
+        slot.approvals
+            .keys()
+            .map(|key| &key[..1])
+            .collect::<String>()
+    };
+    assert_eq!(kept(&slot), "abc");
+    // A committed candidate retires the previous release and its approval.
+    slot.commit_release(candidate.clone());
+    slot.prune_approvals();
+    assert_eq!(kept(&slot), "ac");
+    // Discarding the retained release drops its approval.
+    slot.previous = None;
+    slot.prune_approvals();
+    assert_eq!(kept(&slot), "c");
+    // A removal keeps the approval of the removed release for a reinstall. A purge drops it.
+    slot.removed_release = slot.active.take().as_ref().map(Into::into);
+    slot.prune_approvals();
+    assert_eq!(kept(&slot), "c");
+    slot.removed_release = None;
+    slot.prune_approvals();
+    assert!(slot.approvals.is_empty());
+}
+
+#[test]
+fn journal_saves_prune_approvals_and_refuse_overflow_without_poisoning() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let temp = tempfile::tempdir_in("/root").unwrap();
+    let mut journal = Journal::open(&temp.path().join("manager")).unwrap();
+    let active = signed("1.0.0", 'a');
+    let mut slot = Slot {
+        app_id: "fixture.app".into(),
+        uid: 20_001,
+        generation: 1,
+        active: Some(active.clone()),
+        ..Default::default()
+    };
+    slot.approve(&active, vec![audit("fixture")]);
+    slot.approve(&signed("0.1.0", 'd'), vec![audit("fixture")]);
+    journal.save("fixture", slot.clone()).unwrap();
+    let saved = journal.slot("fixture").unwrap();
+    assert_eq!(saved.approvals.len(), 1);
+    assert_eq!(
+        saved.approval_for(&active).unwrap().unwrap(),
+        [audit("fixture")]
+    );
+    // A journal that would exceed its capacity is refused, and the previous state stays usable.
+    let hosts = (0..40_000)
+        .map(|index| host_grant(&format!("host-{index}")))
+        .collect();
+    slot.approve(&active, hosts);
+    let error = journal.save("fixture", slot).unwrap_err();
+    assert_eq!(error.to_string(), "Manager journal capacity exceeded");
+    journal.writable().unwrap();
+    assert_eq!(
+        journal
+            .slot("fixture")
+            .unwrap()
+            .approval_for(&active)
+            .unwrap()
+            .unwrap(),
+        [audit("fixture")]
+    );
+}
+
 #[test]
 fn control_denies_undeclared_fields_and_defaults_new_authority_to_empty() {
     let cmd =

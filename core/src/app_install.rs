@@ -10,6 +10,11 @@ mod appliance;
 mod browse;
 mod catalog;
 pub(crate) mod filesystem;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) mod grants;
 mod package;
 #[cfg(all(
     target_os = "linux",
@@ -159,14 +164,16 @@ impl Installer {
 
     /// Refresh signed metadata before selecting or downloading an exact release.
     pub fn stage(&self, app_id: &str, version: &str) -> io::Result<StagedPackage> {
-        self.stage_catalog(app_id, version, None)
+        self.stage_catalog(app_id, version, None, |_| Ok(()))
     }
 
+    /// `gate` sees the freshly signed manifest and may refuse the release before any download.
     fn stage_catalog(
         &self,
         app_id: &str,
         version: &str,
         selected_hash: Option<&str>,
+        gate: impl FnOnce(&Value) -> io::Result<()>,
     ) -> io::Result<StagedPackage> {
         let _lock = self.lock()?;
         let transport = transport::Http::new(&self.config.repository_url)?;
@@ -184,11 +191,12 @@ impl Installer {
                     Some(transport.package_source_answers(&package.release_assets().archive))
                 })
             })?;
-        self.prepare(
+        self.prepare_gated(
             &catalog,
             app_id,
             version,
             PackageSource::Catalog(selected_hash),
+            gate,
             |asset| transport.archive(asset),
         )
     }
@@ -221,6 +229,20 @@ impl Installer {
         source: PackageSource<'_>,
         fetch: impl FnOnce(&rentnerproxy_app_contracts::DownloadAsset<'_>) -> io::Result<R>,
     ) -> io::Result<StagedPackage> {
+        self.prepare_gated(trusted, app_id, version, source, |_| Ok(()), fetch)
+    }
+
+    /// Verify the signed release and stage it. `gate` sees the signed manifest after the
+    /// compatibility check, before `package::stage` fetches or extracts anything.
+    fn prepare_gated<R: Read>(
+        &self,
+        trusted: &marketplace_app_catalog::TrustedPackageCatalog,
+        app_id: &str,
+        version: &str,
+        source: PackageSource<'_>,
+        gate: impl FnOnce(&Value) -> io::Result<()>,
+        fetch: impl FnOnce(&rentnerproxy_app_contracts::DownloadAsset<'_>) -> io::Result<R>,
+    ) -> io::Result<StagedPackage> {
         let document = parse_json(trusted.catalog_bytes())?;
         let (package, catalog_revision) = self.signed_package(&document, app_id, version)?;
         let expected_hash = match source {
@@ -231,10 +253,7 @@ impl Installer {
             return Err(invalid("Package identity differs from the signed catalog"));
         }
         self.check_compatibility(package.manifest())?;
-        if matches!(source, PackageSource::Catalog(Some(_))) && requires_grants(package.manifest())
-        {
-            return Err(invalid("Application requires explicit platform grants"));
-        }
+        gate(package.manifest())?;
         let directory = package::stage(
             &self.config.store_directory,
             &package,
@@ -353,12 +372,6 @@ fn catalog_outage(error: io::Error, package_answers: impl FnOnce() -> Option<boo
         Some(false) => transport::SourceUnavailable::error(transport::Source::Network, error),
         _ => error,
     }
-}
-
-fn requires_grants(manifest: &Value) -> bool {
-    !manifest["capabilities"]
-        .as_array()
-        .is_some_and(Vec::is_empty)
 }
 
 fn invalid_contract(error: rentnerproxy_app_contracts::ContractError) -> io::Error {

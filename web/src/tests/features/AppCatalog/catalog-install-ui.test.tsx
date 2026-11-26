@@ -30,7 +30,9 @@ const current = {
     state: 'running',
     name: null,
     providers: null,
+    grants: null,
     update: null,
+    updateRequiresApproval: false,
     previous: null,
 } satisfies CatalogInstallation
 const ready: CatalogSnapshot = {
@@ -44,6 +46,8 @@ const ready: CatalogSnapshot = {
             summary: 'Save a greeting.',
             hasUi: true,
             providers: [],
+            grants: [],
+            permissionKeys: [],
             availability: 'available',
             cached: false,
         },
@@ -390,6 +394,32 @@ test('explains newer releases that the appliance cannot offer for an installed a
         )
         expect(button('Update to 1.0.1')).toBeUndefined()
         expect(container.textContent).not.toContain('requires additional grants')
+    } finally {
+        await unmount()
+    }
+})
+
+test('shows a release that requests grants as needing approval instead of offering it', async () => {
+    snapshot = {
+        ...ready,
+        entries: [
+            {
+                ...ready.entries[0]!,
+                grants: [
+                    {
+                        capability: { id: 'app.provider.register', scope: 'providerProfiles' },
+                        resourceId: 'monitoring',
+                        allowService: true,
+                    },
+                ],
+            },
+        ],
+    }
+    apps = []
+    const { container, button, unmount } = await mountCatalog()
+    try {
+        await waitFor(() => container.textContent?.includes('Additional grants required') === true)
+        expect(button('Install')).toBeUndefined()
     } finally {
         await unmount()
     }

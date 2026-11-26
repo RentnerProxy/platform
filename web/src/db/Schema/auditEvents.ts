@@ -60,6 +60,7 @@ export const auditResource = rentnerProxySchema.enum('audit_resource', [
     'npm-import',
     'config-import',
     'config-export',
+    'app-grants',
 ])
 export const auditResult = rentnerProxySchema.enum('audit_result', ['success', 'failure', 'denied'])
 

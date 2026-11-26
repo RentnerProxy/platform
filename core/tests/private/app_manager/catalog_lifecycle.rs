@@ -80,6 +80,208 @@ fn only_the_latest_newer_eligible_release_is_offered_with_its_exact_digest() {
     assert!(!strictly_newer("1.10.0+other", "1.10.0"));
 }
 
+const HOST: &str = "0b6f3c0e-8d1a-4f43-9c2e-1d7a5b9e4f21";
+
+fn read_hosts() -> Value {
+    json!({"id": "proxy.hosts.read.v1", "scope": "proxyHosts"})
+}
+
+fn support(id: &str) -> Value {
+    json!({"capability": {"id": id, "scope": "installation"}, "allowService": true})
+}
+
+/// A listed release that requests reading proxy hosts and, when `notify`, publishing
+/// notifications.
+fn requesting(release: &Release, notify: bool) -> CatalogEntry {
+    let mut value = serde_json::to_value(entry(release, "available")).unwrap();
+    let mut grants = vec![
+        json!({"capability": read_hosts(), "allowService": true}),
+        support("app.events.subscribe"),
+        support("app.audit.record"),
+    ];
+    if notify {
+        grants.push(json!({
+            "capability": {"id": "notifications.publish.v1", "scope": "installation"},
+            "allowService": true,
+        }));
+    }
+    value["grants"] = grants.into();
+    value["permissionKeys"] = json!(["view"]);
+    serde_json::from_value(value).unwrap()
+}
+
+fn granted(id: &str, scope: &str, resource_id: &str) -> Grant {
+    serde_json::from_value(json!({
+        "capability": {"id": id, "scope": scope},
+        "resourceId": resource_id,
+        "allowService": true,
+    }))
+    .unwrap()
+}
+
+/// The running release, approved to read one proxy host.
+fn approved() -> Slot {
+    let mut slot = committed();
+    let active = slot.active.clone().unwrap();
+    slot.approve(
+        &active,
+        vec![
+            granted("app.audit.record", "installation", ID),
+            granted("app.events.subscribe", "installation", ID),
+            granted("proxy.hosts.read.v1", "proxyHosts", HOST),
+        ],
+    );
+    slot
+}
+
+fn with(mut request: Value, field: &str, value: Value) -> Request {
+    request[field] = value;
+    serde_json::from_value(request).unwrap()
+}
+
+#[test]
+fn updates_that_request_new_grants_need_an_approval_that_receipts_never_repeat() {
+    let target = release("1.10.0", 'c');
+    // An installation approved before approvals were recorded carries nothing.
+    let mut legacy = Installation::new(ID, &committed(), true).unwrap();
+    assert_eq!(
+        serde_json::to_value(&legacy).unwrap()["grants"],
+        Value::Null
+    );
+    legacy.set_update(&[requesting(&target, false)]);
+    assert_eq!(legacy.update, Some((&target).into()));
+    assert!(legacy.update_requires_approval);
+    let update = request("update", Some(&target));
+    let listing = [requesting(&target, false)];
+    assert!(legacy.offers(&update, &listing));
+    assert!(!legacy.approves(&update, &listing));
+    let approval = json!([
+        {"capability": read_hosts(), "resourceId": HOST, "allowService": true, "permissionKey": "view"},
+        support("app.events.subscribe"),
+        support("app.audit.record"),
+    ]);
+    let approved_update = with(serde_json::to_value(&update).unwrap(), "approval", approval);
+    assert!(approved_update.valid());
+    assert!(legacy.approves(&approved_update, &listing));
+    let receipt = serde_json::to_value(&approved_update).unwrap();
+    assert!(receipt.get("approval").is_none(), "{receipt}");
+    assert_ne!(approved_update, update);
+
+    // The approved installation carries its grants to a release that requests nothing new.
+    let mut row = Installation::new(ID, &approved(), true).unwrap();
+    let serialized = serde_json::to_value(&row).unwrap();
+    assert_eq!(serialized["grants"].as_array().unwrap().len(), 3);
+    assert_eq!(serialized["updateRequiresApproval"], false);
+    row.set_update(&listing);
+    assert!(!row.update_requires_approval);
+    assert!(row.approves(&update, &listing));
+    // A release that also publishes notifications needs a new approval.
+    let wider = [requesting(&target, true)];
+    row.set_update(&wider);
+    assert!(row.update_requires_approval);
+    assert_eq!(
+        serde_json::to_value(&row).unwrap()["updateRequiresApproval"],
+        true
+    );
+    assert!(!row.approves(&update, &wider));
+    // An approval that differs from the target's request is refused as well.
+    assert!(!row.approves(&approved_update, &wider));
+    // A removed installation offers its retained approval to a reinstall.
+    let mut removed = approved();
+    removed.removed_release = removed.active.take().as_ref().map(Into::into);
+    removed.removal = Removal::Removed;
+    let removed = Installation::new(ID, &removed, false).unwrap();
+    assert_eq!(
+        serde_json::to_value(&removed).unwrap()["grants"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let reinstall = request("reinstall", Some(&target));
+    assert!(removed.approves(&reinstall, &listing));
+    assert!(!removed.approves(&reinstall, &wider));
+    // Only updates and reinstalls take an approval.
+    let deactivate = request("deactivate", None);
+    assert!(
+        !with(
+            serde_json::to_value(&deactivate).unwrap(),
+            "approval",
+            json!([])
+        )
+        .valid()
+    );
+}
+
+#[test]
+fn revocations_name_approved_grants_of_an_installed_release() {
+    let revoke = |grants: Value| {
+        let base = serde_json::to_value(request("deactivate", None)).unwrap();
+        let mut value = base.clone();
+        value["action"] = "revoke".into();
+        with(value, "grants", grants)
+    };
+    let host = json!({"capability": read_hosts(), "resourceId": HOST});
+    let audit = json!({"capability": {"id": "app.audit.record", "scope": "installation"}, "resourceId": ID});
+    let request = revoke(json!([host, audit]));
+    assert!(request.valid());
+    let receipt = serde_json::to_value(&request).unwrap();
+    assert_eq!(receipt["action"], "revoke");
+    assert!(receipt.get("grants").is_none(), "{receipt}");
+    for invalid in [
+        revoke(json!([])),
+        revoke(json!([host, host])),
+        revoke(serde_json::Value::Array(
+            (0..=MAX_GRANTS)
+                .map(|index| json!({"capability": read_hosts(), "resourceId": format!("h{index}")}))
+                .collect(),
+        )),
+    ] {
+        assert!(!invalid.valid());
+    }
+    let mut targeted = serde_json::to_value(&request).unwrap();
+    targeted["grants"] = json!([host]);
+    targeted["target"] = json!(ReleaseSelection::from(&release("1.10.0", 'c')));
+    assert!(!serde_json::from_value::<Request>(targeted).unwrap().valid());
+    let missing: Value = serde_json::to_value(revoke(json!([host]))).unwrap();
+    assert!(!serde_json::from_value::<Request>(missing).unwrap().valid());
+
+    let mut slot = approved();
+    let running = Installation::new(ID, &slot, true).unwrap();
+    assert!(running.permits(&request));
+    assert!(!running.permits(&revoke(
+        json!([{"capability": read_hosts(), "resourceId": "5c1e2f3a-4b5d-4e6f-8a7b-9c0d1e2f3a4b"}])
+    )));
+    let mut stale = serde_json::to_value(&request).unwrap();
+    stale["grants"] = json!([host]);
+    stale["expected"]["generation"] = 6.into();
+    assert!(!running.permits(&serde_json::from_value(stale).unwrap()));
+    assert!(
+        !Installation::new(ID, &committed(), true)
+            .unwrap()
+            .permits(&request)
+    );
+    slot.desired_running = false;
+    assert!(
+        Installation::new(ID, &slot, false)
+            .unwrap()
+            .permits(&request)
+    );
+    slot.pending_fence = true;
+    assert!(
+        Installation::new(ID, &slot, false)
+            .unwrap()
+            .permits(&request)
+    );
+    slot.removed_release = slot.active.take().as_ref().map(Into::into);
+    slot.removal = Removal::Removed;
+    assert!(
+        !Installation::new(ID, &slot, false)
+            .unwrap()
+            .permits(&request)
+    );
+}
+
 #[test]
 fn installations_report_the_providers_of_their_exact_listed_release() {
     let listed = |release: &Release, providers: Value| {

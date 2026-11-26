@@ -51,8 +51,10 @@ describe('catalog installation progress', () => {
             state: 'running' as const,
             name: null,
             providers: null,
+            grants: null,
             previous: null,
             update: null,
+            updateRequiresApproval: false,
         }
         const lifecycle = {
             action: 'deactivate',

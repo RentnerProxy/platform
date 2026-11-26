@@ -1,4 +1,6 @@
 use super::{bad, valid_id};
+use crate::app_install::grants::MAX_GRANTS;
+pub(super) use crate::app_install::grants::{Capability, Grant};
 use crate::app_ipc::filesystem::{lock_file, require_safe_parents};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -19,22 +21,25 @@ use tokio::{
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 pub(super) const LIMIT: usize = 256;
 
+/// The grants the Owner, or root with the control CLI, approved for one exact release.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct Grant {
-    pub capability: Capability,
-    pub resource_id: String,
-    pub allow_service: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission_key: Option<String>,
+pub(super) struct Approval {
+    pub manifest_sha256: String,
+    pub grants: Vec<Grant>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Capability {
-    pub id: String,
-    pub scope: String,
+/// A stored approval that names another manifest than the release it would start.
+#[derive(Debug)]
+pub(super) struct ApprovalMismatch;
+
+impl std::fmt::Display for ApprovalMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Stored approval belongs to another release manifest")
+    }
 }
+
+impl std::error::Error for ApprovalMismatch {}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -186,9 +191,61 @@ pub(super) struct Slot {
     /// Only the platform records it, unlike the version marker inside the app's own database.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migrating: Option<ReleaseSelection>,
+    /// Approved grants by archive digest, for the releases this installation still references.
+    /// A release without an entry predates recorded approvals.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub approvals: BTreeMap<String, Approval>,
 }
 
 impl Slot {
+    /// The grants approved for exactly `release`, or `None` for a release approved before
+    /// approvals were recorded. An approval for the same archive with another manifest refuses.
+    pub fn approval_for(&self, release: &Release) -> io::Result<Option<&[Grant]>> {
+        match self.approvals.get(&release.archive_sha256) {
+            Some(approval) if approval.manifest_sha256 == release.manifest_sha256 => {
+                Ok(Some(&approval.grants))
+            }
+            Some(_) => Err(io::Error::other(ApprovalMismatch)),
+            None => Ok(None),
+        }
+    }
+
+    /// Record `grants` as the approval of exactly `release`.
+    pub fn approve(&mut self, release: &Release, grants: Vec<Grant>) {
+        self.approvals.insert(
+            release.archive_sha256.clone(),
+            Approval {
+                manifest_sha256: release.manifest_sha256.clone(),
+                grants,
+            },
+        );
+    }
+
+    /// Remove every grant that `revoked` names from every stored approval, so that neither a
+    /// restart, a rollback nor a reinstall can restore it.
+    pub fn revoke(&mut self, revoked: impl Fn(&Grant) -> bool) {
+        for approval in self.approvals.values_mut() {
+            approval.grants.retain(|grant| !revoked(grant));
+        }
+    }
+
+    /// Keep only the approvals of releases this installation can still start or reinstall.
+    /// Every journal save applies it.
+    pub fn prune_approvals(&mut self) {
+        let referenced: BTreeSet<_> = [&self.active, &self.candidate, &self.previous]
+            .into_iter()
+            .flatten()
+            .map(|release| release.archive_sha256.clone())
+            .chain(
+                self.removed_release
+                    .as_ref()
+                    .map(|release| release.archive_sha256.clone()),
+            )
+            .collect();
+        self.approvals
+            .retain(|archive_sha256, _| referenced.contains(archive_sha256));
+    }
+
     pub fn uncertain_grants(&self) -> bool {
         // Older interrupted journals did not distinguish missing files from ambiguous activation.
         self.grants_uncertain.unwrap_or(self.recovery_required)
@@ -410,8 +467,9 @@ impl Journal {
         }
         Ok(())
     }
-    pub fn save(&mut self, id: &str, slot: Slot) -> io::Result<()> {
+    pub fn save(&mut self, id: &str, mut slot: Slot) -> io::Result<()> {
         self.writable()?;
+        slot.prune_approvals();
         let mut next = self.state.as_ref().clone();
         next.installations.insert(id.to_owned(), slot);
         let bytes = encode_state(&next)?;
@@ -519,6 +577,10 @@ fn validate_installations(installations: &BTreeMap<String, Slot>) -> io::Result<
                 || !uids.insert(slot.uid)
                 || slot.generation > super::MAX_GENERATION
                 || slot.pending_fence && slot.generation == 0
+                || slot
+                    .approvals
+                    .values()
+                    .any(|approval| approval.grants.len() > MAX_GRANTS)
         })
     {
         return Err(bad("Invalid manager journal"));

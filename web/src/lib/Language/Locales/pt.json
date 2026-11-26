@@ -256,7 +256,8 @@
                 "recover": "Voltar a tentar a ativação",
                 "rollback": "Restaurar a versão anterior",
                 "purge": "Eliminar dados conservados",
-                "reinstall": "Reinstalar"
+                "reinstall": "Reinstalar",
+                "revoke": "Revogar permissões"
             },
             "pending": {
                 "update": "A atualizar a aplicação…",
@@ -266,7 +267,8 @@
                 "recover": "A tentar ativar novamente…",
                 "rollback": "A restaurar a versão anterior…",
                 "purge": "A eliminar os dados conservados…",
-                "reinstall": "A reinstalar a aplicação…"
+                "reinstall": "A reinstalar a aplicação…",
+                "revoke": "A revogar permissões…"
             },
             "succeeded": {
                 "update": "Aplicação atualizada.",
@@ -276,7 +278,8 @@
                 "recover": "Aplicação ativada.",
                 "rollback": "Versão anterior restaurada.",
                 "purge": "Os dados conservados foram eliminados.",
-                "reinstall": "Aplicação reinstalada."
+                "reinstall": "Aplicação reinstalada.",
+                "revoke": "Permissões revogadas."
             },
             "confirm": {
                 "uninstall": "Desinstalar {{name}}? A aplicação será removida e os dados serão conservados para uma reinstalação.",
@@ -294,7 +297,8 @@
                 "packageSourceUnavailable": "Não foi possível aceder à fonte de pacotes, por isso não foi possível transferir a versão. A aplicação não foi alterada.",
                 "networkUnavailable": "Não foi possível aceder ao catálogo de aplicações nem à fonte de pacotes. Verifique a ligação à internet deste dispositivo. A aplicação não foi alterada.",
                 "incompatibleData": "A versão selecionada é incompatível com os dados guardados.",
-                "operationFailed": "Verifique o estado atual da aplicação antes de voltar a tentar."
+                "operationFailed": "Verifique o estado atual da aplicação antes de voltar a tentar.",
+                "approvalRequired": "A versão selecionada pede permissões que não foram aprovadas. A aplicação não foi alterada."
             }
         },
         "status": {
@@ -315,7 +319,8 @@
             "catalogUnavailable": "Não foi possível aceder ao catálogo de aplicações assinado, por isso não foi possível verificar a versão. Tente novamente quando o catálogo estiver disponível.",
             "packageSourceUnavailable": "Não foi possível aceder à fonte de pacotes, por isso não foi possível transferir a versão. Tente novamente quando a fonte estiver disponível.",
             "networkUnavailable": "Não foi possível aceder ao catálogo de aplicações nem à fonte de pacotes. Verifique a ligação à internet deste dispositivo e tente novamente.",
-            "installFailed": "A instalação falhou. Pode tentar novamente."
+            "installFailed": "A instalação falhou. Pode tentar novamente.",
+            "approvalRequired": "Esta versão pede permissões que não foram aprovadas, por isso não foi instalada."
         }
     },
     "appUi": {
@@ -2863,7 +2868,8 @@
                     "crowdsec": "CrowdSec",
                     "npm-import": "Importação NPM",
                     "config-import": "Importação de configuração",
-                    "config-export": "Exportação de configuração"
+                    "config-export": "Exportação de configuração",
+                    "app-grants": "Permissões de aplicações"
                 }
             },
             "metadata": {
@@ -2881,7 +2887,9 @@
                 "eventId": "ID do evento",
                 "certificateStage": "Fase do certificado",
                 "occurredAt": "Ocorrido em",
-                "certificateErrorCode": "Código de erro do certificado"
+                "certificateErrorCode": "Código de erro do certificado",
+                "appId": "ID da aplicação",
+                "installationId": "Instalação da aplicação"
             },
             "details": {
                 "noMetadata": "Não há metadados seguros adicionais."

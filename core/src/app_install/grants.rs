@@ -1,0 +1,358 @@
+//! The grants an app release requests and the Owner's decision about them.
+//!
+//! A signed manifest declares capabilities, provider profiles and permission keys, never grants.
+//! The platform derives the requested set from it, and the Owner supplies the resources. These
+//! functions are pure: the app manager stores the decided set with the release in its journal and
+//! publishes it to the web authority, which checks every app call against it.
+
+use std::{collections::BTreeSet, fmt, io};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[cfg(test)]
+#[path = "../../tests/private/app_install/grants.rs"]
+mod tests;
+
+/// The most grants one approval holds.
+pub(crate) const MAX_GRANTS: usize = 128;
+
+const INSTALLATION: &str = "installation";
+const PROVIDER_PROFILES: &str = "providerProfiles";
+const PROXY_HOSTS: &str = "proxyHosts";
+
+/// Capabilities with a working platform endpoint. The other contract capabilities have none yet,
+/// and owned proxy hosts wait for their own approval flow, so a release that requests one of them
+/// cannot be approved on this appliance.
+const APPROVABLE: [(&str, &str); 3] = [
+    ("proxy.hosts.read.v1", PROXY_HOSTS),
+    ("diagnostics.upstream.probe.v1", PROXY_HOSTS),
+    ("notifications.publish.v1", INSTALLATION),
+];
+const PROVIDER: (&str, &str) = ("app.provider.register", PROVIDER_PROFILES);
+/// Support grants that an app with any capability needs for change events and its audit trail.
+const SUPPORT: [(&str, &str); 2] = [
+    ("app.events.subscribe", INSTALLATION),
+    ("app.audit.record", INSTALLATION),
+];
+/// Only root grants secret reads, with the control CLI. Releases never request them.
+const SECRET: (&str, &str) = ("app.secret.read", "secretReferences");
+const PROFILES: [&str; 6] = [
+    "monitoring",
+    "docker-discovery",
+    "load-balancer",
+    "dns",
+    "oidc",
+    "crowdsec",
+];
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Capability {
+    pub id: String,
+    pub scope: String,
+}
+
+impl Capability {
+    fn is(&self, (id, scope): (&str, &str)) -> bool {
+        self.id == id && self.scope == scope
+    }
+}
+
+/// One grant as the web authority enforces it.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Grant {
+    pub capability: Capability,
+    pub resource_id: String,
+    pub allow_service: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_key: Option<String>,
+}
+
+/// One grant a release requests. A selectable scope has no resource: the Owner picks at least
+/// one. The core fills the installation itself.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequestedGrant {
+    pub capability: Capability,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
+    pub allow_service: bool,
+}
+
+/// One grant the Owner approved for a requested capability.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[cfg_attr(test, derive(Serialize))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ApprovedGrant {
+    pub capability: Capability,
+    #[serde(default)]
+    pub resource_id: Option<String>,
+    pub allow_service: bool,
+    #[serde(default)]
+    pub permission_key: Option<String>,
+}
+
+/// The release requests a capability that this appliance cannot grant.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct Unapprovable;
+
+/// The release needs an approval of exactly the grants it requests.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct ApprovalRequired;
+
+impl fmt::Display for ApprovalRequired {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Release requires an approval of exactly the grants it requests")
+    }
+}
+
+impl std::error::Error for ApprovalRequired {}
+
+impl From<ApprovalRequired> for io::Error {
+    fn from(error: ApprovalRequired) -> Self {
+        io::Error::new(io::ErrorKind::PermissionDenied, error)
+    }
+}
+
+/// Whether `error` refused a release for a missing or mismatched approval.
+pub(crate) fn approval_required(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<ApprovalRequired>())
+}
+
+/// The grants that `manifest` requests. Fails when one of them cannot be approved.
+pub(crate) fn requested(manifest: &Value) -> Result<Vec<RequestedGrant>, Unapprovable> {
+    match derive(manifest) {
+        (items, true) => Ok(items),
+        (_, false) => Err(Unapprovable),
+    }
+}
+
+/// The app-owned permission keys a grant may name.
+pub(crate) fn permission_keys(manifest: &Value) -> Vec<String> {
+    manifest["permissions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Every approvable item the manifest requests, and whether nothing else is requested.
+fn derive(manifest: &Value) -> (Vec<RequestedGrant>, bool) {
+    let (Some(capabilities), Some(providers)) = (
+        manifest["capabilities"].as_array(),
+        manifest["providers"].as_array(),
+    ) else {
+        return (Vec::new(), false);
+    };
+    let mut approvable = true;
+    let mut items = Vec::new();
+    let mut add = |(id, scope): (&str, &str), resource_id: Option<&str>| {
+        let item = RequestedGrant {
+            capability: Capability {
+                id: id.to_owned(),
+                scope: scope.to_owned(),
+            },
+            resource_id: resource_id.map(str::to_owned),
+            allow_service: true,
+        };
+        if !items.contains(&item) {
+            items.push(item);
+        }
+    };
+    for capability in capabilities {
+        match (capability["id"].as_str(), capability["scope"].as_str()) {
+            (Some(id), Some(scope)) if APPROVABLE.contains(&(id, scope)) => add((id, scope), None),
+            _ => approvable = false,
+        }
+    }
+    for profile in providers {
+        match profile.as_str() {
+            Some(profile) if PROFILES.contains(&profile) => add(PROVIDER, Some(profile)),
+            _ => approvable = false,
+        }
+    }
+    if !capabilities.is_empty() {
+        for support in SUPPORT {
+            add(support, None);
+        }
+    }
+    (items, approvable)
+}
+
+/// Accept `approval` only if it grants exactly what the release requests: no item it does not
+/// request, every requested item covered, resources the Owner may choose, no wider service access
+/// and only declared permission keys. Returns the grants in a stable order.
+pub(crate) fn decide(
+    requested: &[RequestedGrant],
+    permission_keys: &[String],
+    approval: &[ApprovedGrant],
+    installation_id: &str,
+) -> Result<Vec<Grant>, ApprovalRequired> {
+    if approval.len() > MAX_GRANTS {
+        return Err(ApprovalRequired);
+    }
+    let mut grants = approval
+        .iter()
+        .map(|item| {
+            let resource_id = match (item.capability.scope.as_str(), &item.resource_id) {
+                (INSTALLATION, None) => installation_id.to_owned(),
+                (_, Some(resource_id)) => resource_id.clone(),
+                (_, None) => return Err(ApprovalRequired),
+            };
+            Ok(Grant {
+                capability: item.capability.clone(),
+                resource_id,
+                allow_service: item.allow_service,
+                permission_key: item.permission_key.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut targets = BTreeSet::new();
+    let exact = grants.iter().all(|grant| {
+        targets.insert((&grant.capability, &grant.resource_id))
+            && declared_key(grant, permission_keys)
+            && requested
+                .iter()
+                .any(|request| serves(request, grant, installation_id))
+    }) && covered(requested, &grants, installation_id);
+    if !exact {
+        return Err(ApprovalRequired);
+    }
+    grants.sort();
+    Ok(grants)
+}
+
+/// Carry the `approved` grants to a release that requests `requested`, or `None` when that
+/// release needs a new approval. Keeps the grants whose capability, scope and fixed resource the
+/// release still requests, and root's secret reads. A new capability, a changed scope, a new
+/// provider profile or a dropped permission key that a kept grant names needs a new approval.
+pub(crate) fn carry(
+    approved: &[Grant],
+    requested: &[RequestedGrant],
+    permission_keys: &[String],
+    installation_id: &str,
+) -> Option<Vec<Grant>> {
+    let kept: Vec<_> = approved
+        .iter()
+        .filter(|grant| {
+            grant.capability.is(SECRET)
+                || requested
+                    .iter()
+                    .any(|request| serves(request, grant, installation_id))
+        })
+        .cloned()
+        .collect();
+    (kept
+        .iter()
+        .all(|grant| declared_key(grant, permission_keys))
+        && covered(requested, &kept, installation_id))
+    .then_some(kept)
+}
+
+/// Decide the grants that a release with the signed `manifest` receives: exactly the Owner's
+/// `approval` when there is one, otherwise the `carried` approval if it still covers the release.
+pub(crate) fn approve(
+    manifest: &Value,
+    approval: Option<&[ApprovedGrant]>,
+    carried: &[Grant],
+    installation_id: &str,
+) -> Result<Vec<Grant>, ApprovalRequired> {
+    let requested = requested(manifest).map_err(|Unapprovable| ApprovalRequired)?;
+    let keys = permission_keys(manifest);
+    match approval {
+        Some(approval) => decide(&requested, &keys, approval, installation_id),
+        None => carry(carried, &requested, &keys, installation_id).ok_or(ApprovalRequired),
+    }
+}
+
+/// Whether `grants` stay within what `manifest` requests, as root's control CLI and every launch
+/// require. Root may approve a subset, and secret reads that no release requests.
+pub(crate) fn within(manifest: &Value, grants: &[Grant], installation_id: &str) -> bool {
+    let (items, _) = derive(manifest);
+    let keys = permission_keys(manifest);
+    let mut targets = BTreeSet::new();
+    grants.len() <= MAX_GRANTS
+        && grants.iter().all(|grant| {
+            targets.insert((&grant.capability, &grant.resource_id))
+                && declared_key(grant, &keys)
+                && ((grant.capability.is(SECRET) && record_id(&grant.resource_id))
+                    || items
+                        .iter()
+                        .any(|request| serves(request, grant, installation_id)))
+        })
+}
+
+/// Whether an approved `scope` covers the scope a release requests. Scopes are compared as they
+/// are; a later contract may let a wider scope cover a narrower one.
+fn covers(approved: &str, requested: &str) -> bool {
+    approved == requested
+}
+
+/// Whether `grant` serves the requested item: the same capability in a scope it covers, a
+/// resource the item allows, and no service access the item does not request.
+fn serves(request: &RequestedGrant, grant: &Grant, installation_id: &str) -> bool {
+    request.capability.id == grant.capability.id
+        && covers(&grant.capability.scope, &request.capability.scope)
+        && (request.allow_service || !grant.allow_service)
+        && match request.capability.scope.as_str() {
+            INSTALLATION => grant.resource_id == installation_id,
+            PROVIDER_PROFILES => request.resource_id.as_ref() == Some(&grant.resource_id),
+            PROXY_HOSTS => platform_host_id(&grant.resource_id),
+            _ => false,
+        }
+}
+
+/// Whether every requested item has a grant. A selectable scope needs at least one resource.
+fn covered(requested: &[RequestedGrant], grants: &[Grant], installation_id: &str) -> bool {
+    requested.iter().all(|request| {
+        grants
+            .iter()
+            .any(|grant| serves(request, grant, installation_id))
+    })
+}
+
+fn declared_key(grant: &Grant, permission_keys: &[String]) -> bool {
+    grant
+        .permission_key
+        .as_ref()
+        .is_none_or(|key| permission_keys.contains(key))
+}
+
+/// A lowercase RFC 9562 UUID, as the platform names proxy hosts.
+fn platform_host_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let hex = |range: std::ops::Range<usize>| {
+        bytes[range]
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+    };
+    bytes.len() == 36
+        && [8, 13, 18, 23].iter().all(|&dash| bytes[dash] == b'-')
+        && hex(0..8)
+        && hex(9..13)
+        && hex(14..18)
+        && hex(19..23)
+        && hex(24..36)
+        && (value == "00000000-0000-0000-0000-000000000000"
+            || value == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+            || ((b'1'..=b'8').contains(&bytes[14])
+                && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')))
+}
+
+/// An app record ID, as the web authority accepts it for a grant's resource.
+fn record_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
+}
