@@ -329,7 +329,11 @@ fn seals_chunked_envelopes_that_match_an_independent_implementation() {
             transform("open", &file, &target, &large_open, Vec::new()).is_err(),
             "{case}"
         );
-        // The first, intact chunk may be staged; a later failure still rejects the envelope.
+        // A rejected first chunk or size stages nothing. Later failures may leave earlier,
+        // authenticated chunks staged, but the envelope is still rejected.
+        if matches!(case, "swapped" | "short" | "trailing") {
+            assert_eq!(fs::read_dir(&target).unwrap().count(), 0, "{case} staged plaintext");
+        }
         assert!(
             !target.join(NAMES[4]).exists(),
             "{case} published the last artifact"

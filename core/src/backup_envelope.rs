@@ -40,6 +40,9 @@ const TAG_BYTES: usize = 16;
 const CHUNK_BYTES: usize = 65_536;
 const RESERVE_BYTES: u128 = 2 * 1024_u128.pow(3);
 const CHECK_INTERVAL: u64 = 16 * 1024 * 1024;
+/// The most one capacity check admits: a full interval of v2 chunks with their tags.
+const CHECK_BYTES: u128 =
+    CHECK_INTERVAL as u128 + (CHECK_INTERVAL as u128 / CHUNK_BYTES as u128) * TAG_BYTES as u128;
 /// v1 encrypts all artifacts as one AES-256-GCM stream. It is only opened.
 const STREAM_FORMAT: u8 = 1;
 /// v2 seals each 64 KiB chunk of the artifacts on its own with AES-256-GCM.
@@ -446,7 +449,7 @@ fn check_capacity(file: &File) -> io::Result<()> {
     // SAFETY: The kernel has just initialized the structure successfully.
     let information = unsafe { information.assume_init() };
     let available = u128::from(information.f_bavail) * u128::from(information.f_bsize);
-    if available < RESERVE_BYTES + u128::from(CHECK_INTERVAL) {
+    if available < RESERVE_BYTES + CHECK_BYTES {
         return Err(io::Error::other("Backup space reserve unavailable"));
     }
     Ok(())

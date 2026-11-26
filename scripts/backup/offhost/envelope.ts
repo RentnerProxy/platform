@@ -258,32 +258,36 @@ async function openChunks(
             )
             decipher.setAAD(header)
             decipher.setAuthTag(sealed.subarray(plain))
-            // final() throws for an altered chunk before any of its plaintext is written.
-            const data = Buffer.concat([
-                decipher.update(sealed.subarray(0, plain)),
-                decipher.final(),
-            ])
-            let position = 0
-            while (position < data.length) {
-                if (!output) {
-                    const name = names[artifact]
-                    if (!name) throw new Error('invalid encrypted backup payload')
-                    output = await open(join(staging, name), 'wx', 0o600)
-                    await output.chmod(0o600)
-                    remaining = lengths[artifact]!
+            const updated = decipher.update(sealed.subarray(0, plain))
+            let data: Buffer | undefined
+            try {
+                // final() throws for an altered chunk before any of its plaintext is written.
+                data = Buffer.concat([updated, decipher.final()])
+                let position = 0
+                while (position < data.length) {
+                    if (!output) {
+                        const name = names[artifact]
+                        if (!name) throw new Error('invalid encrypted backup payload')
+                        output = await open(join(staging, name), 'wx', 0o600)
+                        await output.chmod(0o600)
+                        remaining = lengths[artifact]!
+                    }
+                    const part = Math.min(remaining, data.length - position)
+                    await writeFileChunk(output, data.subarray(position, position + part))
+                    position += part
+                    remaining -= part
+                    if (remaining === 0) {
+                        await output.sync()
+                        await output.close()
+                        output = undefined
+                        artifact += 1
+                    }
                 }
-                const part = Math.min(remaining, data.length - position)
-                await writeFileChunk(output, data.subarray(position, position + part))
-                position += part
-                remaining -= part
-                if (remaining === 0) {
-                    await output.sync()
-                    await output.close()
-                    output = undefined
-                    artifact += 1
-                }
+            } finally {
+                // Wipe the plaintext also when staging fails or the chunk is rejected.
+                updated.fill(0)
+                data?.fill(0)
             }
-            data.fill(0)
         }
         if (artifact !== names.length) throw new Error('invalid encrypted backup payload')
     } finally {
@@ -418,10 +422,11 @@ export async function encryptBackup(
         }
         await write(header)
         const subkey = payloadKey(key, header)
+        // Source plaintext read for the chunk that is not sealed yet.
+        let pending: Buffer[] = []
         try {
             const count = chunkCount(payloadBytes)
             let index = 0
-            let pending: Buffer[] = []
             let pendingBytes = 0
             const seal = async () => {
                 if ((index * chunkBytes) % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0)
@@ -435,10 +440,18 @@ export async function encryptBackup(
                 )
                 cipher.setAAD(header)
                 const plaintext = Buffer.concat(pending)
-                await write(
-                    Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]),
-                )
-                for (const part of [plaintext, ...pending]) part.fill(0)
+                try {
+                    await write(
+                        Buffer.concat([
+                            cipher.update(plaintext),
+                            cipher.final(),
+                            cipher.getAuthTag(),
+                        ]),
+                    )
+                } finally {
+                    plaintext.fill(0)
+                }
+                for (const part of pending) part.fill(0)
                 pending = []
                 pendingBytes = 0
                 index += 1
@@ -465,6 +478,8 @@ export async function encryptBackup(
             if (index !== count) throw new Error('backup changed during encryption')
         } finally {
             subkey.fill(0)
+            // A failed capacity check, write or source change leaves read plaintext behind.
+            for (const part of pending) part.fill(0)
         }
         await output.sync()
         await output.close()
