@@ -188,7 +188,7 @@ fn pack_fixture<'a>(
     fs::read(pack_fixture_archive(directory, files)).unwrap()
 }
 
-fn pack_fixture_archive<'a>(
+pub(crate) fn pack_fixture_archive<'a>(
     directory: &Path,
     files: impl IntoIterator<Item = (&'a str, usize, Vec<u8>)>,
 ) -> PathBuf {
