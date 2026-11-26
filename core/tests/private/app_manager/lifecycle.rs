@@ -26,6 +26,10 @@ mod published_greeting;
 const ID: &str = "fixture-install";
 const UNCLAIMED: &str = "never-provisioned";
 const INTERRUPTED: &str = "interrupted-claim";
+const RESUMED_REMOVAL: &str = "resumed-removal";
+const RESUMED_PURGE: &str = "resumed-purge";
+/// While this file exists next to the authority socket, `removable` checks fail as unavailable.
+const REFUSE_REMOVAL: &str = "refuse-removal";
 const UID: u32 = 59553;
 const ROOT: &str = "/var/lib/rentnerproxy/app-manager";
 const SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
@@ -189,13 +193,15 @@ async fn authority(
     if let Some(uid) = match value["identity"]["installationId"].as_str() {
         Some(UNCLAIMED) => Some(UID + 1),
         Some(INTERRUPTED) => Some(UID + 2),
+        Some(RESUMED_REMOVAL) => Some(UID + 3),
+        Some(RESUMED_PURGE) => Some(UID + 4),
         _ => None,
     } {
         assert_eq!(value["identity"]["uid"], uid);
         let status = match path.rsplit('/').next().unwrap() {
             "register" => StatusCode::SERVICE_UNAVAILABLE,
-            "retire" | "workers-stopped" | "removable" => StatusCode::NO_CONTENT,
-            action => panic!("unexpected unclaimed fixture action {action}"),
+            "retire" | "workers-stopped" | "removable" | "purge-data" => StatusCode::NO_CONTENT,
+            action => panic!("unexpected unregistered fixture action {action}"),
         };
         return Ok(Response::builder()
             .status(status)
@@ -315,7 +321,12 @@ async fn authority(
             states.remove(&generation);
         }
         "workers-stopped" | "purge-data" => assert!(states.is_empty()),
-        "removable" => (),
+        "removable" => {
+            // An unavailable web authority cannot confirm that the installation is removable.
+            if Path::new(SOCKET).with_file_name(REFUSE_REMOVAL).exists() {
+                status = StatusCode::SERVICE_UNAVAILABLE;
+            }
+        }
         _ => panic!("unexpected private action {action}"),
     }
     Ok(Response::builder()
@@ -651,20 +662,25 @@ async fn ui_mutate(request: &Value, expected_status: u16) {
         return;
     }
     assert_eq!(initial["status"], "pending");
+    let operation = ui_outcome(request).await;
+    assert_eq!(operation["status"], "succeeded", "{operation}");
+}
+
+/// Wait for the accepted lifecycle `request` to finish and return its operation.
+async fn ui_outcome(request: &Value) -> Value {
     timeout(Duration::from_secs(20), async {
         loop {
             let view = manager_catalog(None, 200).await;
             let operation = &view["lifecycle"];
             if operation["status"] != "pending" {
                 assert_eq!(operation["action"], request["action"]);
-                assert_eq!(operation["status"], "succeeded", "{operation}");
-                break;
+                break operation.clone();
             }
             sleep(Duration::from_millis(100)).await;
         }
     })
     .await
-    .unwrap();
+    .unwrap()
 }
 
 async fn ui_action(action: &str, expected_status: u16) {
@@ -767,6 +783,189 @@ async fn check_process_recovery(
     );
     invoke(controller, &["start", ID]).await.unwrap();
     assert_eq!(invoke(controller, &["status"]).await.unwrap(), started);
+}
+
+/// The stopped manager's journal entry for `ID`.
+fn stored() -> Slot {
+    Journal::open(Path::new(ROOT))
+        .unwrap()
+        .slot(ID)
+        .unwrap()
+        .clone()
+}
+
+/// Rewrite the stopped manager's journal entry for `ID` and return the entry it replaced.
+fn preseed(change: impl FnOnce(&mut Slot)) -> Slot {
+    let mut journal = Journal::open(Path::new(ROOT)).unwrap();
+    let before = journal.slot(ID).unwrap().clone();
+    let mut slot = before.clone();
+    change(&mut slot);
+    journal.save(ID, slot).unwrap();
+    before
+}
+
+async fn installation(controller: &Path) -> Value {
+    invoke(controller, &["status"]).await.unwrap()[ID].clone()
+}
+
+/// The process ID that the running fixture app recorded when it started.
+fn app_process() -> Vec<u8> {
+    fs::read(storage::directory(UID).join("data/app-pid")).unwrap()
+}
+
+/// Record `slot` as an interrupted removal or purge of a stopped installation whose claimed
+/// storage still holds data. Returns the path of a retained data file.
+fn reserve_interrupted(journal: &mut Journal, id: &str, slot: Slot) -> PathBuf {
+    storage::claim(id, &slot).unwrap();
+    let data = storage::directory(slot.uid).join("data");
+    fs::create_dir(&data).unwrap();
+    chown(&data, Some(slot.uid), Some(slot.uid)).unwrap();
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).unwrap();
+    let retained = data.join("retained");
+    fs::write(&retained, b"retained data").unwrap();
+    journal
+        .save(
+            id,
+            Slot {
+                storage_claimed: Some(true),
+                ..slot
+            },
+        )
+        .unwrap();
+    retained
+}
+
+/// Boot from journal entries that interrupted transitions leave behind, then refuse releases
+/// that cannot become the running generation. The manager is stopped before and after, with
+/// 1.0.0 committed. `staged` is a working candidate and `incompatible` declares data that the
+/// installation never wrote. Returns the retained previous release to restore afterwards.
+async fn check_interrupted_transitions(
+    controller: &Path,
+    config: &Path,
+    token: &Path,
+    staged: &Release,
+    incompatible: &Release,
+) -> Option<Release> {
+    let last_grants = Path::new(SOCKET).with_file_name("last-grants-generation");
+
+    // An update stopped after it reserved the next generation, before it could publish new
+    // grants. The boot fences that generation and restarts the committed release with the
+    // grants that were already approved.
+    let approved = fs::read(&last_grants).unwrap();
+    let committed = preseed(|slot| {
+        slot.generation += 1;
+        slot.candidate = Some(staged.clone());
+        slot.pending_fence = true;
+        slot.recovery_required = true;
+        slot.grants_uncertain = Some(false);
+    });
+    assert!(!committed.pending_fence && !committed.recovery_required);
+    assert!(committed.desired_running);
+    let mut manager = mount_manager(controller, config, token, BootState::Running).await;
+    let state = installation(controller).await;
+    assert_eq!(state["active"], "1.0.0");
+    assert_eq!(state["candidate"], staged.version);
+    assert_eq!(state["generation"], committed.generation + 2);
+    assert_eq!(fs::read(&last_grants).unwrap(), approved);
+
+    // A candidate that stays alive but never reports the supported protocol reaches its startup
+    // limit, and the committed release starts again. Only the candidate's start consumes the
+    // marker, so the restarted release reports the supported protocol.
+    let marker = storage::directory(UID).join("data/fixture-never-ready");
+    fs::write(&marker, []).unwrap();
+    let error = invoke(controller, &["activate", ID]).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("timed out. Previous release restarted with previously approved grants"),
+        "{error}"
+    );
+    assert!(!marker.exists(), "the candidate did not start");
+    let state = installation(controller).await;
+    assert_eq!(state["active"], "1.0.0");
+    assert_eq!(state["candidate"], staged.version);
+    assert_eq!(state["running"], true);
+    assert_eq!(state["recoveryRequired"], false);
+    assert_eq!(state["generation"], committed.generation + 4);
+    halt(&mut manager).await;
+
+    // An activation stopped after it may have published new grants. The boot restarts the
+    // committed release with an empty grant set until an administrator approves it again.
+    let committed = preseed(|slot| {
+        slot.generation += 1;
+        slot.pending_fence = true;
+        slot.recovery_required = true;
+        slot.grants_uncertain = Some(true);
+    });
+    let mut manager = mount_manager(controller, config, token, BootState::Running).await;
+    let restarted = committed.generation + 2;
+    let state = installation(controller).await;
+    assert_eq!(state["active"], "1.0.0");
+    assert_eq!(state["generation"], restarted);
+    assert_eq!(
+        fs::read_to_string(&last_grants).unwrap(),
+        restarted.to_string()
+    );
+    halt(&mut manager).await;
+    let recovered = stored();
+    assert_eq!(recovered.grants_uncertain, None);
+    assert!(!recovered.recovery_required && !recovered.pending_fence);
+
+    // A removal stopped after it reserved the installation. The authority cannot confirm the
+    // removal at boot, so the installation stays reserved and needs recovery. Starting it
+    // cancels the removal and runs the committed release again.
+    let refusal = Path::new(SOCKET).with_file_name(REFUSE_REMOVAL);
+    fs::write(&refusal, []).unwrap();
+    let committed = preseed(|slot| {
+        slot.removal = Removal::Removing;
+        slot.desired_running = false;
+        // Removal reserves only installations without unresolved provider dependencies.
+        slot.provider_dependencies_unknown = false;
+    });
+    let mut manager = mount_manager(controller, config, token, BootState::Recovery).await;
+    assert_eq!(installation(controller).await["removal"], "removing");
+    fs::remove_file(&refusal).unwrap();
+    invoke(controller, &["start", ID]).await.unwrap();
+    let state = installation(controller).await;
+    assert_eq!(state["removal"], "installed");
+    assert_eq!(state["running"], true);
+    assert_eq!(state["desiredRunning"], true);
+    assert_eq!(state["active"], "1.0.0");
+    assert_eq!(state["generation"], committed.generation + 1);
+    halt(&mut manager).await;
+
+    // A release that declares data the installation never wrote, without a migration that
+    // creates it, cannot open the stored data. Activating it, or rolling back to it, is refused
+    // before the fence: the running generation, its process and the journal stay unchanged.
+    let committed = preseed(|slot| {
+        slot.candidate = Some(incompatible.clone());
+        slot.previous = Some(incompatible.clone());
+    });
+    let mut manager = mount_manager(controller, config, token, BootState::Running).await;
+    let before = installation(controller).await;
+    let process = app_process();
+    let error = invoke(controller, &["activate", ID]).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Declared data versions require migration or recovery"),
+        "{error}"
+    );
+    let view = manager_catalog(None, 200).await;
+    let row = catalog_row(&view);
+    let rollback = lifecycle_input("rollback", row, Some(&row["previous"]));
+    assert_eq!(rollback["target"]["version"], incompatible.version);
+    assert_eq!(
+        manager_catalog(Some(&rollback), 202).await["status"],
+        "pending"
+    );
+    let refused = ui_outcome(&rollback).await;
+    assert_eq!(refused["status"], "failed", "{refused}");
+    assert_eq!(refused["error"], "incompatibleData", "{refused}");
+    assert_eq!(installation(controller).await, before);
+    assert_eq!(app_process(), process);
+    halt(&mut manager).await;
+    committed.previous
 }
 
 pub(super) async fn exercise() {
@@ -979,10 +1178,19 @@ pub(super) async fn exercise() {
     invoke(&controller, &["start", ID]).await.unwrap();
     assert_eq!(fs::read(&last_grants).unwrap(), before_grants);
     halt(&mut manager).await;
+    let previous = check_interrupted_transitions(
+        &controller,
+        &config,
+        &token,
+        &release(&packages[1]),
+        &release(&packages[3]),
+    )
+    .await;
     let mut journal = Journal::open(Path::new(ROOT)).unwrap();
     let mut slot = journal.slot(ID).unwrap().clone();
     assert!(!slot.pending_fence && slot.desired_running);
     slot.candidate = Some(release(&packages[2]));
+    slot.previous = previous;
     journal.save(ID, slot).unwrap();
     drop(journal);
     let mut manager = mount_manager(&controller, &config, &token, BootState::Running).await;
@@ -1048,8 +1256,45 @@ pub(super) async fn exercise() {
     assert!(slot.provider_dependencies_unknown);
     slot.provider_dependencies_unknown = false;
     journal.save(ID, slot).unwrap();
+    // A removal and a purge that stopped after they reserved their installations finish at the
+    // next boot. The removal keeps the installation's data and the purge erases it.
+    let removed_data = reserve_interrupted(
+        &mut journal,
+        RESUMED_REMOVAL,
+        Slot {
+            app_id: "example.probe".into(),
+            uid: UID + 3,
+            generation: 1,
+            authority_recorded: Some(true),
+            active: Some(release(&packages[0])),
+            desired_running: false,
+            pending_fence: true,
+            removal: Removal::Removing,
+            ..Default::default()
+        },
+    );
+    let purged_data = reserve_interrupted(
+        &mut journal,
+        RESUMED_PURGE,
+        Slot {
+            app_id: "example.probe".into(),
+            uid: UID + 4,
+            generation: 1,
+            authority_recorded: Some(true),
+            removed_release: Some((&release(&packages[0])).into()),
+            removal: Removal::Purging,
+            ..Default::default()
+        },
+    );
     drop(journal);
     let mut manager = mount_manager(&controller, &config, &token, BootState::Recovery).await;
+    let states = invoke(&controller, &["status"]).await.unwrap();
+    assert_eq!(states[RESUMED_REMOVAL]["removal"], "removed", "{states}");
+    assert!(states[RESUMED_REMOVAL]["active"].is_null());
+    assert_eq!(fs::read(&removed_data).unwrap(), b"retained data");
+    assert_eq!(states[RESUMED_PURGE]["removal"], "purged", "{states}");
+    assert!(!purged_data.exists());
+    assert!(!storage::directory(UID + 4).exists());
     ui_action("purge", 409).await;
     ui_action("uninstall", 202).await;
     let data = super::super::storage::directory(UID);

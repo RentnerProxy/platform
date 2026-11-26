@@ -9,8 +9,10 @@ import {
     appRuntimeGrants,
     appRuntimeInstallations,
     appRuntimeOperations,
+    appRuntimeOwnedProxyHosts,
     appRuntimeSecrets,
     permissions,
+    proxyHosts,
     rolePermissions,
     roles,
     sessions,
@@ -94,6 +96,60 @@ integrationTest('retirement waits for a registration that has not committed', as
                 .where(eq(appRuntimeInstallations.id, identity.installationId))
         })
     }
+})
+
+integrationTest('removal and data purge wait while the app owns a proxy host', async () => {
+    const { db } = await import('@/db/index.ts')
+    const rolledBack = new Error('owned host test rollback')
+    await expect(
+        db.transaction(async (transaction) => {
+            const identity = {
+                installationId: crypto.randomUUID(),
+                appId: 'fixture.owned-host',
+                uid: 40_496,
+                generation: 1,
+            }
+            const leaseExpiresAt = new Date(Date.now() + 60_000)
+            await registerAppRuntimeGenerationInTransaction(transaction, {
+                identity,
+                leaseExpiresAt,
+                capabilities: [],
+            })
+            await activateAppRuntimeGenerationInTransaction(transaction, identity, leaseExpiresAt)
+            const proxyHostId = crypto.randomUUID()
+            await transaction.insert(proxyHosts).values({
+                id: proxyHostId,
+                forwardScheme: 'http',
+                forwardHost: '172.22.0.5',
+                forwardPort: 8080,
+            })
+            await transaction.insert(appRuntimeOwnedProxyHosts).values({
+                installationId: identity.installationId,
+                hostId: 'owned-host',
+                proxyHostId,
+            })
+
+            // The app manager checks before and after it stopped the generation.
+            await expect(
+                checkAppRuntimeDependenciesInTransaction(transaction, identity, 'removable'),
+            ).rejects.toMatchObject({ code: 'conflict' })
+            await checkAppRuntimeDependenciesInTransaction(transaction, identity, 'workers-stopped')
+            await revokeAppRuntimeGenerationInTransaction(transaction, identity)
+            await expect(
+                checkAppRuntimeDependenciesInTransaction(transaction, identity, 'removable'),
+            ).rejects.toMatchObject({ code: 'conflict' })
+            await expect(
+                checkAppRuntimeDependenciesInTransaction(transaction, identity, 'purge-data'),
+            ).rejects.toMatchObject({ code: 'conflict' })
+
+            // Deleting the host ends the ownership, so removal and the purge may proceed.
+            await transaction.delete(proxyHosts).where(eq(proxyHosts.id, proxyHostId))
+            await checkAppRuntimeDependenciesInTransaction(transaction, identity, 'removable')
+            await checkAppRuntimeDependenciesInTransaction(transaction, identity, 'purge-data')
+            // Roll back the synthetic installation and host in the dedicated CI database.
+            throw rolledBack
+        }),
+    ).rejects.toBe(rolledBack)
 })
 
 integrationTest(
