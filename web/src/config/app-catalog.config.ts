@@ -5,8 +5,10 @@ export const APP_CATALOG_INSTALL_RATE_LIMIT = {
 } as const
 
 /**
- * Revocations withdraw access, so installs and updates must never hold them back. Their own
- * bucket still bounds how often a session can make the app manager write its journal.
+ * Revocations count against their own bucket, keyed by the Owner's user ID like installs, so
+ * that used install and update quota never causes a 429 for a revocation. The app manager's
+ * lifecycle checks still apply: a revocation submitted while another operation is pending is
+ * refused with 409.
  */
 export const APP_CATALOG_REVOKE_RATE_LIMIT = {
     scope: 'app-catalog-revoke',

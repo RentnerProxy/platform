@@ -387,13 +387,13 @@ fn staging_approves_exactly_or_carries_and_refuses_otherwise() {
     let full = full_approval();
     let explicit = approve(&monitoring(), Some(&full), &[], None, ID).unwrap();
     assert_eq!(explicit.grants.len(), 6);
-    assert_eq!(explicit.explicit, Some(requested(&monitoring()).unwrap()));
+    assert!(explicit.explicit);
     let approved = explicit.grants;
     assert_eq!(
         approve(&monitoring(), None, &approved, None, ID).unwrap(),
         Decision {
             grants: approved.clone(),
-            explicit: None,
+            explicit: false,
         }
     );
     assert_eq!(
@@ -408,7 +408,7 @@ fn staging_approves_exactly_or_carries_and_refuses_otherwise() {
         approve(&manifest(json!([]), json!([])), None, &[], None, ID),
         Ok(Decision {
             grants: Vec::new(),
-            explicit: None,
+            explicit: false,
         })
     );
     let error = io::Error::from(ApprovalRequired);
@@ -627,4 +627,89 @@ fn proxy_hosts_are_named_by_lowercase_platform_ids() {
     ] {
         assert!(!platform_host_id(invalid), "{invalid}");
     }
+}
+
+#[test]
+fn a_carry_never_takes_a_stored_permission_key_the_target_does_not_declare() {
+    let requested = requested(&monitoring()).unwrap();
+    let running = decide(&requested, &keys(), &full_approval(), ID).unwrap();
+    // The target's stored approval names a key that an older manifest declared.
+    let mut stored = running.clone();
+    for grant in &mut stored {
+        if grant.capability.id == "proxy.hosts.read.v1" {
+            grant.permission_key = Some("retired".into());
+        }
+    }
+    assert_eq!(
+        carry_to(&running, Some(&stored), &requested, &keys(), ID),
+        None
+    );
+    assert_eq!(
+        approve(&monitoring(), None, &running, Some(&stored), ID),
+        Err(ApprovalRequired)
+    );
+    // A declared stored key is taken.
+    for grant in &mut stored {
+        if grant.capability.id == "proxy.hosts.read.v1" {
+            grant.permission_key = Some("manage".into());
+        }
+    }
+    let carried = carry_to(&running, Some(&stored), &requested, &keys(), ID).unwrap();
+    assert!(
+        carried
+            .iter()
+            .any(|grant| grant.permission_key.as_deref() == Some("manage"))
+    );
+}
+
+#[test]
+fn an_approval_matches_a_stored_decision_only_exactly() {
+    let requested = requested(&monitoring()).unwrap();
+    let mut approved = decide(&requested, &keys(), &full_approval(), ID).unwrap();
+    assert!(same_decision(&full_approval(), &approved, ID));
+    // The installation may be named, the order does not matter.
+    let mut named = full_approval();
+    named[1].resource_id = Some(ID.into());
+    named.reverse();
+    assert!(same_decision(&named, &approved, ID));
+    // Root's secret reads in the stored approval are kept, as staging keeps them.
+    approved.push(grant("app.secret.read", "secretReferences", "token"));
+    assert!(same_decision(&full_approval(), &approved, ID));
+    for changed in [
+        // Narrower service access, another key, a missing or an extra host.
+        {
+            let mut approval = full_approval();
+            approval[0].allow_service = false;
+            approval
+        },
+        {
+            let mut approval = full_approval();
+            approval[0].permission_key = Some("view".into());
+            approval
+        },
+        full_approval()[1..].to_vec(),
+        {
+            let mut approval = full_approval();
+            approval.push(approved_host(OTHER_HOST));
+            approval
+        },
+        {
+            let mut approval = full_approval();
+            approval[0].resource_id = None;
+            approval
+        },
+        {
+            let mut approval = full_approval();
+            approval.push(approval[0].clone());
+            approval
+        },
+    ] {
+        assert!(!same_decision(&changed, &approved, ID), "{changed:?}");
+    }
+    assert!(same_decision(&[], &[], ID));
+    assert!(!same_decision(&full_approval(), &[], ID));
+}
+
+fn approved_host(host: &str) -> ApprovedGrant {
+    approved("proxy.hosts.read.v1", "proxyHosts", Some(host))
 }

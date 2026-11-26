@@ -89,6 +89,18 @@ enum PackageRequest {
     Recorded(Release),
 }
 
+/// The grants a launch publishes.
+#[derive(Clone, Copy)]
+enum Approved<'a> {
+    /// The release's stored approval. A release approved before approvals were recorded
+    /// publishes this set instead, or keeps the grants the web authority holds without one.
+    Stored(Option<&'a [Grant]>),
+    /// Root's replacement from the control CLI. Only the save that commits the activation
+    /// records it, so a refused or failed activation, its fallback and every later recovery run
+    /// with the approval the release had before.
+    Replacement(&'a [Grant]),
+}
+
 /// Decides from a signed manifest which grants a staged release receives, or refuses it.
 type Gate = Arc<dyn Fn(&Value) -> io::Result<Decision> + Send + Sync>;
 
@@ -221,7 +233,7 @@ impl Manager {
         if let Some(decision) = decision {
             // The gate read the stored approval of this archive, which must name this manifest.
             slot.approval_for(&candidate)?;
-            slot.record(&candidate, decision, id);
+            slot.record(&candidate, decision);
         }
         slot.candidate = Some(candidate);
         self.journal.save(id, slot)
@@ -337,21 +349,22 @@ impl Manager {
         .await?
     }
 
-    /// Start `release` in a new generation with the grants approved for exactly that release.
-    /// `legacy` applies only to a release approved before approvals were recorded: `None` keeps
-    /// the grants the web authority holds, and a set replaces them.
+    /// Start `release` in a new generation with the `approved` grants for exactly that release.
     async fn launch(
         &mut self,
         id: &str,
         release: Release,
-        legacy: Option<&[Grant]>,
+        approved: Approved<'_>,
         policy: DataPolicy,
         mut boot_lock_retries: Option<&mut usize>,
     ) -> io::Result<()> {
         let slot = self.journal.slot(id)?.clone();
-        let grants = match slot.approval_for(&release)? {
-            Some(approved) => Some(approved.to_vec()),
-            None => legacy.map(<[Grant]>::to_vec),
+        let grants = match approved {
+            Approved::Replacement(grants) => Some(grants.to_vec()),
+            Approved::Stored(legacy) => match slot.approval_for(&release)? {
+                Some(stored) => Some(stored.to_vec()),
+                None => legacy.map(<[Grant]>::to_vec),
+            },
         };
         let grants = grants.as_deref();
         // Historical committed generations predate the explicit storage acknowledgement.
@@ -535,6 +548,13 @@ impl Manager {
         if live.exited()? {
             return Err(bad("App exited during activation"));
         }
+        // Root's replacement and a pending decision of the Owner take effect with the commit.
+        if let Approved::Replacement(grants) = approved {
+            slot.approve(&release, grants.to_vec());
+        }
+        if let Ok(requested) = grants::requested(&package.manifest) {
+            slot.activate_approval(&release, &requested, id);
+        }
         slot.commit_release(release);
         slot.removal = Removal::Installed;
         slot.removed_release = None;
@@ -558,11 +578,11 @@ impl Manager {
         &mut self,
         id: &str,
         target: Release,
-        legacy: Option<&[Grant]>,
+        approved: Approved<'_>,
         policy: DataPolicy,
     ) -> io::Result<()> {
         let before = self.journal.slot(id)?.clone();
-        match self.launch(id, target, legacy, policy, None).await {
+        match self.launch(id, target, approved, policy, None).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 let after = self.journal.slot(id)?;
@@ -590,7 +610,7 @@ impl Manager {
                         .launch(
                             id,
                             active,
-                            uncertain.then_some([].as_slice()),
+                            Approved::Stored(uncertain.then_some([].as_slice())),
                             DataPolicy::OpenOnly,
                             None,
                         )
@@ -695,32 +715,13 @@ impl Manager {
                     return Err(bad("Grants exceed what the staged release requests"));
                 }
                 grants.sort();
-                let mut slot = self.journal.slot(&installation_id)?.clone();
-                let replaced = slot.approvals.get(&target.archive_sha256).cloned();
-                let generation = slot.generation;
-                slot.approve(&target, grants);
-                self.journal.save(&installation_id, slot)?;
-                let key = target.archive_sha256.clone();
-                if let Err(error) = self
-                    .switch(&installation_id, target, None, DataPolicy::Migrate)
-                    .await
-                {
-                    // Refused before the fence, the old generation keeps its grants. Restore the
-                    // approval it runs with, so that the journal matches the live authority.
-                    let mut slot = self.journal.slot(&installation_id)?.clone();
-                    if slot.generation == generation {
-                        match replaced {
-                            Some(approval) => slot.approvals.insert(key, approval),
-                            None => slot.approvals.remove(&key),
-                        };
-                        if let Err(restore) = self.journal.save(&installation_id, slot) {
-                            eprintln!(
-                                "Application {installation_id} approval restore failed: {restore}"
-                            );
-                        }
-                    }
-                    return Err(error);
-                }
+                self.switch(
+                    &installation_id,
+                    target,
+                    Approved::Replacement(&grants),
+                    DataPolicy::Migrate,
+                )
+                .await?;
             }
             Command::Rollback { installation_id } => {
                 let target = self
@@ -729,8 +730,13 @@ impl Manager {
                     .previous
                     .clone()
                     .ok_or_else(|| bad("No retained previous release"))?;
-                self.switch(&installation_id, target, Some(&[]), DataPolicy::OpenOnly)
-                    .await?;
+                self.switch(
+                    &installation_id,
+                    target,
+                    Approved::Stored(Some(&[])),
+                    DataPolicy::OpenOnly,
+                )
+                .await?;
             }
             Command::Stop { installation_id } => {
                 self.stop(&installation_id).await?;
@@ -754,7 +760,7 @@ impl Manager {
                 // staged release can open. Recovery finishes exactly that activation, never one
                 // the operator did not start, and does not migrate again.
                 let candidate = slot.migrated_candidate();
-                let grants = slot.uncertain_grants().then_some([].as_slice());
+                let grants = Approved::Stored(slot.uncertain_grants().then_some([].as_slice()));
                 let result = self
                     .switch(&installation_id, target, grants, DataPolicy::OpenOnly)
                     .await;
@@ -795,7 +801,7 @@ impl Manager {
                         .active
                         .take()
                         .ok_or_else(|| bad("No active release to recover"))?;
-                    let grants = slot.uncertain_grants().then_some([].as_slice());
+                    let grants = Approved::Stored(slot.uncertain_grants().then_some([].as_slice()));
                     let result = self
                         .launch(
                             &id,
@@ -865,7 +871,7 @@ impl Manager {
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            catalog.publish(self.local_installations())?;
+            self.publish_catalog(catalog)?;
             tokio::select! {
                 _ = tick.tick() => self.check_exits(None)?,
                 Some(job) = self.drains.join_next_with_id(), if !self.drains.is_empty() => {
@@ -875,12 +881,12 @@ impl Manager {
                     match request {
                         catalog::Request::Install(selection) => {
                             let result = self.install_catalog(&selection).await;
-                            catalog.publish(self.local_installations())?;
+                            self.publish_catalog(catalog)?;
                             catalog.finish(selection, result)?;
                         }
                         catalog::Request::Lifecycle(request) => {
                             let result = self.manage_lifecycle(&request).await;
-                            catalog.publish(self.local_installations())?;
+                            self.publish_catalog(catalog)?;
                             catalog.finish_lifecycle(request, result)?;
                         }
                     }

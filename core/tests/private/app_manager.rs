@@ -549,14 +549,16 @@ impl ApprovalModel {
             Self::ID,
         )?;
         self.slot.approval_for(release)?;
-        self.slot.record(release, decision, Self::ID);
+        self.slot.record(release, decision);
         self.slot.candidate = Some(release.clone());
         self.slot.prune_approvals();
         Ok(())
     }
 
-    /// Activate `release`, as an update, an install or a rollback commits it.
+    /// Activate `release`, as the save that commits an update, an install or a rollback does.
     fn activate(&mut self, release: &Release) {
+        let requested = grants::requested(&self.manifest).unwrap();
+        self.slot.activate_approval(release, &requested, Self::ID);
         self.slot.commit_release(release.clone());
         self.slot.prune_approvals();
     }
@@ -631,7 +633,49 @@ fn the_owners_latest_explicit_decision_wins_after_rollback_and_update() {
         model.hosts(&b),
         [(Model::X.to_owned(), true), (Model::Y.to_owned(), true)]
     );
+    // The decision applies to A only once B activates.
+    assert_eq!(model.hosts(&a), [(Model::X.to_owned(), false)]);
+    model.activate(&b);
     assert_eq!(model.hosts(&a), [(Model::X.to_owned(), true)]);
+}
+
+#[test]
+fn a_decision_for_a_release_that_never_activates_leaves_the_running_approval() {
+    use ApprovalModel as Model;
+    let (a, b) = (signed("1.0.0", 'a'), signed("1.1.0", 'b'));
+    let both = [(Model::X.to_owned(), true), (Model::Y.to_owned(), true)];
+    let mut model = Model::new();
+    model
+        .stage(
+            &a,
+            Some(Model::approval(&[(Model::X, true), (Model::Y, true)])),
+        )
+        .unwrap();
+    model.activate(&a);
+    // The Owner approves B for X only, but its switch is refused before the fence. A keeps
+    // running with X and Y, and the journal still records exactly that.
+    model
+        .stage(&b, Some(Model::approval(&[(Model::X, true)])))
+        .unwrap();
+    assert_eq!(model.hosts(&a), both);
+    assert_eq!(model.hosts(&b), [(Model::X.to_owned(), true)]);
+    let stored = serde_json::to_value(&model.slot).unwrap();
+    assert_eq!(stored["approvals"]["b".repeat(64)]["pending"], true);
+    assert!(stored["approvals"]["a".repeat(64)].get("pending").is_none());
+    // Discarding the candidate leaves A's approval untouched as well.
+    model.slot.candidate = None;
+    model.slot.prune_approvals();
+    assert_eq!(model.hosts(&a), both);
+
+    // A carried approval activates without narrowing any other approval: it is a subset of
+    // the running release's approval, and no decision of the Owner is pending.
+    model.stage(&b, None).unwrap();
+    assert_eq!(model.hosts(&b), both);
+    model.activate(&b);
+    assert_eq!(model.hosts(&a), both);
+    assert_eq!(model.hosts(&b), both);
+    let stored = serde_json::to_value(&model.slot).unwrap();
+    assert!(stored["approvals"]["b".repeat(64)].get("pending").is_none());
 }
 
 fn host_without_key(host: &str) -> Grant {

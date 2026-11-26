@@ -181,6 +181,134 @@ fn installs_need_an_exact_approval_that_receipts_never_repeat() {
 }
 
 #[test]
+fn preflight_and_staging_use_the_same_installation_id() {
+    let selection = greeting();
+    let derived = derived_installation_id(&selection.app_id);
+    let purged = Slot {
+        app_id: selection.app_id.clone(),
+        uid: 20_004,
+        generation: 3,
+        removal: Removal::Purged,
+        ..Default::default()
+    };
+    let mut slots = BTreeMap::from([("root-chosen".to_owned(), purged.clone())]);
+    assert_eq!(
+        catalog_installation_id(&slots, &selection.app_id),
+        "root-chosen"
+    );
+    assert_eq!(
+        reused_installation_ids(&slots),
+        BTreeMap::from([(selection.app_id.clone(), "root-chosen".to_owned())])
+    );
+    // A removed installation without a retained release keeps its ID as well. One that still
+    // retains its release, a running one or two installations of the app use the derived ID.
+    slots.get_mut("root-chosen").unwrap().removal = Removal::Removed;
+    assert_eq!(
+        catalog_installation_id(&slots, &selection.app_id),
+        "root-chosen"
+    );
+    slots.get_mut("root-chosen").unwrap().removed_release = Some(removed_release());
+    assert_eq!(catalog_installation_id(&slots, &selection.app_id), derived);
+    slots.get_mut("root-chosen").unwrap().removal = Removal::Installed;
+    assert_eq!(catalog_installation_id(&slots, &selection.app_id), derived);
+    slots.insert(
+        "other".into(),
+        Slot {
+            uid: 20_005,
+            ..purged.clone()
+        },
+    );
+    assert_eq!(catalog_installation_id(&slots, &selection.app_id), derived);
+    assert!(reused_installation_ids(&slots).is_empty());
+
+    // An approval that names the reused installation passes the preflight only once the
+    // manager published the ID that staging will use.
+    let (endpoint, _requests) = Endpoint::new(None);
+    endpoint
+        .finish_refresh(Ok(vec![requesting(&selection)]))
+        .unwrap();
+    let approval = approving(
+        &selection,
+        json!([
+            {"capability": {"id": "app.provider.register", "scope": "providerProfiles"},
+             "resourceId": "monitoring", "allowService": true},
+            {"capability": {"id": "app.events.subscribe", "scope": "installation"},
+             "resourceId": "root-chosen", "allowService": true},
+        ]),
+    );
+    assert!(matches!(
+        endpoint.submit(approval.clone()),
+        Err(Failure::ApprovalRequired)
+    ));
+    endpoint
+        .publish_installation_ids(reused_installation_ids(&BTreeMap::from([(
+            "root-chosen".to_owned(),
+            purged,
+        )])))
+        .unwrap();
+    assert!(endpoint.submit(approval).is_ok());
+}
+
+fn removed_release() -> crate::app_manager::journal::ReleaseSelection {
+    serde_json::from_value(json!({"version": "1.0.0", "archiveSha256": "a".repeat(64)})).unwrap()
+}
+
+#[test]
+fn installing_the_running_release_again_never_changes_its_grants() {
+    let selection = greeting();
+    let active: Release = serde_json::from_value(json!({
+        "version": "1.0.0", "archiveSha256": "a".repeat(64),
+        "manifestSha256": "b".repeat(64), "catalogRevision": 1,
+    }))
+    .unwrap();
+    let grant = |id: &str, resource: &str, service: bool| -> crate::app_manager::journal::Grant {
+        serde_json::from_value(json!({
+            "capability": {"id": id, "scope": if id == "app.provider.register" {
+                "providerProfiles"
+            } else {
+                "installation"
+            }},
+            "resourceId": resource,
+            "allowService": service,
+        }))
+        .unwrap()
+    };
+    let mut slot = Slot {
+        app_id: selection.app_id.clone(),
+        uid: 20_006,
+        generation: 2,
+        active: Some(active.clone()),
+        ..Default::default()
+    };
+    slot.approve(
+        &active,
+        vec![
+            grant("app.events.subscribe", "fixture", true),
+            grant("app.provider.register", "monitoring", true),
+        ],
+    );
+    let exact = json!([
+        {"capability": {"id": "app.provider.register", "scope": "providerProfiles"},
+         "resourceId": "monitoring", "allowService": true},
+        {"capability": {"id": "app.events.subscribe", "scope": "installation"},
+         "allowService": true},
+    ]);
+    // Without an approval, or with the running release's exact approval, it is installed.
+    assert!(selection.keeps(&slot, "fixture"));
+    assert!(approving(&selection, exact.clone()).keeps(&slot, "fixture"));
+    // A narrower or otherwise different approval needs a revocation, an update or a reinstall.
+    let mut narrower = exact.clone();
+    narrower[0]["allowService"] = json!(false);
+    assert!(!approving(&selection, narrower).keeps(&slot, "fixture"));
+    assert!(!approving(&selection, json!([exact[0].clone()])).keeps(&slot, "fixture"));
+    assert!(!approving(&selection, exact.clone()).keeps(&slot, "other-installation"));
+    // A release approved before approvals were recorded keeps only an empty approval.
+    slot.approvals.clear();
+    assert!(approving(&selection, json!([])).keeps(&slot, "fixture"));
+    assert!(!approving(&selection, exact).keeps(&slot, "fixture"));
+}
+
+#[test]
 fn failed_refresh_keeps_the_last_verified_listing_and_allows_recovery() {
     let (endpoint, _) = Endpoint::new(None);
     let fail = || {

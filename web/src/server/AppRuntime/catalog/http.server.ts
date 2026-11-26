@@ -43,12 +43,38 @@ function rateLimitPolicy(input: CatalogInstallInput | CatalogLifecycleInput): Ra
 type CatalogDependencies = typeof defaultDependencies & {
     /** Records an accepted grant decision; defaults to the best-effort audit log. */
     audit?: (event: AuditEventInput) => Promise<void>
+    /** How long the response waits for the audit write; defaults to `AUDIT_WAIT_MS`. */
+    auditWaitMs?: number
 }
+
+/** The longest an accepted grant decision waits for its audit entry before it responds. */
+const AUDIT_WAIT_MS = 2_000
 
 /** Load the audit log only for a grant decision, so the catalog boundary needs no database. */
 async function auditGrantDecision(event: AuditEventInput): Promise<void> {
     const { recordAuditEventBestEffortService } = await import('@/server/Audit/audit.service.ts')
     await recordAuditEventBestEffortService(event)
+}
+
+/**
+ * Wait for the audit write of an accepted decision for at most `waitMs`. The core has already
+ * accepted the decision, so a slow or failed audit write never delays or fails the response:
+ * after the bound the write continues in the background, and its failure is swallowed so that
+ * it never becomes an unhandled rejection.
+ */
+async function settleAudit(write: () => Promise<void>, waitMs: number): Promise<void> {
+    const recorded = Promise.resolve()
+        .then(write)
+        .catch(() => undefined)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const expired = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, waitMs)
+    })
+    try {
+        await Promise.race([recorded, expired])
+    } finally {
+        clearTimeout(timer)
+    }
 }
 
 function catalogFailure(error: unknown, headers: Headers) {
@@ -127,9 +153,10 @@ function createCatalogMutationHandler<
             signal.throwIfAborted()
             const result = await submit(input.data, signal)
             const decision = grantDecision(input.data, ownerId)
-            // The core accepted the decision; a missing audit entry must not report a failure.
-            if (decision)
-                await (dependencies.audit ?? auditGrantDecision)(decision).catch(() => undefined)
+            if (decision) {
+                const audit = dependencies.audit ?? auditGrantDecision
+                await settleAudit(() => audit(decision), dependencies.auditWaitMs ?? AUDIT_WAIT_MS)
+            }
             return Response.json(result, { status: status(result), headers })
         } catch (error) {
             return catalogFailure(error, headers)

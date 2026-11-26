@@ -475,6 +475,26 @@ pub(super) fn incompatible(error: &io::Error) -> bool {
         .is_some_and(|cause| cause.is::<IncompatibleData>())
 }
 
+/// The error of a revocation the live generation could not apply, with every failure of the
+/// steps that fenced it.
+fn fail_closed(
+    published: io::Error,
+    recorded: io::Result<()>,
+    fenced: io::Result<()>,
+) -> io::Error {
+    let failures: Vec<_> = [("recovery state", recorded), ("fence", fenced)]
+        .into_iter()
+        .filter_map(|(step, result)| result.err().map(|error| format!("{step}: {error}")))
+        .collect();
+    if failures.is_empty() {
+        return published;
+    }
+    io::Error::new(
+        published.kind(),
+        format!("{published}; {}", failures.join("; ")),
+    )
+}
+
 fn conflict() -> io::Error {
     io::Error::new(
         io::ErrorKind::AlreadyExists,
@@ -598,11 +618,14 @@ impl Manager {
             Err(error) => Err(error),
         };
         if let Err(error) = published {
-            let mut slot = self.journal.slot(id)?.clone();
-            slot.require_recovery();
-            self.journal.save(id, slot)?;
-            self.fence(id).await?;
-            return Err(error);
+            let recorded = self.journal.slot(id).cloned().and_then(|mut slot| {
+                slot.require_recovery();
+                self.journal.save(id, slot)
+            });
+            // Fence even when the journal refused the recovery state: stopping the app and
+            // retiring its generation does not depend on that write.
+            let fenced = self.fence(id).await.map(drop);
+            return Err(fail_closed(error, recorded, fenced));
         }
         Ok(())
     }

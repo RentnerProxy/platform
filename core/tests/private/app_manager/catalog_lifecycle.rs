@@ -249,6 +249,31 @@ fn update_offers_stay_within_the_stored_approval_of_their_target() {
 }
 
 #[test]
+fn a_revocation_that_cannot_reach_the_app_reports_every_failed_fence_step() {
+    let published = || {
+        io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Generation grants rejected (503)",
+        )
+    };
+    let failed = fail_closed(published(), Ok(()), Ok(()));
+    assert_eq!(failed.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(failed.to_string(), "Generation grants rejected (503)");
+    let failed = fail_closed(
+        published(),
+        Err(io::Error::other("Manager journal capacity exceeded")),
+        Err(io::Error::other("Generation retire rejected (503)")),
+    );
+    // The receipt still reports the unavailable authority.
+    assert_eq!(failed.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(
+        failed.to_string(),
+        "Generation grants rejected (503); recovery state: Manager journal capacity exceeded; \
+         fence: Generation retire rejected (503)"
+    );
+}
+
+#[test]
 fn revocations_name_approved_grants_of_an_installed_release() {
     let revoke = |grants: Value| {
         let base = serde_json::to_value(request("deactivate", None)).unwrap();

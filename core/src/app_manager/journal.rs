@@ -1,5 +1,5 @@
 use super::{bad, valid_id};
-use crate::app_install::grants::{self, Decision, MAX_GRANTS};
+use crate::app_install::grants::{self, Decision, MAX_GRANTS, RequestedGrant};
 pub(super) use crate::app_install::grants::{Capability, Grant};
 use crate::app_ipc::filesystem::{lock_file, require_safe_parents};
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,10 @@ pub(super) const LIMIT: usize = 256;
 pub(super) struct Approval {
     pub manifest_sha256: String,
     pub grants: Vec<Grant>,
+    /// The Owner decided these grants explicitly, and the release has not activated since. Its
+    /// activation applies the decision to the other stored approvals.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 
 /// A stored approval that names another manifest than the release it would start.
@@ -217,27 +221,44 @@ impl Slot {
             Approval {
                 manifest_sha256: release.manifest_sha256.clone(),
                 grants,
+                pending: false,
             },
         );
     }
 
-    /// Record what staging decided as the approval of `release`. The Owner's explicit decision
-    /// also narrows every other stored approval, so that the latest decision wins over an older
-    /// approval after a rollback, a restart or a later update.
-    pub fn record(&mut self, release: &Release, decision: Decision, installation_id: &str) {
-        if let Some(requested) = &decision.explicit {
-            for (archive_sha256, approval) in &mut self.approvals {
-                if *archive_sha256 != release.archive_sha256 {
-                    grants::apply_decision(
-                        &mut approval.grants,
-                        requested,
-                        &decision.grants,
-                        installation_id,
-                    );
-                }
+    /// Record what staging decided as the approval of `release`. An explicit decision of the
+    /// Owner stays pending until the release activates.
+    pub fn record(&mut self, release: &Release, decision: Decision) {
+        self.approve(release, decision.grants);
+        if let Some(approval) = self.approvals.get_mut(&release.archive_sha256) {
+            approval.pending = decision.explicit;
+        }
+    }
+
+    /// Settle the approval of `release` as it activates, which requests `requested`. A pending
+    /// explicit decision of the Owner now narrows every other stored approval, so that it wins
+    /// over an older approval after a rollback, a restart or a later update. A release that
+    /// never activates leaves the other approvals as their running generations hold them.
+    pub fn activate_approval(
+        &mut self,
+        release: &Release,
+        requested: &[RequestedGrant],
+        installation_id: &str,
+    ) {
+        let decided = match self.approvals.get_mut(&release.archive_sha256) {
+            Some(approval)
+                if approval.pending && approval.manifest_sha256 == release.manifest_sha256 =>
+            {
+                approval.pending = false;
+                approval.grants.clone()
+            }
+            _ => return,
+        };
+        for (archive_sha256, approval) in &mut self.approvals {
+            if *archive_sha256 != release.archive_sha256 {
+                grants::apply_decision(&mut approval.grants, requested, &decided, installation_id);
             }
         }
-        self.approve(release, decision.grants);
     }
 
     /// Remove every grant that `revoked` names from every stored approval, so that neither a

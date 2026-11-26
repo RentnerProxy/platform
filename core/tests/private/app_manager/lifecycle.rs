@@ -920,6 +920,55 @@ async fn check_revocation(controller: &Path) {
             "grants": [monitoring_grant()],
         })
     );
+
+    // Root stages the running archive again and activates it with an empty replacement, which
+    // never becomes ready. Only the candidate generation receives the replacement. The fallback
+    // restart runs with the approval the release had, and the journal never records it.
+    let version = current["active"].as_str().unwrap();
+    invoke(controller, &["stage", ID, "example.probe", version])
+        .await
+        .unwrap();
+    assert_eq!(installation(controller).await["candidate"], version);
+    let marker = storage::directory(UID).join("data/fixture-never-ready");
+    fs::write(&marker, []).unwrap();
+    let error = invoke(controller, &["activate", ID]).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Previous release restarted with previously approved grants"),
+        "{error}"
+    );
+    assert!(!marker.exists(), "the candidate did not start");
+    let restarted = installation(controller).await;
+    assert_eq!(restarted["running"], true);
+    assert_eq!(restarted["active"], version);
+    let log = grant_log();
+    assert_eq!(
+        log[log.len() - 2..],
+        [
+            json!({
+                "generation": restarted["generation"].as_u64().unwrap() - 1,
+                "activated": false,
+                "grants": [],
+            }),
+            json!({
+                "generation": restarted["generation"],
+                "activated": false,
+                "grants": [monitoring_grant()],
+            }),
+        ]
+    );
+    let journal = fs::read(Path::new(ROOT).join("journal.json")).unwrap();
+    let journal: Value = serde_json::from_slice(&journal).unwrap();
+    let approvals = journal["installations"][ID]["approvals"]
+        .as_object()
+        .unwrap();
+    assert!(
+        approvals
+            .values()
+            .all(|approval| approval["grants"] == json!([monitoring_grant()])),
+        "{journal}"
+    );
 }
 
 /// Whether no stored approval of `ID` holds the monitoring registration grant.

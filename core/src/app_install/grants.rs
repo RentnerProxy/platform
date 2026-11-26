@@ -271,7 +271,12 @@ pub(crate) fn carry_to(
         return Some(kept);
     };
     let narrowed = narrow(kept, requested, stored, installation_id);
-    covered(requested, &narrowed, installation_id).then_some(narrowed)
+    // The stored permission key may be one the target no longer declares.
+    (narrowed
+        .iter()
+        .all(|grant| declared_key(grant, permission_keys))
+        && covered(requested, &narrowed, installation_id))
+    .then_some(narrowed)
 }
 
 /// Keep a grant the release requests only if `stored` holds the same capability and resource,
@@ -334,9 +339,47 @@ pub(crate) fn apply_decision(
 pub(crate) struct Decision {
     /// The grants the release receives, in a stable order.
     pub grants: Vec<Grant>,
-    /// What the release requests, when the Owner approved `grants` explicitly. An explicit
+    /// Whether the Owner approved `grants` explicitly. Once the release activates, an explicit
     /// decision also applies to every other stored approval of the installation.
-    pub explicit: Option<Vec<RequestedGrant>>,
+    pub explicit: bool,
+}
+
+/// Whether the Owner's `approval` decides exactly the `approved` grants of a release, with the
+/// installation resource filled in and root's secret reads kept, as [`approve`] would decide it.
+pub(crate) fn same_decision(
+    approval: &[ApprovedGrant],
+    approved: &[Grant],
+    installation_id: &str,
+) -> bool {
+    let Some(mut decided) = approval
+        .iter()
+        .map(|item| {
+            let resource_id = match (item.capability.scope.as_str(), &item.resource_id) {
+                (INSTALLATION, None) => installation_id.to_owned(),
+                (_, Some(resource_id)) => resource_id.clone(),
+                (_, None) => return None,
+            };
+            Some(Grant {
+                capability: item.capability.clone(),
+                resource_id,
+                allow_service: item.allow_service,
+                permission_key: item.permission_key.clone(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    decided.extend(
+        approved
+            .iter()
+            .filter(|grant| grant.capability.is(SECRET))
+            .cloned(),
+    );
+    decided.sort();
+    let mut approved = approved.to_vec();
+    approved.sort();
+    decided == approved
 }
 
 /// Decide the grants that a release with the signed `manifest` receives: exactly the Owner's
@@ -358,7 +401,7 @@ pub(crate) fn approve(
         grants.sort();
         return Ok(Decision {
             grants,
-            explicit: None,
+            explicit: false,
         });
     };
     let mut grants = decide(&requested, &keys, approval, installation_id)?;
@@ -374,7 +417,7 @@ pub(crate) fn approve(
     grants.sort();
     Ok(Decision {
         grants,
-        explicit: Some(requested),
+        explicit: true,
     })
 }
 

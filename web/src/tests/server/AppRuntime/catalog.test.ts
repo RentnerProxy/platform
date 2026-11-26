@@ -278,6 +278,45 @@ describe('app catalog installation HTTP boundary', () => {
         expect(await response.json()).toEqual({ error: 'approvalRequired' })
     })
 
+    test('responds within the audit bound when the audit write stalls or fails', async () => {
+        const install = () => Promise.resolve(pending)
+        const stalled = handler({
+            install,
+            audit: () => new Promise<void>(() => {}),
+            auditWaitMs: 20,
+        })
+        const started = Date.now()
+        const response = await stalled.handle(request({ ...release, approval }))
+        expect(response.status).toBe(202)
+        expect(await response.json()).toEqual(pending)
+        expect(Date.now() - started).toBeLessThan(1_000)
+
+        const failing = handler({
+            install,
+            audit: () => Promise.reject(new Error('audit unavailable')),
+            auditWaitMs: 20,
+        })
+        expect((await failing.handle(request({ ...release, approval }))).status).toBe(202)
+        const throwing = handler({
+            install,
+            audit: () => {
+                throw new Error('audit unavailable')
+            },
+            auditWaitMs: 20,
+        })
+        expect((await throwing.handle(request({ ...release, approval }))).status).toBe(202)
+        // A fast audit write is awaited before the response.
+        let recorded = false
+        const fast = handler({
+            install,
+            audit: async () => {
+                recorded = true
+            },
+        })
+        expect((await fast.handle(request({ ...release, approval }))).status).toBe(202)
+        expect(recorded).toBe(true)
+    })
+
     test('rejects admins and viewers with an approval before any native call', async () => {
         const audit = mock(async () => {})
         const { calls, handle } = handler({
