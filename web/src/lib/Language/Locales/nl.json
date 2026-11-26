@@ -201,6 +201,7 @@
         "install": "Installeren",
         "retry": "Installatie opnieuw proberen",
         "installing": "App wordt geïnstalleerd…",
+        "requiresSource": "Niet op dit apparaat opgeslagen. Voor de installatie is de pakketbron nodig.",
         "open": "App openen",
         "management": {
             "installed": "Geïnstalleerde apps",
@@ -211,6 +212,7 @@
             "empty": "Op dit apparaat zijn geen apps geïnstalleerd.",
             "version": "Versie {{version}}",
             "updateTo": "Bijwerken naar {{version}}",
+            "updateRequiresSource": "Versie {{version}} is niet op dit apparaat opgeslagen. Voor de update is de pakketbron nodig.",
             "reinstall": "{{version}} opnieuw installeren",
             "blocked": {
                 "incompatible": "Versie {{version}} is niet compatibel met dit apparaat en wordt daarom niet aangeboden.",
@@ -267,6 +269,9 @@
                 "dependencyBlocked": "Er hangt nog iets van deze app af, zoals een proxyhost die de app beheert, een lopende appbewerking of een andere app die de providers gebruikt. Los die afhankelijkheid op en probeer het daarna opnieuw.",
                 "rateLimited": "Te veel verzoeken. Wacht even en probeer het opnieuw.",
                 "unavailable": "De appservice is niet beschikbaar. Vernieuw en probeer het opnieuw.",
+                "catalogUnavailable": "De ondertekende appcatalogus is niet bereikbaar, waardoor de versie niet kon worden gecontroleerd. De app is niet gewijzigd.",
+                "packageSourceUnavailable": "De pakketbron is niet bereikbaar, waardoor de versie niet kon worden gedownload. De app is niet gewijzigd.",
+                "networkUnavailable": "De appcatalogus en de pakketbron zijn allebei niet bereikbaar. Controleer de internetverbinding van dit apparaat. De app is niet gewijzigd.",
                 "incompatibleData": "De geselecteerde versie is incompatibel met de opgeslagen appgegevens.",
                 "operationFailed": "Controleer de huidige status van de app voordat je het opnieuw probeert."
             }
@@ -286,6 +291,9 @@
             "conflict": "De versie is gewijzigd of er loopt een andere installatie. Vernieuw de catalogus en probeer het opnieuw.",
             "rateLimited": "Te veel installatieverzoeken. Wacht even en probeer het opnieuw.",
             "unavailable": "De installatieservice is niet beschikbaar. Probeer het opnieuw.",
+            "catalogUnavailable": "De ondertekende appcatalogus is niet bereikbaar, waardoor de versie niet kon worden gecontroleerd. Probeer het opnieuw zodra de catalogus beschikbaar is.",
+            "packageSourceUnavailable": "De pakketbron is niet bereikbaar, waardoor de versie niet kon worden gedownload. Probeer het opnieuw zodra de bron beschikbaar is.",
+            "networkUnavailable": "De appcatalogus en de pakketbron zijn allebei niet bereikbaar. Controleer de internetverbinding van dit apparaat en probeer het daarna opnieuw.",
             "installFailed": "De installatie is mislukt. Je kunt het opnieuw proberen."
         }
     },

@@ -222,6 +222,7 @@
         "install": "Installa",
         "retry": "Riprova l’installazione",
         "installing": "Installazione dell’app in corso…",
+        "requiresSource": "Non salvata su questo dispositivo. L’installazione richiede la sua fonte dei pacchetti.",
         "open": "Apri app",
         "management": {
             "installed": "App installate",
@@ -232,6 +233,7 @@
             "empty": "Non ci sono app installate su questo dispositivo.",
             "version": "Versione {{version}}",
             "updateTo": "Aggiorna alla versione {{version}}",
+            "updateRequiresSource": "La versione {{version}} non è salvata su questo dispositivo. L’aggiornamento richiede la sua fonte dei pacchetti.",
             "reinstall": "Reinstalla {{version}}",
             "blocked": {
                 "incompatible": "La versione {{version}} non è compatibile con questo dispositivo, quindi non viene offerta.",
@@ -288,6 +290,9 @@
                 "dependencyBlocked": "Qualcosa dipende ancora da questa app, ad esempio un host proxy che gestisce, un’operazione dell’app in corso o un’altra app che usa i suoi provider. Risolvi questa dipendenza e riprova.",
                 "rateLimited": "Troppe richieste. Attendi un momento e riprova.",
                 "unavailable": "Il servizio delle app non è disponibile. Aggiorna e riprova.",
+                "catalogUnavailable": "Il catalogo delle app firmato non è raggiungibile, quindi non è stato possibile verificare la versione. L’app non è stata modificata.",
+                "packageSourceUnavailable": "La fonte dei pacchetti non è raggiungibile, quindi non è stato possibile scaricare la versione. L’app non è stata modificata.",
+                "networkUnavailable": "Né il catalogo delle app né la fonte dei pacchetti sono raggiungibili. Controlla la connessione Internet di questo dispositivo. L’app non è stata modificata.",
                 "incompatibleData": "La versione selezionata non è compatibile con i dati salvati.",
                 "operationFailed": "Controlla lo stato attuale dell’app prima di riprovare."
             }
@@ -307,6 +312,9 @@
             "conflict": "La versione è cambiata o è in corso un’altra installazione. Aggiorna il catalogo e riprova.",
             "rateLimited": "Troppe richieste di installazione. Attendi e riprova.",
             "unavailable": "Il servizio di installazione non è disponibile. Riprova.",
+            "catalogUnavailable": "Il catalogo delle app firmato non è raggiungibile, quindi non è stato possibile verificare la versione. Riprova quando il catalogo sarà disponibile.",
+            "packageSourceUnavailable": "La fonte dei pacchetti non è raggiungibile, quindi non è stato possibile scaricare la versione. Riprova quando la fonte sarà disponibile.",
+            "networkUnavailable": "Né il catalogo delle app né la fonte dei pacchetti sono raggiungibili. Controlla la connessione Internet di questo dispositivo e riprova.",
             "installFailed": "L’installazione non è riuscita. Puoi riprovare."
         }
     },

@@ -222,6 +222,7 @@
         "install": "Installer",
         "retry": "Réessayer l’installation",
         "installing": "Installation de l’application…",
+        "requiresSource": "Non stockée sur cet appareil. Son installation nécessite sa source de paquets.",
         "open": "Ouvrir l’application",
         "management": {
             "installed": "Applications installées",
@@ -232,6 +233,7 @@
             "empty": "Aucune application n’est installée sur cet appareil.",
             "version": "Version {{version}}",
             "updateTo": "Mettre à jour vers {{version}}",
+            "updateRequiresSource": "La version {{version}} n’est pas stockée sur cet appareil. La mise à jour nécessite sa source de paquets.",
             "reinstall": "Réinstaller {{version}}",
             "blocked": {
                 "incompatible": "La version {{version}} est incompatible avec cet appareil et n’est donc pas proposée.",
@@ -288,6 +290,9 @@
                 "dependencyBlocked": "Un élément dépend encore de cette application, par exemple un hôte proxy qu’elle gère, une opération de l’application en cours ou une autre application qui utilise ses fournisseurs. Résolvez cette dépendance, puis réessayez.",
                 "rateLimited": "Trop de demandes. Patientez un instant, puis réessayez.",
                 "unavailable": "Le service des applications est indisponible. Actualisez et réessayez.",
+                "catalogUnavailable": "Le catalogue d’applications signé est injoignable, la version n’a donc pas pu être vérifiée. L’application n’a pas été modifiée.",
+                "packageSourceUnavailable": "La source de paquets est injoignable, la version n’a donc pas pu être téléchargée. L’application n’a pas été modifiée.",
+                "networkUnavailable": "Ni le catalogue d’applications ni la source de paquets ne sont joignables. Vérifiez la connexion Internet de cet appareil. L’application n’a pas été modifiée.",
                 "incompatibleData": "La version sélectionnée est incompatible avec les données enregistrées.",
                 "operationFailed": "Vérifiez l’état actuel de l’application avant de réessayer."
             }
@@ -307,6 +312,9 @@
             "conflict": "La version a changé ou une autre installation est en cours. Actualisez le catalogue et réessayez.",
             "rateLimited": "Trop de demandes d’installation. Patientez, puis réessayez.",
             "unavailable": "Le service d’installation est indisponible. Réessayez.",
+            "catalogUnavailable": "Le catalogue d’applications signé est injoignable, la version n’a donc pas pu être vérifiée. Réessayez lorsque le catalogue sera disponible.",
+            "packageSourceUnavailable": "La source de paquets est injoignable, la version n’a donc pas pu être téléchargée. Réessayez lorsque la source sera disponible.",
+            "networkUnavailable": "Ni le catalogue d’applications ni la source de paquets ne sont joignables. Vérifiez la connexion Internet de cet appareil, puis réessayez.",
             "installFailed": "L’installation a échoué. Vous pouvez réessayer."
         }
     },

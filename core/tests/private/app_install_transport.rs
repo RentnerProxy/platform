@@ -8,7 +8,10 @@ use marketplace_artifacts::{FileIdentity, digest};
 
 use crate::app_install::package::write_download;
 
-use super::{Client, DownloadAsset, Duration, Http, Instant, Url, release_redirect_allowed};
+use super::{
+    Client, DownloadAsset, Duration, Http, Instant, Source, Url, release_redirect_allowed,
+    unreachable_source,
+};
 
 #[test]
 fn release_redirects_remain_on_approved_https_origins() {
@@ -33,6 +36,15 @@ fn release_redirects_remain_on_approved_https_origins() {
 }
 
 fn response(header: &'static str, body: &'static [u8]) -> (Http, thread::JoinHandle<()>) {
+    answer(Some(header), body)
+}
+
+/// Read one request and close the connection without any HTTP response.
+fn unanswered() -> (Http, thread::JoinHandle<()>) {
+    answer(None, b"")
+}
+
+fn answer(header: Option<&'static str>, body: &'static [u8]) -> (Http, thread::JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
@@ -59,6 +71,9 @@ fn response(header: &'static str, body: &'static [u8]) -> (Http, thread::JoinHan
         while reader.read_line(&mut line).unwrap() != 0 && line != "\r\n" {
             line.clear();
         }
+        let Some(header) = header else {
+            return;
+        };
         let _ = write!(
             &mut connection,
             "HTTP/1.1 {header}\r\nConnection: close\r\n\r\n"
@@ -128,4 +143,49 @@ fn archive_keeps_only_the_exact_signed_bytes() {
         server.join().unwrap();
     }
     assert_eq!(std::fs::read(destination).unwrap(), b"yes");
+}
+
+#[test]
+fn outages_name_the_source_that_did_not_answer() {
+    let asset = |http: &Http| DownloadAsset {
+        url: http.root.to_string(),
+        sha256: "",
+        size_bytes: 3,
+    };
+    for (fixture, expected) in [
+        (unanswered(), Some(Source::Catalog)),
+        (
+            response("503 Service Unavailable", b""),
+            Some(Source::Catalog),
+        ),
+        (response("302 Found", b""), None),
+    ] {
+        let (http, server) = fixture;
+        let error = http.metadata("metadata/timestamp.json", 3).unwrap_err();
+        assert_eq!(unreachable_source(&error), expected, "{error}");
+        server.join().unwrap();
+    }
+    for (fixture, expected) in [
+        (unanswered(), Some(Source::Package)),
+        (response("502 Bad Gateway", b""), Some(Source::Package)),
+        (response("404 Not Found", b""), None),
+    ] {
+        let (http, server) = fixture;
+        let error = http.archive(&asset(&http)).unwrap_err();
+        assert_eq!(unreachable_source(&error), expected, "{error}");
+        server.join().unwrap();
+    }
+    for (fixture, answers) in [
+        (
+            response("206 Partial Content\r\nContent-Length: 1", b"y"),
+            true,
+        ),
+        (response("404 Not Found", b""), true),
+        (response("503 Service Unavailable", b""), false),
+        (unanswered(), false),
+    ] {
+        let (http, server) = fixture;
+        assert_eq!(http.package_source_answers(&asset(&http)), answers);
+        server.join().unwrap();
+    }
 }
