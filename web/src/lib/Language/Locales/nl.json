@@ -212,6 +212,10 @@
             "version": "Versie {{version}}",
             "updateTo": "Bijwerken naar {{version}}",
             "reinstall": "{{version}} opnieuw installeren",
+            "blocked": {
+                "incompatible": "Versie {{version}} is niet compatibel met dit apparaat en wordt daarom niet aangeboden.",
+                "grantsRequired": "Versie {{version}} vereist aanvullende machtigingen en wordt daarom niet aangeboden."
+            },
             "failed": "De appactie kon niet worden voltooid.",
             "states": {
                 "running": "Actief",
@@ -259,7 +263,8 @@
             "errors": {
                 "invalid": "De gevraagde appactie is ongeldig.",
                 "forbidden": "Alleen eigenaren van het apparaat kunnen apps beheren.",
-                "conflict": "De app is gewijzigd, er loopt een andere actie of een afhankelijkheid houdt deze actie tegen. Vernieuw en controleer de app.",
+                "conflict": "De app is gewijzigd of er loopt een andere actie. Vernieuw en controleer de app.",
+                "dependencyBlocked": "Er hangt nog iets van deze app af, zoals een proxyhost die de app beheert, een lopende appbewerking of een andere app die de providers gebruikt. Los die afhankelijkheid op en probeer het daarna opnieuw.",
                 "rateLimited": "Te veel verzoeken. Wacht even en probeer het opnieuw.",
                 "unavailable": "De appservice is niet beschikbaar. Vernieuw en probeer het opnieuw.",
                 "incompatibleData": "De geselecteerde versie is incompatibel met de opgeslagen appgegevens.",
