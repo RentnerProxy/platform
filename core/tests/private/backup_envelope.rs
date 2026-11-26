@@ -42,10 +42,10 @@ fn vector_bytes<const N: usize>(vector: &Value, field: &str) -> [u8; N] {
     unhex(vector[field].as_str().unwrap()).try_into().unwrap()
 }
 
-fn random_salt() -> [u8; 12] {
-    let mut salt = [0; 12];
-    rand::fill(&mut salt).unwrap();
-    salt
+fn random<const N: usize>() -> [u8; N] {
+    rand::generate(&rand::SystemRandom::new())
+        .unwrap()
+        .expose()
 }
 
 /// A header for `format` and the frames that seal (with artifact hashes) and open it.
@@ -347,9 +347,8 @@ fn checks_headers_frames_and_sources_before_sealing() {
     let entries = small_entries();
     write_entries(&source, &entries);
     fs::create_dir(&restored).unwrap();
-    let mut key = [0; 32];
-    rand::fill(&mut key).unwrap();
-    let (header, seal_frame, open_frame) = frames(2, key, random_salt(), &entries);
+    let key = random::<32>();
+    let (header, seal_frame, open_frame) = frames(2, key, random(), &entries);
     let encrypted = temp.path().join("backup.rpba");
 
     assert_eq!(
