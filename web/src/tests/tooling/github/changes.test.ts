@@ -54,9 +54,9 @@ function commit(directory: string): string {
 describe('affected CI selection', () => {
     test('documentation avoids heavy checks and unknown ownership runs the full suite', () => {
         expect(Object.values(selectChecks(['README.md', 'docs/architecture.md']))).toEqual(
-            Array(11).fill(false),
+            Array(12).fill(false),
         )
-        expect(Object.values(selectChecks(['new-area/input']))).toEqual(Array(11).fill(true))
+        expect(Object.values(selectChecks(['new-area/input']))).toEqual(Array(12).fill(true))
         expect(selectChecks(['package.json']).full).toBe(true)
         expect(selectChecks(['tsconfig.scripts.json']).full).toBe(true)
     })
@@ -99,6 +99,34 @@ describe('affected CI selection', () => {
         expect(selectChecks(['.github/scripts/ci/go-coverage-check.go']).go).toBe(true)
         expect(selectChecks(['docker/tooling/buildinfo/verify.go']).go).toBe(true)
         expect(selectChecks(['.github/scripts/ci/changes.ts']).full).toBe(true)
+    })
+    test.each([
+        'core/src/app_manager.rs',
+        'core/src/app_install/catalog.rs',
+        'core/tests/private/app_manager/lifecycle/published_greeting.rs',
+        'core/tests/fixtures/app-manager/app.rs',
+        'core/Cargo.lock',
+        'core/rust-toolchain.toml',
+        'docker/production/Dockerfile',
+        'docker-compose.yml',
+        'scripts/backup/portable-app-archive.ts',
+        'scripts/production-restore.ts',
+        'web/src/lib/AppCatalog/contract.ts',
+        'web/src/tests/fixtures/app-runtime-reference/package.json',
+        '.github/workflows/app-runtime-reference.yml',
+        '.github/scripts/ci/fixtures/app-ipc-boundaries.sh',
+    ])('%s selects the native app runtime reference', (path) => {
+        expect(selectChecks([path]).app_runtime).toBe(true)
+    })
+    test.each([
+        'core/src/main.rs',
+        'core/tests/private/backup_envelope.rs',
+        'web/src/features/Hosts/middleware.ts',
+        'scripts/coverage/report.ts',
+        '.github/workflows/codeql.yml',
+        '.github/scripts/ci/rust-coverage.sh',
+    ])('%s leaves the native app runtime reference unaffected', (path) => {
+        expect(selectChecks([path]).app_runtime).toBe(false)
     })
     test.each([
         'scripts/assets/prepare-country-flags.ts',
@@ -211,6 +239,42 @@ test('required CI jobs guard detector failures and preserve successful unaffecte
     expect(workflow.jobs.coverage?.steps?.some((step) => step.run?.includes('--producers'))).toBe(
         true,
     )
+})
+
+test('the native app runtime reference reports on every pull request and runs only when affected', async () => {
+    const workflow = Bun.YAML.parse(
+        await readFile(
+            new URL('../../../../../.github/workflows/app-runtime-reference.yml', import.meta.url),
+            'utf8',
+        ),
+    ) as {
+        on: { pull_request: unknown; push: { branches: string[]; paths?: string[] } }
+        jobs: Record<
+            string,
+            {
+                uses?: string
+                if?: string
+                needs?: string
+                env?: Record<string, string>
+                steps?: { name: string; run?: string; env?: Record<string, string>; if?: string }[]
+            }
+        >
+    }
+    // A path filter would leave the required check pending for unrelated pull requests.
+    expect(workflow.on.pull_request).toBeNull()
+    expect(workflow.on.push).toEqual({ branches: ['main'] })
+    expect(workflow.jobs.changes?.uses).toBe('./.github/workflows/detect-changes.yml')
+    const native = workflow.jobs.native!
+    expect(native.needs).toBe('changes')
+    expect(native.if).toBe('${{ !cancelled() }}')
+    expect(native.env?.RUN_CHECK).toBe("${{ needs.changes.outputs.app_runtime != 'false' }}")
+    const [detection, unaffected, ...work] = native.steps ?? []
+    expect(detection?.env?.CHANGE_RESULT).toBe('${{ needs.changes.result }}')
+    expect(detection?.run).toContain('test "$CHANGE_RESULT" = success')
+    expect(unaffected?.if).toBe("env.RUN_CHECK != 'true'")
+    expect(work.length).toBeGreaterThan(10)
+    for (const step of work) expect(step.if).toStartWith("env.RUN_CHECK == 'true'")
+    expect(work.some((step) => step.run?.includes('app-ipc-boundaries.sh'))).toBe(true)
 })
 
 test('test-only web changes receive native type checking without building production assets', async () => {
