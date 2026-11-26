@@ -9,7 +9,10 @@ import {
     type CatalogLifecycle,
     type CatalogRelease,
 } from '@/lib/AppCatalog/contract.ts'
-import { catalogInstallationActions } from '@/lib/AppCatalog/installationActions.ts'
+import {
+    catalogBlockedRelease,
+    catalogInstallationActions,
+} from '@/lib/AppCatalog/installationActions.ts'
 import { keepCatalogProgress, type CatalogQueryResult } from '@/lib/AppCatalog/installProgress.ts'
 import {
     catalogRequestError,
@@ -143,6 +146,7 @@ export default function useAppCatalogLogic() {
                     status === 'ready',
                     availableReleases.get(installation.appId),
                 ),
+                blockedRelease: catalogBlockedRelease(installation, catalogEntries),
             }
         },
     )
