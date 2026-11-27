@@ -1,7 +1,7 @@
 import '@tanstack/react-start/server-only'
 
 import { createHash } from 'node:crypto'
-import { and, asc, desc, eq, gt, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, or, sql } from 'drizzle-orm'
 
 import { appRuntimeEvents } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
@@ -18,6 +18,7 @@ import {
 } from './authority-policy.server.ts'
 import { resolveAppRuntimePrincipalInTransaction } from './authority.server.ts'
 import { eventOrderLock, readAppEventFloor } from './event-log.server.ts'
+import { HOST_EVENT_CAPABILITIES } from './host-events.server.ts'
 import {
     AppRuntimeAuthorityError,
     type AppRuntimeCredentials,
@@ -127,19 +128,23 @@ export async function replayAppRuntimeEventsInTransaction(
     const position = cursorPosition ?? floor
     const filter = principal.grants
         .filter((grant) => isAppRuntimeGrantAuthorized(principal, grant))
-        .map((grant) =>
+        .map((grant) => {
+            // A grant that covers a host receives its lifecycle events under any covering
+            // capability, so revoking the grant that recorded an event keeps it for the others.
+            const capability = (HOST_EVENT_CAPABILITIES as readonly string[]).includes(
+                grant.capability.id,
+            )
+                ? inArray(appRuntimeEvents.capabilityId, [...HOST_EVENT_CAPABILITIES])
+                : eq(appRuntimeEvents.capabilityId, grant.capability.id)
             // A grant for all proxy hosts covers the events of every host it reads or probes.
-            coversAllProxyHosts(grant, { id: grant.capability.id, scope: 'proxyHosts' })
-                ? and(
-                      eq(appRuntimeEvents.capabilityId, grant.capability.id),
-                      eq(appRuntimeEvents.scope, 'proxyHosts'),
-                  )
+            return coversAllProxyHosts(grant, { id: grant.capability.id, scope: 'proxyHosts' })
+                ? and(capability, eq(appRuntimeEvents.scope, 'proxyHosts'))
                 : and(
-                      eq(appRuntimeEvents.capabilityId, grant.capability.id),
+                      capability,
                       eq(appRuntimeEvents.scope, grant.capability.scope),
                       eq(appRuntimeEvents.resourceId, grant.resourceId),
-                  ),
-        )
+                  )
+        })
     if (filter.length === 0) throw new AppRuntimeAuthorityError('unauthorized')
     const rows = await transaction
         .select()

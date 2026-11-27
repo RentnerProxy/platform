@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test } from 'bun:test'
-import { eq, inArray } from 'drizzle-orm'
-import { hostDomains, proxyHosts } from '@/db/schema.ts'
+import { and, eq, inArray } from 'drizzle-orm'
+import { appRuntimeGenerations, hostDomains, proxyHosts } from '@/db/schema.ts'
 import type {
     DomainDiagnosticsControllerInput,
     DomainDiagnosticsResult,
@@ -242,3 +242,33 @@ integrationTest(
         }
     },
 )
+
+integrationTest('authority that expires while the probes run reports no result', async () => {
+    const host = randomUUID()
+    const domain = `expiring-${host.slice(0, 8)}.example.test`
+    const apps: AppRuntimeIdentity[] = []
+    try {
+        await createHost(host, [domain])
+        const app = await installEventApp([allHostsGrant(monitorHosts.id)])
+        apps.push(app)
+        const probe = createAppUpstreamProbes(async (input) => {
+            // The generation's lease runs out while the core probes the upstream.
+            await getAuthDatabase()
+                .update(appRuntimeGenerations)
+                .set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+                .where(
+                    and(
+                        eq(appRuntimeGenerations.installationId, app.installationId),
+                        eq(appRuntimeGenerations.generation, app.generation),
+                    ),
+                )
+            return reachable(input)
+        })
+        await expect(
+            probe(credentials(app), { probes: [{ hostId: host, domain, timeoutMs: 1_000 }] }),
+        ).rejects.toMatchObject({ code: 'unauthorized' })
+    } finally {
+        await removeHosts([host])
+        await removeEventApps(apps)
+    }
+})

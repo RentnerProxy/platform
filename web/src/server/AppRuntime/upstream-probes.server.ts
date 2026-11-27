@@ -50,7 +50,7 @@ async function readSelections(
     transaction: AuthTransaction,
     credentials: AppRuntimeCredentials,
     probes: readonly AppUpstreamProbeTarget[],
-): Promise<readonly Selection[]> {
+): Promise<{ readonly expiresAt: Date; readonly selections: readonly Selection[] }> {
     const principal = await resolveAppRuntimePrincipalInTransaction(transaction, credentials)
     if (principal.expiresAt.getTime() <= Date.now())
         throw new AppRuntimeAuthorityError('unauthorized')
@@ -119,7 +119,7 @@ async function readSelections(
                 : [],
         ),
     )
-    return probes.map((_probe, index): Selection => {
+    const selections = probes.map((_probe, index): Selection => {
         const refusal = refusals[index]
         if (refusal !== null && refusal !== undefined) return { ready: false, outcome: refusal }
         const proxyHostId = covered[index]!
@@ -128,22 +128,28 @@ async function readSelections(
             ? { ready: true, proxyHostId, context }
             : { ready: false, outcome: 'configurationChanged' }
     })
+    return { expiresAt: principal.expiresAt, selections }
 }
 
 /** Host fences share the monitoring database class, apart from interactive requests. */
-function readBatchSelections(
+async function readBatchSelections(
     credentials: AppRuntimeCredentials,
     probes: readonly AppUpstreamProbeTarget[],
 ): Promise<readonly Selection[] | null> {
-    return getBackgroundDatabase('monitoring')
-        .transaction((transaction) => readSelections(transaction, credentials, probes), {
-            isolationLevel: 'repeatable read',
-        })
-        .catch((error: unknown) => {
-            // Saturated monitoring capacity makes every probe of the batch busy.
-            if (error instanceof ResourceAdmissionError && error.reason !== 'cancelled') return null
-            throw error
-        })
+    let read: Awaited<ReturnType<typeof readSelections>>
+    try {
+        read = await getBackgroundDatabase('monitoring').transaction(
+            (transaction) => readSelections(transaction, credentials, probes),
+            { isolationLevel: 'repeatable read' },
+        )
+    } catch (error) {
+        // Saturated monitoring capacity makes every probe of the batch busy.
+        if (error instanceof ResourceAdmissionError && error.reason !== 'cancelled') return null
+        throw error
+    }
+    // Authority can expire while the fence reads, so no probe starts or reports after that.
+    if (read.expiresAt.getTime() <= Date.now()) throw new AppRuntimeAuthorityError('unauthorized')
+    return read.selections
 }
 
 async function runProbe(
