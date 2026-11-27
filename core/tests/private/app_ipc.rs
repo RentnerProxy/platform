@@ -428,6 +428,98 @@ async fn authenticates_every_request_and_rebuilds_the_bridge_request() {
     task.abort();
 }
 
+#[tokio::test]
+async fn the_monitoring_class_probe_batch_reaches_the_platform_bridge() {
+    if env::var_os("RENTNERPROXY_APP_BOOTSTRAP_FD").is_some() {
+        return;
+    }
+    let scratch = Scratch::create(&env::temp_dir());
+    let backend = scratch.path("gateway.sock");
+    let listener = UnixListener::bind(&backend).unwrap();
+    let (forwarded, mut received) = mpsc::channel(1);
+    let backend_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let handler = service_fn(move |request: Request<hyper::body::Incoming>| {
+            let forwarded = forwarded.clone();
+            async move {
+                let (parts, body) = request.into_parts();
+                forwarded
+                    .send((parts, body.collect().await.unwrap().to_bytes()))
+                    .await
+                    .unwrap();
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Full::new(Bytes::from_static(br#"{"results":[]}"#)))
+                        .unwrap(),
+                )
+            }
+        });
+        server::conn::http1::Builder::new()
+            .serve_connection(TokioIo::new(stream), handler)
+            .await
+            .unwrap();
+    });
+    let socket = scratch.path("core.sock");
+    let task = tokio::spawn(gateway::serve(
+        UnixListener::bind(&socket).unwrap(),
+        test_generation(uid(), backend, uid()),
+    ));
+    let mut sender = open(&socket).await;
+    const BATCH: &str = "/platform/v1/diagnostics/upstream/batch";
+    // The batch is a JSON POST route; other methods and paths below it do not exist.
+    for (method, path) in [
+        (Method::GET, BATCH),
+        (Method::POST, "/platform/v1/diagnostics/upstream/batch/1"),
+    ] {
+        assert_problem(
+            &mut sender,
+            request(method, path, CREDENTIAL, "9", Bytes::new()),
+            StatusCode::NOT_FOUND,
+            "operationNotFound",
+        )
+        .await;
+    }
+    let payload = Bytes::from_static(
+        br#"{"probes":[{"hostId":"host-1","domain":"app.example.net","timeoutMs":3000}]}"#,
+    );
+    let response = sender
+        .send_request(request(
+            Method::POST,
+            BATCH,
+            CREDENTIAL,
+            "9",
+            payload.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let (parts, body) = timeout(Duration::from_secs(5), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(parts.method, Method::POST);
+    assert_eq!(parts.uri, BATCH);
+    assert_eq!(body, payload);
+    assert_eq!(parts.headers["x-app-installation"], "installation");
+    backend_task.await.unwrap();
+    task.abort();
+}
+
+/// The platform's copy of the shared probe fixtures, pinned to the contract revision it builds
+/// against.
+#[test]
+fn the_platform_tests_classify_probes_with_the_contract_fixtures() {
+    let copy: Value = serde_json::from_str(include_str!(
+        "../../../web/src/tests/fixtures/app-contracts/upstream-probe-fixtures.json"
+    ))
+    .unwrap();
+    let contract: Value =
+        serde_json::from_str(rentnerproxy_app_contracts::UPSTREAM_PROBE_FIXTURES).unwrap();
+    assert_eq!(copy, contract);
+}
+
 const HANDOFFS: &str = "/platform/v1/legacy-handoffs/";
 
 fn handoff_request(

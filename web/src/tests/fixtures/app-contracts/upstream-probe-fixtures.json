@@ -1,0 +1,852 @@
+{
+    "description": "Each case pairs a probe result with the outcome that built-in host monitoring records for the same upstream observation and expected status. diagnostics is the stage result the platform derives the probe result from: stages from the upstream-only check, an error instead of a result, or null when the platform did not run the check. monitoring is null when built-in monitoring records no observation. An app reproduces monitoring from result and expectedStatus alone.",
+    "cases": [
+        {
+            "title": "a 2xx response meets the default expected status",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "passed",
+                        "code": "upstream_responded",
+                        "durationMs": 42,
+                        "addresses": [],
+                        "httpStatus": 204
+                    },
+                    "tls": {
+                        "status": "not_applicable",
+                        "code": "http_upstream",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 42,
+                "httpStatus": 204,
+                "failure": null
+            },
+            "monitoring": {
+                "status": "healthy",
+                "code": "expected_status",
+                "durationMs": 42,
+                "httpStatus": 204
+            }
+        },
+        {
+            "title": "a redirect meets the default expected status",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "unknown",
+                        "code": "redirect_not_followed",
+                        "durationMs": 30,
+                        "addresses": [],
+                        "httpStatus": 301
+                    },
+                    "tls": {
+                        "status": "not_applicable",
+                        "code": "http_upstream",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 30,
+                "httpStatus": 301,
+                "failure": null
+            },
+            "monitoring": {
+                "status": "healthy",
+                "code": "expected_status",
+                "durationMs": 30,
+                "httpStatus": 301
+            }
+        },
+        {
+            "title": "a server error misses the default expected status",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "failed",
+                        "code": "upstream_error",
+                        "durationMs": 61,
+                        "addresses": [],
+                        "httpStatus": 503
+                    },
+                    "tls": {
+                        "status": "not_applicable",
+                        "code": "http_upstream",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 61,
+                "httpStatus": 503,
+                "failure": null
+            },
+            "monitoring": {
+                "status": "unhealthy",
+                "code": "unexpected_status",
+                "durationMs": 61,
+                "httpStatus": 503
+            }
+        },
+        {
+            "title": "a different status misses an explicit expected status",
+            "expectedStatus": 204,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "passed",
+                        "code": "upstream_responded",
+                        "durationMs": 25,
+                        "addresses": [],
+                        "httpStatus": 200
+                    },
+                    "tls": {
+                        "status": "not_applicable",
+                        "code": "http_upstream",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 25,
+                "httpStatus": 200,
+                "failure": null
+            },
+            "monitoring": {
+                "status": "unhealthy",
+                "code": "unexpected_status",
+                "durationMs": 25,
+                "httpStatus": 200
+            }
+        },
+        {
+            "title": "an explicit expected status accepts an error status",
+            "expectedStatus": 401,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "failed",
+                        "code": "access_denied",
+                        "durationMs": 18,
+                        "addresses": [],
+                        "httpStatus": 401
+                    },
+                    "tls": {
+                        "status": "not_applicable",
+                        "code": "http_upstream",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 18,
+                "httpStatus": 401,
+                "failure": null
+            },
+            "monitoring": {
+                "status": "healthy",
+                "code": "expected_status",
+                "durationMs": 18,
+                "httpStatus": 401
+            }
+        },
+        {
+            "title": "a verified TLS upstream reports its response",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "passed",
+                        "code": "upstream_responded",
+                        "durationMs": 75,
+                        "addresses": [],
+                        "httpStatus": 200
+                    },
+                    "tls": {
+                        "status": "passed",
+                        "code": "tls_verified",
+                        "durationMs": 40,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 75,
+                "httpStatus": 200,
+                "failure": null
+            },
+            "monitoring": {
+                "status": "healthy",
+                "code": "expected_status",
+                "durationMs": 75,
+                "httpStatus": 200
+            }
+        },
+        {
+            "title": "an unverified TLS upstream is not a failure",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "passed",
+                        "code": "upstream_responded",
+                        "durationMs": 55,
+                        "addresses": [],
+                        "httpStatus": 200
+                    },
+                    "tls": {
+                        "status": "unknown",
+                        "code": "tls_verification_disabled",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 55,
+                "httpStatus": 200,
+                "failure": null
+            },
+            "monitoring": {
+                "status": "healthy",
+                "code": "expected_status",
+                "durationMs": 55,
+                "httpStatus": 200
+            }
+        },
+        {
+            "title": "a failed TLS verification is unhealthy",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "failed",
+                        "code": "upstream_unreachable",
+                        "durationMs": 90,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "tls": {
+                        "status": "failed",
+                        "code": "tls_failed",
+                        "durationMs": 88,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 90,
+                "httpStatus": null,
+                "failure": {
+                    "stage": "tls",
+                    "code": "tls_failed"
+                }
+            },
+            "monitoring": {
+                "status": "unhealthy",
+                "code": "tls_failed",
+                "durationMs": 90,
+                "httpStatus": null
+            }
+        },
+        {
+            "title": "an unreachable upstream is unhealthy",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "failed",
+                        "code": "upstream_unreachable",
+                        "durationMs": 12,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "tls": {
+                        "status": "not_applicable",
+                        "code": "http_upstream",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 12,
+                "httpStatus": null,
+                "failure": {
+                    "stage": "upstream",
+                    "code": "upstream_unreachable"
+                }
+            },
+            "monitoring": {
+                "status": "unhealthy",
+                "code": "upstream_unreachable",
+                "durationMs": 12,
+                "httpStatus": null
+            }
+        },
+        {
+            "title": "a timed out upstream is unhealthy",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "failed",
+                        "code": "upstream_timeout",
+                        "durationMs": 3000,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "tls": {
+                        "status": "not_applicable",
+                        "code": "http_upstream",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 3000,
+                "httpStatus": null,
+                "failure": {
+                    "stage": "upstream",
+                    "code": "upstream_timeout"
+                }
+            },
+            "monitoring": {
+                "status": "unhealthy",
+                "code": "upstream_timeout",
+                "durationMs": 3000,
+                "httpStatus": null
+            }
+        },
+        {
+            "title": "an upstream name that does not resolve is unhealthy",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "passed",
+                        "code": "configuration_active",
+                        "durationMs": 1,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "failed",
+                        "code": "upstream_dns_failed",
+                        "durationMs": 7,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "tls": {
+                        "status": "unknown",
+                        "code": "tls_unconfirmed",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 7,
+                "httpStatus": null,
+                "failure": {
+                    "stage": "upstream",
+                    "code": "upstream_dns_failed"
+                }
+            },
+            "monitoring": {
+                "status": "unhealthy",
+                "code": "upstream_dns_failed",
+                "durationMs": 7,
+                "httpStatus": null
+            }
+        },
+        {
+            "title": "a stale proxy configuration is unknown",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "unknown",
+                        "code": "configuration_stale",
+                        "durationMs": 2,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "tls": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 0,
+                "httpStatus": null,
+                "failure": {
+                    "stage": "configuration",
+                    "code": "configuration_stale"
+                }
+            },
+            "monitoring": {
+                "status": "unknown",
+                "code": "configuration_stale",
+                "durationMs": null,
+                "httpStatus": null
+            }
+        },
+        {
+            "title": "a configuration change during the check is unknown",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "unknown",
+                        "code": "configuration_changed",
+                        "durationMs": 2,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "tls": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 0,
+                "httpStatus": null,
+                "failure": {
+                    "stage": "configuration",
+                    "code": "configuration_changed"
+                }
+            },
+            "monitoring": {
+                "status": "unknown",
+                "code": "configuration_changed",
+                "durationMs": null,
+                "httpStatus": null
+            }
+        },
+        {
+            "title": "a host outside the active configuration is unknown",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "unknown",
+                        "code": "host_not_active",
+                        "durationMs": 2,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "tls": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 0,
+                "httpStatus": null,
+                "failure": {
+                    "stage": "configuration",
+                    "code": "host_not_active"
+                }
+            },
+            "monitoring": {
+                "status": "unknown",
+                "code": "host_not_active",
+                "durationMs": null,
+                "httpStatus": null
+            }
+        },
+        {
+            "title": "an unavailable proxy runtime is unknown",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "stages": {
+                    "configuration": {
+                        "status": "unknown",
+                        "code": "runtime_unavailable",
+                        "durationMs": 2,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "dns": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "upstream": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    },
+                    "tls": {
+                        "status": "unknown",
+                        "code": "skipped",
+                        "durationMs": 0,
+                        "addresses": [],
+                        "httpStatus": null
+                    }
+                }
+            },
+            "result": {
+                "outcome": "probed",
+                "hostId": "host-1",
+                "domain": "app.example.net",
+                "probeRevision": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "durationMs": 0,
+                "httpStatus": null,
+                "failure": {
+                    "stage": "configuration",
+                    "code": "runtime_unavailable"
+                }
+            },
+            "monitoring": {
+                "status": "unknown",
+                "code": "runtime_unavailable",
+                "durationMs": null,
+                "httpStatus": null
+            }
+        },
+        {
+            "title": "a busy check is unknown",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "error": "busy"
+            },
+            "result": {
+                "outcome": "busy",
+                "hostId": "host-1",
+                "domain": "app.example.net"
+            },
+            "monitoring": {
+                "status": "unknown",
+                "code": "busy",
+                "durationMs": null,
+                "httpStatus": null
+            }
+        },
+        {
+            "title": "a failed check is unknown",
+            "expectedStatus": 200,
+            "diagnostics": {
+                "error": "runtime_unavailable"
+            },
+            "result": {
+                "outcome": "unavailable",
+                "hostId": "host-1",
+                "domain": "app.example.net"
+            },
+            "monitoring": {
+                "status": "unknown",
+                "code": "runtime_unavailable",
+                "durationMs": null,
+                "httpStatus": null
+            }
+        },
+        {
+            "title": "a host change seen by the platform discards the probe",
+            "expectedStatus": 200,
+            "diagnostics": null,
+            "result": {
+                "outcome": "configurationChanged",
+                "hostId": "host-1",
+                "domain": "app.example.net"
+            },
+            "monitoring": null
+        },
+        {
+            "title": "a disabled host is not probed",
+            "expectedStatus": 200,
+            "diagnostics": null,
+            "result": {
+                "outcome": "hostDisabled",
+                "hostId": "host-1",
+                "domain": "app.example.net"
+            },
+            "monitoring": null
+        }
+    ]
+}

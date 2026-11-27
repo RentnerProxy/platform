@@ -14,6 +14,7 @@ const selectableScopes: ReadonlySet<string> = new Set(['proxyHosts'])
 const allHostsCapabilities: ReadonlySet<string> = new Set([
     'proxy.hosts.read.v1',
     'diagnostics.upstream.probe.v1',
+    'diagnostics.upstream.probe.v2',
 ])
 /** The scope and resource of a grant for all proxy hosts, including hosts created later. */
 export const ALL_PROXY_HOSTS = { scope: 'allProxyHosts', resourceId: 'all' } as const
@@ -21,6 +22,7 @@ export const ALL_PROXY_HOSTS = { scope: 'allProxyHosts', resourceId: 'all' } as 
 const grantNames = {
     'proxy.hosts.read.v1': 'proxyHostsRead',
     'diagnostics.upstream.probe.v1': 'upstreamProbe',
+    'diagnostics.upstream.probe.v2': 'upstreamMonitoring',
     'notifications.publish.v1': 'notificationsPublish',
     'app.audit.record': 'auditRecord',
     'app.events.subscribe': 'eventsSubscribe',
