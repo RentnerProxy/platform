@@ -198,9 +198,7 @@ export async function reconcileAppIncidentsInTransaction(
             ? read
             : {
                   ...read,
-                  active: new Set(
-                      [...read.active].filter((id) => id !== removedInstallationId),
-                  ),
+                  active: new Set([...read.active].filter((id) => id !== removedInstallationId)),
               }
     const resolutions = new Map<string, AppIncidentResolution>()
     for (const incident of open) {

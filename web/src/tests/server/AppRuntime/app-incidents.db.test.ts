@@ -542,27 +542,30 @@ describe('app incidents through the App API', () => {
         expect(incident?.recoveredAt).not.toBeNull()
     })
 
-    integrationTest('a stopped installation resolves its incidents once its lease ends', async () => {
-        const app = await install()
-        expect((await app.incident('disk-full', open(), 'stop-1')).status).toBe(204)
-        await drain()
-        expect((await app.control('retire')).status).toBe(204)
-        // A start or an update registers its next generation within that lease, so nothing ends.
-        expect(await claimNextNotificationDelivery()).toBeNull()
-        expect((await runtime()).incidents[0]?.recoveredAt).toBeNull()
-        const { db } = await import('@/db/index.ts')
-        await db
-            .update(appRuntimeGenerations)
-            .set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
-            .where(eq(appRuntimeGenerations.installationId, app.identity.installationId))
-        const recovery = await claimNextNotificationDelivery()
-        expect(recovery?.payload).toMatchObject({
-            type: 'recovery',
-            app: { resolution: 'appStopped' },
-        })
-        expect(await authorizeNotificationDelivery(recovery!)).not.toBeNull()
-        expect((await runtime()).incidents[0]?.app?.resolution).toBe('appStopped')
-    })
+    integrationTest(
+        'a stopped installation resolves its incidents once its lease ends',
+        async () => {
+            const app = await install()
+            expect((await app.incident('disk-full', open(), 'stop-1')).status).toBe(204)
+            await drain()
+            expect((await app.control('retire')).status).toBe(204)
+            // A start or an update registers its next generation within that lease, so nothing ends.
+            expect(await claimNextNotificationDelivery()).toBeNull()
+            expect((await runtime()).incidents[0]?.recoveredAt).toBeNull()
+            const { db } = await import('@/db/index.ts')
+            await db
+                .update(appRuntimeGenerations)
+                .set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+                .where(eq(appRuntimeGenerations.installationId, app.identity.installationId))
+            const recovery = await claimNextNotificationDelivery()
+            expect(recovery?.payload).toMatchObject({
+                type: 'recovery',
+                app: { resolution: 'appStopped' },
+            })
+            expect(await authorizeNotificationDelivery(recovery!)).not.toBeNull()
+            expect((await runtime()).incidents[0]?.app?.resolution).toBe('appStopped')
+        },
+    )
 
     integrationTest(
         'a restart retires the running generation first and keeps the incident open',
