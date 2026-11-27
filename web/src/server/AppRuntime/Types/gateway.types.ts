@@ -6,6 +6,7 @@ export type AppRuntimeOperation =
     | 'listHosts'
     | 'updateHost'
     | 'probe'
+    | 'probeBatch'
     | 'notification'
     | 'audit'
     | 'secret'

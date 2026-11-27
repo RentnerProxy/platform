@@ -32,6 +32,10 @@ export const appCapabilitySchema = z.discriminatedUnion('id', [
         id: z.literal('diagnostics.upstream.probe.v1'),
         scope: z.literal('proxyHosts'),
     }),
+    z.strictObject({
+        id: z.literal('diagnostics.upstream.probe.v2'),
+        scope: z.literal('proxyHosts'),
+    }),
     z.strictObject({ id: z.literal('notifications.publish.v1'), scope: z.literal('installation') }),
     z.strictObject({
         id: z.literal('docker.inventory.observe.v1'),
@@ -64,7 +68,11 @@ export const ALL_PROXY_HOSTS_RESOURCE = 'all'
 export const appGrantCapabilitySchema = z.union([
     appCapabilitySchema,
     z.strictObject({
-        id: z.enum(['proxy.hosts.read.v1', 'diagnostics.upstream.probe.v1']),
+        id: z.enum([
+            'proxy.hosts.read.v1',
+            'diagnostics.upstream.probe.v1',
+            'diagnostics.upstream.probe.v2',
+        ]),
         scope: z.literal('allProxyHosts'),
     }),
 ])
@@ -114,6 +122,24 @@ export const appProxyHostChange = z.discriminatedUnion('action', [
 export const appUpstreamProbe = z.strictObject({
     hostId: appRecordId,
     timeoutMs: z.number().int().min(1).max(10_000),
+})
+/** The most probes one monitoring-class batch may name. */
+export const APP_UPSTREAM_PROBE_BATCH_LIMIT = 32
+export const appUpstreamProbeBatch = z.strictObject({
+    probes: z
+        .array(
+            z.strictObject({
+                hostId: appRecordId,
+                domain: hostname,
+                // Leaves room for both host fences within the App API request deadline.
+                timeoutMs: z.number().int().min(1_000).max(8_000),
+            }),
+        )
+        .min(1)
+        .max(APP_UPSTREAM_PROBE_BATCH_LIMIT)
+        .refine(
+            (probes) => new Set(probes.map(({ hostId }) => hostId)).size === probes.length,
+        ),
 })
 export const appNotification = z.strictObject({
     category: appRecordId,

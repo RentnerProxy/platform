@@ -18,8 +18,12 @@ export interface ProxyHostEvent {
     readonly type: ProxyHostEventType
 }
 
-/** Read is preferred, so an app that holds both grants records the event under read. */
-const coveringCapabilities = ['proxy.hosts.read.v1', 'diagnostics.upstream.probe.v1'] as const
+/** Read is preferred, so an app that holds several of these grants records the event under read. */
+const coveringCapabilities = [
+    'proxy.hosts.read.v1',
+    'diagnostics.upstream.probe.v2',
+    'diagnostics.upstream.probe.v1',
+] as const
 
 /** Stored host settings, as a summary or a table row, with the enabled state and timestamps. */
 type HostSettings = {
