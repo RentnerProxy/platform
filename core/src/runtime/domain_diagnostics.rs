@@ -1,26 +1,53 @@
+mod app_admission;
 mod dns;
 mod models;
 mod resolver;
 mod upstream;
 use super::ProxyRuntime;
 use crate::models::{ProxyHost, TrustedCa};
+pub(super) use app_admission::AppAdmission;
 use models::{Code, HostType, Stage, Stages, Status};
 pub(crate) use models::{Request, Result};
 use std::{sync::atomic::Ordering, time::Duration};
 use tokio::time::{Instant, timeout_at};
 
-// Admission caps this registry at 64 scheduled plus two interactive entries.
-// The key deliberately excludes
-// revision and domain so a host edit cannot bypass an executing check.
+// Each admission class keeps its own host slot, so an app probe or built-in
+// monitoring probe can never make an interactive Domain Check busy. Within a
+// class, two checks for the same host still exclude each other. The key
+// deliberately excludes revision and domain so a host edit cannot bypass an
+// executing check. Admission bounds the registry: 2 interactive, 64
+// monitoring and 128 app entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Class {
+    Interactive,
+    Monitoring,
+    App,
+}
+impl Class {
+    fn of(request: &Request) -> Self {
+        if request.installation_id.is_some() {
+            Self::App
+        } else if request.upstream_only {
+            Self::Monitoring
+        } else {
+            Self::Interactive
+        }
+    }
+}
+type ActiveKey = (Class, HostType, String);
 #[derive(Default)]
-pub(super) struct ActiveChecks(std::sync::Mutex<std::collections::HashSet<(HostType, String)>>);
+pub(super) struct ActiveChecks(std::sync::Mutex<std::collections::HashSet<ActiveKey>>);
 struct ActiveCheck<'a> {
     checks: &'a ActiveChecks,
-    key: (HostType, String),
+    key: ActiveKey,
 }
 impl ActiveChecks {
     fn acquire(&self, request: &Request) -> std::result::Result<ActiveCheck<'_>, Error> {
-        let key = (request.host_type, request.host_id.clone());
+        let key = (
+            Class::of(request),
+            request.host_type,
+            request.host_id.clone(),
+        );
         let registry_key = key.clone();
         let mut checks = self.0.lock().unwrap_or_else(|error| error.into_inner());
         if !checks.insert(registry_key) {
@@ -43,6 +70,7 @@ impl Drop for ActiveCheck<'_> {
 pub(crate) enum Error {
     InvalidInput,
     Busy,
+    RateLimited,
     Unavailable,
 }
 #[derive(Clone, PartialEq, Eq)]
@@ -148,12 +176,21 @@ impl ProxyRuntime {
         let start = Instant::now();
         // Only the trusted monitoring caller sets upstream_only. Keep its pool
         // separate so scheduled probes cannot consume interactive reservations.
-        let admission = if request.upstream_only {
-            &self.monitoring_admission
-        } else {
-            &self.diagnostics_admission
+        // App probes (installation id) use their own budget and neither pool.
+        let (_permit, _app) = match request.installation_id.as_deref() {
+            Some(installation) => (None, Some(self.app_admission.acquire(installation)?)),
+            None => {
+                let admission = if request.upstream_only {
+                    &self.monitoring_admission
+                } else {
+                    &self.diagnostics_admission
+                };
+                (
+                    Some(admission.try_acquire().map_err(|_| Error::Busy)?),
+                    None,
+                )
+            }
         };
-        let _permit = admission.try_acquire().map_err(|_| Error::Busy)?;
         let _active = self.diagnostics_active.acquire(&request)?;
         // A configured timeout bounds snapshot admission plus network work.
         // Keep a separate verification reserve so a genuine upstream timeout

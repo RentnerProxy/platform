@@ -44,7 +44,7 @@ test('controller enforces bounded confidential POST, caller abort and exact sele
 })
 
 test('only strict allowlisted controller errors cross the boundary', async () => {
-    for (const code of ['invalid_input', 'busy', 'runtime_unavailable'])
+    for (const code of ['invalid_input', 'busy', 'rate_limited', 'runtime_unavailable'])
         await expect(
             createDomainDiagnosticsController(async () => ({ error: code }))(input),
         ).rejects.toMatchObject({ code })
@@ -52,6 +52,31 @@ test('only strict allowlisted controller errors cross the boundary', async () =>
         await expect(
             createDomainDiagnosticsController(async () => payload)(input),
         ).rejects.toMatchObject({ code: 'runtime_unavailable' })
+})
+
+test('app probe installation id is lowercase, requires upstreamOnly and is forwarded verbatim', async () => {
+    const installationId = '0198d98a-0000-7000-8000-0000000005a1'
+    const bodies: unknown[] = []
+    const inspect = createDomainDiagnosticsController(async (_path, options) => {
+        bodies.push(JSON.parse(options.body!))
+        return domainDiagnosticsFixture()
+    })
+    await inspect(input, undefined, { upstreamOnly: true, installationId, timeoutMs: 3000 })
+    await inspect(input)
+    expect(bodies).toEqual([
+        { ...input, upstreamOnly: true, installationId, timeoutMs: 3000 },
+        input,
+    ])
+    for (const options of [
+        { installationId },
+        { upstreamOnly: false, installationId },
+        { upstreamOnly: true, installationId: installationId.toUpperCase() },
+        { upstreamOnly: true, installationId: 'not-a-uuid' },
+    ])
+        await expect(inspect(input, undefined, options)).rejects.toMatchObject({
+            code: 'invalid_input',
+        })
+    expect(bodies).toHaveLength(2)
 })
 
 test('transport requires bearer auth even on loopback and composes caller abort/deadlines with listener cleanup', async () => {

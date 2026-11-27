@@ -151,6 +151,7 @@ impl Fixture {
             expected_revision: revision(),
             upstream_only: false,
             timeout_ms: None,
+            installation_id: None,
         }
     }
     fn router(&self, configured: bool) -> axum::Router {
@@ -1741,12 +1742,6 @@ async fn scheduled_capacity_preserves_interactive_reservations_and_cleans_up_on_
         fixture.runtime.diagnose_domain(overflow).await,
         Err(Error::Busy)
     ));
-    let mut duplicate = requests[0].clone();
-    duplicate.upstream_only = false;
-    assert!(matches!(
-        fixture.runtime.diagnose_domain(duplicate).await,
-        Err(Error::Busy)
-    ));
     assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 2);
     for (index, request) in requests[64..66].iter().enumerate() {
         let runtime = fixture.runtime.clone();
@@ -1826,7 +1821,7 @@ async fn scheduled_timeout_includes_snapshot_wait_and_releases_both_guards() {
 }
 
 #[tokio::test]
-async fn host_exclusion_is_shared_in_both_admission_directions() {
+async fn host_exclusion_is_per_class_and_never_crosses_interactive_and_monitoring() {
     let http = HttpFixture::new(200, None, true).await;
     let fixture = Fixture::new(http.port).await;
     let dns = DnsFixture::normal().await;
@@ -1844,12 +1839,25 @@ async fn host_exclusion_is_shared_in_both_admission_directions() {
         timeout(Duration::from_secs(2), http.started.notified())
             .await
             .unwrap();
-        request.upstream_only = !scheduled;
+        // The same class on the same host stays exclusive.
         assert!(matches!(
-            fixture.runtime.diagnose_domain(request).await,
+            fixture.runtime.diagnose_domain(request.clone()).await,
             Err(Error::Busy)
         ));
+        // The other class is admitted concurrently for the same host.
+        request.upstream_only = !scheduled;
+        let runtime = fixture.runtime.clone();
+        let resolver = dns.resolver();
+        let other =
+            tokio::spawn(
+                async move { runtime.diagnose_domain_inner(request, Some(resolver)).await },
+            );
+        timeout(Duration::from_secs(2), http.started.notified())
+            .await
+            .unwrap();
+        other.abort();
         check.abort();
+        let _ = other.await;
         let _ = check.await;
         assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 64);
         assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 2);
@@ -1863,8 +1871,191 @@ async fn host_exclusion_is_shared_in_both_admission_directions() {
                 .is_empty()
         );
     }
-    assert_eq!(http.requests.lock().await.len(), 2);
+    assert_eq!(http.requests.lock().await.len(), 4);
     fixture.assert_pure();
+}
+
+const INSTALLATION: &str = "0198d98a-0000-7000-8000-0000000005a1";
+fn app_request(fixture: &Fixture, installation: &str) -> Request {
+    let mut request = fixture.request();
+    request.upstream_only = true;
+    request.installation_id = Some(installation.into());
+    request
+}
+
+#[test]
+fn installation_id_is_strict_and_only_valid_for_upstream_only_proxy_probes() {
+    let base = json!({"hostType":"proxy","hostId":HOST,"domain":DOMAIN,"expectedRevision":revision(),"upstreamOnly":true});
+    let mut valid = base.clone();
+    valid["installationId"] = json!(INSTALLATION);
+    let parsed: Request = serde_json::from_value(valid.clone()).unwrap();
+    assert_eq!(parsed.installation_id.as_deref(), Some(INSTALLATION));
+    parsed.validate().unwrap();
+    for invalid in [
+        json!("0198D98A-0000-7000-8000-0000000005A1"),
+        json!("not-a-uuid"),
+        json!(""),
+        json!(format!("{INSTALLATION}0")),
+    ] {
+        let mut request = valid.clone();
+        request["installationId"] = invalid;
+        assert_eq!(
+            serde_json::from_value::<Request>(request)
+                .unwrap()
+                .validate(),
+            Err(Error::InvalidInput)
+        );
+    }
+    let mut misplaced = [valid.clone(), valid.clone(), valid.clone()];
+    misplaced[0]["upstreamOnly"] = json!(false);
+    misplaced[1].as_object_mut().unwrap().remove("upstreamOnly");
+    misplaced[2]["hostType"] = json!("redirect");
+    for request in misplaced {
+        assert_eq!(
+            serde_json::from_value::<Request>(request)
+                .unwrap()
+                .validate(),
+            Err(Error::InvalidInput)
+        );
+    }
+    let mut wrong_type = valid;
+    wrong_type["installationId"] = json!(7);
+    assert!(serde_json::from_value::<Request>(wrong_type).is_err());
+    let legacy: Request = serde_json::from_value(base).unwrap();
+    assert_eq!(legacy.installation_id, None);
+    legacy.validate().unwrap();
+}
+
+#[tokio::test]
+async fn invalid_installation_id_is_rejected_before_any_admission() {
+    let fixture = Fixture::new(12345).await;
+    let mut request = app_request(&fixture, "NOT-A-UUID");
+    assert!(matches!(
+        fixture.runtime.diagnose_domain(request.clone()).await,
+        Err(Error::InvalidInput)
+    ));
+    request.installation_id = Some(INSTALLATION.into());
+    request.upstream_only = false;
+    assert!(matches!(
+        fixture.runtime.diagnose_domain(request).await,
+        Err(Error::InvalidInput)
+    ));
+    assert_eq!(fixture.runtime.app_admission.available_global(), 128);
+    assert_eq!(fixture.runtime.app_admission.tracked(), 0);
+}
+
+#[tokio::test]
+async fn app_probes_use_their_own_admission_and_never_block_other_classes() {
+    let http = HttpFixture::new(200, None, true).await;
+    let fixture = Fixture::new(http.port).await;
+    let dns = DnsFixture::normal().await;
+    let runtime = fixture.runtime.clone();
+    let resolver = dns.resolver();
+    let app = tokio::spawn({
+        let request = app_request(&fixture, INSTALLATION);
+        async move { runtime.diagnose_domain_inner(request, Some(resolver)).await }
+    });
+    timeout(Duration::from_secs(2), http.started.notified())
+        .await
+        .unwrap();
+    assert_eq!(fixture.runtime.app_admission.available_global(), 127);
+    assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 64);
+    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 2);
+    // Two app probes for the same host exclude each other, even across installations.
+    let other_installation = "0198d98a-0000-7000-8000-0000000005a2";
+    for installation in [INSTALLATION, other_installation] {
+        assert!(matches!(
+            fixture
+                .runtime
+                .diagnose_domain(app_request(&fixture, installation))
+                .await,
+            Err(Error::Busy)
+        ));
+    }
+    assert_eq!(fixture.runtime.app_admission.available_global(), 127);
+    // An interactive Domain Check and a monitoring probe for the same host still run.
+    let mut others = JoinSet::new();
+    for upstream_only in [false, true] {
+        let runtime = fixture.runtime.clone();
+        let mut request = fixture.request();
+        request.upstream_only = upstream_only;
+        let resolver = dns.resolver();
+        others.spawn(async move { runtime.diagnose_domain_inner(request, Some(resolver)).await });
+        timeout(Duration::from_secs(2), http.started.notified())
+            .await
+            .unwrap();
+    }
+    assert_eq!(http.requests.lock().await.len(), 3);
+    assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 63);
+    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 1);
+    assert_eq!(fixture.runtime.app_admission.available_global(), 127);
+    others.abort_all();
+    while others.join_next().await.is_some() {}
+    app.abort();
+    let _ = app.await;
+    assert_eq!(fixture.runtime.app_admission.available_global(), 128);
+    assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 64);
+    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 2);
+    assert!(
+        fixture
+            .runtime
+            .diagnostics_active
+            .0
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+    fixture.assert_pure();
+}
+
+#[tokio::test]
+async fn exhausted_app_bucket_is_rate_limited_over_http_and_releases_everything() {
+    let http = HttpFixture::new(200, None, false).await;
+    let fixture = Fixture::new(http.port).await;
+    for _ in 0..120 {
+        drop(fixture.runtime.app_admission.acquire(INSTALLATION).unwrap());
+    }
+    assert!(matches!(
+        fixture
+            .runtime
+            .diagnose_domain(app_request(&fixture, INSTALLATION))
+            .await,
+        Err(Error::RateLimited)
+    ));
+    let mut payload = json!({
+        "hostType":"proxy","hostId":HOST,"domain":DOMAIN,"expectedRevision":revision(),
+        "upstreamOnly":true,"installationId":INSTALLATION
+    });
+    let (status, body) = call(
+        fixture.router(true),
+        serde_json::to_vec(&payload).unwrap(),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body, json!({"error":"rate_limited"}));
+    // Another installation has its own bucket.
+    payload["installationId"] = json!("0198d98a-0000-7000-8000-0000000005a2");
+    let (status, body) = call(
+        fixture.router(true),
+        serde_json::to_vec(&payload).unwrap(),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["stages"]["upstream"]["code"], "upstream_responded");
+    assert_eq!(fixture.runtime.app_admission.available_global(), 128);
+    assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 64);
+    assert!(
+        fixture
+            .runtime
+            .diagnostics_active
+            .0
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(http.requests.lock().await.len(), 1);
 }
 
 #[tokio::test]
