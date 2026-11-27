@@ -73,7 +73,11 @@ describe('monitoring-class upstream probe results', () => {
                 domain: string
                 probeRevision: string
             }
-            const result = upstreamProbeOutcome({ hostId, domain }, probeRevision, diagnostics.stages)
+            const result = upstreamProbeOutcome(
+                { hostId, domain },
+                probeRevision,
+                diagnostics.stages,
+            )
             expect(result).toEqual(fixture.result as AppUpstreamProbeOutcome)
             // Built-in monitoring and an app that reads only the probe result agree exactly.
             const monitoring: unknown = classifyHostMonitoringOutcome(

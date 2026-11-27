@@ -137,9 +137,7 @@ export const appUpstreamProbeBatch = z.strictObject({
         )
         .min(1)
         .max(APP_UPSTREAM_PROBE_BATCH_LIMIT)
-        .refine(
-            (probes) => new Set(probes.map(({ hostId }) => hostId)).size === probes.length,
-        ),
+        .refine((probes) => new Set(probes.map(({ hostId }) => hostId)).size === probes.length),
 })
 export const appNotification = z.strictObject({
     category: appRecordId,

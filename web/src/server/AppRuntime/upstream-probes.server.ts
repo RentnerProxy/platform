@@ -11,7 +11,10 @@ import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.t
 import type { HostMonitoringProbeContext } from '@/server/HostMonitoring/Types/host-monitoring-probe.types.ts'
 import { readHostMonitoringContextsInTransaction } from '@/server/RuntimeDiagnostics/domain-diagnostics-data.ts'
 import { DomainDiagnosticsError } from '@/server/RuntimeDiagnostics/domain-diagnostics.errors.ts'
-import { isAppRuntimeAuthorized, resolveAppRuntimePrincipalInTransaction } from './authority.server.ts'
+import {
+    isAppRuntimeAuthorized,
+    resolveAppRuntimePrincipalInTransaction,
+} from './authority.server.ts'
 import { appUpstreamProbeBatch } from './contract.ts'
 import { appProbeRevision } from './hosts.server.ts'
 import { AppRuntimeAuthorityError } from './Types/authority.types.ts'
@@ -138,8 +141,7 @@ function readBatchSelections(
         })
         .catch((error: unknown) => {
             // Saturated monitoring capacity makes every probe of the batch busy.
-            if (error instanceof ResourceAdmissionError && error.reason !== 'cancelled')
-                return null
+            if (error instanceof ResourceAdmissionError && error.reason !== 'cancelled') return null
             throw error
         })
 }
