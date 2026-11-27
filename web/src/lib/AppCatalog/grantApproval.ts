@@ -10,6 +10,13 @@ import {
 
 /** Scopes whose resources the Owner selects. Every other scope names a fixed resource. */
 const selectableScopes: ReadonlySet<string> = new Set(['proxyHosts'])
+/** Capabilities the Owner may approve for all proxy hosts instead of selected ones. */
+const allHostsCapabilities: ReadonlySet<string> = new Set([
+    'proxy.hosts.read.v1',
+    'diagnostics.upstream.probe.v1',
+])
+/** The scope and resource of a grant for all proxy hosts, including hosts created later. */
+export const ALL_PROXY_HOSTS = { scope: 'allProxyHosts', resourceId: 'all' } as const
 
 const grantNames = {
     'proxy.hosts.read.v1': 'proxyHostsRead',
@@ -24,6 +31,7 @@ const grantNames = {
 const grantScopes = {
     installation: 'installation',
     proxyHosts: 'proxyHosts',
+    allProxyHosts: 'allProxyHosts',
     providerProfiles: 'providerProfiles',
     secretReferences: 'secretReferences',
 } as const
@@ -47,6 +55,10 @@ export type GrantDraftItem = {
     permissionKey: string | undefined
     /** The selected resources of a selectable scope. */
     resources: string[]
+    /** The Owner may approve all proxy hosts instead of selected ones. */
+    allHostsAvailable: boolean
+    /** The Owner approved all proxy hosts, including hosts created later. */
+    allHosts: boolean
 }
 
 export type GrantDraft = readonly GrantDraftItem[]
@@ -73,6 +85,11 @@ export function isSupportGrant(capability: CatalogGrantCapability): boolean {
     return capability.id.startsWith('app.')
 }
 
+/** Whether a recorded grant covers all proxy hosts. */
+export function coversAllProxyHosts(capability: CatalogGrantCapability): boolean {
+    return capability.scope === ALL_PROXY_HOSTS.scope
+}
+
 /** Whether the Owner selects the resources of this capability. */
 export function isSelectableGrant(capability: CatalogGrantCapability): boolean {
     return selectableScopes.has(capability.scope)
@@ -89,10 +106,14 @@ export function grantDraft(
 ): GrantDraft {
     return requested.map(({ capability, resourceId, allowService }) => {
         const selectable = isSelectableGrant(capability)
+        const allHostsAvailable = selectable && allHostsCapabilities.has(capability.id)
         const prior = (previous ?? []).filter(
             (grant) =>
-                sameCapability(grant.capability, capability) &&
-                (resourceId === undefined || grant.resourceId === resourceId),
+                (sameCapability(grant.capability, capability) &&
+                    (resourceId === undefined || grant.resourceId === resourceId)) ||
+                (allHostsAvailable &&
+                    grant.capability.id === capability.id &&
+                    coversAllProxyHosts(grant.capability)),
         )
         const key = prior.find((grant) => grant.permissionKey !== undefined)?.permissionKey
         return {
@@ -103,7 +124,17 @@ export function grantDraft(
             allowService:
                 allowService && (prior.length === 0 || prior.some((grant) => grant.allowService)),
             permissionKey: key !== undefined && permissionKeys.includes(key) ? key : undefined,
-            resources: selectable ? [...new Set(prior.map((grant) => grant.resourceId))] : [],
+            resources: selectable
+                ? [
+                      ...new Set(
+                          prior
+                              .filter((grant) => !coversAllProxyHosts(grant.capability))
+                              .map((grant) => grant.resourceId),
+                      ),
+                  ]
+                : [],
+            allHostsAvailable,
+            allHosts: prior.some((grant) => coversAllProxyHosts(grant.capability)),
         }
     })
 }
@@ -120,13 +151,25 @@ export function grantApproval(
     exists: (resourceId: string) => boolean = anyResource,
 ): CatalogApprovedGrant[] {
     return draft.flatMap((item) => {
-        const grant = (resourceId: string | undefined): CatalogApprovedGrant => ({
-            capability: item.capability,
+        const grant = (
+            resourceId: string | undefined,
+            capability = item.capability,
+        ): CatalogApprovedGrant => ({
+            capability,
             ...(resourceId !== undefined && { resourceId }),
             allowService: item.serviceRequested && item.allowService,
             ...(item.permissionKey !== undefined && { permissionKey: item.permissionKey }),
         })
-        return item.selectable ? item.resources.filter(exists).map(grant) : [grant(item.resourceId)]
+        if (item.allHosts)
+            return [
+                grant(ALL_PROXY_HOSTS.resourceId, {
+                    id: item.capability.id,
+                    scope: ALL_PROXY_HOSTS.scope,
+                }),
+            ]
+        return item.selectable
+            ? item.resources.filter(exists).map((resourceId) => grant(resourceId))
+            : [grant(item.resourceId)]
     })
 }
 
@@ -136,7 +179,7 @@ export function grantDraftComplete(
     exists: (resourceId: string) => boolean = anyResource,
 ): boolean {
     return (
-        draft.every((item) => !item.selectable || item.resources.some(exists)) &&
+        draft.every((item) => !item.selectable || item.allHosts || item.resources.some(exists)) &&
         grantApproval(draft, exists).length <= APP_CATALOG_MAX_GRANTS
     )
 }
@@ -144,12 +187,18 @@ export function grantDraftComplete(
 export function updateGrantDraft(
     draft: GrantDraft,
     index: number,
-    change: Partial<Pick<GrantDraftItem, 'allowService' | 'permissionKey' | 'resources'>>,
+    change: Partial<
+        Pick<GrantDraftItem, 'allowService' | 'permissionKey' | 'resources' | 'allHosts'>
+    >,
 ): GrantDraft {
     return draft.map((item, position) => {
         if (position !== index) return item
         const next = { ...item, ...change }
-        return { ...next, allowService: next.serviceRequested && next.allowService }
+        return {
+            ...next,
+            allowService: next.serviceRequested && next.allowService,
+            allHosts: next.allHostsAvailable && next.allHosts,
+        }
     })
 }
 

@@ -57,13 +57,25 @@ export default function GrantApprovalDialog({
                         })}
                     </p>
                     <p className="mt-0.5 text-sm wrap-anywhere text-muted">
-                        {t(`appCatalog.grants.scope.${scope}`, {
+                        {t(`appCatalog.grants.scope.${item.allHosts ? 'allProxyHosts' : scope}`, {
                             resource: item.resourceId,
                             scope: item.capability.scope,
                         })}
                     </p>
                 </div>
-                {item.selectable ? (
+                {item.allHostsAvailable ? (
+                    <div className="grid gap-1">
+                        <OptionToggle
+                            label={t('appCatalog.grants.hosts.all')}
+                            checked={item.allHosts}
+                            onChange={(event) =>
+                                handler.handleChange(index, { allHosts: event.target.checked })
+                            }
+                        />
+                        <p className="text-xs text-muted">{t('appCatalog.grants.hosts.allHint')}</p>
+                    </div>
+                ) : null}
+                {item.selectable && !item.allHosts ? (
                     <GrantHostPicker
                         id={`${id}-hosts-${index}`}
                         hosts={state.hosts}

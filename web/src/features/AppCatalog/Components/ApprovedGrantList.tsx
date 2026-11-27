@@ -2,6 +2,7 @@ import { ShieldCheck } from 'lucide-react'
 import type { CatalogGrant } from '@/lib/AppCatalog/contract.ts'
 import {
     canRevokeGrants,
+    coversAllProxyHosts,
     grantIdentity,
     grantNameKey,
     isSelectableGrant,
@@ -37,9 +38,11 @@ export default function ApprovedGrantList({
             id: grant.capability.id,
         })
         if (grant.resourceId === app.installation.installationId) return name
-        const resource = isSelectableGrant(grant.capability)
-            ? (hostnames.get(grant.resourceId) ?? grant.resourceId)
-            : grant.resourceId
+        const resource = coversAllProxyHosts(grant.capability)
+            ? t('appCatalog.grants.hosts.every')
+            : isSelectableGrant(grant.capability)
+              ? (hostnames.get(grant.resourceId) ?? grant.resourceId)
+              : grant.resourceId
         return t('appCatalog.grants.onResource', { name, resource })
     }
 

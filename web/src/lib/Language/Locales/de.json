@@ -345,7 +345,8 @@
                 "proxyHosts": "Für die ausgewählten Proxy-Hosts",
                 "providerProfiles": "Provider-Profil {{resource}}",
                 "secretReferences": "Geheimnis {{resource}}",
-                "unknown": "Bereich {{scope}}"
+                "unknown": "Bereich {{scope}}",
+                "allProxyHosts": "Für alle Proxy-Hosts, auch später angelegte"
             },
             "allowService": "Im Hintergrund erlauben",
             "allowServiceHint": "Die App darf diese Berechtigung auch ohne angemeldete Person nutzen, zum Beispiel für geplante Prüfungen.",
@@ -358,7 +359,10 @@
                 "empty": "Es gibt noch keine Proxy-Hosts zur Auswahl.",
                 "required": "Wähle mindestens einen Proxy-Host aus.",
                 "loadFailed": "Die Proxy-Hosts konnten nicht geladen werden.",
-                "disabled": "{{hostname}} (inaktiv)"
+                "disabled": "{{hostname}} (inaktiv)",
+                "all": "Alle Proxy-Hosts",
+                "allHint": "Die App erhält diese Berechtigung auch für später angelegte Proxy-Hosts.",
+                "every": "alle Proxy-Hosts"
             },
             "approveInstall": "Freigeben und installieren",
             "approveUpdate": "Freigeben und auf {{version}} aktualisieren",

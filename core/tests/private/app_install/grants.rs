@@ -713,3 +713,85 @@ fn an_approval_matches_a_stored_decision_only_exactly() {
 fn approved_host(host: &str) -> ApprovedGrant {
     approved("proxy.hosts.read.v1", "proxyHosts", Some(host))
 }
+
+/// `full_approval()` with all proxy hosts in place of the selected one.
+fn all_hosts_approval() -> Vec<ApprovedGrant> {
+    let mut approval = full_approval();
+    approval[0] = approved("proxy.hosts.read.v1", "allProxyHosts", Some("all"));
+    approval
+}
+
+#[test]
+fn the_owner_may_approve_all_proxy_hosts_for_reading_and_probing() {
+    let requested = requested(&monitoring()).unwrap();
+    let decided = decide(&requested, &keys(), &all_hosts_approval(), ID).unwrap();
+    assert!(decided.contains(&grant("proxy.hosts.read.v1", "allProxyHosts", "all")));
+    let probing = manifest(
+        json!([{"id": "diagnostics.upstream.probe.v1", "scope": "proxyHosts"}]),
+        json!([]),
+    );
+    let probe_request = requested_or_panic(&probing);
+    let mut probe = vec![
+        approved(
+            "diagnostics.upstream.probe.v1",
+            "allProxyHosts",
+            Some("all"),
+        ),
+        approved("app.events.subscribe", "installation", None),
+        approved("app.audit.record", "installation", None),
+    ];
+    assert!(decide(&probe_request, &keys(), &probe, ID).is_ok());
+    // The scope names no host, and is never mixed with a selection of the same capability.
+    for resource in [None, Some(HOST), Some("*")] {
+        probe[0].resource_id = resource.map(Into::into);
+        assert_eq!(
+            decide(&probe_request, &keys(), &probe, ID),
+            Err(ApprovalRequired),
+            "{resource:?}"
+        );
+    }
+    let mut mixed = all_hosts_approval();
+    mixed.push(approved_host(HOST));
+    assert_eq!(
+        decide(&requested, &keys(), &mixed, ID),
+        Err(ApprovalRequired)
+    );
+    // No other capability or scope takes it.
+    let mut notify = full_approval();
+    notify[1] = approved("notifications.publish.v1", "allProxyHosts", Some("all"));
+    assert_eq!(
+        decide(&requested, &keys(), &notify, ID),
+        Err(ApprovalRequired)
+    );
+    let owned = item("proxy.hosts.manage-owned.v1", "proxyHosts", None);
+    let all = grant("proxy.hosts.manage-owned.v1", "allProxyHosts", "all");
+    assert!(!serves(&owned, &all, ID));
+    assert!(!covers("proxyHosts", "allProxyHosts"));
+}
+
+#[test]
+fn all_proxy_hosts_carry_to_releases_that_still_read_hosts() {
+    let requested = requested(&monitoring()).unwrap();
+    let decided = decide(&requested, &keys(), &all_hosts_approval(), ID).unwrap();
+    assert_eq!(
+        carry(&decided, &requested, &keys(), ID).as_deref(),
+        Some(decided.as_slice())
+    );
+    assert!(within(&monitoring(), &decided, ID));
+    // A release that no longer reads hosts drops the grant.
+    let notify_only = manifest(
+        json!([{"id": "notifications.publish.v1", "scope": "installation"}]),
+        json!([]),
+    );
+    let carried = carry(&decided, &requested_or_panic(&notify_only), &keys(), ID).unwrap();
+    assert!(
+        carried
+            .iter()
+            .all(|grant| grant.capability.scope != "allProxyHosts")
+    );
+    assert!(!within(&notify_only, &decided, ID));
+}
+
+fn requested_or_panic(manifest: &Value) -> Vec<RequestedGrant> {
+    requested(manifest).expect("approvable release")
+}
