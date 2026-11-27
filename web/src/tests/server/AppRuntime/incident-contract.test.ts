@@ -41,8 +41,18 @@ describe('the app incident change contract', () => {
         expect(valid({ ...open, title: '\u{1F600}'.repeat(80) })).toBeTrue()
     })
 
-    test('refuses control, surrogate and format characters', () => {
-        const texts = ['a\nb', 'a\u0000b', 'a\u007fb', 'a‮b', 'a​b', 'a﻿b', 'a\ud800b']
+    test('refuses control, surrogate, format and separator characters', () => {
+        const texts = [
+            'a\nb',
+            'a\u0000b',
+            'a\u007fb',
+            'a‮b',
+            'a​b',
+            'a﻿b',
+            'a\ud800b',
+            'a b',
+            'a b',
+        ]
         for (const text of texts)
             for (const field of ['title', 'message'])
                 expect(valid({ ...open, [field]: text })).toBeFalse()
@@ -65,6 +75,8 @@ describe('the app incident change contract', () => {
         // Plain mentions of hosts and paths are not links.
         expect(valid({ ...open, message: 'service.example.test is down, see /var/log' })).toBeTrue()
         expect(valid({ ...open, message: 'Timeout: 30s' })).toBeTrue()
+        // Like both contract SDKs, only ASCII letters fold case when looking for a scheme.
+        expect(valid({ ...open, message: 'Marked \u017f://example.net as unreachable' })).toBeTrue()
     })
 
     test('the capability is an installation grant', () => {

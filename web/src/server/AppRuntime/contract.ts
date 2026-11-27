@@ -158,16 +158,20 @@ export const appNotification = z.strictObject({
     title: z.string().regex(/^[^\p{Cc}\p{Cs}]{1,80}$/u),
     message: z.string().regex(/^[^\p{Cc}\p{Cs}]{1,400}$/u),
 })
-/** App text renders as plain text: no control, surrogate or format characters and no links. */
-const linkLike = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)/iu
-const isPlainText = (value: string) => !linkLike.test(value)
+/**
+ * App text renders as plain text on one line: no control, surrogate, format, line or paragraph
+ * separator characters, and no links. Like both contract SDKs, only ASCII letters fold case.
+ */
+const linkLike = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)/u
+const isPlainText = (value: string) =>
+    !linkLike.test(value.replace(/[A-Z]/gu, (letter) => letter.toLowerCase()))
 const incidentTitle = z
     .string()
-    .regex(/^[^\p{Cc}\p{Cs}\p{Cf}]{1,80}$/u)
+    .regex(/^[^\p{Cc}\p{Cs}\p{Cf}\p{Zl}\p{Zp}]{1,80}$/u)
     .refine(isPlainText)
 const incidentMessage = z
     .string()
-    .regex(/^[^\p{Cc}\p{Cs}\p{Cf}]{1,400}$/u)
+    .regex(/^[^\p{Cc}\p{Cs}\p{Cf}\p{Zl}\p{Zp}]{1,400}$/u)
     .refine(isPlainText)
 export const appIncidentChange = z.discriminatedUnion('status', [
     z.strictObject({
