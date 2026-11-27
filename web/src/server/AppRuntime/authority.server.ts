@@ -170,10 +170,17 @@ export async function readAppRuntimeContextInTransaction(
         allowPreparing: true,
     })
     const grants = await readGrants(transaction, generation)
+    // The context names capabilities as the manifest declares them, the form authorization
+    // requests use. A grant for all proxy hosts is reported as the proxy host scope it covers.
     const capabilities = new Map(
         grants
             .filter(({ capability }) => !isAppRuntimeSupportCapability(capability))
-            .map(({ capability }) => [capability.id, capability]),
+            .map(({ capability }) => [
+                capability.id,
+                capability.scope === 'allProxyHosts'
+                    ? { id: capability.id, scope: 'proxyHosts' }
+                    : capability,
+            ]),
     )
 
     if (generation.leaseExpiresAt.getTime() <= Date.now())

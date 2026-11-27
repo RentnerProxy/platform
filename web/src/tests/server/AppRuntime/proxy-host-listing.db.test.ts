@@ -8,6 +8,7 @@ import {
     hostDomains,
     proxyHosts,
 } from '@/db/schema.ts'
+import { readAppRuntimeContextInTransaction } from '@/server/AppRuntime/authority.server.ts'
 import { listAppProxyHosts } from '@/server/AppRuntime/hosts.server.ts'
 import {
     activateAppRuntimeGenerationInTransaction,
@@ -27,6 +28,7 @@ const integrationTest =
         : test.skip
 const readHosts = { id: 'proxy.hosts.read.v1', scope: 'proxyHosts' }
 const probeHosts = { id: 'diagnostics.upstream.probe.v1', scope: 'proxyHosts' }
+const manageOwnedHosts = { id: 'proxy.hosts.manage-owned.v1', scope: 'ownedProxyHosts' }
 const allHosts = (id: string): AppRuntimeGrant => ({
     capability: { id, scope: 'allProxyHosts' },
     resourceId: 'all',
@@ -75,18 +77,28 @@ integrationTest(
         const [early, late, pooled] = [randomUUID(), randomUUID(), randomUUID()]
         const ids: string[] = [early, late, pooled]
         const suffix = installationId.slice(0, 8)
-        await createHost(early, [`b-${suffix}.example.test`, `a-${suffix}.example.test`])
         const leaseExpiresAt = new Date(Date.now() + 60_000)
-        await db.transaction(async (transaction) => {
-            await registerAppRuntimeGenerationInTransaction(transaction, {
-                identity,
-                leaseExpiresAt,
-                capabilities: [readHosts, probeHosts],
-            })
-            await activateAppRuntimeGenerationInTransaction(transaction, identity, leaseExpiresAt)
-        })
         try {
+            await createHost(early, [`b-${suffix}.example.test`, `a-${suffix}.example.test`])
+            await db.transaction(async (transaction) => {
+                // Managing owned hosts is declared, so only the scope can refuse it below.
+                await registerAppRuntimeGenerationInTransaction(transaction, {
+                    identity,
+                    leaseExpiresAt,
+                    capabilities: [readHosts, probeHosts, manageOwnedHosts],
+                })
+                await activateAppRuntimeGenerationInTransaction(
+                    transaction,
+                    identity,
+                    leaseExpiresAt,
+                )
+            })
             await grant(identity, [allHosts(readHosts.id), allHosts(probeHosts.id)])
+            // The context reports the scopes as the manifest declares them.
+            const context = await db.transaction((transaction) =>
+                readAppRuntimeContextInTransaction(transaction, identity),
+            )
+            expect(context.capabilities).toEqual([probeHosts, readHosts])
             // Hosts created after the approval are listed too.
             await createHost(late, [`late-${suffix}.example.test`])
             await createHost(pooled, [`pool-${suffix}.example.test`], true)
