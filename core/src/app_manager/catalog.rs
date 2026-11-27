@@ -397,20 +397,32 @@ impl Endpoint {
                     && entry.archive_sha256 == selection.archive_sha256
             })
             .ok_or(Failure::Conflict)?;
-        // A quick check against the signed listing, with the installation ID that staging uses.
-        // Staging decides again from fresh metadata.
-        let installation_id = state
-            .installation_ids
-            .get(&selection.app_id)
-            .cloned()
-            .unwrap_or_else(|| derived_installation_id(&selection.app_id));
-        grants::decide(
-            &entry.grants,
-            &entry.permission_keys,
-            selection.approval.as_deref().unwrap_or_default(),
-            &installation_id,
-        )
-        .map_err(|_| Failure::ApprovalRequired)?;
+        // A replay of the exact running release, which may run with a subset that root
+        // approved, reaches the manager's own check against the journal.
+        let replays = state.installations.iter().any(|installation| {
+            installation.replays(
+                &selection.app_id,
+                &selection.version,
+                &selection.archive_sha256,
+                selection.approval.as_deref(),
+            )
+        });
+        if !replays {
+            // A quick check against the signed listing, with the installation ID that staging
+            // uses. Staging decides again from fresh metadata.
+            let installation_id = state
+                .installation_ids
+                .get(&selection.app_id)
+                .cloned()
+                .unwrap_or_else(|| derived_installation_id(&selection.app_id));
+            grants::decide(
+                &entry.grants,
+                &entry.permission_keys,
+                selection.approval.as_deref().unwrap_or_default(),
+                &installation_id,
+            )
+            .map_err(|_| Failure::ApprovalRequired)?;
+        }
         self.requests
             .try_send(Request::Install(selection.clone()))
             .map_err(|_| Failure::Unavailable)?;

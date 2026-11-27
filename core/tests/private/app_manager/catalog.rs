@@ -22,12 +22,18 @@ fn entry(selection: &Selection, availability: &str) -> CatalogEntry {
 }
 
 pub(in crate::app_manager) fn ready_endpoint() -> (Endpoint, mpsc::Receiver<Request>, Selection) {
-    let (endpoint, requests) = Endpoint::new(None);
     let selection = greeting();
-    endpoint
-        .finish_refresh(Ok(vec![entry(&selection, "available")]))
-        .unwrap();
+    let (endpoint, requests) = listing(vec![entry(&selection, "available")]);
     (endpoint, requests, selection)
+}
+
+/// An endpoint whose verified listing holds exactly `entries`.
+pub(in crate::app_manager) fn listing(
+    entries: Vec<CatalogEntry>,
+) -> (Endpoint, mpsc::Receiver<Request>) {
+    let (endpoint, requests) = Endpoint::new(None);
+    endpoint.finish_refresh(Ok(entries)).unwrap();
+    (endpoint, requests)
 }
 
 #[test]

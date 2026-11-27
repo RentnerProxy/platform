@@ -227,8 +227,19 @@ impl Slot {
     }
 
     /// Record what staging decided as the approval of `release`. An explicit decision of the
-    /// Owner stays pending until the release activates.
+    /// Owner stays pending until the release activates. Staging the same release again without
+    /// a new decision keeps a pending one, so that its activation still applies the decision.
     pub fn record(&mut self, release: &Release, decision: Decision) {
+        if !decision.explicit
+            && self
+                .approvals
+                .get(&release.archive_sha256)
+                .is_some_and(|approval| {
+                    approval.pending && approval.manifest_sha256 == release.manifest_sha256
+                })
+        {
+            return;
+        }
         self.approve(release, decision.grants);
         if let Some(approval) = self.approvals.get_mut(&release.archive_sha256) {
             approval.pending = decision.explicit;

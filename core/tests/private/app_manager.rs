@@ -678,6 +678,34 @@ fn a_decision_for_a_release_that_never_activates_leaves_the_running_approval() {
     assert!(stored["approvals"]["b".repeat(64)].get("pending").is_none());
 }
 
+#[test]
+fn staging_a_release_again_without_a_decision_keeps_the_owners_pending_one() {
+    use ApprovalModel as Model;
+    let (a, b) = (signed("1.0.0", 'a'), signed("1.1.0", 'b'));
+    let x = || (Model::X.to_owned(), true);
+    let mut model = Model::new();
+    model
+        .stage(
+            &a,
+            Some(Model::approval(&[(Model::X, true), (Model::Y, true)])),
+        )
+        .unwrap();
+    model.activate(&a);
+    // The Owner approves B for X only, and B is staged again without a new decision before it
+    // activates. The carry stays within B's decision, which remains pending.
+    model
+        .stage(&b, Some(Model::approval(&[(Model::X, true)])))
+        .unwrap();
+    model.stage(&b, None).unwrap();
+    assert_eq!(model.hosts(&b), [x()]);
+    let stored = serde_json::to_value(&model.slot).unwrap();
+    assert_eq!(stored["approvals"]["b".repeat(64)]["pending"], true);
+    // B's activation still applies the decision, so a rollback to A cannot restore Y.
+    model.activate(&b);
+    model.activate(&a);
+    assert_eq!(model.hosts(&a), [x()]);
+}
+
 fn host_without_key(host: &str) -> Grant {
     serde_json::from_value(json!({
         "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},

@@ -1033,3 +1033,96 @@ async fn expired_shutdown_write_fixture() {
     let journal = Journal::open(&directory).unwrap();
     assert!(journal.slot("expired").unwrap().pending_fence);
 }
+
+#[tokio::test]
+async fn revocation_waits_for_a_stopping_generation() {
+    run_isolated_lock_fixture("revocation_drain_fixture").await;
+}
+
+#[tokio::test]
+#[ignore = "private subprocess for the revocation drain lock fixture"]
+async fn revocation_drain_fixture() {
+    assert_eq!(unsafe { libc::geteuid() }, 0);
+    let dir = tempfile::tempdir_in("/root").unwrap();
+    let directory = dir.path().join("journal");
+    let posted = Arc::new(AtomicUsize::new(0));
+    let mut manager = Manager {
+        ui: ui::Registry::default(),
+        listener: None,
+        config: Some(dir.path().join("offline")),
+        journal: Journal::open(&directory).unwrap(),
+        gateway: authority(&dir.path().join("web.sock"), {
+            let posted = Arc::clone(&posted);
+            move |_, _| {
+                posted.fetch_add(1, Ordering::SeqCst);
+                StatusCode::NO_CONTENT
+            }
+        }),
+        running: BTreeMap::new(),
+        fence_cursor: String::new(),
+        drains: JoinSet::new(),
+        draining: HashMap::new(),
+    };
+    let active = Release {
+        version: "1.0.0".into(),
+        archive_sha256: "a".repeat(64),
+        manifest_sha256: "b".repeat(64),
+        catalog_revision: 1,
+    };
+    let host = |resource_id: &str| -> Grant {
+        serde_json::from_value(json!({
+            "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
+            "resourceId": resource_id,
+            "allowService": true,
+        }))
+        .unwrap()
+    };
+    let revoked = "0b6f3c0e-8d1a-4f43-9c2e-1d7a5b9e4f21";
+    let kept = host("5c1e2f3a-4b5d-4e6f-8a7b-9c0d1e2f3a4b");
+    let mut slot = Slot {
+        app_id: "fixture.revoke".into(),
+        uid: 53370,
+        generation: 1,
+        active: Some(active.clone()),
+        ..Default::default()
+    };
+    slot.approve(&active, vec![host(revoked), kept.clone()]);
+    manager.journal.save("revoke", slot).unwrap();
+    let request: lifecycle::Request = serde_json::from_value(json!({
+        "action": "revoke",
+        "installationId": "revoke",
+        "expected": {"generation": 1, "version": "1.0.0", "archiveSha256": "a".repeat(64)},
+        "grants": [{
+            "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
+            "resourceId": revoked,
+        }],
+    }))
+    .unwrap();
+    assert!(request.valid());
+    // The stopping generation still holds its writer, so its drain is in flight.
+    let writer = manager.journal.writer(53370).unwrap();
+    manager
+        .begin_drain("revoke".into(), Instant::now() + Duration::from_secs(5))
+        .unwrap();
+    let journal = directory.join("journal.json");
+    timeout(Duration::from_secs(4), async {
+        let (result, ()) = tokio::join!(manager.manage_lifecycle(&request), async {
+            sleep(Duration::from_millis(200)).await;
+            // The revocation waits for the drain instead of succeeding beside it.
+            let state: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+            let grants = &state["installations"]["revoke"]["approvals"]["a".repeat(64)]["grants"];
+            assert_eq!(grants.as_array().unwrap().len(), 2);
+            drop(writer);
+        });
+        result.unwrap();
+    })
+    .await
+    .unwrap();
+    assert!(!manager.is_draining("revoke"));
+    assert_eq!(
+        manager.journal.slot("revoke").unwrap().approvals[&"a".repeat(64)].grants,
+        [kept]
+    );
+    // No live generation remained to publish the reduced set to.
+    assert_eq!(posted.load(Ordering::SeqCst), 0);
+}

@@ -425,6 +425,29 @@ impl Installation {
             }
     }
 
+    /// Whether installing this exact running release again with `approval` changes nothing:
+    /// without an approval, or with one that decides exactly its stored grants. The manager
+    /// checks the journal again before it answers.
+    pub(super) fn replays(
+        &self,
+        app_id: &str,
+        version: &str,
+        archive_sha256: &str,
+        approval: Option<&[ApprovedGrant]>,
+    ) -> bool {
+        self.state == InstallationState::Running
+            && self.app_id == app_id
+            && self.release.version == version
+            && self.release.archive_sha256 == archive_sha256
+            && approval.is_none_or(|approval| {
+                grants::same_decision(
+                    approval,
+                    self.grants.as_deref().unwrap_or_default(),
+                    &self.installation_id,
+                )
+            })
+    }
+
     /// Whether the listed target of an offered update or reinstall receives an approval: the
     /// request's own, which must match the target exactly, or the carried one.
     pub(super) fn approves(&self, request: &Request, entries: &[CatalogEntry]) -> bool {
@@ -597,6 +620,9 @@ impl Manager {
     /// keeps a grant that the Owner revoked. A crash before the publication leaves the boot to
     /// fence the generation and start it with the reduced approval.
     async fn revoke(&mut self, id: &str, revoked: &[RevokedGrant]) -> io::Result<()> {
+        // A stopping generation keeps its grants until its drain completes, and no live handle
+        // remains to publish the reduced set to. Revoke once it can no longer use them.
+        self.wait_for_drain(id).await?;
         let mut slot = self.journal.slot(id)?.clone();
         slot.revoke(|grant| revoked.iter().any(|revoked| revoked.names(grant)));
         self.journal.save(id, slot)?;

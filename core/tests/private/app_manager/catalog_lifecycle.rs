@@ -543,6 +543,63 @@ fn offline_management_coalesces_retries_and_serializes_with_catalog_install() {
 }
 
 #[test]
+fn an_exact_replay_of_the_running_release_reaches_the_manager() {
+    let active = release("1.9.2", 'a');
+    let mut listed = serde_json::to_value(entry(&active, "available")).unwrap();
+    listed["grants"] = json!([
+        {"capability": {"id": "app.provider.register", "scope": "providerProfiles"},
+         "resourceId": "monitoring", "allowService": true},
+        {"capability": {"id": "app.events.subscribe", "scope": "installation"}, "allowService": true},
+    ]);
+    let (endpoint, mut queue) =
+        catalog::tests::listing(vec![serde_json::from_value(listed).unwrap()]);
+    let selection = |approval: Value| -> catalog::Selection {
+        serde_json::from_value(json!({
+            "appId": APP, "version": "1.9.2", "archiveSha256": "a".repeat(64),
+            "approval": approval,
+        }))
+        .unwrap()
+    };
+    let events = json!({"capability": {"id": "app.events.subscribe", "scope": "installation"},
+                        "allowService": true});
+    let provider = json!({"capability": {"id": "app.provider.register", "scope": "providerProfiles"},
+                          "resourceId": "monitoring", "allowService": true});
+    // Root approved only the events for the running release.
+    let mut slot = committed();
+    slot.approve(
+        &active,
+        vec![
+            serde_json::from_value(json!({
+                "capability": {"id": "app.events.subscribe", "scope": "installation"},
+                "resourceId": ID, "allowService": true,
+            }))
+            .unwrap(),
+        ],
+    );
+    let replay = selection(json!([events]));
+    // Unless the installation runs, the subset is no replay and needs a full approval.
+    endpoint
+        .publish(vec![Installation::new(ID, &slot, false).unwrap()])
+        .unwrap();
+    assert!(matches!(
+        endpoint.submit(replay.clone()),
+        Err(catalog::Failure::ApprovalRequired)
+    ));
+    endpoint
+        .publish(vec![Installation::new(ID, &slot, true).unwrap()])
+        .unwrap();
+    // Another subset still needs a full approval. The exact one reaches the manager, which
+    // compares it with the journal again.
+    assert!(matches!(
+        endpoint.submit(selection(json!([provider]))),
+        Err(catalog::Failure::ApprovalRequired)
+    ));
+    assert!(queue.try_recv().is_err());
+    assert!(endpoint.submit(replay.clone()).is_ok());
+    assert_eq!(queue.try_recv().unwrap(), catalog::Request::Install(replay));
+}
+
+#[test]
 fn dependency_refusals_are_reported_apart_from_conflicts() {
     let (endpoint, mut queue, _) = catalog::tests::ready_endpoint();
     endpoint
