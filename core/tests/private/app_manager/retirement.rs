@@ -1035,7 +1035,7 @@ async fn expired_shutdown_write_fixture() {
 }
 
 #[tokio::test]
-async fn revocation_waits_for_a_stopping_generation() {
+async fn revocation_never_succeeds_beside_an_unretired_generation() {
     run_isolated_lock_fixture("revocation_drain_fixture").await;
 }
 
@@ -1045,17 +1045,25 @@ async fn revocation_drain_fixture() {
     assert_eq!(unsafe { libc::geteuid() }, 0);
     let dir = tempfile::tempdir_in("/root").unwrap();
     let directory = dir.path().join("journal");
-    let posted = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::new(Mutex::new(Vec::new()));
     let mut manager = Manager {
         ui: ui::Registry::default(),
         listener: None,
         config: Some(dir.path().join("offline")),
         journal: Journal::open(&directory).unwrap(),
         gateway: authority(&dir.path().join("web.sock"), {
-            let posted = Arc::clone(&posted);
-            move |_, _| {
-                posted.fetch_add(1, Ordering::SeqCst);
-                StatusCode::NO_CONTENT
+            let calls = Arc::clone(&calls);
+            move |action, body| {
+                let call = format!("{action} {}", body["identity"]["installationId"]);
+                let mut calls = calls.lock().unwrap();
+                calls.push(call.clone());
+                // The first retirement of the fenced generation fails.
+                if call == r#"retire "fenced""# && calls.iter().filter(|c| **c == call).count() == 1
+                {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::NO_CONTENT
+                }
             }
         }),
         running: BTreeMap::new(),
@@ -1077,34 +1085,49 @@ async fn revocation_drain_fixture() {
         }))
         .unwrap()
     };
-    let revoked = "0b6f3c0e-8d1a-4f43-9c2e-1d7a5b9e4f21";
-    let kept = host("5c1e2f3a-4b5d-4e6f-8a7b-9c0d1e2f3a4b");
-    let mut slot = Slot {
-        app_id: "fixture.revoke".into(),
-        uid: 53370,
-        generation: 1,
-        active: Some(active.clone()),
-        ..Default::default()
+    let revoke = |id: &str, resource_id: &str| -> lifecycle::Request {
+        let request: lifecycle::Request = serde_json::from_value(json!({
+            "action": "revoke",
+            "installationId": id,
+            "expected": {"generation": 1, "version": "1.0.0", "archiveSha256": "a".repeat(64)},
+            "grants": [{
+                "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
+                "resourceId": resource_id,
+            }],
+        }))
+        .unwrap();
+        assert!(request.valid());
+        request
     };
-    slot.approve(&active, vec![host(revoked), kept.clone()]);
-    manager.journal.save("revoke", slot).unwrap();
-    let request: lifecycle::Request = serde_json::from_value(json!({
-        "action": "revoke",
-        "installationId": "revoke",
-        "expected": {"generation": 1, "version": "1.0.0", "archiveSha256": "a".repeat(64)},
-        "grants": [{
-            "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
-            "resourceId": revoked,
-        }],
-    }))
-    .unwrap();
-    assert!(request.valid());
+    let (revoked, other) = (
+        "0b6f3c0e-8d1a-4f43-9c2e-1d7a5b9e4f21",
+        "5c1e2f3a-4b5d-4e6f-8a7b-9c0d1e2f3a4b",
+    );
+    let kept = host(other);
+    let approved = |id: &str, uid: u32, pending_fence: bool| -> Slot {
+        let mut slot = Slot {
+            app_id: format!("fixture.{id}"),
+            uid,
+            generation: 1,
+            active: Some(active.clone()),
+            pending_fence,
+            ..Default::default()
+        };
+        slot.approve(&active, vec![host(revoked), kept.clone()]);
+        slot
+    };
+    manager
+        .journal
+        .save("revoke", approved("revoke", 53370, false))
+        .unwrap();
+
     // The stopping generation still holds its writer, so its drain is in flight.
     let writer = manager.journal.writer(53370).unwrap();
     manager
         .begin_drain("revoke".into(), Instant::now() + Duration::from_secs(5))
         .unwrap();
     let journal = directory.join("journal.json");
+    let request = revoke("revoke", revoked);
     timeout(Duration::from_secs(4), async {
         let (result, ()) = tokio::join!(manager.manage_lifecycle(&request), async {
             sleep(Duration::from_millis(200)).await;
@@ -1121,8 +1144,69 @@ async fn revocation_drain_fixture() {
     assert!(!manager.is_draining("revoke"));
     assert_eq!(
         manager.journal.slot("revoke").unwrap().approvals[&"a".repeat(64)].grants,
-        [kept]
+        std::slice::from_ref(&kept)
     );
     // No live generation remained to publish the reduced set to.
-    assert_eq!(posted.load(Ordering::SeqCst), 0);
+    assert!(calls.lock().unwrap().is_empty());
+
+    // A failed fence left "fenced" unretired, and other drains take every retry slot, so no
+    // retry is in flight. The revocation completes the fence before it reports success.
+    manager
+        .journal
+        .save("fenced", approved("fenced", 53371, true))
+        .unwrap();
+    let mut held = Vec::new();
+    for index in 0..8 {
+        let (id, uid) = (format!("busy-{index}"), 53372 + index);
+        let slot = Slot {
+            app_id: format!("fixture.{id}"),
+            uid,
+            generation: 1,
+            ..Default::default()
+        };
+        manager.journal.save(&id, slot).unwrap();
+        held.push((id.clone(), manager.journal.writer(uid).unwrap()));
+        manager
+            .begin_drain(id, Instant::now() + Duration::from_secs(5))
+            .unwrap();
+    }
+    timeout(Duration::from_secs(3), async {
+        // The fence fails again: the revocation is recorded, but it does not succeed.
+        assert!(
+            manager
+                .manage_lifecycle(&revoke("fenced", revoked))
+                .await
+                .is_err()
+        );
+        assert!(!manager.is_draining("fenced"));
+        let slot = manager.journal.slot("fenced").unwrap();
+        assert!(slot.pending_fence);
+        assert_eq!(
+            slot.approvals[&"a".repeat(64)].grants,
+            std::slice::from_ref(&kept)
+        );
+        // Once the authority retires the generation, a revocation succeeds.
+        manager
+            .manage_lifecycle(&revoke("fenced", other))
+            .await
+            .unwrap();
+    })
+    .await
+    .unwrap();
+    let slot = manager.journal.slot("fenced").unwrap();
+    assert!(!slot.pending_fence);
+    assert!(slot.approvals[&"a".repeat(64)].grants.is_empty());
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| *call == r#"retire "fenced""#)
+            .count(),
+        2
+    );
+    for (id, writer) in held {
+        drop(writer);
+        manager.wait_for_drain(&id).await.unwrap();
+    }
 }

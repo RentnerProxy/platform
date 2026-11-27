@@ -627,6 +627,11 @@ impl Manager {
         slot.revoke(|grant| revoked.iter().any(|revoked| revoked.names(grant)));
         self.journal.save(id, slot)?;
         if !self.running.contains_key(id) {
+            // A failed drain may leave the generation unretired at the authority, with no retry
+            // in flight. Complete its fence before the revocation reports success.
+            if self.journal.slot(id)?.pending_fence {
+                self.fence(id).await?;
+            }
             return Ok(());
         }
         let slot = self.journal.slot(id)?;
