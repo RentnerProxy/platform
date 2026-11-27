@@ -77,6 +77,7 @@ const invalid = [
     [{ id: 'ok', name: '', resource: 'none' }],
     [{ id: 'ok', name: 'x'.repeat(81), resource: 'none' }],
     [{ id: 'ok', name: 'Line\nbreak', resource: 'none' }],
+    [{ id: 'ok', name: 'Line separator', resource: 'none' }],
     [{ id: 'ok', name: 'Bidi‮flip', resource: 'none' }],
     [{ id: 'ok', name: 'Name', resource: 'dockerHost' }],
     Array.from({ length: 17 }, (_, index) => ({
