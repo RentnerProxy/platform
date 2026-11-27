@@ -147,7 +147,7 @@ integrationTest('an ordinary Unicode category name registers unchanged', () =>
         await registerAppRuntimeGenerationInTransaction(transaction, {
             identity,
             leaseExpiresAt,
-            capabilities: [],
+            capabilities: [incidents],
             incidentCategories: unicode,
         })
         await activateAppRuntimeGenerationInTransaction(transaction, identity, leaseExpiresAt)
