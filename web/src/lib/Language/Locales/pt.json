@@ -237,7 +237,7 @@
             "reinstall": "Reinstalar {{version}}",
             "blocked": {
                 "incompatible": "A versão {{version}} é incompatível com este dispositivo, por isso não é oferecida.",
-                "grantsRequired": "A versão {{version}} requer permissões adicionais, por isso não é oferecida."
+                "grantsRequired": "A versão {{version}} pede permissões que este dispositivo não pode conceder, por isso não é oferecida."
             },
             "failed": "Não foi possível concluir a ação.",
             "states": {
@@ -284,7 +284,8 @@
             "confirm": {
                 "uninstall": "Desinstalar {{name}}? A aplicação será removida e os dados serão conservados para uma reinstalação.",
                 "purge": "Eliminar definitivamente os dados conservados de {{name}}? Esta ação é irreversível.",
-                "rollback": "Restaurar a versão {{version}} de {{name}}? Os dados atuais têm de ser compatíveis com essa versão."
+                "rollback": "Restaurar a versão {{version}} de {{name}}? Os dados atuais têm de ser compatíveis com essa versão.",
+                "revoke": "Revogar «{{grant}}» de {{name}}? A aplicação perde esta permissão de imediato."
             },
             "errors": {
                 "invalid": "A ação pedida é inválida.",
@@ -298,8 +299,11 @@
                 "networkUnavailable": "Não foi possível aceder ao catálogo de aplicações nem à fonte de pacotes. Verifique a ligação à internet deste dispositivo. A aplicação não foi alterada.",
                 "incompatibleData": "A versão selecionada é incompatível com os dados guardados.",
                 "operationFailed": "Verifique o estado atual da aplicação antes de voltar a tentar.",
-                "approvalRequired": "A versão selecionada pede permissões que não foram aprovadas. A aplicação não foi alterada."
-            }
+                "approvalRequired": "A versão selecionada pede permissões que não foram aprovadas. A aplicação não foi alterada.",
+                "revokedAppStopped": "A permissão foi revogada, mas a aplicação em execução não conseguiu aplicar a alteração, por isso foi parada. Tente novamente a ativação para a iniciar com as permissões restantes."
+            },
+            "updateRequiresApproval": "A versão {{version}} pede permissões adicionais. Reveja-as antes de atualizar.",
+            "reviewUpdate": "Rever a atualização para {{version}}"
         },
         "status": {
             "loading": "A carregar o catálogo de aplicações…",
@@ -308,7 +312,7 @@
         },
         "availability": {
             "incompatible": "Incompatível com este dispositivo",
-            "grantsRequired": "São necessárias permissões adicionais"
+            "grantsRequired": "Pede permissões que este dispositivo não pode conceder"
         },
         "errors": {
             "invalid": "A versão selecionada é inválida.",
@@ -321,6 +325,52 @@
             "networkUnavailable": "Não foi possível aceder ao catálogo de aplicações nem à fonte de pacotes. Verifique a ligação à internet deste dispositivo e tente novamente.",
             "installFailed": "A instalação falhou. Pode tentar novamente.",
             "approvalRequired": "Esta versão pede permissões que não foram aprovadas, por isso não foi instalada."
+        },
+        "grants": {
+            "title": "Rever as permissões pedidas",
+            "description": "{{name}} {{version}} pede as permissões abaixo. Só é iniciada depois de as aprovar.",
+            "capabilities": "Funcionalidades",
+            "support": "Acesso à plataforma",
+            "supportHint": "Todas as aplicações com funcionalidades recebem este acesso para eventos de alteração e o seu registo de auditoria.",
+            "names": {
+                "proxyHostsRead": "Ler hosts proxy",
+                "upstreamProbe": "Verificar a acessibilidade dos upstreams",
+                "notificationsPublish": "Enviar notificações",
+                "auditRecord": "Escrever entradas no registo de auditoria",
+                "eventsSubscribe": "Receber eventos de alteração",
+                "providerRegister": "Registar-se como fornecedor",
+                "secretRead": "Ler segredos",
+                "unknown": "Funcionalidade {{id}}"
+            },
+            "scope": {
+                "installation": "Para esta aplicação",
+                "proxyHosts": "Para os hosts proxy que selecionar",
+                "providerProfiles": "Perfil de fornecedor {{resource}}",
+                "secretReferences": "Segredo {{resource}}",
+                "unknown": "Âmbito {{scope}}"
+            },
+            "allowService": "Permitir em segundo plano",
+            "allowServiceHint": "A aplicação pode usar esta permissão sem um utilizador com sessão iniciada, por exemplo para verificações agendadas.",
+            "permissionKey": "Permissão da aplicação necessária",
+            "permissionKeyNone": "Nenhuma permissão da aplicação necessária",
+            "hosts": {
+                "label": "Hosts proxy",
+                "placeholder": "Selecionar hosts proxy",
+                "search": "Pesquisar hosts proxy…",
+                "empty": "Ainda não há hosts proxy para selecionar.",
+                "required": "Selecione pelo menos um host proxy.",
+                "loadFailed": "Não foi possível carregar os hosts proxy.",
+                "disabled": "{{hostname}} (inativo)"
+            },
+            "approveInstall": "Aprovar e instalar",
+            "approveUpdate": "Aprovar e atualizar para {{version}}",
+            "approveReinstall": "Aprovar e reinstalar {{version}}",
+            "decline": "Recusar",
+            "declineHint": "Se recusar, nada é instalado nem alterado.",
+            "approved": "Permissões aprovadas",
+            "revoke": "Revogar",
+            "onResource": "{{name}}: {{resource}}",
+            "userOnly": "(apenas com um utilizador com sessão iniciada)"
         }
     },
     "appUi": {

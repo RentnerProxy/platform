@@ -239,7 +239,7 @@
             "reinstall": "Zainstaluj ponownie {{version}}",
             "blocked": {
                 "incompatible": "Wersja {{version}} nie jest zgodna z tym urządzeniem, dlatego nie jest oferowana.",
-                "grantsRequired": "Wersja {{version}} wymaga dodatkowych uprawnień, dlatego nie jest oferowana."
+                "grantsRequired": "Wersja {{version}} żąda uprawnień, których to urządzenie nie może przyznać, dlatego nie jest oferowana."
             },
             "failed": "Nie udało się wykonać operacji.",
             "states": {
@@ -286,7 +286,8 @@
             "confirm": {
                 "uninstall": "Odinstalować {{name}}? Aplikacja zostanie usunięta, a jej dane pozostaną na potrzeby ponownej instalacji.",
                 "purge": "Trwale usunąć zachowane dane aplikacji {{name}}? Tej operacji nie można cofnąć.",
-                "rollback": "Przywrócić wersję {{version}} aplikacji {{name}}? Jej bieżące dane muszą być zgodne z tą wersją."
+                "rollback": "Przywrócić wersję {{version}} aplikacji {{name}}? Jej bieżące dane muszą być zgodne z tą wersją.",
+                "revoke": "Cofnąć „{{grant}}” dla {{name}}? Aplikacja natychmiast straci to uprawnienie."
             },
             "errors": {
                 "invalid": "Żądana operacja jest nieprawidłowa.",
@@ -300,8 +301,11 @@
                 "networkUnavailable": "Ani katalog aplikacji, ani źródło pakietów nie są osiągalne. Sprawdź połączenie internetowe tego urządzenia. Aplikacja nie została zmieniona.",
                 "incompatibleData": "Wybrana wersja jest niezgodna z zapisanymi danymi aplikacji.",
                 "operationFailed": "Sprawdź bieżący stan aplikacji i spróbuj ponownie.",
-                "approvalRequired": "Wybrana wersja wymaga uprawnień, które nie zostały zatwierdzone. Aplikacja nie została zmieniona."
-            }
+                "approvalRequired": "Wybrana wersja wymaga uprawnień, które nie zostały zatwierdzone. Aplikacja nie została zmieniona.",
+                "revokedAppStopped": "Uprawnienie zostało cofnięte, ale działająca aplikacja nie mogła zastosować zmiany, więc została zatrzymana. Ponów aktywację, aby uruchomić ją z pozostałymi uprawnieniami."
+            },
+            "updateRequiresApproval": "Wersja {{version}} żąda dodatkowych uprawnień. Sprawdź je przed aktualizacją.",
+            "reviewUpdate": "Sprawdź aktualizację do {{version}}"
         },
         "status": {
             "loading": "Wczytywanie katalogu aplikacji…",
@@ -310,7 +314,7 @@
         },
         "availability": {
             "incompatible": "Aplikacja nie jest zgodna z tym urządzeniem",
-            "grantsRequired": "Wymagane są dodatkowe uprawnienia"
+            "grantsRequired": "Żąda uprawnień, których to urządzenie nie może przyznać"
         },
         "errors": {
             "invalid": "Wybrana wersja jest nieprawidłowa.",
@@ -323,6 +327,52 @@
             "networkUnavailable": "Ani katalog aplikacji, ani źródło pakietów nie są osiągalne. Sprawdź połączenie internetowe tego urządzenia i spróbuj ponownie.",
             "installFailed": "Instalacja nie powiodła się. Możesz spróbować ponownie.",
             "approvalRequired": "Ta wersja wymaga uprawnień, które nie zostały zatwierdzone, dlatego nie została zainstalowana."
+        },
+        "grants": {
+            "title": "Sprawdź żądane uprawnienia",
+            "description": "{{name}} {{version}} żąda poniższych uprawnień. Aplikacja uruchomi się dopiero po ich zatwierdzeniu.",
+            "capabilities": "Funkcje",
+            "support": "Dostęp do platformy",
+            "supportHint": "Każda aplikacja z funkcjami otrzymuje ten dostęp do zdarzeń zmian i swojego dziennika audytu.",
+            "names": {
+                "proxyHostsRead": "Odczyt hostów proxy",
+                "upstreamProbe": "Sprawdzanie dostępności upstreamów",
+                "notificationsPublish": "Wysyłanie powiadomień",
+                "auditRecord": "Zapisywanie wpisów w dzienniku audytu",
+                "eventsSubscribe": "Odbieranie zdarzeń zmian",
+                "providerRegister": "Rejestracja jako dostawca",
+                "secretRead": "Odczyt sekretów",
+                "unknown": "Funkcja {{id}}"
+            },
+            "scope": {
+                "installation": "Dla tej aplikacji",
+                "proxyHosts": "Dla wybranych hostów proxy",
+                "providerProfiles": "Profil dostawcy {{resource}}",
+                "secretReferences": "Sekret {{resource}}",
+                "unknown": "Zakres {{scope}}"
+            },
+            "allowService": "Zezwalaj w tle",
+            "allowServiceHint": "Aplikacja może korzystać z tego uprawnienia bez zalogowanego użytkownika, na przykład do zaplanowanych kontroli.",
+            "permissionKey": "Wymagane uprawnienie aplikacji",
+            "permissionKeyNone": "Uprawnienie aplikacji nie jest wymagane",
+            "hosts": {
+                "label": "Hosty proxy",
+                "placeholder": "Wybierz hosty proxy",
+                "search": "Szukaj hostów proxy…",
+                "empty": "Nie ma jeszcze hostów proxy do wyboru.",
+                "required": "Wybierz co najmniej jeden host proxy.",
+                "loadFailed": "Nie udało się wczytać hostów proxy.",
+                "disabled": "{{hostname}} (nieaktywny)"
+            },
+            "approveInstall": "Zatwierdź i zainstaluj",
+            "approveUpdate": "Zatwierdź i zaktualizuj do {{version}}",
+            "approveReinstall": "Zatwierdź i zainstaluj ponownie {{version}}",
+            "decline": "Odrzuć",
+            "declineHint": "Jeśli odrzucisz, nic nie zostanie zainstalowane ani zmienione.",
+            "approved": "Zatwierdzone uprawnienia",
+            "revoke": "Cofnij",
+            "onResource": "{{name}}: {{resource}}",
+            "userOnly": "(tylko z zalogowanym użytkownikiem)"
         }
     },
     "appUi": {

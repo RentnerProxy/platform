@@ -151,6 +151,8 @@ enum LifecycleFailure {
     PackageSourceUnavailable,
     NetworkUnavailable,
     IncompatibleData,
+    /// The revocation is stored, and the app that could not apply it live was stopped.
+    RevokedAppStopped,
     OperationFailed,
 }
 
@@ -521,6 +523,8 @@ impl Endpoint {
                 );
                 let error = if lifecycle::incompatible(&error) {
                     LifecycleFailure::IncompatibleData
+                } else if lifecycle::revoked_and_stopped(&error) {
+                    LifecycleFailure::RevokedAppStopped
                 } else if grants::approval_required(&error) {
                     LifecycleFailure::ApprovalRequired
                 } else if let Some(outage) = LifecycleFailure::outage(&error) {

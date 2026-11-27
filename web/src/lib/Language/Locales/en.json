@@ -235,7 +235,7 @@
             "reinstall": "Reinstall {{version}}",
             "blocked": {
                 "incompatible": "Version {{version}} is incompatible with this appliance, so it is not offered.",
-                "grantsRequired": "Version {{version}} requires additional grants, so it is not offered."
+                "grantsRequired": "Version {{version}} requests access this appliance cannot grant, so it is not offered."
             },
             "failed": "The app action could not be completed.",
             "states": {
@@ -282,7 +282,8 @@
             "confirm": {
                 "uninstall": "Uninstall {{name}}? The app will be removed and its data will be kept for reinstallation.",
                 "purge": "Permanently delete the retained data for {{name}}? This cannot be undone.",
-                "rollback": "Switch {{name}} to version {{version}}? Its current data must be compatible with that version."
+                "rollback": "Switch {{name}} to version {{version}}? Its current data must be compatible with that version.",
+                "revoke": "Revoke “{{grant}}” from {{name}}? The app loses this access immediately."
             },
             "errors": {
                 "invalid": "The requested app action is invalid.",
@@ -296,8 +297,11 @@
                 "networkUnavailable": "Neither the app catalog nor the package source could be reached. Check this appliance’s internet connection. The app was not changed.",
                 "incompatibleData": "The selected version is incompatible with the app’s stored data.",
                 "operationFailed": "Check the app’s current state before trying again.",
-                "approvalRequired": "The selected version requests grants that have not been approved. The app was not changed."
-            }
+                "approvalRequired": "The selected version requests grants that have not been approved. The app was not changed.",
+                "revokedAppStopped": "The access was revoked, but the running app could not apply the change, so it was stopped. Retry activation to start it with its remaining access."
+            },
+            "updateRequiresApproval": "Version {{version}} requests additional access. Review it before updating.",
+            "reviewUpdate": "Review update to {{version}}"
         },
         "status": {
             "loading": "Loading the app catalog…",
@@ -306,7 +310,7 @@
         },
         "availability": {
             "incompatible": "Incompatible with this appliance",
-            "grantsRequired": "Additional grants required"
+            "grantsRequired": "Requests access this appliance cannot grant"
         },
         "errors": {
             "invalid": "The selected release is invalid.",
@@ -319,6 +323,52 @@
             "networkUnavailable": "Neither the app catalog nor the package source could be reached. Check this appliance’s internet connection, then try again.",
             "installFailed": "Installation failed. You can try again.",
             "approvalRequired": "This release requests grants that have not been approved, so it was not installed."
+        },
+        "grants": {
+            "title": "Review requested access",
+            "description": "{{name}} {{version}} requests the access below. It starts only after you approve it.",
+            "capabilities": "Capabilities",
+            "support": "Platform access",
+            "supportHint": "Every app with capabilities receives this access for change events and its audit trail.",
+            "names": {
+                "proxyHostsRead": "Read proxy hosts",
+                "upstreamProbe": "Check upstream reachability",
+                "notificationsPublish": "Send notifications",
+                "auditRecord": "Write audit log entries",
+                "eventsSubscribe": "Receive change events",
+                "providerRegister": "Register as a provider",
+                "secretRead": "Read secrets",
+                "unknown": "Capability {{id}}"
+            },
+            "scope": {
+                "installation": "For this app",
+                "proxyHosts": "For the proxy hosts you select",
+                "providerProfiles": "Provider profile {{resource}}",
+                "secretReferences": "Secret {{resource}}",
+                "unknown": "Scope {{scope}}"
+            },
+            "allowService": "Allow in the background",
+            "allowServiceHint": "Lets the app use this access without a signed-in user, for example for scheduled checks.",
+            "permissionKey": "Required app permission",
+            "permissionKeyNone": "No app permission required",
+            "hosts": {
+                "label": "Proxy hosts",
+                "placeholder": "Select proxy hosts",
+                "search": "Search proxy hosts…",
+                "empty": "There are no proxy hosts to select yet.",
+                "required": "Select at least one proxy host.",
+                "loadFailed": "The proxy hosts could not be loaded.",
+                "disabled": "{{hostname}} (inactive)"
+            },
+            "approveInstall": "Approve and install",
+            "approveUpdate": "Approve and update to {{version}}",
+            "approveReinstall": "Approve and reinstall {{version}}",
+            "decline": "Decline",
+            "declineHint": "If you decline, nothing is installed or changed.",
+            "approved": "Approved access",
+            "revoke": "Revoke",
+            "onResource": "{{name}}: {{resource}}",
+            "userOnly": "(only with a signed-in user)"
         }
     },
     "appUi": {

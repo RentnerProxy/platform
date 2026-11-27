@@ -3,6 +3,7 @@ import { buttonClassName } from '@/shared/Buttons/buttonStyles.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import PageHeader from '@/shared/Management/PageHeader.tsx'
 import { ConfirmDialog } from '@/shared/Modal/Components/ConfirmDialog.tsx'
+import GrantApprovalDialog from './Components/GrantApprovalDialog.tsx'
 import InstalledAppCard from './Components/InstalledAppCard.tsx'
 import useAppCatalogLogic from './Hooks/useAppCatalogLogic.ts'
 
@@ -105,6 +106,7 @@ export default function AppCatalogPage() {
                                 app={app}
                                 canManage={state.canManage}
                                 onAction={handler.handleAction}
+                                onRevoke={handler.handleRevoke}
                             />
                         ))}
                     </ul>
@@ -123,6 +125,7 @@ export default function AppCatalogPage() {
                                 app={app}
                                 canManage={state.canManage}
                                 onAction={handler.handleAction}
+                                onRevoke={handler.handleRevoke}
                             />
                         ))}
                     </ul>
@@ -207,6 +210,7 @@ export default function AppCatalogPage() {
                         ? t(`appCatalog.management.confirm.${confirmation.request.action}`, {
                               name: confirmation.name,
                               version: confirmation.request.target?.version,
+                              grant: confirmation.grant,
                           })
                         : ''
                 }
@@ -218,6 +222,13 @@ export default function AppCatalogPage() {
                 destructive={confirmation?.request.action !== 'rollback'}
                 onConfirm={handler.handleConfirm}
             />
+            {state.approval ? (
+                <GrantApprovalDialog
+                    key={`${state.approval.kind}:${state.approval.name}:${state.approval.version}`}
+                    request={state.approval}
+                    onOpenChange={handler.handleApprovalChange}
+                />
+            ) : null}
         </section>
     )
 }

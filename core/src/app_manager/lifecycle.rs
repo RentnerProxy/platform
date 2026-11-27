@@ -498,8 +498,36 @@ pub(super) fn incompatible(error: &io::Error) -> bool {
         .is_some_and(|cause| cause.is::<IncompatibleData>())
 }
 
-/// The error of a revocation the live generation could not apply, with every failure of the
-/// steps that fenced it.
+/// The revocation is stored, but the live generation could not apply it. The manager stopped the
+/// app instead, and it waits for recovery with the remaining grants.
+#[derive(Debug)]
+pub(super) struct RevokedAndStopped(io::Error);
+
+impl fmt::Display for RevokedAndStopped {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "Revocation stopped the app that could not apply it: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for RevokedAndStopped {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+pub(super) fn revoked_and_stopped(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<RevokedAndStopped>())
+}
+
+/// The error of a revocation the live generation could not apply. When every step that fenced
+/// it succeeded, the app is stopped and waits for recovery; otherwise the error names each
+/// failed step.
 fn fail_closed(
     published: io::Error,
     recorded: io::Result<()>,
@@ -510,7 +538,7 @@ fn fail_closed(
         .filter_map(|(step, result)| result.err().map(|error| format!("{step}: {error}")))
         .collect();
     if failures.is_empty() {
-        return published;
+        return io::Error::new(published.kind(), RevokedAndStopped(published));
     }
     io::Error::new(
         published.kind(),
