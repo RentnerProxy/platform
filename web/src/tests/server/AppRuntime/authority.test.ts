@@ -26,6 +26,10 @@ import type {
 
 const readCapability = { id: 'proxy.hosts.read.v1', scope: 'proxyHosts' } as const
 const ownedCapability = { id: 'proxy.hosts.manage-owned.v1', scope: 'ownedProxyHosts' } as const
+/** A grant for all proxy hosts, or one that wrongly names a single host. */
+function allHosts(id: string, resourceId = 'all'): AppRuntimeGrant {
+    return { capability: { id, scope: 'allProxyHosts' }, resourceId, allowService: true }
+}
 const appId = 'test.integration'
 const installationId = 'instance-a'
 const servicePrincipal: AppRuntimePrincipal = {
@@ -167,6 +171,57 @@ describe('app runtime authorization', () => {
                 'credential-a',
             ),
         ).toBe(true)
+    })
+
+    test('a grant for all proxy hosts covers every host only for reading and probing', () => {
+        const probe = { id: 'diagnostics.upstream.probe.v1', scope: 'proxyHosts' } as const
+        const host = '2f9c4b1e-6a3d-4e8f-9b7c-0d1e2f3a4b5c'
+        const reading = { ...servicePrincipal, grants: [allHosts(readCapability.id)] }
+        // Hosts created after the approval are covered, under any ID the app sees.
+        expect(isAppRuntimeAuthorized(reading, readCapability, host)).toBe(true)
+        expect(isAppRuntimeAuthorized(reading, readCapability, 'owned-host')).toBe(true)
+        expect(isAppRuntimeAuthorized(reading, probe, host)).toBe(false)
+        expect(
+            isAppRuntimeAuthorized(
+                { ...servicePrincipal, grants: [allHosts(probe.id)] },
+                probe,
+                host,
+            ),
+        ).toBe(true)
+        // Managing hosts and every other capability stay per resource.
+        const managing = { ...servicePrincipal, grants: [allHosts(ownedCapability.id)] }
+        expect(isAppRuntimeAuthorized(managing, ownedCapability, 'owned-host')).toBe(false)
+        for (const grant of [
+            allHosts(ownedCapability.id),
+            allHosts('access.logs.read.v1'),
+            allHosts(readCapability.id, host),
+        ])
+            expect(
+                isAppRuntimeGrantTarget(grant.capability, grant.resourceId, installationId),
+            ).toBe(false)
+        expect(
+            isAppRuntimeGrantTarget(allHosts(readCapability.id).capability, 'all', installationId),
+        ).toBe(true)
+        // On behalf of a user, the grant needs the user's permission to view proxy hosts.
+        const user = { ...userPrincipal, grants: [allHosts(readCapability.id)] }
+        expect(isAppRuntimeAuthorized(user, readCapability, host)).toBe(true)
+        expect(
+            isAppRuntimeAuthorized(
+                { ...user, permissions: [PERMISSIONS.APP_ACCESS] },
+                readCapability,
+                host,
+            ),
+        ).toBe(false)
+        expect(
+            isAppRuntimeAuthorized(
+                {
+                    ...servicePrincipal,
+                    grants: [{ ...allHosts(readCapability.id), allowService: false }],
+                },
+                readCapability,
+                host,
+            ),
+        ).toBe(false)
     })
 })
 

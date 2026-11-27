@@ -114,7 +114,8 @@ describe('catalog grant approval', () => {
         ).toBe('unknown')
         expect(grantNameKey({ id: 'constructor', scope: 'installation' })).toBe('unknown')
         expect(grantScopeKey(provider)).toBe('providerProfiles')
-        expect(grantScopeKey({ id: read.id, scope: 'allProxyHosts' })).toBe('unknown')
+        expect(grantScopeKey({ id: read.id, scope: 'allProxyHosts' })).toBe('allProxyHosts')
+        expect(grantScopeKey({ id: read.id, scope: 'dockerConnections' })).toBe('unknown')
         expect([read, notify, provider, audit].map(isSupportGrant)).toEqual([
             false,
             false,
@@ -133,5 +134,34 @@ describe('catalog grant approval', () => {
         })
         expect(canRevokeGrants(installation)).toBe(true)
         expect(canRevokeGrants({ ...installation, state: 'removed' })).toBe(false)
+    })
+})
+
+describe('catalog approval for all proxy hosts', () => {
+    test('replaces the host selection with one grant that also covers later hosts', () => {
+        const draft = grantDraft(requested, [])
+        expect(draft.map((item) => item.allHostsAvailable)).toEqual([true, false, false, false])
+        const all = updateGrantDraft(draft, 0, { allHosts: true })
+        // No host needs to be selected, and a selected one is not approved besides.
+        expect(grantDraftComplete(all)).toBe(true)
+        expect(grantApproval(updateGrantDraft(all, 0, { resources: [HOST_A] }))[0]).toEqual({
+            capability: { id: read.id, scope: 'allProxyHosts' },
+            resourceId: 'all',
+            allowService: true,
+        })
+        // Only reading and probing hosts may cover all of them.
+        expect(updateGrantDraft(draft, 1, { allHosts: true })[1]?.allHosts).toBe(false)
+    })
+
+    test('preselects all proxy hosts from a previous approval', () => {
+        const previous: CatalogGrant[] = [
+            {
+                capability: { id: read.id, scope: 'allProxyHosts' },
+                resourceId: 'all',
+                allowService: false,
+            },
+        ]
+        const [hosts] = grantDraft(requested, [], previous)
+        expect(hosts).toMatchObject({ allHosts: true, resources: [], allowService: false })
     })
 })

@@ -339,7 +339,24 @@ integrationTest(
                 ]),
             )
             expect(await listAppProxyHosts(owner, { limit: 10 })).toEqual({
-                hosts: [{ id: change.hostId, hostname: change.hostname, revision }],
+                hosts: [
+                    {
+                        id: change.hostId,
+                        hostname: change.hostname,
+                        revision,
+                        platformHostId,
+                        enabled: true,
+                        domains: [change.hostname],
+                        upstream: {
+                            scheme: change.upstream.scheme,
+                            targets: [
+                                { address: change.upstream.address, port: change.upstream.port },
+                            ],
+                            pool: null,
+                        },
+                        probeRevision: expect.stringMatching(/^[a-f0-9]{64}$/u),
+                    },
+                ],
             })
             await expect(
                 probeAppProxyUpstream(foreign, { hostId: change.hostId, timeoutMs: 1 }),

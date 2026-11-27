@@ -37,7 +37,7 @@ import {
     qualifyAppRuntimePermission,
 } from './authority-policy.server.ts'
 import {
-    appCapabilitySchema,
+    appGrantCapabilitySchema,
     appIdSchema,
     appGenerationSchema,
     appRecordId,
@@ -131,7 +131,7 @@ async function readGrants(
         const capability = { id: capabilityId, scope }
         if (
             (!generation.capabilities.includes(capabilityId) ||
-                !appCapabilitySchema.safeParse(capability).success) &&
+                !appGrantCapabilitySchema.safeParse(capability).success) &&
             !isAppRuntimeSupportCapability(capability)
         )
             return []

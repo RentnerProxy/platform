@@ -345,7 +345,8 @@
                 "proxyHosts": "For the proxy hosts you select",
                 "providerProfiles": "Provider profile {{resource}}",
                 "secretReferences": "Secret {{resource}}",
-                "unknown": "Scope {{scope}}"
+                "unknown": "Scope {{scope}}",
+                "allProxyHosts": "For all proxy hosts, including hosts created later"
             },
             "allowService": "Allow in the background",
             "allowServiceHint": "Lets the app use this access without a signed-in user, for example for scheduled checks.",
@@ -358,7 +359,10 @@
                 "empty": "There are no proxy hosts to select yet.",
                 "required": "Select at least one proxy host.",
                 "loadFailed": "The proxy hosts could not be loaded.",
-                "disabled": "{{hostname}} (inactive)"
+                "disabled": "{{hostname}} (inactive)",
+                "all": "All proxy hosts",
+                "allHint": "The app also gets this access to proxy hosts created later.",
+                "every": "all proxy hosts"
             },
             "approveInstall": "Approve and install",
             "approveUpdate": "Approve and update to {{version}}",

@@ -1,4 +1,4 @@
-import type { AppOwnedProxyHostChange, AppProxyHost } from './hosts.types.ts'
+import type { AppOwnedProxyHostChange, AppProxyHostReference } from './hosts.types.ts'
 
 export type AppOperationStatus = 'accepted' | 'running' | 'cancelled' | 'succeeded' | 'failed'
 
@@ -8,7 +8,7 @@ export interface AppOperationFailure {
     readonly status: number
 }
 
-export interface AppOperationHost extends AppProxyHost {
+export interface AppOperationHost extends AppProxyHostReference {
     readonly platformHostId: string
 }
 

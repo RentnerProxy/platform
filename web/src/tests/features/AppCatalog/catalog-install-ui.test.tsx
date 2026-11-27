@@ -504,6 +504,56 @@ test('installs a release with capabilities only after the Owner approves its acc
     }
 })
 
+test('approves all proxy hosts instead of selecting them', async () => {
+    snapshot = {
+        ...ready,
+        entries: [{ ...ready.entries[0]!, grants: requesting(readHosts, notify) }],
+    }
+    apps = []
+    const post = spyOn(globalThis, 'fetch').mockResolvedValue(
+        Response.json(pending, { status: 202 }),
+    )
+    const { button, unmount } = await mountCatalog()
+    try {
+        await waitFor(() => button('Install')?.disabled === false)
+        await act(async () => button('Install')!.click())
+        await waitFor(() => dialogButton('Approve and install')?.disabled === true)
+        const allHosts = Array.from(openDialog()!.querySelectorAll('label')).find(
+            (label) => label.textContent === 'All proxy hosts',
+        )
+        await act(async () => allHosts!.querySelector('input')!.click())
+        await waitFor(() => dialogButton('Approve and install')?.disabled === false)
+        // The host picker gives way to the grant for every host.
+        expect(openDialog()!.querySelector('button[role="combobox"]')).toBeNull()
+        expect(openDialog()!.textContent).toContain(
+            'For all proxy hosts, including hosts created later',
+        )
+        await act(async () => dialogButton('Approve and install')!.click())
+        await waitFor(() => post.mock.calls.length === 1)
+        expect(post).toHaveBeenCalledWith(
+            APP_CATALOG_INSTALL_PATH,
+            expect.objectContaining({
+                body: JSON.stringify({
+                    ...selection,
+                    approval: [
+                        {
+                            capability: { id: readHosts.id, scope: 'allProxyHosts' },
+                            resourceId: 'all',
+                            allowService: true,
+                        },
+                        { capability: notify, allowService: true },
+                        { capability: support[0], allowService: true },
+                        { capability: support[1], allowService: true },
+                    ],
+                }),
+            }),
+        )
+    } finally {
+        await unmount()
+        post.mockRestore()
+    }
+})
+
 test('reviews an update that requests more access and revokes approved access', async () => {
     const target = { version: '1.1.0', archiveSha256: 'b'.repeat(64) }
     const approved = [
