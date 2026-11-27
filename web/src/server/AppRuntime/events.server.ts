@@ -12,6 +12,7 @@ import {
 } from '@/server/Auth/Core/encryption.server.ts'
 import {
     APP_RUNTIME_SUPPORT_CAPABILITIES,
+    coversAllProxyHosts,
     isAppRuntimeGrantAuthorized,
     isAppRuntimeGrantTarget,
     requireAppRuntimeAuthorization,
@@ -229,12 +230,18 @@ export async function replayAppRuntimeEventsInTransaction(
     const position = cursorPosition ?? floor
     const filter = principal.grants
         .filter((grant) => isAppRuntimeGrantAuthorized(principal, grant))
-        .map(({ capability, resourceId }) =>
-            and(
-                eq(appRuntimeEvents.capabilityId, capability.id),
-                eq(appRuntimeEvents.scope, capability.scope),
-                eq(appRuntimeEvents.resourceId, resourceId),
-            ),
+        .map((grant) =>
+            // A grant for all proxy hosts covers the events of every host it reads or probes.
+            coversAllProxyHosts(grant, { id: grant.capability.id, scope: 'proxyHosts' })
+                ? and(
+                      eq(appRuntimeEvents.capabilityId, grant.capability.id),
+                      eq(appRuntimeEvents.scope, 'proxyHosts'),
+                  )
+                : and(
+                      eq(appRuntimeEvents.capabilityId, grant.capability.id),
+                      eq(appRuntimeEvents.scope, grant.capability.scope),
+                      eq(appRuntimeEvents.resourceId, grant.resourceId),
+                  ),
         )
     if (filter.length === 0) throw new AppRuntimeAuthorityError('unauthorized')
     const rows = await transaction

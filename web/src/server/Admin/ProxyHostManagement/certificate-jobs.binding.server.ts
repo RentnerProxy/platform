@@ -18,6 +18,11 @@ import {
 import { getCertificateJobManualDnsState } from './certificate-jobs.manual.ts'
 import type { CertificateJobRow } from './Types/certificate-jobs-storage.types.ts'
 import { withCertificateJobClaim } from './certificate-jobs.lease.server.ts'
+import { toProxyHostSummary } from './proxy-hosts.mutations.server.ts'
+import {
+    proxyHostChange,
+    recordProxyHostEventsInTransaction,
+} from '@/server/AppRuntime/host-events.server.ts'
 
 export const certificateJobRuntime = {
     reconcile: reconcileProxyConfigurationService,
@@ -88,6 +93,17 @@ export async function bindIssuedJobCertificate(
                         updatedAt: new Date(),
                     })
                     .where(eq(proxyHosts.id, context.host.id))
+                const previous = toProxyHostSummary(context.host, context.domains)
+                const type = proxyHostChange(previous, {
+                    ...previous,
+                    certificateId: metadata.id,
+                    enabled: current.desiredEnabled,
+                    forceHttps: current.desiredForceHttps,
+                })
+                if (type)
+                    await recordProxyHostEventsInTransaction(transaction, [
+                        { proxyHostId: context.host.id, type },
+                    ])
                 const assigned = await readCertificateJobHost(transaction, context.host.id)
                 await transaction
                     .update(certificateJobs)

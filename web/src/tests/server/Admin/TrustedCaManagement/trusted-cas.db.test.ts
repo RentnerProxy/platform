@@ -31,6 +31,13 @@ import { createSessionService } from '@/server/Auth/Access/sessions.service.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
 import { getApplicationRevision } from '@/server/WebSockets/applicationChanges.ts'
+import {
+    allHostsGrant,
+    hostEventsOf,
+    installEventApp,
+    readHosts,
+    removeEventApps,
+} from '@/tests/Helpers/appHostEvents.ts'
 
 const enabled = process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() !== null
 const integrationTest = enabled ? test : test.skip
@@ -297,6 +304,52 @@ describe('trusted CAs with PostgreSQL', () => {
                         .where(eq(trustedCas.id, created.trustedCaId))
                 )[0]?.fingerprintSha256,
             ).toBe('sha256:' + 'b'.repeat(64))
+        },
+    )
+
+    integrationTest(
+        'replacing a trusted CA records one update for each host that verifies against it',
+        async () => {
+            const owner = await createUser([SYSTEM_ROLES.OWNER])
+            const ca = await asUser(owner, () =>
+                createTrustedCaService({ name: PREFIX + 'events', pem: PEM }),
+            )
+            const host = (verify: boolean) =>
+                asUser(owner, () =>
+                    createProxyHostService({
+                        domains: [randomUUID() + '.invalid'],
+                        forwardScheme: 'https',
+                        forwardHost: PREFIX + 'backend.invalid',
+                        forwardPort: 443,
+                        enabled: true,
+                        verifyUpstreamTls: verify,
+                        upstreamTlsServerName: null,
+                        trustedCaId: verify ? ca.trustedCaId : null,
+                    }),
+                )
+            const verifying = await host(true)
+            await host(false)
+            const app = await installEventApp([allHostsGrant(readHosts.id)])
+            try {
+                controller!.setFingerprint('c')
+                await asUser(owner, () =>
+                    replaceTrustedCaService({
+                        trustedCaId: ca.trustedCaId,
+                        name: PREFIX + 'events',
+                        pem: PEM,
+                    }),
+                )
+                expect(await hostEventsOf(app.installationId)).toEqual([
+                    {
+                        type: 'proxyHostUpdated',
+                        capabilityId: readHosts.id,
+                        scope: 'proxyHosts',
+                        resourceId: verifying.id,
+                    },
+                ])
+            } finally {
+                await removeEventApps([app])
+            }
         },
     )
 

@@ -321,6 +321,7 @@ export async function applyAppOwnedProxyHostChange(
     const actor: ProxyHostMutationActor = {
         userId: principal.user?.id ?? null,
         operationId,
+        installationId: principal.identity.installationId,
         ...(!previous && platformHostId.safeParse(input.hostId).success
             ? { proxyHostId: input.hostId }
             : {}),

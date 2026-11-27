@@ -24,8 +24,13 @@ import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-se
 import { assertDiscoveryHostEditable } from '@/server/Admin/DockerDiscovery/discovery-storage.server.ts'
 import {
     createProxyHostInTransaction,
+    toProxyHostSummary,
     updateProxyHostInTransaction,
 } from './proxy-hosts.mutations.server.ts'
+import {
+    proxyHostChange,
+    recordProxyHostEventsInTransaction,
+} from '@/server/AppRuntime/host-events.server.ts'
 import {
     assertNoActiveHostJob,
     canonicalHostForDigest,
@@ -234,6 +239,17 @@ async function requestJobTransaction(
                     updatedAt: new Date(),
                 })
                 .where(eq(proxyHosts.id, hostState.host.id))
+            const previous = toProxyHostSummary(hostState.host, hostState.domains)
+            const type = proxyHostChange(previous, {
+                ...previous,
+                enabled: false,
+                certificateId: null,
+                forceHttps: false,
+            })
+            if (type)
+                await recordProxyHostEventsInTransaction(transaction, [
+                    { proxyHostId: hostState.host.id, type },
+                ])
             await appendAuditEventInTransactionService(transaction, {
                 actorUserId: actorId,
                 actorKind: 'user',
