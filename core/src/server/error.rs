@@ -75,6 +75,13 @@ impl ApiError {
         }
     }
 
+    pub(super) fn rate_limited() -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            error: "rate_limited",
+        }
+    }
+
     pub(super) fn invalid_trusted_ca() -> Self {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,

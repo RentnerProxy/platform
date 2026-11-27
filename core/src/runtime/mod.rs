@@ -195,6 +195,7 @@ pub(crate) struct ProxyRuntime {
     monitoring_admission: Semaphore,
     upstream_health_admission: Semaphore,
     diagnostics_active: domain_diagnostics::ActiveChecks,
+    app_admission: domain_diagnostics::AppAdmission,
 }
 
 impl ProxyRuntime {
@@ -288,6 +289,7 @@ impl ProxyRuntime {
             monitoring_admission: Semaphore::new(64),
             upstream_health_admission: Semaphore::new(8),
             diagnostics_active: domain_diagnostics::ActiveChecks::default(),
+            app_admission: domain_diagnostics::AppAdmission::default(),
         })
     }
 }
