@@ -18,7 +18,6 @@ import {
 import { getCertificateJobManualDnsState } from './certificate-jobs.manual.ts'
 import type { CertificateJobRow } from './Types/certificate-jobs-storage.types.ts'
 import { withCertificateJobClaim } from './certificate-jobs.lease.server.ts'
-import { toProxyHostSummary } from './proxy-hosts.mutations.server.ts'
 import {
     proxyHostChange,
     recordProxyHostEventsInTransaction,
@@ -93,9 +92,8 @@ export async function bindIssuedJobCertificate(
                         updatedAt: new Date(),
                     })
                     .where(eq(proxyHosts.id, context.host.id))
-                const previous = toProxyHostSummary(context.host, context.domains)
-                const type = proxyHostChange(previous, {
-                    ...previous,
+                const type = proxyHostChange(context.host, {
+                    ...context.host,
                     certificateId: metadata.id,
                     enabled: current.desiredEnabled,
                     forceHttps: current.desiredForceHttps,

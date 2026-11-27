@@ -24,7 +24,6 @@ import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-se
 import { assertDiscoveryHostEditable } from '@/server/Admin/DockerDiscovery/discovery-storage.server.ts'
 import {
     createProxyHostInTransaction,
-    toProxyHostSummary,
     updateProxyHostInTransaction,
 } from './proxy-hosts.mutations.server.ts'
 import {
@@ -239,9 +238,8 @@ async function requestJobTransaction(
                     updatedAt: new Date(),
                 })
                 .where(eq(proxyHosts.id, hostState.host.id))
-            const previous = toProxyHostSummary(hostState.host, hostState.domains)
-            const type = proxyHostChange(previous, {
-                ...previous,
+            const type = proxyHostChange(hostState.host, {
+                ...hostState.host,
                 enabled: false,
                 certificateId: null,
                 forceHttps: false,

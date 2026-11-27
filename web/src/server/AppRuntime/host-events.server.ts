@@ -2,10 +2,9 @@ import '@tanstack/react-start/server-only'
 
 import { and, eq, inArray, or } from 'drizzle-orm'
 import { appRuntimeGrants } from '@/db/schema.ts'
-import type { ProxyHostSummary } from '@/lib/Admin/ProxyHostManagement/Types/proxy-hosts.types.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { ALL_PROXY_HOSTS_RESOURCE } from './contract.ts'
-import { appendAppRuntimeEventInTransaction } from './events.server.ts'
+import { appendAppRuntimeEventInTransaction } from './event-log.server.ts'
 
 export type ProxyHostEventType =
     | 'proxyHostCreated'
@@ -22,13 +21,20 @@ export interface ProxyHostEvent {
 /** Read is preferred, so an app that holds both grants records the event under read. */
 const coveringCapabilities = ['proxy.hosts.read.v1', 'diagnostics.upstream.probe.v1'] as const
 
+/** Stored host settings, as a summary or a table row, with the enabled state and timestamps. */
+type HostSettings = {
+    readonly enabled: boolean
+    readonly createdAt?: Date
+    readonly updatedAt?: Date
+}
+
 /** The stored settings of a host apart from its enabled state and timestamps. */
 function settingsView({
     createdAt: _created,
     updatedAt: _updated,
     enabled: _enabled,
     ...settings
-}: ProxyHostSummary): string {
+}: HostSettings): string {
     return JSON.stringify(settings)
 }
 
@@ -37,9 +43,9 @@ function settingsView({
  * app sees in the listing besides the enabled state changed, otherwise the enabled transition,
  * otherwise none.
  */
-export function proxyHostChange(
-    previous: ProxyHostSummary,
-    next: ProxyHostSummary,
+export function proxyHostChange<Settings extends HostSettings>(
+    previous: Settings,
+    next: Settings,
 ): ProxyHostEventType | null {
     if (settingsView(previous) !== settingsView(next)) return 'proxyHostUpdated'
     if (previous.enabled === next.enabled) return null
