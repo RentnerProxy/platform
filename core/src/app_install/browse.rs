@@ -6,7 +6,11 @@ use serde::Serialize;
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use super::{Installer, StagedPackage, invalid_contract, requires_grants, transport};
+use super::{
+    Installer, StagedPackage,
+    grants::{self, RequestedGrant},
+    invalid_contract, transport,
+};
 
 #[derive(Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
@@ -23,6 +27,12 @@ pub(crate) struct CatalogEntry {
     /// Provider profiles from the signed manifest.
     #[cfg_attr(test, serde(default))]
     pub(crate) providers: Vec<String>,
+    /// The grants the signed manifest requests, for the Owner to approve.
+    #[cfg_attr(test, serde(default))]
+    pub(crate) grants: Vec<RequestedGrant>,
+    /// The app-owned permission keys an approved grant may name.
+    #[cfg_attr(test, serde(default))]
+    pub(crate) permission_keys: Vec<String>,
     availability: Availability,
     /// Whether the package store already holds this archive, so installing it needs fresh
     /// signed metadata but no download from the package source.
@@ -36,6 +46,7 @@ pub(crate) struct CatalogEntry {
 enum Availability {
     Available,
     Incompatible,
+    /// The release requests a capability that this appliance cannot grant.
     GrantsRequired,
 }
 
@@ -61,13 +72,16 @@ impl Installer {
         self.catalog_entries(&catalog)
     }
 
+    /// Stage the exact listed release. `gate` decides from the freshly signed manifest whether
+    /// the release may be staged, before anything is downloaded.
     pub(crate) fn stage_selected(
         &self,
         app_id: &str,
         version: &str,
         archive_sha256: &str,
+        gate: impl FnOnce(&Value) -> io::Result<()>,
     ) -> io::Result<StagedPackage> {
-        self.stage_catalog(app_id, version, Some(archive_sha256))
+        self.stage_catalog(app_id, version, Some(archive_sha256), gate)
     }
 
     pub(super) fn catalog_entries(
@@ -90,9 +104,10 @@ impl Installer {
                 continue;
             };
             let manifest = &package["manifest"];
+            let requested = grants::requested(manifest);
             let availability = if self.check_compatibility(manifest).is_err() {
                 Availability::Incompatible
-            } else if requires_grants(manifest) {
+            } else if requested.is_err() {
                 Availability::GrantsRequired
             } else {
                 Availability::Available
@@ -107,6 +122,8 @@ impl Installer {
                 publisher: field(&release["publisher"], "name")?.to_owned(),
                 has_ui: manifest["ui"].is_object(),
                 providers: super::target::providers(manifest),
+                grants: requested.unwrap_or_default(),
+                permission_keys: grants::permission_keys(manifest),
                 availability,
                 cached: self
                     .archive_cached(archive_sha256, package["archive"]["sizeBytes"].as_u64()),

@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import type { CatalogEntry, CatalogInstallation } from '@/lib/AppCatalog/contract.ts'
 import {
     catalogBlockedRelease,
+    catalogEntryAvailability,
+    catalogInstallationActions,
     compareCatalogVersions,
 } from '@/lib/AppCatalog/installationActions.ts'
 
@@ -14,9 +16,21 @@ const installation = {
     state: 'running',
     name: null,
     providers: null,
+    grants: null,
     update: null,
+    updateRequiresApproval: false,
     previous: null,
 } satisfies CatalogInstallation
+
+const providerGrant = {
+    capability: { id: 'app.provider.register', scope: 'providerProfiles' },
+    resourceId: 'monitoring',
+    allowService: true,
+}
+
+function actions(row: CatalogInstallation) {
+    return catalogInstallationActions(row, true, undefined).map(({ action }) => action)
+}
 
 function entry(
     version: string,
@@ -32,6 +46,8 @@ function entry(
         publisher: 'RentnerProxy',
         hasUi: true,
         providers: [],
+        grants: [],
+        permissionKeys: [],
         availability,
         cached: false,
     }
@@ -76,6 +92,25 @@ describe('catalog installation releases', () => {
                 entry('1.9.0', 'grantsRequired'),
             ]),
         ).toEqual({ version: '1.10.0', availability: 'incompatible' })
+    })
+
+    test('offers no release that needs an approval until Owners can review it here', () => {
+        const requesting = { ...entry('1.0.1', 'available'), grants: [providerGrant] }
+        expect(catalogEntryAvailability(entry('1.0.1', 'available'))).toBe('available')
+        expect(catalogEntryAvailability(requesting)).toBe('grantsRequired')
+        expect(catalogEntryAvailability(entry('1.0.1', 'incompatible'))).toBe('incompatible')
+        const update = { version: '1.0.1', archiveSha256: 'b'.repeat(64) }
+        // The update the core offers needs an approval, so it is named but not offered.
+        const blocked = { ...installation, update, updateRequiresApproval: true }
+        expect(actions(blocked)).toEqual(['deactivate', 'uninstall'])
+        expect(catalogBlockedRelease(blocked, [requesting])).toEqual({
+            version: '1.0.1',
+            availability: 'grantsRequired',
+        })
+        // An update that carries its approval stays offered.
+        const carried = { ...installation, update, updateRequiresApproval: false }
+        expect(actions(carried)).toEqual(['update', 'deactivate', 'uninstall'])
+        expect(catalogBlockedRelease(carried, [requesting])).toBeUndefined()
     })
 
     test('stays silent when the newest release is offered or belongs to another app', () => {

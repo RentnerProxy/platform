@@ -103,6 +103,8 @@ const metadataKeys: readonly (keyof AuditMetadata)[] = [
     'certificateStage',
     'occurredAt',
     'certificateErrorCode',
+    'appId',
+    'installationId',
 ]
 
 export function formatAuditMetadataValue(entry: AuditMetadataEntry, t: Translate): string {

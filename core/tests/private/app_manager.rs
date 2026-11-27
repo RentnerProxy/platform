@@ -367,6 +367,397 @@ fn declared_sql_migrations_advance_data_that_restarts_only_open() {
     );
 }
 
+/// A release whose archive and manifest digests derive from `digest`.
+fn signed(version: &str, digest: char) -> Release {
+    Release {
+        version: version.into(),
+        archive_sha256: digest.to_string().repeat(64),
+        manifest_sha256: digest.to_ascii_uppercase().to_string().repeat(64),
+        catalog_revision: 1,
+    }
+}
+
+fn audit(installation_id: &str) -> Grant {
+    serde_json::from_value(json!({
+        "capability": {"id": "app.audit.record", "scope": "installation"},
+        "resourceId": installation_id,
+        "allowService": true,
+    }))
+    .unwrap()
+}
+
+fn host_grant(host: &str) -> Grant {
+    serde_json::from_value(json!({
+        "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
+        "resourceId": host,
+        "allowService": true,
+        "permissionKey": "view",
+    }))
+    .unwrap()
+}
+
+#[test]
+fn approvals_bind_to_exact_releases_and_follow_the_releases_a_slot_references() {
+    // A journal entry written before approvals were recorded parses without any.
+    let legacy = Slot {
+        app_id: "fixture.app".into(),
+        uid: 20_000,
+        generation: 2,
+        active: Some(signed("1.0.0", 'a')),
+        ..Default::default()
+    };
+    let stored = serde_json::to_value(&legacy).unwrap();
+    assert!(stored.get("approvals").is_none(), "{stored}");
+    let mut slot: Slot = serde_json::from_value(stored).unwrap();
+    assert!(slot.approvals.is_empty());
+    let active = signed("1.0.0", 'a');
+    assert!(slot.approval_for(&active).unwrap().is_none());
+
+    // An approval binds the archive and the manifest digest.
+    slot.approve(&active, vec![audit("fixture"), host_grant("h1")]);
+    assert_eq!(slot.approval_for(&active).unwrap().unwrap().len(), 2);
+    let stored = serde_json::to_value(&slot).unwrap();
+    assert_eq!(
+        stored["approvals"]["a".repeat(64)]["manifestSha256"],
+        "A".repeat(64)
+    );
+    let mut altered = active.clone();
+    altered.manifest_sha256 = "f".repeat(64);
+    let error = slot.approval_for(&altered).unwrap_err();
+    assert!(error.get_ref().unwrap().is::<journal::ApprovalMismatch>());
+    let reparsed: Slot = serde_json::from_value(stored).unwrap();
+    assert_eq!(reparsed.approvals, slot.approvals);
+
+    // Revoking removes a grant from every stored approval.
+    let (previous, candidate, unrelated) = (
+        signed("0.9.0", 'b'),
+        signed("1.1.0", 'c'),
+        signed("0.1.0", 'd'),
+    );
+    slot.previous = Some(previous.clone());
+    slot.candidate = Some(candidate.clone());
+    for release in [&previous, &candidate, &unrelated] {
+        slot.approve(
+            release,
+            vec![audit("fixture"), host_grant("h1"), host_grant("h2")],
+        );
+    }
+    slot.revoke(|grant| grant == &host_grant("h1"));
+    for release in [&active, &previous, &candidate, &unrelated] {
+        let grants = &slot.approvals[&release.archive_sha256].grants;
+        assert!(!grants.contains(&host_grant("h1")));
+        assert!(grants.contains(&audit("fixture")));
+    }
+
+    // Only the releases the slot can still start or reinstall keep an approval.
+    slot.prune_approvals();
+    let kept = |slot: &Slot| {
+        slot.approvals
+            .keys()
+            .map(|key| &key[..1])
+            .collect::<String>()
+    };
+    assert_eq!(kept(&slot), "abc");
+    // A committed candidate retires the previous release and its approval.
+    slot.commit_release(candidate.clone());
+    slot.prune_approvals();
+    assert_eq!(kept(&slot), "ac");
+    // Discarding the retained release drops its approval.
+    slot.previous = None;
+    slot.prune_approvals();
+    assert_eq!(kept(&slot), "c");
+    // A removal keeps the approval of the removed release for a reinstall. A purge drops it.
+    slot.removed_release = slot.active.take().as_ref().map(Into::into);
+    slot.prune_approvals();
+    assert_eq!(kept(&slot), "c");
+    slot.removed_release = None;
+    slot.prune_approvals();
+    assert!(slot.approvals.is_empty());
+}
+
+/// The journal steps that staging, activation and rollback take for one installation whose
+/// releases read proxy hosts.
+struct ApprovalModel {
+    slot: Slot,
+    manifest: Value,
+}
+
+impl ApprovalModel {
+    const ID: &str = "fixture";
+    const X: &str = "0b6f3c0e-8d1a-4f43-9c2e-1d7a5b9e4f21";
+    const Y: &str = "5c1e2f3a-4b5d-4e6f-8a7b-9c0d1e2f3a4b";
+
+    fn new() -> Self {
+        Self {
+            slot: Slot {
+                app_id: "fixture.app".into(),
+                uid: 20_002,
+                ..Default::default()
+            },
+            manifest: json!({
+                "capabilities": [{"id": "proxy.hosts.read.v1", "scope": "proxyHosts"}],
+                "providers": [],
+                "permissions": ["view"],
+            }),
+        }
+    }
+
+    /// An approval of the hosts with their service access, events and the audit trail.
+    fn approval(hosts: &[(&str, bool)]) -> Vec<grants::ApprovedGrant> {
+        let mut items: Vec<Value> = hosts
+            .iter()
+            .map(|(host, service)| {
+                json!({
+                    "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
+                    "resourceId": host,
+                    "allowService": service,
+                })
+            })
+            .collect();
+        for id in ["app.events.subscribe", "app.audit.record"] {
+            items.push(json!({
+                "capability": {"id": id, "scope": "installation"},
+                "allowService": true,
+            }));
+        }
+        serde_json::from_value(Value::Array(items)).unwrap()
+    }
+
+    /// Stage `release` as an update or install does: with the Owner's `approval`, or carrying
+    /// the running release's approval within the target's stored one.
+    fn stage(
+        &mut self,
+        release: &Release,
+        approval: Option<Vec<grants::ApprovedGrant>>,
+    ) -> io::Result<()> {
+        let slot = &self.slot;
+        let carried = slot
+            .active
+            .as_ref()
+            .and_then(|active| slot.approval_for(active).ok().flatten())
+            .unwrap_or_default()
+            .to_vec();
+        let stored = slot
+            .approvals
+            .get(&release.archive_sha256)
+            .map(|approval| approval.grants.clone());
+        let decision = grants::approve(
+            &self.manifest,
+            approval.as_deref(),
+            &carried,
+            stored.as_deref(),
+            Self::ID,
+        )?;
+        self.slot.approval_for(release)?;
+        self.slot.record(release, decision);
+        self.slot.candidate = Some(release.clone());
+        self.slot.prune_approvals();
+        Ok(())
+    }
+
+    /// Activate `release`, as the save that commits an update, an install or a rollback does.
+    fn activate(&mut self, release: &Release) {
+        let requested = grants::requested(&self.manifest).unwrap();
+        self.slot.activate_approval(release, &requested, Self::ID);
+        self.slot.commit_release(release.clone());
+        self.slot.prune_approvals();
+    }
+
+    /// The hosts and service access that a launch of `release` publishes.
+    fn hosts(&self, release: &Release) -> Vec<(String, bool)> {
+        self.slot
+            .approval_for(release)
+            .unwrap()
+            .unwrap()
+            .iter()
+            .filter(|grant| grant.capability.id == "proxy.hosts.read.v1")
+            .map(|grant| (grant.resource_id.clone(), grant.allow_service))
+            .collect()
+    }
+}
+
+#[test]
+fn the_owners_latest_explicit_decision_wins_after_rollback_and_update() {
+    use ApprovalModel as Model;
+    let (a, b) = (signed("1.0.0", 'a'), signed("1.1.0", 'b'));
+    let x = || (Model::X.to_owned(), true);
+
+    // A reads X and Y. The Owner approves B for X only, then rolls back to A.
+    let mut model = Model::new();
+    model
+        .stage(
+            &a,
+            Some(Model::approval(&[(Model::X, true), (Model::Y, true)])),
+        )
+        .unwrap();
+    model.activate(&a);
+    model
+        .stage(&b, Some(Model::approval(&[(Model::X, true)])))
+        .unwrap();
+    model.activate(&b);
+    model.activate(&a);
+    assert_eq!(model.slot.previous, Some(b.clone()));
+    assert_eq!(model.hosts(&a), [x()]);
+    // An update back to B without an approval carries X only and keeps B's decision.
+    model.stage(&b, None).unwrap();
+    assert_eq!(model.hosts(&b), [x()]);
+
+    // Even if root approves Y for A again, the carry cannot overwrite B's stored approval.
+    let mut wider = model.slot.approval_for(&a).unwrap().unwrap().to_vec();
+    wider.push(host_without_key(Model::Y));
+    model.slot.approve(&a, wider);
+    assert_eq!(model.hosts(&a).len(), 2);
+    model.stage(&b, None).unwrap();
+    assert_eq!(model.hosts(&b), [x()]);
+
+    // Narrowing service access survives a rollback as well.
+    let mut model = Model::new();
+    model
+        .stage(&a, Some(Model::approval(&[(Model::X, true)])))
+        .unwrap();
+    model.activate(&a);
+    model
+        .stage(&b, Some(Model::approval(&[(Model::X, false)])))
+        .unwrap();
+    model.activate(&b);
+    model.activate(&a);
+    assert_eq!(model.hosts(&a), [(Model::X.to_owned(), false)]);
+    // A later explicit approval may widen again, because it is the Owner's latest decision.
+    model
+        .stage(
+            &b,
+            Some(Model::approval(&[(Model::X, true), (Model::Y, true)])),
+        )
+        .unwrap();
+    assert_eq!(
+        model.hosts(&b),
+        [(Model::X.to_owned(), true), (Model::Y.to_owned(), true)]
+    );
+    // The decision applies to A only once B activates.
+    assert_eq!(model.hosts(&a), [(Model::X.to_owned(), false)]);
+    model.activate(&b);
+    assert_eq!(model.hosts(&a), [(Model::X.to_owned(), true)]);
+}
+
+#[test]
+fn a_decision_for_a_release_that_never_activates_leaves_the_running_approval() {
+    use ApprovalModel as Model;
+    let (a, b) = (signed("1.0.0", 'a'), signed("1.1.0", 'b'));
+    let both = [(Model::X.to_owned(), true), (Model::Y.to_owned(), true)];
+    let mut model = Model::new();
+    model
+        .stage(
+            &a,
+            Some(Model::approval(&[(Model::X, true), (Model::Y, true)])),
+        )
+        .unwrap();
+    model.activate(&a);
+    // The Owner approves B for X only, but its switch is refused before the fence. A keeps
+    // running with X and Y, and the journal still records exactly that.
+    model
+        .stage(&b, Some(Model::approval(&[(Model::X, true)])))
+        .unwrap();
+    assert_eq!(model.hosts(&a), both);
+    assert_eq!(model.hosts(&b), [(Model::X.to_owned(), true)]);
+    let stored = serde_json::to_value(&model.slot).unwrap();
+    assert_eq!(stored["approvals"]["b".repeat(64)]["pending"], true);
+    assert!(stored["approvals"]["a".repeat(64)].get("pending").is_none());
+    // Discarding the candidate leaves A's approval untouched as well.
+    model.slot.candidate = None;
+    model.slot.prune_approvals();
+    assert_eq!(model.hosts(&a), both);
+
+    // A carried approval activates without narrowing any other approval: it is a subset of
+    // the running release's approval, and no decision of the Owner is pending.
+    model.stage(&b, None).unwrap();
+    assert_eq!(model.hosts(&b), both);
+    model.activate(&b);
+    assert_eq!(model.hosts(&a), both);
+    assert_eq!(model.hosts(&b), both);
+    let stored = serde_json::to_value(&model.slot).unwrap();
+    assert!(stored["approvals"]["b".repeat(64)].get("pending").is_none());
+}
+
+#[test]
+fn staging_a_release_again_without_a_decision_keeps_the_owners_pending_one() {
+    use ApprovalModel as Model;
+    let (a, b) = (signed("1.0.0", 'a'), signed("1.1.0", 'b'));
+    let x = || (Model::X.to_owned(), true);
+    let mut model = Model::new();
+    model
+        .stage(
+            &a,
+            Some(Model::approval(&[(Model::X, true), (Model::Y, true)])),
+        )
+        .unwrap();
+    model.activate(&a);
+    // The Owner approves B for X only, and B is staged again without a new decision before it
+    // activates. The carry stays within B's decision, which remains pending.
+    model
+        .stage(&b, Some(Model::approval(&[(Model::X, true)])))
+        .unwrap();
+    model.stage(&b, None).unwrap();
+    assert_eq!(model.hosts(&b), [x()]);
+    let stored = serde_json::to_value(&model.slot).unwrap();
+    assert_eq!(stored["approvals"]["b".repeat(64)]["pending"], true);
+    // B's activation still applies the decision, so a rollback to A cannot restore Y.
+    model.activate(&b);
+    model.activate(&a);
+    assert_eq!(model.hosts(&a), [x()]);
+}
+
+fn host_without_key(host: &str) -> Grant {
+    serde_json::from_value(json!({
+        "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
+        "resourceId": host,
+        "allowService": true,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn journal_saves_prune_approvals_and_refuse_overflow_without_poisoning() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let temp = tempfile::tempdir_in("/root").unwrap();
+    let mut journal = Journal::open(&temp.path().join("manager")).unwrap();
+    let active = signed("1.0.0", 'a');
+    let mut slot = Slot {
+        app_id: "fixture.app".into(),
+        uid: 20_001,
+        generation: 1,
+        active: Some(active.clone()),
+        ..Default::default()
+    };
+    slot.approve(&active, vec![audit("fixture")]);
+    slot.approve(&signed("0.1.0", 'd'), vec![audit("fixture")]);
+    journal.save("fixture", slot.clone()).unwrap();
+    let saved = journal.slot("fixture").unwrap();
+    assert_eq!(saved.approvals.len(), 1);
+    assert_eq!(
+        saved.approval_for(&active).unwrap().unwrap(),
+        [audit("fixture")]
+    );
+    // A journal that would exceed its capacity is refused, and the previous state stays usable.
+    let hosts = (0..40_000)
+        .map(|index| host_grant(&format!("host-{index}")))
+        .collect();
+    slot.approve(&active, hosts);
+    let error = journal.save("fixture", slot).unwrap_err();
+    assert_eq!(error.to_string(), "Manager journal capacity exceeded");
+    journal.writable().unwrap();
+    assert_eq!(
+        journal
+            .slot("fixture")
+            .unwrap()
+            .approval_for(&active)
+            .unwrap()
+            .unwrap(),
+        [audit("fixture")]
+    );
+}
+
 #[test]
 fn control_denies_undeclared_fields_and_defaults_new_authority_to_empty() {
     let cmd =

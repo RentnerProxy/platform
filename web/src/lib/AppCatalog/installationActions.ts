@@ -10,6 +10,16 @@ export type CatalogBlockedRelease = {
     availability: Exclude<CatalogEntry['availability'], 'available'>
 }
 
+/**
+ * The availability this page offers. Until Owners can review and approve requested grants
+ * here, a release that requests any is shown as needing additional grants.
+ */
+export function catalogEntryAvailability(entry: CatalogEntry): CatalogEntry['availability'] {
+    return entry.availability === 'available' && entry.grants.length > 0
+        ? 'grantsRequired'
+        : entry.availability
+}
+
 export function catalogInstallationActions(
     installation: CatalogInstallation,
     catalogReady: boolean,
@@ -22,11 +32,13 @@ export function catalogInstallationActions(
         action: CatalogLifecycleInput['action'],
         target?: CatalogLifecycleInput['target'],
     ): CatalogLifecycleInput => ({ action, installationId, expected, ...(target && { target }) })
+    // An update that needs a new approval waits for the approval dialog.
+    const offeredUpdate = installation.updateRequiresApproval ? null : update
 
     switch (state) {
         case 'running':
             return [
-                ...(update && catalogReady ? [request('update', update)] : []),
+                ...(offeredUpdate && catalogReady ? [request('update', offeredUpdate)] : []),
                 request('deactivate'),
                 ...(previous ? [request('rollback', previous)] : []),
                 request('uninstall'),
@@ -107,6 +119,14 @@ export function catalogBlockedRelease(
         )
             newest = entry
     }
-    if (!newest || newest.availability === 'available') return undefined
-    return { version: newest.version, availability: newest.availability }
+    if (!newest) return undefined
+    const offered =
+        installation.update !== null &&
+        !installation.updateRequiresApproval &&
+        installation.update.version === newest.version &&
+        installation.update.archiveSha256 === newest.archiveSha256
+    // An offered update carries the approval it needs; any other release must be approved.
+    const availability = offered ? newest.availability : catalogEntryAvailability(newest)
+    if (availability === 'available') return undefined
+    return { version: newest.version, availability }
 }

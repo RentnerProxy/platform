@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     io,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
@@ -10,11 +11,15 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::{
-    Command, Manager, PackageRequest,
-    journal::{Grant, Release, Removal},
+    Command, Manager, PackageRequest, gate,
+    journal::{Release, Removal, Slot},
     lifecycle,
 };
-use crate::app_install::{CatalogEntry, Installer, Source, TargetEnvironment, unreachable_source};
+use crate::app_install::{
+    CatalogEntry, Installer, Source, TargetEnvironment,
+    grants::{self, ApprovedGrant, MAX_GRANTS},
+    unreachable_source,
+};
 
 #[cfg(test)]
 #[path = "../../tests/private/app_manager/catalog.rs"]
@@ -28,18 +33,75 @@ pub(super) struct Selection {
     app_id: String,
     version: String,
     archive_sha256: String,
+    /// The Owner's approval of the grants this release requests. Receipts never repeat it.
+    #[serde(default, skip_serializing)]
+    approval: Option<Vec<ApprovedGrant>>,
 }
 
 impl Selection {
     fn matches(&self, release: &Release) -> bool {
         release.version == self.version && release.archive_sha256 == self.archive_sha256
     }
+
+    /// Whether installing this selection again leaves the running `slot` as it is: without an
+    /// approval, or with one that decides exactly the running release's stored approval. A
+    /// narrower set goes through a revocation, any other change through an update or reinstall.
+    fn keeps(&self, slot: &Slot, installation_id: &str) -> bool {
+        self.approval.as_deref().is_none_or(|approval| {
+            let approved = slot
+                .active
+                .as_ref()
+                .and_then(|active| slot.approval_for(active).ok().flatten())
+                .unwrap_or_default();
+            grants::same_decision(approval, approved, installation_id)
+        })
+    }
+
+    pub(super) fn valid(&self) -> bool {
+        self.approval
+            .as_ref()
+            .is_none_or(|approval| approval.len() <= MAX_GRANTS)
+    }
+}
+
+/// The installation ID derived from an app ID, which a first catalog install receives.
+fn derived_installation_id(app_id: &str) -> String {
+    format!("app-{}", &digest(app_id.as_bytes())[..32])
+}
+
+/// The installation ID a catalog install of `app_id` uses. A removed installation without
+/// retained release, or a purged one, keeps its own ID, which root may have chosen. Every other
+/// install uses the derived ID.
+pub(super) fn catalog_installation_id(slots: &BTreeMap<String, Slot>, app_id: &str) -> String {
+    let mut matches = slots.iter().filter(|(_, slot)| slot.app_id == app_id);
+    match (matches.next(), matches.next()) {
+        (Some((id, slot)), None)
+            if slot.removal == Removal::Purged
+                || slot.removal == Removal::Removed && slot.removed_release.is_none() =>
+        {
+            id.clone()
+        }
+        _ => derived_installation_id(app_id),
+    }
+}
+
+/// The apps in `slots` whose next catalog install reuses an ID other than the derived one.
+pub(super) fn reused_installation_ids(slots: &BTreeMap<String, Slot>) -> BTreeMap<String, String> {
+    slots
+        .values()
+        .filter_map(|slot| {
+            let id = catalog_installation_id(slots, &slot.app_id);
+            (id != derived_installation_id(&slot.app_id)).then(|| (slot.app_id.clone(), id))
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) enum Failure {
     Conflict,
+    /// The release needs an approval of exactly the grants it requests.
+    ApprovalRequired,
     Unavailable,
     /// The signed catalog metadata could not be reached, but the package source answered.
     CatalogUnavailable,
@@ -80,6 +142,8 @@ pub(super) struct Install {
 #[serde(rename_all = "camelCase")]
 enum LifecycleFailure {
     Conflict,
+    /// The target release needs an approval of exactly the grants it requests.
+    ApprovalRequired,
     /// A proxy host, an app operation or a provider dependency still needs the installation.
     DependencyBlocked,
     Unavailable,
@@ -139,6 +203,8 @@ struct State {
     entries: Option<Arc<[CatalogEntry]>>,
     install: Option<Install>,
     installations: Arc<[lifecycle::Installation]>,
+    /// Apps whose next catalog install reuses an installation ID other than the derived one.
+    installation_ids: Arc<BTreeMap<String, String>>,
     lifecycle: Option<Lifecycle>,
     next_refresh: Option<Instant>,
 }
@@ -172,6 +238,7 @@ impl Endpoint {
             entries: None,
             install: None,
             installations: Arc::from([]),
+            installation_ids: Arc::default(),
             lifecycle: None,
             next_refresh: Some(Instant::now()),
         };
@@ -240,6 +307,13 @@ impl Endpoint {
 
     pub(super) fn publish(&self, installations: Vec<lifecycle::Installation>) -> io::Result<()> {
         self.state()?.installations = installations.into();
+        Ok(())
+    }
+
+    /// Publish the apps whose next catalog install reuses another installation ID, so that the
+    /// preflight decides with the installation resource that staging uses.
+    pub(super) fn publish_installation_ids(&self, ids: BTreeMap<String, String>) -> io::Result<()> {
+        self.state()?.installation_ids = ids.into();
         Ok(())
     }
 
@@ -314,13 +388,40 @@ impl Endpoint {
             };
         }
         let entries = state.entries.as_deref().ok_or(Failure::Unavailable)?;
-        if !entries.iter().any(|entry| {
-            entry.is_available()
-                && entry.app_id == selection.app_id
-                && entry.version == selection.version
-                && entry.archive_sha256 == selection.archive_sha256
-        }) {
-            return Err(Failure::Conflict);
+        let entry = entries
+            .iter()
+            .find(|entry| {
+                entry.is_available()
+                    && entry.app_id == selection.app_id
+                    && entry.version == selection.version
+                    && entry.archive_sha256 == selection.archive_sha256
+            })
+            .ok_or(Failure::Conflict)?;
+        // A replay of the exact running release, which may run with a subset that root
+        // approved, reaches the manager's own check against the journal.
+        let replays = state.installations.iter().any(|installation| {
+            installation.replays(
+                &selection.app_id,
+                &selection.version,
+                &selection.archive_sha256,
+                selection.approval.as_deref(),
+            )
+        });
+        if !replays {
+            // A quick check against the signed listing, with the installation ID that staging
+            // uses. Staging decides again from fresh metadata.
+            let installation_id = state
+                .installation_ids
+                .get(&selection.app_id)
+                .cloned()
+                .unwrap_or_else(|| derived_installation_id(&selection.app_id));
+            grants::decide(
+                &entry.grants,
+                &entry.permission_keys,
+                selection.approval.as_deref().unwrap_or_default(),
+                &installation_id,
+            )
+            .map_err(|_| Failure::ApprovalRequired)?;
         }
         self.requests
             .try_send(Request::Install(selection.clone()))
@@ -344,6 +445,7 @@ impl Endpoint {
                 eprintln!("Catalog application installation failed: {error}");
                 InstallStatus::Failed {
                     error: match (unreachable_source(&error), error.kind()) {
+                        _ if grants::approval_required(&error) => Failure::ApprovalRequired,
                         (Some(Source::Catalog), _) => Failure::CatalogUnavailable,
                         (Some(Source::Package), _) => Failure::PackageSourceUnavailable,
                         (Some(Source::Network), _) => Failure::NetworkUnavailable,
@@ -390,6 +492,10 @@ impl Endpoint {
         if !current.offers(&request, entries) {
             return Err(Failure::Conflict);
         }
+        // A quick check against the signed listing. Staging decides again from fresh metadata.
+        if !current.approves(&request, entries) {
+            return Err(Failure::ApprovalRequired);
+        }
         self.requests
             .try_send(Request::Lifecycle(request.clone()))
             .map_err(|_| Failure::Unavailable)?;
@@ -415,6 +521,8 @@ impl Endpoint {
                 );
                 let error = if lifecycle::incompatible(&error) {
                     LifecycleFailure::IncompatibleData
+                } else if grants::approval_required(&error) {
+                    LifecycleFailure::ApprovalRequired
                 } else if let Some(outage) = LifecycleFailure::outage(&error) {
                     outage
                 } else {
@@ -436,8 +544,14 @@ impl Endpoint {
 }
 
 impl Manager {
+    /// Publish the installations and the IDs that catalog installs reuse.
+    pub(super) fn publish_catalog(&self, catalog: &Endpoint) -> io::Result<()> {
+        catalog.publish(self.local_installations())?;
+        catalog.publish_installation_ids(reused_installation_ids(self.journal.slots()))
+    }
+
     pub(super) async fn install_catalog(&mut self, selection: &Selection) -> io::Result<String> {
-        let mut installation_id = format!("app-{}", &digest(selection.app_id.as_bytes())[..32]);
+        let installation_id = catalog_installation_id(self.journal.slots(), &selection.app_id);
         let conflict = || {
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -454,10 +568,9 @@ impl Manager {
                 return Err(conflict());
             }
             match slot.removal {
-                Removal::Removed if slot.removed_release.is_none() => {
-                    installation_id.clone_from(id)
-                }
-                Removal::Purged => installation_id.clone_from(id),
+                // `catalog_installation_id` already chose this installation's own ID.
+                Removal::Removed if slot.removed_release.is_none() => (),
+                Removal::Purged => (),
                 Removal::Installed => {
                     if slot
                         .active
@@ -467,6 +580,11 @@ impl Manager {
                         && let Some(live) = self.running.get_mut(id)
                         && !live.exited()?
                     {
+                        // The exact release already runs. An approval that would change its
+                        // grants is not an install.
+                        if !selection.keeps(slot, id) {
+                            return Err(conflict());
+                        }
                         return Ok(id.to_owned());
                     }
                     if id != &installation_id
@@ -493,28 +611,39 @@ impl Manager {
             None,
             true,
         )?;
+        // An installation receives exactly the Owner's approval. Nothing is carried over.
+        let stored = self
+            .journal
+            .slots()
+            .get(&installation_id)
+            .and_then(|slot| slot.approvals.get(&selection.archive_sha256))
+            .map(|approval| approval.grants.clone());
+        let gate = gate(
+            installation_id.clone(),
+            selection.approval.clone(),
+            Vec::new(),
+            stored,
+        );
         let download = Self::package(
             self.config.clone(),
             selection.app_id.clone(),
             selection.version.clone(),
-            PackageRequest::Selected(selection.archive_sha256.clone()),
+            PackageRequest::Selected(selection.archive_sha256.clone(), Arc::clone(&gate)),
         );
         self.stage(
             &installation_id,
             selection.app_id.clone(),
             selection.version.clone(),
             download,
+            Some(gate),
         )
         .await?;
-        self.activate_catalog(&installation_id, Some(&[])).await?;
+        self.activate_catalog(&installation_id).await?;
         Ok(installation_id)
     }
 
-    pub(super) async fn activate_catalog(
-        &mut self,
-        id: &str,
-        grants: Option<&[Grant]>,
-    ) -> io::Result<()> {
+    /// Activate the staged candidate with the approval that staging recorded for it.
+    pub(super) async fn activate_catalog(&mut self, id: &str) -> io::Result<()> {
         self.settle_exit(id).await?;
         let slot = self.journal.slot(id)?;
         let candidate = slot
@@ -530,7 +659,13 @@ impl Manager {
             slot.removed_data_required = Some(false);
             self.journal.save(id, slot)?;
         }
-        self.switch(id, candidate, grants, super::DataPolicy::Migrate)
-            .await
+        // Catalog staging records the candidate's approval. A release without one gets no grants.
+        self.switch(
+            id,
+            candidate,
+            super::Approved::Stored(Some(&[])),
+            super::DataPolicy::Migrate,
+        )
+        .await
     }
 }

@@ -30,6 +30,12 @@ const RESUMED_REMOVAL: &str = "resumed-removal";
 const RESUMED_PURGE: &str = "resumed-purge";
 /// While this file exists next to the authority socket, `removable` checks fail as unavailable.
 const REFUSE_REMOVAL: &str = "refuse-removal";
+/// With this variable, the authority fixture records every grant publication in the named file,
+/// also for an activated generation, instead of accepting only an empty set before activation.
+const GRANT_LOG: &str = "RENTNERPROXY_TEST_GRANT_LOG";
+/// While this file exists next to the authority socket, grant publications for an activated
+/// generation fail as unavailable.
+const REFUSE_GRANTS: &str = "refuse-grants";
 const UID: u32 = 59553;
 const ROOT: &str = "/var/lib/rentnerproxy/app-manager";
 const SOCKET: &str = "/run/rentnerproxy/app-api/web.sock";
@@ -273,16 +279,41 @@ async fn authority(
             }
         }
         "grants" => {
-            assert_eq!(
-                states.get(&generation).map(|state| state.activated),
-                Some(false)
-            );
-            assert_eq!(value["grants"], json!([]));
-            fs::write(
-                Path::new(SOCKET).with_file_name("last-grants-generation"),
-                generation.to_string(),
-            )
-            .unwrap();
+            let activated = states.get(&generation).map(|state| state.activated);
+            if let Some(log) = std::env::var_os(GRANT_LOG) {
+                // A revocation replaces the grants of the activated generation, as the web
+                // authority does. A retired generation has none to replace.
+                match activated {
+                    None => status = StatusCode::CONFLICT,
+                    Some(true) if Path::new(SOCKET).with_file_name(REFUSE_GRANTS).exists() => {
+                        status = StatusCode::SERVICE_UNAVAILABLE;
+                    }
+                    Some(activated) => {
+                        let record = json!({
+                            "generation": generation,
+                            "activated": activated,
+                            "grants": value["grants"],
+                        });
+                        let mut file = fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(log)
+                            .unwrap();
+                        std::io::Write::write_all(&mut file, format!("{record}\n").as_bytes())
+                            .unwrap();
+                    }
+                }
+            } else {
+                assert_eq!(activated, Some(false));
+                assert_eq!(value["grants"], json!([]));
+            }
+            if status == StatusCode::NO_CONTENT {
+                fs::write(
+                    Path::new(SOCKET).with_file_name("last-grants-generation"),
+                    generation.to_string(),
+                )
+                .unwrap();
+            }
         }
         "activate" => {
             let state = states.get_mut(&generation).unwrap();
@@ -604,8 +635,65 @@ async fn check_control_boundary(controller: &Path, temporary: &Path) {
     fs::set_permissions(&grants, fs::Permissions::from_mode(0o600)).unwrap();
     fs::write(&grants, "{").unwrap();
     assert!(invoke(controller, &["activate", ID, path]).await.is_err());
+    // Root's escape hatch is validated like an approval: a capability the staged release does
+    // not declare, or another provider profile, is refused before anything changes.
+    let before = invoke(controller, &["status"]).await.unwrap();
+    let published = grant_log().len();
+    for undeclared in [
+        json!({
+            "capability": {"id": "proxy.hosts.read.v1", "scope": "proxyHosts"},
+            "resourceId": "0b6f3c0e-8d1a-4f43-9c2e-1d7a5b9e4f21",
+            "allowService": true,
+        }),
+        json!({
+            "capability": {"id": "app.provider.register", "scope": "providerProfiles"},
+            "resourceId": "oidc",
+            "allowService": true,
+        }),
+    ] {
+        fs::write(&grants, serde_json::to_vec(&json!([undeclared])).unwrap()).unwrap();
+        let refused = invoke(controller, &["activate", ID, path])
+            .await
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("Grants exceed what the staged release requests"),
+            "{refused}"
+        );
+    }
+    assert_eq!(invoke(controller, &["status"]).await.unwrap(), before);
+    assert_eq!(grant_log().len(), published);
     fs::write(&grants, "[]").unwrap();
     invoke(controller, &["activate", ID, path]).await.unwrap();
+    // The activation published root's empty approval for its own generation.
+    let status = invoke(controller, &["status"]).await.unwrap();
+    assert_eq!(
+        last_grants(),
+        json!({"generation": status[ID]["generation"], "activated": false, "grants": []})
+    );
+}
+
+/// Every grant publication the authority fixture recorded, oldest first.
+fn grant_log() -> Vec<Value> {
+    fs::read_to_string(Path::new(SOCKET).with_file_name("grant-log.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn last_grants() -> Value {
+    grant_log().pop().expect("a recorded grant publication")
+}
+
+/// The provider registration grant the fixture app's releases request.
+fn monitoring_grant() -> Value {
+    json!({
+        "capability": {"id": "app.provider.register", "scope": "providerProfiles"},
+        "resourceId": "monitoring",
+        "allowService": true,
+    })
 }
 
 fn catalog_row(view: &Value) -> &Value {
@@ -722,6 +810,10 @@ async fn ui_signed_switch(controller: &Path, first: &Release, second: &Release) 
     assert_eq!(active["archiveSha256"], first.archive_sha256);
     assert_eq!(active["update"]["version"], second.version);
     assert_eq!(active["update"]["archiveSha256"], second.archive_sha256);
+    // The restored release predates recorded approvals, so it carries none to the update,
+    // which requests its provider registration.
+    assert_eq!(active["grants"], Value::Null);
+    assert_eq!(active["updateRequiresApproval"], true);
     let update = lifecycle_input("update", active, Some(&active["update"]));
     let mut invalid = update.clone();
     invalid["target"]["archiveSha256"] = "0".repeat(64).into();
@@ -729,11 +821,34 @@ async fn ui_signed_switch(controller: &Path, first: &Release, second: &Release) 
     let mut stale = update.clone();
     stale["expected"]["generation"] = updated_by_cli["generation"].clone();
     ui_mutate(&stale, 409).await;
-    let grants_file = Path::new(SOCKET).with_file_name("last-grants-generation");
-    let old_grant_state = fs::read(&grants_file).unwrap();
-    ui_mutate(&update, 202).await;
-    assert_eq!(fs::read(grants_file).unwrap(), old_grant_state);
+    // Without an approval, or with a wider one, the update is refused before anything changes.
+    let published = grant_log().len();
+    ui_mutate(&update, 422).await;
+    let mut wider = update.clone();
+    let mut oidc = monitoring_grant();
+    oidc["resourceId"] = "oidc".into();
+    wider["approval"] = json!([monitoring_grant(), oidc]);
+    ui_mutate(&wider, 422).await;
+    assert_eq!(grant_log().len(), published);
+    assert_eq!(
+        catalog_row(&manager_catalog(None, 200).await)["generation"],
+        active["generation"]
+    );
+    let mut approved = update.clone();
+    approved["approval"] = json!([monitoring_grant()]);
+    ui_mutate(&approved, 202).await;
     let current = invoke(controller, &["status"]).await.unwrap()[ID].clone();
+    // The update published exactly the approved grants for its own generation.
+    assert_eq!(
+        last_grants(),
+        json!({
+            "generation": current["generation"],
+            "activated": false,
+            "grants": [monitoring_grant()],
+        })
+    );
+    let row = catalog_row(&manager_catalog(None, 200).await).clone();
+    assert_eq!(row["grants"], json!([monitoring_grant()]));
     assert_eq!(current["active"], second.version);
     assert_eq!(current["previous"], first.version);
     assert_eq!(current["uid"], UID);
@@ -742,6 +857,202 @@ async fn ui_signed_switch(controller: &Path, first: &Release, second: &Release) 
         active["generation"].as_u64().unwrap() + 1
     );
     current
+}
+
+/// The catalog view once a refreshed listing offers updates again.
+async fn ready_view() -> Value {
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let view = manager_catalog(None, 200).await;
+            if view["state"] == "ready" {
+                break view;
+            }
+            assert_eq!(view["state"], "loading", "{view}");
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+fn revocation(row: &Value, grant: &Value) -> Value {
+    let mut request = lifecycle_input("revoke", row, None);
+    request["grants"] = json!([{
+        "capability": grant["capability"],
+        "resourceId": grant["resourceId"],
+    }]);
+    request
+}
+
+/// Revoke the running update's approved grant without a restart, then approve it again with
+/// a rollback and an update. The catalog is reachable, and the update is running.
+async fn check_revocation(controller: &Path) {
+    let before = installation(controller).await;
+    let view = manager_catalog(None, 200).await;
+    let revoke = revocation(catalog_row(&view), &monitoring_grant());
+    ui_mutate(&revoke, 202).await;
+    // The live generation lost the grant at once and keeps running.
+    assert_eq!(
+        last_grants(),
+        json!({"generation": before["generation"], "activated": true, "grants": []})
+    );
+    assert_eq!(installation(controller).await, before);
+    let row = catalog_row(&manager_catalog(None, 200).await).clone();
+    assert_eq!(row["grants"], json!([]));
+    // Every stored approval lost it, and a revoked grant cannot be revoked again.
+    assert!(stored_without_monitoring());
+    ui_mutate(&revocation(&row, &monitoring_grant()), 409).await;
+
+    let rollback = lifecycle_input("rollback", &row, Some(&row["previous"]));
+    ui_mutate(&rollback, 202).await;
+    let view = ready_view().await;
+    let active = catalog_row(&view);
+    let mut update = lifecycle_input("update", active, Some(&active["update"]));
+    update["approval"] = json!([monitoring_grant()]);
+    ui_mutate(&update, 202).await;
+    let current = installation(controller).await;
+    assert_eq!(current["active"], before["active"]);
+    assert_eq!(
+        last_grants(),
+        json!({
+            "generation": current["generation"],
+            "activated": false,
+            "grants": [monitoring_grant()],
+        })
+    );
+
+    // Root stages the running archive again and activates it with an empty replacement, which
+    // never becomes ready. Only the candidate generation receives the replacement. The fallback
+    // restart runs with the approval the release had, and the journal never records it.
+    let version = current["active"].as_str().unwrap();
+    invoke(controller, &["stage", ID, "example.probe", version])
+        .await
+        .unwrap();
+    assert_eq!(installation(controller).await["candidate"], version);
+    let marker = storage::directory(UID).join("data/fixture-never-ready");
+    fs::write(&marker, []).unwrap();
+    let error = invoke(controller, &["activate", ID]).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Previous release restarted with previously approved grants"),
+        "{error}"
+    );
+    assert!(!marker.exists(), "the candidate did not start");
+    let restarted = installation(controller).await;
+    assert_eq!(restarted["running"], true);
+    assert_eq!(restarted["active"], version);
+    let log = grant_log();
+    assert_eq!(
+        log[log.len() - 2..],
+        [
+            json!({
+                "generation": restarted["generation"].as_u64().unwrap() - 1,
+                "activated": false,
+                "grants": [],
+            }),
+            json!({
+                "generation": restarted["generation"],
+                "activated": false,
+                "grants": [monitoring_grant()],
+            }),
+        ]
+    );
+    let journal = fs::read(Path::new(ROOT).join("journal.json")).unwrap();
+    let journal: Value = serde_json::from_slice(&journal).unwrap();
+    let approvals = journal["installations"][ID]["approvals"]
+        .as_object()
+        .unwrap();
+    assert!(
+        approvals
+            .values()
+            .all(|approval| approval["grants"] == json!([monitoring_grant()])),
+        "{journal}"
+    );
+}
+
+/// Whether no stored approval of `ID` holds the monitoring registration grant.
+fn stored_without_monitoring() -> bool {
+    // The running manager holds the journal lock, so read the persisted journal itself.
+    let journal = fs::read(Path::new(ROOT).join("journal.json")).unwrap();
+    let state: Value = serde_json::from_slice(&journal).unwrap();
+    let approvals = state["installations"][ID]["approvals"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    !approvals.is_empty()
+        && approvals.values().all(|approval| {
+            !approval["grants"]
+                .as_array()
+                .unwrap()
+                .contains(&monitoring_grant())
+        })
+}
+
+/// Restarts, an interrupted transition and recovery publish the approval of the committed
+/// release again. A revocation that the live generation cannot apply fences it.
+async fn check_approved_restarts(
+    controller: &Path,
+    config: &Path,
+    token: &Path,
+    manager: &mut Child,
+) {
+    invoke(controller, &["stop", ID]).await.unwrap();
+    invoke(controller, &["start", ID]).await.unwrap();
+    let started = installation(controller).await;
+    assert_eq!(
+        last_grants(),
+        json!({
+            "generation": started["generation"],
+            "activated": false,
+            "grants": [monitoring_grant()],
+        })
+    );
+
+    // An activation stopped after it may have published new grants. The boot restarts the
+    // committed release with its own approval instead of clearing every grant.
+    halt(manager).await;
+    let interrupted = preseed(|slot| {
+        slot.generation += 1;
+        slot.pending_fence = true;
+        slot.recovery_required = true;
+        slot.grants_uncertain = Some(true);
+    });
+    *manager = mount_manager(controller, config, token, BootState::Running).await;
+    assert_eq!(
+        last_grants(),
+        json!({
+            "generation": interrupted.generation + 2,
+            "activated": false,
+            "grants": [monitoring_grant()],
+        })
+    );
+
+    // The authority cannot apply a revocation to the live generation. The manager fences it
+    // and requires recovery, which starts the release with the reduced approval.
+    let refusal = Path::new(SOCKET).with_file_name(REFUSE_GRANTS);
+    fs::write(&refusal, []).unwrap();
+    let view = manager_catalog(None, 200).await;
+    let revoke = revocation(catalog_row(&view), &monitoring_grant());
+    assert_eq!(
+        manager_catalog(Some(&revoke), 202).await["status"],
+        "pending"
+    );
+    let failed = ui_outcome(&revoke).await;
+    assert_eq!(failed["status"], "failed", "{failed}");
+    assert_eq!(failed["error"], "unavailable", "{failed}");
+    let fenced = installation(controller).await;
+    assert_eq!(fenced["running"], false);
+    assert_eq!(fenced["recoveryRequired"], true);
+    assert!(stored_without_monitoring());
+    fs::remove_file(&refusal).unwrap();
+    ui_action("recover", 202).await;
+    let recovered = installation(controller).await;
+    assert_eq!(recovered["running"], true);
+    assert_eq!(
+        last_grants(),
+        json!({"generation": recovered["generation"], "activated": false, "grants": []})
+    );
 }
 
 async fn check_process_recovery(
@@ -940,10 +1251,22 @@ async fn check_interrupted_transitions(
     let committed = preseed(|slot| {
         slot.candidate = Some(incompatible.clone());
         slot.previous = Some(incompatible.clone());
+        slot.approve(
+            incompatible,
+            vec![serde_json::from_value(monitoring_grant()).unwrap()],
+        );
     });
     let mut manager = mount_manager(controller, config, token, BootState::Running).await;
     let before = installation(controller).await;
     let process = app_process();
+    let stored_approval = || -> Value {
+        let journal = fs::read(Path::new(ROOT).join("journal.json")).unwrap();
+        let state: Value = serde_json::from_slice(&journal).unwrap();
+        state["installations"][ID]["approvals"][&incompatible.archive_sha256].clone()
+    };
+    let approval = stored_approval();
+    assert_eq!(approval["grants"], json!([monitoring_grant()]));
+    // Root's empty set is refused before the fence, so the release keeps the approval it had.
     let error = invoke(controller, &["activate", ID]).await.unwrap_err();
     assert!(
         error
@@ -951,6 +1274,7 @@ async fn check_interrupted_transitions(
             .contains("Declared data versions require migration or recovery"),
         "{error}"
     );
+    assert_eq!(stored_approval(), approval);
     let view = manager_catalog(None, 200).await;
     let row = catalog_row(&view);
     let rollback = lifecycle_input("rollback", row, Some(&row["previous"]));
@@ -1023,6 +1347,10 @@ pub(super) async fn exercise() {
         ])
         .uid(10002)
         .gid(10002)
+        .env(
+            GRANT_LOG,
+            Path::new(SOCKET).with_file_name("grant-log.jsonl"),
+        )
         .stdout(Stdio::null())
         .kill_on_drop(true)
         .spawn()
@@ -1146,8 +1474,9 @@ pub(super) async fn exercise() {
     let note = storage::directory(UID).join("data/signed-update-fixture");
     fs::write(&note, b"data before update").unwrap();
     chown(&note, Some(UID), Some(UID)).unwrap();
-    let updated =
-        ui_signed_switch(&controller, &release(&packages[0]), &release(&packages[1])).await;
+    ui_signed_switch(&controller, &release(&packages[0]), &release(&packages[1])).await;
+    check_revocation(&controller).await;
+    let updated = installation(&controller).await;
     halt(&mut manager).await;
     drop(catalog);
     let mut manager = mount_manager(&controller, &config, &token, BootState::Running).await;
@@ -1158,8 +1487,18 @@ pub(super) async fn exercise() {
         restored[ID]["generation"].as_u64().unwrap(),
         updated["generation"].as_u64().unwrap() + 1
     );
+    // The boot published the committed release's approval for its new generation.
+    assert_eq!(
+        last_grants(),
+        json!({
+            "generation": restored[ID]["generation"],
+            "activated": false,
+            "grants": [monitoring_grant()],
+        })
+    );
     assert_eq!(fs::read(&note).unwrap(), b"data before update");
     assert_provider_invocation().await;
+    check_approved_restarts(&controller, &config, &token, &mut manager).await;
     invoke(&controller, &["rollback", ID]).await.unwrap();
     check_process_recovery(&controller, &config, &token, &mut manager).await;
     halt(&mut manager).await;

@@ -12,6 +12,7 @@ import {
 } from '@/lib/AppCatalog/contract.ts'
 import {
     catalogBlockedRelease,
+    catalogEntryAvailability,
     catalogInstallationActions,
 } from '@/lib/AppCatalog/installationActions.ts'
 import { keepCatalogProgress, type CatalogQueryResult } from '@/lib/AppCatalog/installProgress.ts'
@@ -134,7 +135,7 @@ export default function useAppCatalogLogic() {
     const catalogNames = new Map(catalogEntries.map((entry) => [entry.appId, entry]))
     const availableReleases = new Map<string, CatalogRelease>(
         catalogEntries
-            .filter(({ availability }) => availability === 'available')
+            .filter((entry) => catalogEntryAvailability(entry) === 'available')
             .map(({ appId, version, archiveSha256 }) => [appId, { version, archiveSha256 }]),
     )
     const accessibleApps = new Map(inventory?.apps.map((app) => [app.installationId, app]))
@@ -169,13 +170,17 @@ export default function useAppCatalogLogic() {
     )
     const entries = catalogEntries
         .filter((entry) => !installedAppIds.has(entry.appId))
-        .map((entry) => ({
-            entry,
-            isRetry: install?.status === 'failed' && sameCatalogRelease(install, entry),
-            canInstall: canManage && status === 'ready' && entry.availability === 'available',
-            requiresSource:
-                sourceUnreachable && entry.availability === 'available' && !entry.cached,
-        }))
+        .map((listed) => {
+            // Show a release that requests grants as needing them until it can be approved here.
+            const entry = { ...listed, availability: catalogEntryAvailability(listed) }
+            return {
+                entry,
+                isRetry: install?.status === 'failed' && sameCatalogRelease(install, entry),
+                canInstall: canManage && status === 'ready' && entry.availability === 'available',
+                requiresSource:
+                    sourceUnreachable && entry.availability === 'available' && !entry.cached,
+            }
+        })
     const retained = installations.filter(
         ({ installation }) => installation.state === 'removed' || installation.state === 'purging',
     )

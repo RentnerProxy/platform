@@ -26,6 +26,11 @@ export const uiProblems = {
     stale: new AppRuntimeProblem(409, 'staleGeneration', 'The app has changed. Reload its UI.'),
     conflict: new AppRuntimeProblem(409, 'conflict', 'The app rejected the current request state.'),
     tooLarge: new AppRuntimeProblem(413, 'payloadTooLarge', 'App UI payload is too large.'),
+    approvalRequired: new AppRuntimeProblem(
+        422,
+        'approvalRequired',
+        'The release needs an approval of exactly the grants it requests.',
+    ),
     rateLimited: new AppRuntimeProblem(429, 'rateLimited', 'The app has too many active requests.'),
     upstream: new AppRuntimeProblem(502, 'appUnavailable', 'The app backend is unavailable.'),
     unavailable: new AppRuntimeProblem(503, 'unavailable', 'App UI is unavailable.'),
@@ -175,6 +180,8 @@ async function nativeRequest(path: string, signal: AbortSignal, init?: RequestIn
                 throw uiProblems.stale
             case 413:
                 throw uiProblems.tooLarge
+            case 422:
+                throw uiProblems.approvalRequired
             case 429:
                 throw uiProblems.rateLimited
             case 502:

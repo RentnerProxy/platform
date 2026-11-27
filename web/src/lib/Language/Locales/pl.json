@@ -258,7 +258,8 @@
                 "recover": "Ponów aktywację",
                 "rollback": "Przywróć poprzednią wersję",
                 "purge": "Usuń zachowane dane",
-                "reinstall": "Zainstaluj ponownie"
+                "reinstall": "Zainstaluj ponownie",
+                "revoke": "Cofnij uprawnienia"
             },
             "pending": {
                 "update": "Aktualizowanie aplikacji…",
@@ -268,7 +269,8 @@
                 "recover": "Ponawianie aktywacji…",
                 "rollback": "Przywracanie poprzedniej wersji…",
                 "purge": "Usuwanie zachowanych danych…",
-                "reinstall": "Ponowne instalowanie aplikacji…"
+                "reinstall": "Ponowne instalowanie aplikacji…",
+                "revoke": "Cofanie uprawnień…"
             },
             "succeeded": {
                 "update": "Zaktualizowano aplikację.",
@@ -278,7 +280,8 @@
                 "recover": "Aktywowano aplikację.",
                 "rollback": "Przywrócono poprzednią wersję.",
                 "purge": "Usunięto zachowane dane aplikacji.",
-                "reinstall": "Ponownie zainstalowano aplikację."
+                "reinstall": "Ponownie zainstalowano aplikację.",
+                "revoke": "Uprawnienia cofnięte."
             },
             "confirm": {
                 "uninstall": "Odinstalować {{name}}? Aplikacja zostanie usunięta, a jej dane pozostaną na potrzeby ponownej instalacji.",
@@ -296,7 +299,8 @@
                 "packageSourceUnavailable": "Źródło pakietów jest nieosiągalne, więc nie można było pobrać wersji. Aplikacja nie została zmieniona.",
                 "networkUnavailable": "Ani katalog aplikacji, ani źródło pakietów nie są osiągalne. Sprawdź połączenie internetowe tego urządzenia. Aplikacja nie została zmieniona.",
                 "incompatibleData": "Wybrana wersja jest niezgodna z zapisanymi danymi aplikacji.",
-                "operationFailed": "Sprawdź bieżący stan aplikacji i spróbuj ponownie."
+                "operationFailed": "Sprawdź bieżący stan aplikacji i spróbuj ponownie.",
+                "approvalRequired": "Wybrana wersja wymaga uprawnień, które nie zostały zatwierdzone. Aplikacja nie została zmieniona."
             }
         },
         "status": {
@@ -317,7 +321,8 @@
             "catalogUnavailable": "Podpisany katalog aplikacji jest nieosiągalny, więc nie można było zweryfikować wersji. Spróbuj ponownie, gdy katalog będzie dostępny.",
             "packageSourceUnavailable": "Źródło pakietów jest nieosiągalne, więc nie można było pobrać wersji. Spróbuj ponownie, gdy źródło będzie dostępne.",
             "networkUnavailable": "Ani katalog aplikacji, ani źródło pakietów nie są osiągalne. Sprawdź połączenie internetowe tego urządzenia i spróbuj ponownie.",
-            "installFailed": "Instalacja nie powiodła się. Możesz spróbować ponownie."
+            "installFailed": "Instalacja nie powiodła się. Możesz spróbować ponownie.",
+            "approvalRequired": "Ta wersja wymaga uprawnień, które nie zostały zatwierdzone, dlatego nie została zainstalowana."
         }
     },
     "appUi": {
@@ -2865,7 +2870,8 @@
                     "crowdsec": "CrowdSec",
                     "npm-import": "Import NPM",
                     "config-import": "Import konfiguracji",
-                    "config-export": "Eksport konfiguracji"
+                    "config-export": "Eksport konfiguracji",
+                    "app-grants": "Uprawnienia aplikacji"
                 }
             },
             "metadata": {
@@ -2883,7 +2889,9 @@
                 "eventId": "Identyfikator zdarzenia",
                 "certificateStage": "Etap certyfikatu",
                 "occurredAt": "Data zdarzenia",
-                "certificateErrorCode": "Kod błędu certyfikatu"
+                "certificateErrorCode": "Kod błędu certyfikatu",
+                "appId": "ID aplikacji",
+                "installationId": "Instalacja aplikacji"
             },
             "details": {
                 "noMetadata": "Brak dodatkowych bezpiecznych metadanych."
