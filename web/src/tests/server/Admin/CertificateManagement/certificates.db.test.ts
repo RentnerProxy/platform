@@ -43,6 +43,13 @@ import {
     getProxyHostConfigEditorService,
 } from '@/server/ProxyRuntime/proxy-host-config-editor.service.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
+import {
+    allHostsGrant,
+    hostEventsOf,
+    installEventApp,
+    readHosts,
+    removeEventApps,
+} from '@/tests/Helpers/appHostEvents.ts'
 
 const enabled = process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() !== null
 const integrationTest = enabled ? test : test.skip
@@ -569,6 +576,7 @@ describe('certificate management with PostgreSQL', () => {
             const redirect = await asUser(owner, () =>
                 createRedirectHostService(redirectInput(id, 'redirect.test')),
             )
+            const app = await installEventApp([allHostsGrant(readHosts.id)])
             await expect(
                 getAuthDatabase().delete(certificates).where(eq(certificates.id, id)).execute(),
             ).rejects.toThrow()
@@ -578,6 +586,12 @@ describe('certificate management with PostgreSQL', () => {
                 detachedHostCount: 3,
                 runtimeStatus: 'applied',
             })
+            // Each detached proxy host records one update for the app that reads every host.
+            const events = await hostEventsOf(app.installationId)
+            await removeEventApps([app])
+            expect(events.map(({ type, resourceId }) => [type, resourceId]).toSorted()).toEqual(
+                [first.id, second.id].toSorted().map((host) => ['proxyHostUpdated', host]),
+            )
             expect(controller!.entries.has(id)).toBeFalse()
             expect(
                 await getAuthDatabase().select().from(certificates).where(eq(certificates.id, id)),

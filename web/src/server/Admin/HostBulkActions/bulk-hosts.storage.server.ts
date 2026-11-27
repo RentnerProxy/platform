@@ -19,6 +19,10 @@ import { bulkHostTagIds } from '@/lib/HostBulkActions/bulkHostActions.ts'
 import { ProxyHostDomainError } from '@/server/Admin/ProxyHostManagement/proxy-hosts.errors.ts'
 import { createBulkHostServices } from './bulk-hosts.service.ts'
 import { invalidateHostMonitoringForHostsInTransaction } from '@/server/HostMonitoring/host-monitoring.repository.ts'
+import {
+    proxyHostChange,
+    recordProxyHostEventsInTransaction,
+} from '@/server/AppRuntime/host-events.server.ts'
 
 export const bulkHostServices = createBulkHostServices({
     authorize: requirePermissionService,
@@ -81,6 +85,13 @@ export const bulkHostServices = createBulkHostServices({
             .update(table)
             .set({ ...change, updatedAt: new Date() })
             .where(eq(table.id, host.id))
+        if (kind === 'proxy' && 'forwardHost' in host) {
+            const type = proxyHostChange(host, { ...host, ...change })
+            if (type)
+                await recordProxyHostEventsInTransaction(transaction, [
+                    { proxyHostId: host.id, type },
+                ])
+        }
         if (kind === 'proxy' && action.type === 'disable')
             await invalidateHostMonitoringForHostsInTransaction(
                 transaction,

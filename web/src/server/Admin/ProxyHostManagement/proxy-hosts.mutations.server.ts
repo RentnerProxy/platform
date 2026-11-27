@@ -37,6 +37,10 @@ import { validateTrustedCaAssignmentInTransaction } from '@/server/Admin/Trusted
 import { validateCertificateAssignmentInTransaction } from '@/server/Admin/CertificateManagement/certificates.service.ts'
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
 import { invalidateHostMonitoringForHostsInTransaction } from '@/server/HostMonitoring/host-monitoring.repository.ts'
+import {
+    proxyHostChange,
+    recordProxyHostEventsInTransaction,
+} from '@/server/AppRuntime/host-events.server.ts'
 
 function invalidInput(): ProxyHostDomainError {
     return new ProxyHostDomainError('invalid_input', 'Proxy host input is invalid.')
@@ -173,6 +177,11 @@ export function parseUpdateProxyHostInput(input: UpdateProxyHostInput) {
  * Ordered pools share the host's scheme and TLS policy; absent or null pools
  * retain single-target behavior. Native JSONB binding stores pools as objects.
  */
+/** The installation that changes a host through its own owned-host operation. */
+function actingInstallation(actor: ProxyHostMutationActor): string | undefined {
+    return typeof actor === 'string' ? undefined : actor.installationId
+}
+
 export async function createProxyHostInTransaction(
     transaction: AuthTransaction,
     actor: ProxyHostMutationActor,
@@ -271,6 +280,11 @@ export async function createProxyHostInTransaction(
             browserCache: parsedInput.browserCache,
         })
     }
+    await recordProxyHostEventsInTransaction(
+        transaction,
+        [{ proxyHostId: proxyHost.id, type: 'proxyHostCreated' }],
+        actingInstallation(actor),
+    )
     await appendAuditEventInTransactionService(transaction, {
         ...mutationAuditActor(actor),
         action: 'create',
@@ -474,6 +488,19 @@ export async function updateProxyHostInTransaction(
             browserCache: parsedInput.browserCache,
         })
     }
+    const change = proxyHostChange(
+        toProxyHostSummary(
+            proxyHost,
+            previousDomains.map(({ domain }) => domain),
+        ),
+        toProxyHostSummary(updatedProxyHost, domains),
+    )
+    if (change)
+        await recordProxyHostEventsInTransaction(
+            transaction,
+            [{ proxyHostId: proxyHost.id, type: change }],
+            actingInstallation(actor),
+        )
     await appendAuditEventInTransactionService(transaction, {
         ...mutationAuditActor(actor),
         action: 'update',
@@ -556,6 +583,11 @@ export async function deleteProxyHostInTransaction(
     await assignHostTagsInTransaction(transaction, 'proxy', host.id, [])
     await transaction.delete(proxyHosts).where(eq(proxyHosts.id, host.id))
     await invalidateHostMonitoringForHostsInTransaction(transaction, [host.id])
+    await recordProxyHostEventsInTransaction(
+        transaction,
+        [{ proxyHostId: host.id, type: 'proxyHostRemoved' }],
+        actingInstallation(actor),
+    )
     await appendAuditEventInTransactionService(transaction, {
         ...mutationAuditActor(actor),
         action: 'delete',
