@@ -4,19 +4,14 @@
 //! creates the app schema, 1.2.0 fails inside its migration, 1.3.0 upgrades the data and
 //! 1.4.0 commits a migration before its backend refuses to start. One fresh appliance state
 //! installs, updates, refuses a rollback the data no longer supports and recovers through the
-//! catalog UI. Each update needs its own catalog revision, because only the latest newer
-//! release is offered, and a manager restart refreshes the listing.
+//! catalog UI.
 
 use super::distribution::{self, Distribution};
 use super::portable_backup::postgres;
+use super::repackage::{Repackaged, generation, installation, offer, repackage};
 use super::*;
-use crate::app_install::tests::pack_fixture_archive;
-use crate::app_install::tests::published_greeting::{PublishedGreeting, PublishedSnapshot};
 use crate::app_manager::migration::recorded_version;
-use marketplace_app_pipeline::package::execute;
-use marketplace_artifacts::{digest, file_identity};
-use rentnerproxy_app_contracts::Contracts;
-use time::OffsetDateTime;
+use marketplace_artifacts::digest;
 
 /// SQL steps by name. Step `n` of a release migrates data version `n` to `n + 1`.
 const STEPS: [(&str, &str); 4] = [
@@ -58,14 +53,6 @@ const RELEASES: [(&str, &[&str]); 4] = [
     ("1.4.0", &["initialize", "upgrade", "archive"]),
 ];
 
-fn native_target() -> &'static str {
-    if cfg!(target_arch = "x86_64") {
-        "linux-amd64"
-    } else {
-        "linux-arm64"
-    }
-}
-
 fn step_sql(name: &str) -> &'static str {
     STEPS
         .iter()
@@ -89,185 +76,21 @@ fn data(steps: &[&str]) -> Value {
     })
 }
 
-fn manifest(official: &Value, version: &str, data: &Value) -> Value {
-    let mut manifest = official.clone();
-    manifest["version"] = version.into();
-    manifest["data"] = data.clone();
-    manifest
-}
-
-/// Extract the verified official archive once with the installer's package validator.
-fn official_tree(archive: &Path, work: &Path, source: &Value) -> PathBuf {
-    let tar = work.join("official.tar");
-    let tree = work.join("official");
-    execute(
-        "decompress-package",
-        json!({"inputPath": archive, "outputPath": tar}),
-    )
-    .unwrap();
-    execute(
-        "validate-package",
-        json!({
-            "archivePath": tar,
-            "outputDirectory": tree,
-            "target": native_target(),
-            "source": {"repositoryId": source["repositoryId"], "commit": source["commit"]},
-        }),
-    )
-    .unwrap();
-    fs::remove_file(tar).unwrap();
-    tree
-}
-
-/// Package-relative paths and archive modes of every file below `directory`.
-fn package_files(root: &Path, directory: &Path, files: &mut Vec<(String, usize)>) {
-    for entry in fs::read_dir(directory).unwrap() {
-        let path = entry.unwrap().path();
-        let metadata = fs::symlink_metadata(&path).unwrap();
-        if metadata.is_dir() {
-            package_files(root, &path, files);
-            continue;
-        }
-        assert!(metadata.is_file(), "{}", path.display());
-        let relative = path
-            .strip_prefix(root)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_owned();
-        let mode = if metadata.permissions().mode() & 0o111 == 0 {
-            0o644
-        } else {
-            0o755
-        };
-        files.push((relative, mode));
-    }
-}
-
-/// Repack the official package with `manifest` as app.json and the declared SQL steps.
-fn pack(
-    work: &Path,
-    tree: &Path,
-    files: &[(String, usize)],
-    manifest: &Value,
-    steps: &[&str],
-) -> PathBuf {
-    let directory = work.join(format!(
-        "greeting-{}",
-        manifest["version"].as_str().unwrap()
-    ));
-    fs::create_dir(&directory).unwrap();
-    let migrations: Vec<_> = steps
-        .iter()
-        .map(|name| (format!("migrations/{name}.sql"), step_sql(name)))
-        .collect();
-    let archive = pack_fixture_archive(
-        &directory,
-        std::iter::once(("app.json", 0o644, serde_json::to_vec(manifest).unwrap()))
-            .chain(
-                files
-                    .iter()
-                    .map(|(path, mode)| (path.as_str(), *mode, fs::read(tree.join(path)).unwrap())),
-            )
-            .chain(
-                migrations
-                    .iter()
-                    .map(|(path, sql)| (path.as_str(), 0o644, sql.as_bytes().to_vec())),
-            ),
-    );
-    // Only the compressed archive is served.
-    fs::remove_file(directory.join("fixture.tar")).unwrap();
-    archive
-}
-
-/// Clone the official release as `version`. The native package names the repacked archive.
-/// No archive exists for the other target, so it gets an identity no asset can satisfy.
-fn release_entry(official: &Value, version: &str, data: &Value, archive: &Value) -> Value {
-    let mut release = official.clone();
-    release["version"] = version.into();
-    for package in release["packages"].as_array_mut().unwrap() {
-        let manifest = manifest(&package["manifest"], version, data);
-        package["manifestSha256"] = digest(&serde_json::to_vec(&manifest).unwrap()).into();
-        if manifest["target"] == native_target() {
-            package["archive"] = archive.clone();
-        } else {
-            let identity = format!("unpublished {APP_ID} {version} {}", manifest["target"]);
-            package["archive"]["sha256"] = digest(identity.as_bytes()).into();
-        }
-        package["manifest"] = manifest;
-    }
-    release
-}
-
-/// Repackage the four releases and sign one catalog revision for each, in order.
-fn repackage(fixture: &mut PublishedGreeting, work: &Path) -> [PublishedSnapshot; 4] {
-    let official = &fixture.snapshots[1];
-    let (official_version, official_commit) = (official.version, official.official_commit);
-    let official_archive = official.archive_path.clone();
-    let mut catalog: Value = serde_json::from_slice(fixture.repository.catalog_bytes()).unwrap();
-    let base = catalog["releases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|release| release["appId"] == APP_ID && release["version"] == official_version)
-        .expect("official Greeting 1.0.1 release")
-        .clone();
-    let native = base["packages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|package| package["manifest"]["target"] == native_target())
-        .expect("official native Greeting package")["manifest"]
-        .clone();
-    let tree = official_tree(&official_archive, work, &native["source"]);
-    let mut files = Vec::new();
-    package_files(&tree, &tree, &mut files);
-    files.retain(|(path, _)| path != "app.json");
-    files.sort_unstable();
-    let contracts = Contracts::new().unwrap();
-    let signed_at = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
-    let releases = std::array::from_fn(|index| {
-        let (version, steps) = RELEASES[index];
-        let data = data(steps);
-        let archive_path = pack(
-            work,
-            &tree,
-            &files,
-            &manifest(&native, version, &data),
-            steps,
-        );
-        let identity =
-            file_identity(&archive_path, fs::metadata(&archive_path).unwrap().len()).unwrap();
-        let archive = json!({"sha256": identity.sha256, "sizeBytes": identity.size_bytes});
-        catalog["releases"]
-            .as_array_mut()
-            .unwrap()
-            .push(release_entry(&base, version, &data, &archive));
-        let catalog_revision = catalog["revision"].as_u64().unwrap() + 1;
-        catalog["revision"] = catalog_revision.into();
-        let bytes = serde_json::to_vec(&catalog).unwrap();
-        let signed = fixture.repository.publish(&bytes, signed_at).clone();
-        let validated = contracts.validate_catalog(&catalog).unwrap();
-        let package = validated
-            .package(APP_ID, version, native_target())
-            .expect("repackaged native Greeting package");
-        let asset = package.release_assets().archive;
-        assert_eq!(asset.sha256, identity.sha256);
-        PublishedSnapshot {
-            version,
-            official_commit,
-            catalog_revision,
-            catalog_sha256: digest(&bytes),
-            files: signed,
-            archive_path,
-            archive_url: asset.url,
-            archive_sha256: identity.sha256,
-            archive_size_bytes: identity.size_bytes,
-            manifest_sha256: package.manifest_sha256().to_owned(),
-        }
-    });
-    fs::remove_dir_all(tree).unwrap();
-    releases
+/// Each release with its data block and the SQL files of its declared steps.
+fn repackaged() -> [Repackaged; 4] {
+    RELEASES.map(|(version, steps)| Repackaged {
+        version,
+        fields: json!({"data": data(steps)}),
+        files: steps
+            .iter()
+            .map(|name| {
+                (
+                    format!("migrations/{name}.sql"),
+                    step_sql(name).as_bytes().to_vec(),
+                )
+            })
+            .collect(),
+    })
 }
 
 async fn app_query(uid: u32, sql: &str) -> String {
@@ -324,42 +147,6 @@ fn write_state(path: &Path, uid: u32, bytes: &[u8]) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
-fn installation<'a>(view: &'a Value, id: &str) -> &'a Value {
-    view["installations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["installationId"] == id)
-        .expect("Greeting installation in the catalog view")
-}
-
-/// Serve the revision that adds `release` and restart the manager, which refreshes its listing
-/// on start. Returns the running installation, which must offer exactly that release.
-async fn offer(
-    hosts: &Distribution,
-    release: &PublishedSnapshot,
-    manager: &mut Child,
-    controller: &Path,
-    installer: &InstallerFixture,
-    id: &str,
-) -> Value {
-    hosts.serve_metadata(release.files.clone());
-    halt(manager).await;
-    *manager = start_manager(controller, &installer.config, &installer.token, Some(id)).await;
-    let ready = wait_catalog_state("ready").await;
-    let row = running_installation(&ready, id).clone();
-    assert_eq!(
-        row["update"],
-        json!({"version": release.version, "archiveSha256": release.archive_sha256}),
-        "{row}"
-    );
-    row
-}
-
-fn generation(row: &Value) -> u64 {
-    row["generation"].as_u64().unwrap()
-}
-
 #[tokio::test]
 #[ignore = "requires native Linux, root, the published Greeting fixture and isolated PostgreSQL"]
 async fn privileged_published_greeting_data_migrations() {
@@ -371,10 +158,10 @@ async fn privileged_published_greeting_data_migrations() {
     let report_path = PathBuf::from(std::env::var_os("RP_GREETING_MIGRATIONS_REPORT").unwrap());
     let mut fixture = crate::app_install::tests::published_greeting::prepare(&fixture_path);
     let installer = InstallerFixture::new(&fixture.root);
-    let releases = repackage(&mut fixture, installer.work.path());
+    let releases = repackage(&mut fixture, installer.work.path(), &repackaged());
     let [initial, broken, upgrade, committed] = &releases;
     let installation_id = format!("app-{}", &digest(APP_ID.as_bytes())[..32]);
-    let mut authority = start_authority(&installation_id).await;
+    let mut authority = start_authority(&installation_id, None).await;
     let hosts = Distribution::start(installer.work.path(), initial.files.clone(), &releases);
     let mut manager = start_manager(&controller, &installer.config, &installer.token, None).await;
 
