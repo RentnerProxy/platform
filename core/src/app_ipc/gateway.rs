@@ -511,7 +511,7 @@ struct Operation {
     events: bool,
 }
 
-static APP_OPERATIONS: LazyLock<[HttpDescriptor; 16]> = LazyLock::new(|| {
+static APP_OPERATIONS: LazyLock<[HttpDescriptor; 17]> = LazyLock::new(|| {
     [
         HttpOperation::GetPlatformContext,
         HttpOperation::SubscribeToEvents,
@@ -519,6 +519,7 @@ static APP_OPERATIONS: LazyLock<[HttpDescriptor; 16]> = LazyLock::new(|| {
         HttpOperation::ListProxyHosts,
         HttpOperation::UpdateOwnedProxyHost,
         HttpOperation::ProbeUpstream,
+        HttpOperation::ProbeUpstreams,
         HttpOperation::PublishNotification,
         HttpOperation::RecordAuditEvent,
         HttpOperation::ReadSecret,

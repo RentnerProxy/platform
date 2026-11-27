@@ -26,6 +26,7 @@ const directRoutes = new Map<string, AppRuntimeOperation>([
     ['POST /platform/v1/proxy-hosts/query', 'listHosts'],
     ['POST /platform/v1/proxy-hosts/owned', 'updateHost'],
     ['POST /platform/v1/diagnostics/upstream', 'probe'],
+    ['POST /platform/v1/diagnostics/upstream/batch', 'probeBatch'],
     ['POST /platform/v1/notifications', 'notification'],
     ['POST /platform/v1/audit-events', 'audit'],
     ['GET /platform/v1/events', 'events'],

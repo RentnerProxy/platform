@@ -27,9 +27,11 @@ import {
     appProxyHostQuery,
     appRpcLimits,
     appUpstreamProbe,
+    appUpstreamProbeBatch,
 } from './contract.ts'
 import { replayAppRuntimeEventsInTransaction } from './events.server.ts'
 import { listAppProxyHosts, probeAppProxyUpstream } from './hosts.server.ts'
+import { probeAppProxyUpstreams } from './upstream-probes.server.ts'
 import { recordAppRuntimeMessageInTransaction } from './messages.server.ts'
 import {
     cancelAppOperation,
@@ -232,6 +234,14 @@ export function executeAppRuntimeCall(
                     await probeAppProxyUpstream(
                         credentials,
                         parseAppInput(appUpstreamProbe, body),
+                        signal,
+                    ),
+                )
+            case 'probeBatch':
+                return json(
+                    await probeAppProxyUpstreams(
+                        credentials,
+                        parseAppInput(appUpstreamProbeBatch, body),
                         signal,
                     ),
                 )

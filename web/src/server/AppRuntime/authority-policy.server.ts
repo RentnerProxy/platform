@@ -35,6 +35,7 @@ const platformPermissions: Readonly<Partial<Record<string, readonly PermissionKe
         PERMISSIONS.PROXY_HOSTS_DELETE,
     ],
     'diagnostics.upstream.probe.v1': [PERMISSIONS.PROXY_HOSTS_VIEW],
+    'diagnostics.upstream.probe.v2': [PERMISSIONS.PROXY_HOSTS_VIEW],
     'notifications.publish.v1': [PERMISSIONS.NOTIFICATIONS_MANAGE],
     'docker.inventory.observe.v1': [PERMISSIONS.DOCKER_DISCOVERY_VIEW],
     'dns.challenge.manage.v1': [PERMISSIONS.DNS_CONNECTIONS_MANAGE],

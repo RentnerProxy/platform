@@ -1500,7 +1500,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 [[package]]
 name = "marketplace-app-catalog"
 version = "0.1.0"
-source = "git+https://github.com/RentnerProxy/marketplace.git?rev=409240d35f45cfaed632a941ff95517e97779fbb#409240d35f45cfaed632a941ff95517e97779fbb"
+source = "git+https://github.com/RentnerProxy/marketplace.git?rev=b5761fb1fc2237f34c88442bb52ce04c328528d2#b5761fb1fc2237f34c88442bb52ce04c328528d2"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -1518,7 +1518,7 @@ dependencies = [
 [[package]]
 name = "marketplace-app-pipeline"
 version = "0.1.0"
-source = "git+https://github.com/RentnerProxy/marketplace.git?rev=409240d35f45cfaed632a941ff95517e97779fbb#409240d35f45cfaed632a941ff95517e97779fbb"
+source = "git+https://github.com/RentnerProxy/marketplace.git?rev=b5761fb1fc2237f34c88442bb52ce04c328528d2#b5761fb1fc2237f34c88442bb52ce04c328528d2"
 dependencies = [
  "getrandom 0.4.3",
  "hex",
@@ -1541,7 +1541,7 @@ dependencies = [
 [[package]]
 name = "marketplace-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/RentnerProxy/marketplace.git?rev=409240d35f45cfaed632a941ff95517e97779fbb#409240d35f45cfaed632a941ff95517e97779fbb"
+source = "git+https://github.com/RentnerProxy/marketplace.git?rev=b5761fb1fc2237f34c88442bb52ce04c328528d2#b5761fb1fc2237f34c88442bb52ce04c328528d2"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -2038,7 +2038,7 @@ checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 [[package]]
 name = "rentnerproxy-app-contracts"
 version = "1.0.0"
-source = "git+https://github.com/RentnerProxy/marketplace.git?rev=409240d35f45cfaed632a941ff95517e97779fbb#409240d35f45cfaed632a941ff95517e97779fbb"
+source = "git+https://github.com/RentnerProxy/marketplace.git?rev=b5761fb1fc2237f34c88442bb52ce04c328528d2#b5761fb1fc2237f34c88442bb52ce04c328528d2"
 dependencies = [
  "jsonschema",
  "serde_json",

@@ -6,10 +6,10 @@ rust-version = "1.99.1"
 license = "MIT"
 
 [dependencies]
-marketplace-app-catalog = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "409240d35f45cfaed632a941ff95517e97779fbb" }
-marketplace-app-pipeline = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "409240d35f45cfaed632a941ff95517e97779fbb" }
-marketplace-artifacts = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "409240d35f45cfaed632a941ff95517e97779fbb" }
-rentnerproxy-app-contracts = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "409240d35f45cfaed632a941ff95517e97779fbb" }
+marketplace-app-catalog = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "b5761fb1fc2237f34c88442bb52ce04c328528d2" }
+marketplace-app-pipeline = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "b5761fb1fc2237f34c88442bb52ce04c328528d2" }
+marketplace-artifacts = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "b5761fb1fc2237f34c88442bb52ce04c328528d2" }
+rentnerproxy-app-contracts = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "b5761fb1fc2237f34c88442bb52ce04c328528d2" }
 aws-lc-rs = "1.19.0"
 axum = { version = "0.8.9", default-features = false, features = [
     "json",
