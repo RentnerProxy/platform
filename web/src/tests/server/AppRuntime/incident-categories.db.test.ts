@@ -113,7 +113,29 @@ integrationTest('registering the same generation again must declare the same cat
             })
         await register(categories)
         await register(categories)
+        // Order is not part of the declaration, as for the other declared lists.
+        await register(categories.toReversed())
         await expect(register([categories[0]])).rejects.toThrow()
+    }),
+)
+
+integrationTest('an ordinary Unicode category name registers unchanged', () =>
+    scenario(async (transaction) => {
+        const identity = identityOf(40_606)
+        const leaseExpiresAt = new Date(Date.now() + 60_000)
+        const unicode = [
+            { id: 'availability', name: 'Verfügbarkeit prüfen \u{1F6A6}', resource: 'none' },
+        ] as const
+        await registerAppRuntimeGenerationInTransaction(transaction, {
+            identity,
+            leaseExpiresAt,
+            capabilities: [],
+            incidentCategories: unicode,
+        })
+        await activateAppRuntimeGenerationInTransaction(transaction, identity, leaseExpiresAt)
+        expect(
+            await readAppIncidentCategoriesInTransaction(transaction, identity.installationId),
+        ).toEqual(unicode)
     }),
 )
 
