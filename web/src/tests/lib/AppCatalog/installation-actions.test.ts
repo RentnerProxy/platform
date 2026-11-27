@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test'
 import type { CatalogEntry, CatalogInstallation } from '@/lib/AppCatalog/contract.ts'
 import {
     catalogBlockedRelease,
-    catalogEntryAvailability,
     catalogInstallationActions,
     compareCatalogVersions,
 } from '@/lib/AppCatalog/installationActions.ts'
@@ -94,20 +93,13 @@ describe('catalog installation releases', () => {
         ).toEqual({ version: '1.10.0', availability: 'incompatible' })
     })
 
-    test('offers no release that needs an approval until Owners can review it here', () => {
+    test('offers an update that needs an approval for the Owner to review', () => {
         const requesting = { ...entry('1.0.1', 'available'), grants: [providerGrant] }
-        expect(catalogEntryAvailability(entry('1.0.1', 'available'))).toBe('available')
-        expect(catalogEntryAvailability(requesting)).toBe('grantsRequired')
-        expect(catalogEntryAvailability(entry('1.0.1', 'incompatible'))).toBe('incompatible')
         const update = { version: '1.0.1', archiveSha256: 'b'.repeat(64) }
-        // The update the core offers needs an approval, so it is named but not offered.
-        const blocked = { ...installation, update, updateRequiresApproval: true }
-        expect(actions(blocked)).toEqual(['deactivate', 'uninstall'])
-        expect(catalogBlockedRelease(blocked, [requesting])).toEqual({
-            version: '1.0.1',
-            availability: 'grantsRequired',
-        })
-        // An update that carries its approval stays offered.
+        // The approval dialog opens for the update instead of starting it.
+        const reviewed = { ...installation, update, updateRequiresApproval: true }
+        expect(actions(reviewed)).toEqual(['update', 'deactivate', 'uninstall'])
+        expect(catalogBlockedRelease(reviewed, [requesting])).toBeUndefined()
         const carried = { ...installation, update, updateRequiresApproval: false }
         expect(actions(carried)).toEqual(['update', 'deactivate', 'uninstall'])
         expect(catalogBlockedRelease(carried, [requesting])).toBeUndefined()

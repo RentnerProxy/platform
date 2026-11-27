@@ -5,8 +5,8 @@ import {
     catalogLifecycleSchema,
     sameCatalogLifecycle,
     sameCatalogRelease,
+    type CatalogInstallInput,
     type CatalogLifecycleInput,
-    type CatalogSelector,
 } from './contract.ts'
 
 const requestErrors = {
@@ -33,7 +33,7 @@ export function catalogRequestError(error: unknown) {
     return error instanceof CatalogRequestError ? error.code : 'unavailable'
 }
 
-async function postCatalog(path: string, input: CatalogSelector | CatalogLifecycleInput) {
+async function postCatalog(path: string, input: CatalogInstallInput | CatalogLifecycleInput) {
     const response = await fetch(path, {
         method: 'POST',
         credentials: 'same-origin',
@@ -48,10 +48,15 @@ async function postCatalog(path: string, input: CatalogSelector | CatalogLifecyc
     return (await response.json()) as unknown
 }
 
-export async function installCatalogRelease(input: CatalogSelector) {
-    const { appId, version, archiveSha256 } = input
+export async function installCatalogRelease(input: CatalogInstallInput) {
+    const { appId, version, archiveSha256, approval } = input
     const result = catalogInstallSchema.parse(
-        await postCatalog(APP_CATALOG_INSTALL_PATH, { appId, version, archiveSha256 }),
+        await postCatalog(APP_CATALOG_INSTALL_PATH, {
+            appId,
+            version,
+            archiveSha256,
+            ...(approval && { approval }),
+        }),
     )
     if (!sameCatalogRelease(result, input)) throw new Error('Unexpected catalog selection.')
     return result

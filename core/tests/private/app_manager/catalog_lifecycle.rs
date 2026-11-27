@@ -256,15 +256,37 @@ fn a_revocation_that_cannot_reach_the_app_reports_every_failed_fence_step() {
             "Generation grants rejected (503)",
         )
     };
+    // A complete fence stopped the app, which the receipt reports as such.
     let failed = fail_closed(published(), Ok(()), Ok(()));
+    assert!(revoked_and_stopped(&failed));
     assert_eq!(failed.kind(), io::ErrorKind::WouldBlock);
-    assert_eq!(failed.to_string(), "Generation grants rejected (503)");
+    assert_eq!(
+        failed.to_string(),
+        "Revocation stopped the app that could not apply it: Generation grants rejected (503)"
+    );
+    for (recorded, fenced) in [
+        (
+            Err(io::Error::other("Manager journal capacity exceeded")),
+            Ok(()),
+        ),
+        (
+            Ok(()),
+            Err(io::Error::other("Generation retire rejected (503)")),
+        ),
+    ] {
+        assert!(!revoked_and_stopped(&fail_closed(
+            published(),
+            recorded,
+            fenced
+        )));
+    }
     let failed = fail_closed(
         published(),
         Err(io::Error::other("Manager journal capacity exceeded")),
         Err(io::Error::other("Generation retire rejected (503)")),
     );
-    // The receipt still reports the unavailable authority.
+    // Without a complete fence, the receipt still reports the unavailable authority.
+    assert!(!revoked_and_stopped(&failed));
     assert_eq!(failed.kind(), io::ErrorKind::WouldBlock);
     assert_eq!(
         failed.to_string(),

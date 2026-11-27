@@ -237,7 +237,7 @@
             "reinstall": "Reinstalla {{version}}",
             "blocked": {
                 "incompatible": "La versione {{version}} non è compatibile con questo dispositivo, quindi non viene offerta.",
-                "grantsRequired": "La versione {{version}} richiede autorizzazioni aggiuntive, quindi non viene offerta."
+                "grantsRequired": "La versione {{version}} richiede autorizzazioni che questo dispositivo non può concedere, quindi non viene offerta."
             },
             "failed": "Impossibile completare l’operazione.",
             "states": {
@@ -284,7 +284,8 @@
             "confirm": {
                 "uninstall": "Disinstallare {{name}}? L’app verrà rimossa e i suoi dati saranno conservati per una reinstallazione.",
                 "purge": "Eliminare definitivamente i dati conservati di {{name}}? L’operazione è irreversibile.",
-                "rollback": "Tornare alla versione {{version}} di {{name}}? I dati attuali devono essere compatibili con questa versione."
+                "rollback": "Tornare alla versione {{version}} di {{name}}? I dati attuali devono essere compatibili con questa versione.",
+                "revoke": "Revocare «{{grant}}» a {{name}}? L’app perde subito questa autorizzazione."
             },
             "errors": {
                 "invalid": "L’operazione richiesta non è valida.",
@@ -298,8 +299,11 @@
                 "networkUnavailable": "Né il catalogo delle app né la fonte dei pacchetti sono raggiungibili. Controlla la connessione Internet di questo dispositivo. L’app non è stata modificata.",
                 "incompatibleData": "La versione selezionata non è compatibile con i dati salvati.",
                 "operationFailed": "Controlla lo stato attuale dell’app prima di riprovare.",
-                "approvalRequired": "La versione selezionata richiede autorizzazioni non approvate. L’app non è stata modificata."
-            }
+                "approvalRequired": "La versione selezionata richiede autorizzazioni non approvate. L’app non è stata modificata.",
+                "revokedAppStopped": "L’autorizzazione è stata revocata, ma l’app in esecuzione non ha potuto applicare la modifica ed è stata quindi arrestata. Riprova l’attivazione per avviarla con le autorizzazioni rimanenti."
+            },
+            "updateRequiresApproval": "La versione {{version}} richiede autorizzazioni aggiuntive. Controllale prima di aggiornare.",
+            "reviewUpdate": "Controlla l’aggiornamento a {{version}}"
         },
         "status": {
             "loading": "Caricamento del catalogo delle app…",
@@ -308,7 +312,7 @@
         },
         "availability": {
             "incompatible": "Incompatibile con questo dispositivo",
-            "grantsRequired": "Sono necessarie autorizzazioni aggiuntive"
+            "grantsRequired": "Richiede autorizzazioni che questo dispositivo non può concedere"
         },
         "errors": {
             "invalid": "La versione selezionata non è valida.",
@@ -321,6 +325,52 @@
             "networkUnavailable": "Né il catalogo delle app né la fonte dei pacchetti sono raggiungibili. Controlla la connessione Internet di questo dispositivo e riprova.",
             "installFailed": "L’installazione non è riuscita. Puoi riprovare.",
             "approvalRequired": "Questa versione richiede autorizzazioni non approvate, quindi non è stata installata."
+        },
+        "grants": {
+            "title": "Controlla le autorizzazioni richieste",
+            "description": "{{name}} {{version}} richiede le autorizzazioni seguenti. Si avvia solo dopo la tua approvazione.",
+            "capabilities": "Funzionalità",
+            "support": "Accesso alla piattaforma",
+            "supportHint": "Ogni app con funzionalità riceve questo accesso per gli eventi di modifica e il suo registro di audit.",
+            "names": {
+                "proxyHostsRead": "Leggere gli host proxy",
+                "upstreamProbe": "Verificare la raggiungibilità degli upstream",
+                "notificationsPublish": "Inviare notifiche",
+                "auditRecord": "Scrivere voci nel registro di audit",
+                "eventsSubscribe": "Ricevere eventi di modifica",
+                "providerRegister": "Registrarsi come provider",
+                "secretRead": "Leggere segreti",
+                "unknown": "Funzionalità {{id}}"
+            },
+            "scope": {
+                "installation": "Per questa app",
+                "proxyHosts": "Per gli host proxy che selezioni",
+                "providerProfiles": "Profilo provider {{resource}}",
+                "secretReferences": "Segreto {{resource}}",
+                "unknown": "Ambito {{scope}}"
+            },
+            "allowService": "Consenti in background",
+            "allowServiceHint": "L’app può usare questa autorizzazione senza un utente connesso, ad esempio per controlli pianificati.",
+            "permissionKey": "Autorizzazione app richiesta",
+            "permissionKeyNone": "Nessuna autorizzazione app richiesta",
+            "hosts": {
+                "label": "Host proxy",
+                "placeholder": "Seleziona host proxy",
+                "search": "Cerca host proxy…",
+                "empty": "Non ci sono ancora host proxy da selezionare.",
+                "required": "Seleziona almeno un host proxy.",
+                "loadFailed": "Impossibile caricare gli host proxy.",
+                "disabled": "{{hostname}} (inattivo)"
+            },
+            "approveInstall": "Approva e installa",
+            "approveUpdate": "Approva e aggiorna a {{version}}",
+            "approveReinstall": "Approva e reinstalla {{version}}",
+            "decline": "Rifiuta",
+            "declineHint": "Se rifiuti, non viene installato né modificato nulla.",
+            "approved": "Autorizzazioni approvate",
+            "revoke": "Revoca",
+            "onResource": "{{name}}: {{resource}}",
+            "userOnly": "(solo con un utente connesso)"
         }
     },
     "appUi": {

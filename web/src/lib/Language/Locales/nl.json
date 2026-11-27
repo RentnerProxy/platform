@@ -216,7 +216,7 @@
             "reinstall": "{{version}} opnieuw installeren",
             "blocked": {
                 "incompatible": "Versie {{version}} is niet compatibel met dit apparaat en wordt daarom niet aangeboden.",
-                "grantsRequired": "Versie {{version}} vereist aanvullende machtigingen en wordt daarom niet aangeboden."
+                "grantsRequired": "Versie {{version}} vraagt machtigingen aan die dit apparaat niet kan verlenen en wordt daarom niet aangeboden."
             },
             "failed": "De appactie kon niet worden voltooid.",
             "states": {
@@ -263,7 +263,8 @@
             "confirm": {
                 "uninstall": "{{name}} verwijderen? De app wordt verwijderd en de gegevens blijven bewaard voor een herinstallatie.",
                 "purge": "De bewaarde gegevens van {{name}} definitief wissen? Dit kan niet ongedaan worden gemaakt.",
-                "rollback": "{{name}} terugzetten naar versie {{version}}? De huidige gegevens moeten compatibel zijn met die versie."
+                "rollback": "{{name}} terugzetten naar versie {{version}}? De huidige gegevens moeten compatibel zijn met die versie.",
+                "revoke": "“{{grant}}” intrekken voor {{name}}? De app verliest deze machtiging direct."
             },
             "errors": {
                 "invalid": "De gevraagde appactie is ongeldig.",
@@ -277,8 +278,11 @@
                 "networkUnavailable": "De appcatalogus en de pakketbron zijn allebei niet bereikbaar. Controleer de internetverbinding van dit apparaat. De app is niet gewijzigd.",
                 "incompatibleData": "De geselecteerde versie is incompatibel met de opgeslagen appgegevens.",
                 "operationFailed": "Controleer de huidige status van de app voordat je het opnieuw probeert.",
-                "approvalRequired": "De geselecteerde versie vraagt machtigingen aan die niet zijn goedgekeurd. De app is niet gewijzigd."
-            }
+                "approvalRequired": "De geselecteerde versie vraagt machtigingen aan die niet zijn goedgekeurd. De app is niet gewijzigd.",
+                "revokedAppStopped": "De machtiging is ingetrokken, maar de actieve app kon de wijziging niet toepassen en is daarom gestopt. Probeer de activering opnieuw om de app met de resterende machtigingen te starten."
+            },
+            "updateRequiresApproval": "Versie {{version}} vraagt extra machtigingen aan. Controleer ze voordat je bijwerkt.",
+            "reviewUpdate": "Update naar {{version}} controleren"
         },
         "status": {
             "loading": "Appcatalogus laden…",
@@ -287,7 +291,7 @@
         },
         "availability": {
             "incompatible": "Niet compatibel met dit apparaat",
-            "grantsRequired": "Aanvullende machtigingen vereist"
+            "grantsRequired": "Vraagt machtigingen aan die dit apparaat niet kan verlenen"
         },
         "errors": {
             "invalid": "De geselecteerde versie is ongeldig.",
@@ -300,6 +304,52 @@
             "networkUnavailable": "De appcatalogus en de pakketbron zijn allebei niet bereikbaar. Controleer de internetverbinding van dit apparaat en probeer het daarna opnieuw.",
             "installFailed": "De installatie is mislukt. Je kunt het opnieuw proberen.",
             "approvalRequired": "Deze versie vraagt machtigingen aan die niet zijn goedgekeurd en is daarom niet geïnstalleerd."
+        },
+        "grants": {
+            "title": "Aangevraagde machtigingen controleren",
+            "description": "{{name}} {{version}} vraagt de onderstaande machtigingen aan. De app start pas nadat je ze goedkeurt.",
+            "capabilities": "Functies",
+            "support": "Platformtoegang",
+            "supportHint": "Elke app met functies krijgt deze toegang voor wijzigingsgebeurtenissen en het auditlogboek.",
+            "names": {
+                "proxyHostsRead": "Proxyhosts lezen",
+                "upstreamProbe": "Bereikbaarheid van upstreams controleren",
+                "notificationsPublish": "Meldingen versturen",
+                "auditRecord": "Vermeldingen in het auditlogboek schrijven",
+                "eventsSubscribe": "Wijzigingsgebeurtenissen ontvangen",
+                "providerRegister": "Registreren als provider",
+                "secretRead": "Geheimen lezen",
+                "unknown": "Functie {{id}}"
+            },
+            "scope": {
+                "installation": "Voor deze app",
+                "proxyHosts": "Voor de proxyhosts die je selecteert",
+                "providerProfiles": "Providerprofiel {{resource}}",
+                "secretReferences": "Geheim {{resource}}",
+                "unknown": "Bereik {{scope}}"
+            },
+            "allowService": "Op de achtergrond toestaan",
+            "allowServiceHint": "De app mag deze machtiging ook zonder aangemelde gebruiker gebruiken, bijvoorbeeld voor geplande controles.",
+            "permissionKey": "Vereiste app-machtiging",
+            "permissionKeyNone": "Geen app-machtiging vereist",
+            "hosts": {
+                "label": "Proxyhosts",
+                "placeholder": "Proxyhosts selecteren",
+                "search": "Proxyhosts zoeken…",
+                "empty": "Er zijn nog geen proxyhosts om te selecteren.",
+                "required": "Selecteer ten minste één proxyhost.",
+                "loadFailed": "De proxyhosts konden niet worden geladen.",
+                "disabled": "{{hostname}} (inactief)"
+            },
+            "approveInstall": "Goedkeuren en installeren",
+            "approveUpdate": "Goedkeuren en bijwerken naar {{version}}",
+            "approveReinstall": "Goedkeuren en {{version}} opnieuw installeren",
+            "decline": "Weigeren",
+            "declineHint": "Als je weigert, wordt er niets geïnstalleerd of gewijzigd.",
+            "approved": "Goedgekeurde machtigingen",
+            "revoke": "Intrekken",
+            "onResource": "{{name}}: {{resource}}",
+            "userOnly": "(alleen met een aangemelde gebruiker)"
         }
     },
     "appUi": {

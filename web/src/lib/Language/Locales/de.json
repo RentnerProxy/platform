@@ -235,7 +235,7 @@
             "reinstall": "{{version}} erneut installieren",
             "blocked": {
                 "incompatible": "Version {{version}} ist mit dieser Appliance inkompatibel und wird daher nicht angeboten.",
-                "grantsRequired": "Version {{version}} erfordert zusätzliche Berechtigungen und wird daher nicht angeboten."
+                "grantsRequired": "Version {{version}} fordert Berechtigungen an, die diese Appliance nicht erteilen kann, und wird daher nicht angeboten."
             },
             "failed": "Die App-Aktion konnte nicht abgeschlossen werden.",
             "states": {
@@ -282,7 +282,8 @@
             "confirm": {
                 "uninstall": "{{name}} deinstallieren? Die App wird entfernt und ihre Daten bleiben für eine erneute Installation erhalten.",
                 "purge": "Die aufbewahrten Daten von {{name}} endgültig löschen? Das lässt sich nicht rückgängig machen.",
-                "rollback": "{{name}} auf Version {{version}} zurücksetzen? Die aktuellen Daten müssen mit dieser Version kompatibel sein."
+                "rollback": "{{name}} auf Version {{version}} zurücksetzen? Die aktuellen Daten müssen mit dieser Version kompatibel sein.",
+                "revoke": "„{{grant}}“ für {{name}} entziehen? Die App verliert diese Berechtigung sofort."
             },
             "errors": {
                 "invalid": "Die angeforderte App-Aktion ist ungültig.",
@@ -296,8 +297,11 @@
                 "networkUnavailable": "Weder der App-Katalog noch die Paketquelle waren erreichbar. Prüfe die Internetverbindung dieser Appliance. Die App wurde nicht verändert.",
                 "incompatibleData": "Die gewählte Version ist mit den gespeicherten App-Daten inkompatibel.",
                 "operationFailed": "Überprüfe den aktuellen Zustand der App und versuche es erneut.",
-                "approvalRequired": "Die ausgewählte Version fordert Berechtigungen an, die nicht freigegeben wurden. Die App wurde nicht geändert."
-            }
+                "approvalRequired": "Die ausgewählte Version fordert Berechtigungen an, die nicht freigegeben wurden. Die App wurde nicht geändert.",
+                "revokedAppStopped": "Die Berechtigung wurde entzogen, aber die laufende App konnte die Änderung nicht übernehmen und wurde deshalb gestoppt. Versuche die Aktivierung erneut, um sie mit den verbliebenen Berechtigungen zu starten."
+            },
+            "updateRequiresApproval": "Version {{version}} fordert zusätzliche Berechtigungen an. Prüfe sie vor dem Update.",
+            "reviewUpdate": "Update auf {{version}} prüfen"
         },
         "status": {
             "loading": "App-Katalog wird geladen …",
@@ -306,7 +310,7 @@
         },
         "availability": {
             "incompatible": "Mit dieser Appliance inkompatibel",
-            "grantsRequired": "Zusätzliche Berechtigungen erforderlich"
+            "grantsRequired": "Fordert Berechtigungen an, die diese Appliance nicht erteilen kann"
         },
         "errors": {
             "invalid": "Die gewählte Version ist ungültig.",
@@ -319,6 +323,52 @@
             "networkUnavailable": "Weder der App-Katalog noch die Paketquelle waren erreichbar. Prüfe die Internetverbindung dieser Appliance und versuche es dann erneut.",
             "installFailed": "Die Installation ist fehlgeschlagen. Du kannst es erneut versuchen.",
             "approvalRequired": "Diese Version fordert Berechtigungen an, die nicht freigegeben wurden. Sie wurde daher nicht installiert."
+        },
+        "grants": {
+            "title": "Angeforderte Berechtigungen prüfen",
+            "description": "{{name}} {{version}} fordert die folgenden Berechtigungen an. Die App startet erst, wenn du sie freigibst.",
+            "capabilities": "Funktionen",
+            "support": "Plattformzugriff",
+            "supportHint": "Jede App mit Funktionen erhält diesen Zugriff für Änderungsereignisse und ihr Audit-Protokoll.",
+            "names": {
+                "proxyHostsRead": "Proxy-Hosts lesen",
+                "upstreamProbe": "Erreichbarkeit von Upstreams prüfen",
+                "notificationsPublish": "Benachrichtigungen senden",
+                "auditRecord": "Einträge ins Audit-Protokoll schreiben",
+                "eventsSubscribe": "Änderungsereignisse empfangen",
+                "providerRegister": "Als Provider registrieren",
+                "secretRead": "Geheimnisse lesen",
+                "unknown": "Funktion {{id}}"
+            },
+            "scope": {
+                "installation": "Für diese App",
+                "proxyHosts": "Für die ausgewählten Proxy-Hosts",
+                "providerProfiles": "Provider-Profil {{resource}}",
+                "secretReferences": "Geheimnis {{resource}}",
+                "unknown": "Bereich {{scope}}"
+            },
+            "allowService": "Im Hintergrund erlauben",
+            "allowServiceHint": "Die App darf diese Berechtigung auch ohne angemeldete Person nutzen, zum Beispiel für geplante Prüfungen.",
+            "permissionKey": "Erforderliche App-Berechtigung",
+            "permissionKeyNone": "Keine App-Berechtigung erforderlich",
+            "hosts": {
+                "label": "Proxy-Hosts",
+                "placeholder": "Proxy-Hosts auswählen",
+                "search": "Proxy-Hosts durchsuchen…",
+                "empty": "Es gibt noch keine Proxy-Hosts zur Auswahl.",
+                "required": "Wähle mindestens einen Proxy-Host aus.",
+                "loadFailed": "Die Proxy-Hosts konnten nicht geladen werden.",
+                "disabled": "{{hostname}} (inaktiv)"
+            },
+            "approveInstall": "Freigeben und installieren",
+            "approveUpdate": "Freigeben und auf {{version}} aktualisieren",
+            "approveReinstall": "Freigeben und {{version}} neu installieren",
+            "decline": "Ablehnen",
+            "declineHint": "Wenn du ablehnst, wird nichts installiert oder geändert.",
+            "approved": "Freigegebene Berechtigungen",
+            "revoke": "Entziehen",
+            "onResource": "{{name}}: {{resource}}",
+            "userOnly": "(nur mit angemeldeter Person)"
         }
     },
     "appUi": {
