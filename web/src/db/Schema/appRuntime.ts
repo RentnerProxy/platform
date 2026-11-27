@@ -26,6 +26,12 @@ export interface AppRuntimeStoredProvider {
     readonly version: string
 }
 
+export interface AppRuntimeStoredIncidentCategory {
+    readonly id: string
+    readonly name: string
+    readonly resource: 'proxyHost' | 'none'
+}
+
 export const appRuntimeInstallations = rentnerProxySchema.table(
     'app_runtime_installations',
     {
@@ -56,6 +62,10 @@ export const appRuntimeGenerations = rentnerProxySchema.table(
         hasUi: boolean('has_ui').notNull().default(false),
         providerProfiles: jsonb('provider_profiles')
             .$type<readonly string[]>()
+            .notNull()
+            .default(sql`'[]'::jsonb`),
+        incidentCategories: jsonb('incident_categories')
+            .$type<readonly AppRuntimeStoredIncidentCategory[]>()
             .notNull()
             .default(sql`'[]'::jsonb`),
         providers: jsonb('providers').$type<readonly AppRuntimeStoredProvider[]>(),

@@ -139,6 +139,15 @@ export const appUpstreamProbeBatch = z.strictObject({
         .max(APP_UPSTREAM_PROBE_BATCH_LIMIT)
         .refine((probes) => new Set(probes.map(({ hostId }) => hostId)).size === probes.length),
 })
+export const appIncidentCategorySchema = z.strictObject({
+    id: appRecordId,
+    name: z.string().regex(/^[^\p{Cc}\p{Cs}\p{Cf}]{1,80}$/u),
+    resource: z.enum(['proxyHost', 'none']),
+})
+export const appIncidentCategoriesSchema = z
+    .array(appIncidentCategorySchema)
+    .max(16)
+    .refine((categories) => new Set(categories.map(({ id }) => id)).size === categories.length)
 export const appNotification = z.strictObject({
     category: appRecordId,
     severity: z.enum(['info', 'warning', 'error']),

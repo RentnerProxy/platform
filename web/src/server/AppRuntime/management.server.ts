@@ -12,6 +12,7 @@ import {
 import {
     appCapabilitySchema,
     appGenerationSchema,
+    appIncidentCategoriesSchema,
     appIdSchema,
     appProviderProfilesSchema,
     appProviderRegistrationsSchema,
@@ -46,6 +47,7 @@ const registration = lease.extend({
     permissionKeys: z.array(permissionKeySchema).max(64).optional(),
     providerProfiles: appProviderProfilesSchema.default([]),
     hasUi: z.boolean().optional(),
+    incidentCategories: appIncidentCategoriesSchema.optional(),
 })
 const providerUpdate = z.strictObject({
     identity: identitySchema,
@@ -98,6 +100,7 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
                             permissionKeys,
                             providerProfiles,
                             hasUi,
+                            incidentCategories,
                         } = parseAppInput(registration, body)
                         return registerAppRuntimeGenerationInTransaction(transaction, {
                             identity,
@@ -106,6 +109,7 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
                             providerProfiles,
                             ...(permissionKeys !== undefined && { permissionKeys }),
                             ...(hasUi !== undefined && { hasUi }),
+                            ...(incidentCategories !== undefined && { incidentCategories }),
                         })
                     }
                     case 'providers': {
