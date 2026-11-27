@@ -145,7 +145,7 @@ export const appUpstreamProbeBatch = z.strictObject({
 })
 const appIncidentCategorySchema = z.strictObject({
     id: appRecordId,
-    name: z.string().regex(/^[^\p{Cc}\p{Cs}\p{Cf}]{1,80}$/u),
+    name: z.string().regex(/^[^\p{Cc}\p{Cs}\p{Cf}\p{Zl}\p{Zp}]{1,80}$/u),
     resource: z.enum(['proxyHost', 'none']),
 })
 export const appIncidentCategoriesSchema = z
