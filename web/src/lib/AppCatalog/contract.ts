@@ -201,6 +201,7 @@ export const catalogLifecycleSchema = z
                 'unavailable',
                 ...sourceOutages,
                 'incompatibleData',
+                'revokedAppStopped',
                 'operationFailed',
             ]),
         }),
@@ -224,6 +225,10 @@ export type CatalogInstallation = z.infer<typeof installationSchema>
 export type CatalogLifecycleInput = z.infer<typeof catalogLifecycleInputSchema>
 export type CatalogLifecycle = z.infer<typeof catalogLifecycleSchema>
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>
+export type CatalogRequestedGrant = z.infer<typeof requestedGrantSchema>
+export type CatalogGrant = z.infer<typeof grantSchema>
+export type CatalogApprovedGrant = z.infer<typeof approvedGrantSchema>
+export type CatalogGrantCapability = z.infer<typeof grantCapabilitySchema>
 
 /** Whether an operation failed because the package source, or every source, was unreachable. */
 export function isPackageSourceOutage(error: string | undefined): boolean {

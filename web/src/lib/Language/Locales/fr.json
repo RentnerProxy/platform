@@ -237,7 +237,7 @@
             "reinstall": "Réinstaller {{version}}",
             "blocked": {
                 "incompatible": "La version {{version}} est incompatible avec cet appareil et n’est donc pas proposée.",
-                "grantsRequired": "La version {{version}} nécessite des autorisations supplémentaires et n’est donc pas proposée."
+                "grantsRequired": "La version {{version}} demande des autorisations que cet appareil ne peut pas accorder ; elle n’est donc pas proposée."
             },
             "failed": "L’action n’a pas pu aboutir.",
             "states": {
@@ -284,7 +284,8 @@
             "confirm": {
                 "uninstall": "Désinstaller {{name}} ? L’application sera supprimée et ses données seront conservées pour une réinstallation.",
                 "purge": "Supprimer définitivement les données conservées de {{name}} ? Cette action est irréversible.",
-                "rollback": "Revenir à la version {{version}} de {{name}} ? Ses données actuelles doivent être compatibles avec cette version."
+                "rollback": "Revenir à la version {{version}} de {{name}} ? Ses données actuelles doivent être compatibles avec cette version.",
+                "revoke": "Révoquer « {{grant}} » pour {{name}} ? L’application perd immédiatement cette autorisation."
             },
             "errors": {
                 "invalid": "L’action demandée est invalide.",
@@ -298,8 +299,11 @@
                 "networkUnavailable": "Ni le catalogue d’applications ni la source de paquets ne sont joignables. Vérifiez la connexion Internet de cet appareil. L’application n’a pas été modifiée.",
                 "incompatibleData": "La version sélectionnée est incompatible avec les données enregistrées.",
                 "operationFailed": "Vérifiez l’état actuel de l’application avant de réessayer.",
-                "approvalRequired": "La version sélectionnée demande des autorisations qui n’ont pas été approuvées. L’application n’a pas été modifiée."
-            }
+                "approvalRequired": "La version sélectionnée demande des autorisations qui n’ont pas été approuvées. L’application n’a pas été modifiée.",
+                "revokedAppStopped": "L’autorisation a été révoquée, mais l’application en cours n’a pas pu appliquer la modification ; elle a donc été arrêtée. Relancez l’activation pour la démarrer avec les autorisations restantes."
+            },
+            "updateRequiresApproval": "La version {{version}} demande des autorisations supplémentaires. Vérifiez-les avant la mise à jour.",
+            "reviewUpdate": "Vérifier la mise à jour vers {{version}}"
         },
         "status": {
             "loading": "Chargement du catalogue d’applications…",
@@ -308,7 +312,7 @@
         },
         "availability": {
             "incompatible": "Incompatible avec cet appareil",
-            "grantsRequired": "Autorisations supplémentaires requises"
+            "grantsRequired": "Demande des autorisations que cet appareil ne peut pas accorder"
         },
         "errors": {
             "invalid": "La version sélectionnée est invalide.",
@@ -321,6 +325,52 @@
             "networkUnavailable": "Ni le catalogue d’applications ni la source de paquets ne sont joignables. Vérifiez la connexion Internet de cet appareil, puis réessayez.",
             "installFailed": "L’installation a échoué. Vous pouvez réessayer.",
             "approvalRequired": "Cette version demande des autorisations qui n’ont pas été approuvées ; elle n’a donc pas été installée."
+        },
+        "grants": {
+            "title": "Vérifier les autorisations demandées",
+            "description": "{{name}} {{version}} demande les autorisations ci-dessous. L’application ne démarre qu’après votre approbation.",
+            "capabilities": "Fonctionnalités",
+            "support": "Accès à la plateforme",
+            "supportHint": "Toute application dotée de fonctionnalités reçoit cet accès pour les événements de modification et son journal d’audit.",
+            "names": {
+                "proxyHostsRead": "Lire les hôtes proxy",
+                "upstreamProbe": "Vérifier la joignabilité des upstreams",
+                "notificationsPublish": "Envoyer des notifications",
+                "auditRecord": "Écrire dans le journal d’audit",
+                "eventsSubscribe": "Recevoir les événements de modification",
+                "providerRegister": "S’enregistrer comme fournisseur",
+                "secretRead": "Lire des secrets",
+                "unknown": "Fonctionnalité {{id}}"
+            },
+            "scope": {
+                "installation": "Pour cette application",
+                "proxyHosts": "Pour les hôtes proxy que vous sélectionnez",
+                "providerProfiles": "Profil de fournisseur {{resource}}",
+                "secretReferences": "Secret {{resource}}",
+                "unknown": "Portée {{scope}}"
+            },
+            "allowService": "Autoriser en arrière-plan",
+            "allowServiceHint": "L’application peut utiliser cette autorisation sans utilisateur connecté, par exemple pour des vérifications planifiées.",
+            "permissionKey": "Autorisation d’application requise",
+            "permissionKeyNone": "Aucune autorisation d’application requise",
+            "hosts": {
+                "label": "Hôtes proxy",
+                "placeholder": "Sélectionner des hôtes proxy",
+                "search": "Rechercher des hôtes proxy…",
+                "empty": "Il n’y a encore aucun hôte proxy à sélectionner.",
+                "required": "Sélectionnez au moins un hôte proxy.",
+                "loadFailed": "Les hôtes proxy n’ont pas pu être chargés.",
+                "disabled": "{{hostname}} (inactif)"
+            },
+            "approveInstall": "Approuver et installer",
+            "approveUpdate": "Approuver et mettre à jour vers {{version}}",
+            "approveReinstall": "Approuver et réinstaller {{version}}",
+            "decline": "Refuser",
+            "declineHint": "Si vous refusez, rien n’est installé ni modifié.",
+            "approved": "Autorisations approuvées",
+            "revoke": "Révoquer",
+            "onResource": "{{name}} : {{resource}}",
+            "userOnly": "(uniquement avec un utilisateur connecté)"
         }
     },
     "appUi": {
