@@ -4,6 +4,7 @@ import { eq, inArray } from 'drizzle-orm'
 import { NOTIFICATION_SETTINGS_KEY, NOTIFICATION_STATE_KEY } from '@/config/notifications.config.ts'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import {
+    appRuntimeGenerations,
     appRuntimeMessages,
     appRuntimeOwnedProxyHosts,
     hostDomains,
@@ -541,37 +542,61 @@ describe('app incidents through the App API', () => {
         expect(incident?.recoveredAt).not.toBeNull()
     })
 
-    integrationTest('retiring the installation resolves its incidents at once', async () => {
+    integrationTest('a stopped installation resolves its incidents once its lease ends', async () => {
         const app = await install()
-        expect((await app.incident('disk-full', open(), 'retire-1')).status).toBe(204)
+        expect((await app.incident('disk-full', open(), 'stop-1')).status).toBe(204)
         await drain()
         expect((await app.control('retire')).status).toBe(204)
-        const [incident] = (await runtime()).incidents
-        expect(incident?.app?.resolution).toBe('appStopped')
+        // A start or an update registers its next generation within that lease, so nothing ends.
+        expect(await claimNextNotificationDelivery()).toBeNull()
+        expect((await runtime()).incidents[0]?.recoveredAt).toBeNull()
+        const { db } = await import('@/db/index.ts')
+        await db
+            .update(appRuntimeGenerations)
+            .set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+            .where(eq(appRuntimeGenerations.installationId, app.identity.installationId))
         const recovery = await claimNextNotificationDelivery()
         expect(recovery?.payload).toMatchObject({
             type: 'recovery',
             app: { resolution: 'appStopped' },
         })
         expect(await authorizeNotificationDelivery(recovery!)).not.toBeNull()
+        expect((await runtime()).incidents[0]?.app?.resolution).toBe('appStopped')
     })
 
-    integrationTest('an update that swaps the generation keeps the incident open', async () => {
+    integrationTest(
+        'a restart retires the running generation first and keeps the incident open',
+        async () => {
+            const app = await install()
+            expect((await app.incident('disk-full', open(), 'restart-1')).status).toBe(204)
+            await drain()
+            // The core retires the running generation before it registers the next one.
+            expect((await app.control('retire')).status).toBe(204)
+            expect(await claimNextNotificationDelivery()).toBeNull()
+            const next = await install({
+                installationId: app.identity.installationId,
+                generation: 2,
+                uid: app.identity.uid,
+                grants: (installationId) => [grant(incidents, installationId)],
+            })
+            expect(next.identity.generation).toBe(2)
+            expect(await claimNextNotificationDelivery()).toBeNull()
+            expect((await runtime()).incidents[0]?.recoveredAt).toBeNull()
+        },
+    )
+
+    integrationTest('removing the installation resolves its incidents at once', async () => {
         const app = await install()
-        expect((await app.incident('disk-full', open(), 'update-1')).status).toBe(204)
+        expect((await app.incident('disk-full', open(), 'remove-1')).status).toBe(204)
         await drain()
-        const next = await install({
-            installationId: app.identity.installationId,
-            generation: 2,
-            uid: app.identity.uid,
-            grants: (installationId) => [grant(incidents, installationId)],
-        })
-        // The old generation is revoked after the new one is active.
         expect((await app.control('retire')).status).toBe(204)
-        const [incident] = (await runtime()).incidents
-        expect(incident?.recoveredAt).toBeNull()
-        expect(next.identity.generation).toBe(2)
-        expect(await claimNextNotificationDelivery()).toBeNull()
+        expect((await app.control('purge-data')).status).toBe(204)
+        expect((await runtime()).incidents[0]?.app?.resolution).toBe('appStopped')
+        const recovery = await claimNextNotificationDelivery()
+        expect(recovery?.payload).toMatchObject({
+            type: 'recovery',
+            app: { resolution: 'appStopped' },
+        })
     })
 
     integrationTest(

@@ -2,7 +2,7 @@
 import '@tanstack/react-start/server-only'
 
 import { randomUUID } from 'node:crypto'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, inArray, sql } from 'drizzle-orm'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import type { PermissionKey } from '@/config/Types/permissions-config.types.ts'
 import {
@@ -61,16 +61,15 @@ async function readAppIncidentFacts(
     ]
     if (installationIds.length === 0)
         return { active: new Set(), grants: [], owned: new Map(), hostnames: new Map() }
-    const [active, grants, owned, hosts] = await Promise.all([
+    const [generations, grants, owned, hosts] = await Promise.all([
         transaction
-            .select({ installationId: appRuntimeGenerations.installationId })
+            .select({
+                installationId: appRuntimeGenerations.installationId,
+                state: appRuntimeGenerations.state,
+                leaseExpiresAt: appRuntimeGenerations.leaseExpiresAt,
+            })
             .from(appRuntimeGenerations)
-            .where(
-                and(
-                    inArray(appRuntimeGenerations.installationId, installationIds),
-                    eq(appRuntimeGenerations.state, 'active'),
-                ),
-            ),
+            .where(inArray(appRuntimeGenerations.installationId, installationIds)),
         transaction
             .select({
                 installationId: appRuntimeGrants.installationId,
@@ -116,8 +115,18 @@ async function readAppIncidentFacts(
                   .from(proxyHosts)
                   .where(inArray(proxyHosts.id, hostIds)),
     ])
+    // A start or update retires the running generation before it registers the next one, so an
+    // installation stays live while a generation is not revoked or a revoked one's lease runs.
+    const now = Date.now()
     return {
-        active: new Set(active.map(({ installationId }) => installationId)),
+        active: new Set(
+            generations
+                .filter(
+                    ({ state, leaseExpiresAt }) =>
+                        state !== 'revoked' || leaseExpiresAt.getTime() > now,
+                )
+                .map(({ installationId }) => installationId),
+        ),
         grants,
         owned: new Map(
             owned.map(({ installationId, proxyHostId, hostId }) => [
@@ -178,10 +187,21 @@ export async function reconcileAppIncidentsInTransaction(
     transaction: AuthTransaction,
     state: NotificationState,
     now: number,
+    removedInstallationId?: string,
 ): Promise<NotificationState> {
     const open = state.incidents.filter(isOpenAppIncident)
     if (open.length === 0) return state
-    const facts = await readAppIncidentFacts(transaction, open)
+    const read = await readAppIncidentFacts(transaction, open)
+    // A removed installation is stopped, whatever lease its last generation still holds.
+    const facts =
+        removedInstallationId === undefined
+            ? read
+            : {
+                  ...read,
+                  active: new Set(
+                      [...read.active].filter((id) => id !== removedInstallationId),
+                  ),
+              }
     const resolutions = new Map<string, AppIncidentResolution>()
     for (const incident of open) {
         const reason = unkeepableReason(incident, facts)
@@ -191,11 +211,12 @@ export async function reconcileAppIncidentsInTransaction(
 }
 
 /**
- * Resolve an installation's open incidents once it has no active generation, so a stop or an
- * uninstall ends them promptly. The caller holds the installation lock; configuration and
- * runtime follow in the usual order. An update keeps its active generation and resolves nothing.
+ * Resolve a removed installation's open incidents at once. A stop needs no call: the reconcile
+ * resolves its incidents once the last generation's lease ends, while a start or an update
+ * registers its next generation within that lease. The caller holds the installation lock;
+ * configuration and runtime follow in the usual order.
  */
-export async function resolveStoppedAppIncidentsInTransaction(
+export async function resolveRemovedAppIncidentsInTransaction(
     transaction: AuthTransaction,
     installationId: string,
 ): Promise<void> {
@@ -213,7 +234,12 @@ export async function resolveStoppedAppIncidentsInTransaction(
     )
     const runtime = await lockNotificationRuntime(transaction)
     const now = Date.now()
-    const resolved = await reconcileAppIncidentsInTransaction(transaction, runtime.engine, now)
+    const resolved = await reconcileAppIncidentsInTransaction(
+        transaction,
+        runtime.engine,
+        now,
+        installationId,
+    )
     if (resolved === runtime.engine) return
     await writeNotificationRuntime(transaction, {
         ...runtime,
