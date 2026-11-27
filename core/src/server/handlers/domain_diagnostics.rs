@@ -29,6 +29,7 @@ pub(in crate::server) async fn diagnose(
         Ok(result) => Ok(no_store_json(result)),
         Err(Error::InvalidInput) => Ok(invalid_input()),
         Err(Error::Busy) => Err(ApiError::busy()),
+        Err(Error::RateLimited) => Err(ApiError::rate_limited()),
         Err(Error::Unavailable) => Err(ApiError::runtime_unavailable()),
     }
 }

@@ -19,10 +19,16 @@ import {
 import { controllerRequest } from './transport.server.ts'
 import type { DomainDiagnosticsProbeOptions } from './Types/domain-diagnostics.types.ts'
 
-const probeOptionsSchema = z.strictObject({
-    upstreamOnly: z.boolean().optional(),
-    timeoutMs: z.number().int().min(1000).max(10_000).optional(),
-})
+const probeOptionsSchema = z
+    .strictObject({
+        upstreamOnly: z.boolean().optional(),
+        installationId: z
+            .uuid()
+            .refine((value) => value === value.toLowerCase())
+            .optional(),
+        timeoutMs: z.number().int().min(1000).max(10_000).optional(),
+    })
+    .refine((options) => options.installationId === undefined || options.upstreamOnly === true)
 
 export function createDomainDiagnosticsController(
     request: typeof controllerRequest = controllerRequest,
@@ -55,7 +61,9 @@ export function createDomainDiagnosticsController(
         }
         assertDiagnosticsNotAborted(signal)
         const error = z
-            .strictObject({ error: z.enum(['invalid_input', 'busy', 'runtime_unavailable']) })
+            .strictObject({
+                error: z.enum(['invalid_input', 'busy', 'rate_limited', 'runtime_unavailable']),
+            })
             .safeParse(payload)
         if (error.success) throw new DomainDiagnosticsError(error.data.error)
         const result = domainDiagnosticsResultSchema.safeParse(payload)
