@@ -2012,6 +2012,8 @@ async fn app_probes_use_their_own_admission_and_never_block_other_classes() {
 async fn exhausted_app_bucket_is_rate_limited_over_http_and_releases_everything() {
     let http = HttpFixture::new(200, None, false).await;
     let fixture = Fixture::new(http.port).await;
+    // Hold the clock while the bucket is empty, so no refill can admit a rejected request.
+    tokio::time::pause();
     for _ in 0..120 {
         drop(fixture.runtime.app_admission.acquire(INSTALLATION).unwrap());
     }
@@ -2034,6 +2036,7 @@ async fn exhausted_app_bucket_is_rate_limited_over_http_and_releases_everything(
     .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body, json!({"error":"rate_limited"}));
+    tokio::time::resume();
     // Another installation has its own bucket.
     payload["installationId"] = json!("0198d98a-0000-7000-8000-0000000005a2");
     let (status, body) = call(

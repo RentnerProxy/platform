@@ -60,11 +60,12 @@ impl AppAdmission {
     /// token. Busy never consumes a token; an empty bucket is RateLimited.
     pub(super) fn acquire(&self, installation: &str) -> std::result::Result<AppPermit<'_>, Error> {
         let global = self.global.try_acquire().map_err(|_| Error::Busy)?;
-        let now = Instant::now();
         let mut installations = self
             .installations
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        // Sampled under the lock, so no refill moves an installation's refill time backwards.
+        let now = Instant::now();
         if !installations.contains_key(installation) {
             if installations.len() >= APP_TRACKED_INSTALLATIONS {
                 installations.retain(|_, entry| !entry.is_idle_and_full(now));
