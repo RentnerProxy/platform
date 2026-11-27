@@ -16,6 +16,7 @@ pub(crate) struct Request {
     #[serde(default)]
     pub(crate) upstream_only: bool,
     pub(crate) timeout_ms: Option<u32>,
+    pub(crate) installation_id: Option<String>,
 }
 impl Request {
     pub(super) fn validate(&self) -> std::result::Result<(), super::Error> {
@@ -25,6 +26,11 @@ impl Request {
             .is_some_and(|timeout| !(1000..=10000).contains(&timeout))
             || (self.upstream_only
                 && (self.host_type != HostType::Proxy || self.domain.starts_with("*.")))
+            || self.installation_id.as_ref().is_some_and(|id| {
+                !self.upstream_only
+                    || self.host_type != HostType::Proxy
+                    || !crate::proxy::is_canonical_uuid(id)
+            })
             || !crate::proxy::is_canonical_uuid(&self.host_id)
             || self.domain.len() > 253
             || !crate::proxy::is_canonical_domain(name)

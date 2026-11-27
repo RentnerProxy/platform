@@ -21,6 +21,8 @@ export const BACKGROUND_RESOURCE_ENVELOPE = {
         interactiveDiagnostics: 2,
         dnsAssistant: 2,
         upstreamHealth: 8,
+        // App upstream probes: own admission, never shared with the pools above.
+        appProbes: { global: 128, perInstallation: 64, perInstallationPerMinute: 1_200 },
     },
     notifications: { running: 8, perChannel: 1, perOwner: 2, perTransport: 4, durablePending: 256 },
     discovery: { running: 1, pendingInvalidations: 1, identities: 1_024 },
