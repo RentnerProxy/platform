@@ -29,6 +29,7 @@ import {
     revokeAppRuntimeGenerationInTransaction,
     setAppRuntimeRolePermissionInTransaction,
 } from './lifecycle.server.ts'
+import { resolveStoppedAppIncidentsInTransaction } from '@/server/Notifications/app-incidents.repository.ts'
 import { AppRuntimeProblem } from './problem.ts'
 import { appRuntimeTransaction, parseAppInput, withAppRuntimeErrors } from './services.server.ts'
 
@@ -147,20 +148,35 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
                     case 'removable':
                     case 'purge-data': {
                         const { identity } = parseAppInput(generationRequest, body)
-                        return checkAppRuntimeDependenciesInTransaction(
+                        await checkAppRuntimeDependenciesInTransaction(
                             transaction,
                             identity,
                             action,
                         )
+                        // An uninstalled app can no longer assert or resolve its incidents.
+                        if (action === 'purge-data')
+                            await resolveStoppedAppIncidentsInTransaction(
+                                transaction,
+                                identity.installationId,
+                            )
+                        return undefined
                     }
                     case 'revoke':
                     case 'retire': {
                         const input = parseAppInput(generationRequest, body)
-                        return revokeAppRuntimeGenerationInTransaction(
+                        await revokeAppRuntimeGenerationInTransaction(
                             transaction,
                             input.identity,
                             action === 'retire',
                         )
+                        // A stop ends the app's incidents at once. The revoke that follows an
+                        // update's activation leaves the new generation active and resolves nothing.
+                        if (action === 'retire')
+                            await resolveStoppedAppIncidentsInTransaction(
+                                transaction,
+                                input.identity.installationId,
+                            )
+                        return undefined
                     }
                     case 'grants': {
                         const { identity, grants } = parseAppInput(grantUpdate, body)

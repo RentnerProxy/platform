@@ -15,8 +15,8 @@ import { AppRuntimeProblem } from './problem.ts'
 import type { AppRuntimeCredentials } from './Types/authority.types.ts'
 import { AppRuntimeAuthorityError } from './Types/authority.types.ts'
 
-const RETENTION_MS = 30 * 24 * 60 * 60 * 1_000
-const MAX_MESSAGES_PER_INSTALLATION = 10_000
+export const APP_MESSAGE_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000
+export const APP_MESSAGE_LIMIT = 10_000
 
 /**
  * Persist typed app messages and their event together. The caller never supplies provenance.
@@ -63,12 +63,17 @@ export async function recordAppRuntimeMessageInTransaction(
 
     await transaction
         .delete(appRuntimeMessages)
-        .where(and(scope, lte(appRuntimeMessages.createdAt, new Date(Date.now() - RETENTION_MS))))
+        .where(
+            and(
+                scope,
+                lte(appRuntimeMessages.createdAt, new Date(Date.now() - APP_MESSAGE_RETENTION_MS)),
+            ),
+        )
     const [usage] = await transaction
         .select({ total: count() })
         .from(appRuntimeMessages)
         .where(scope)
-    if (!usage || usage.total >= MAX_MESSAGES_PER_INSTALLATION) {
+    if (!usage || usage.total >= APP_MESSAGE_LIMIT) {
         throw new AppRuntimeProblem(429, 'messageLimit', 'App message storage limit reached.')
     }
 

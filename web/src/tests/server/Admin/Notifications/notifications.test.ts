@@ -45,7 +45,11 @@ const input: UpdateNotificationConfigurationInput = {
             hasAuthorization: _authorization,
             revision: _revision,
             ...channel
-        }) => ({ ...channel, events: [...channel.events] }),
+        }) => ({
+            ...channel,
+            events: [...channel.events],
+            appCategories: channel.appCategories && [...channel.appCategories],
+        }),
     ),
 }
 const transaction = {} as AuthTransaction

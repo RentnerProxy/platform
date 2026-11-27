@@ -12,6 +12,7 @@ const integrationEnabled =
     process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && Boolean(process.env.DATABASE_URL)
 const integrationTest = integrationEnabled ? test : test.skip
 
+const incidents = { id: 'notifications.incidents.manage.v1', scope: 'installation' } as const
 const rolledBack = new Error('incident category test rollback')
 const categories = [
     { id: 'disk-full', name: 'Disk full', resource: 'none' },
@@ -40,7 +41,7 @@ integrationTest('registered incident categories are read back from the active ge
         await registerAppRuntimeGenerationInTransaction(transaction, {
             identity,
             leaseExpiresAt,
-            capabilities: [],
+            capabilities: [incidents],
             incidentCategories: categories,
         })
         // A preparing generation does not yet declare anything for the installation.
@@ -92,8 +93,25 @@ for (const [index, incidentCategories] of invalid.entries())
                 registerAppRuntimeGenerationInTransaction(transaction, {
                     identity: identityOf(40_603),
                     leaseExpiresAt: new Date(Date.now() + 60_000),
-                    capabilities: [],
+                    capabilities: [incidents],
                     incidentCategories: incidentCategories as never,
+                }),
+            ).rejects.toThrow()
+        }),
+    )
+
+const mismatched = [
+    { capabilities: [], incidentCategories: categories },
+    { capabilities: [incidents], incidentCategories: [] },
+]
+for (const [index, registration] of mismatched.entries())
+    integrationTest(`categories are declared exactly when incidents are requested (${index})`, () =>
+        scenario(async (transaction) => {
+            await expect(
+                registerAppRuntimeGenerationInTransaction(transaction, {
+                    identity: identityOf(40_606),
+                    leaseExpiresAt: new Date(Date.now() + 60_000),
+                    ...registration,
                 }),
             ).rejects.toThrow()
         }),
@@ -107,7 +125,7 @@ integrationTest('registering the same generation again must declare the same cat
             registerAppRuntimeGenerationInTransaction(transaction, {
                 identity,
                 leaseExpiresAt,
-                capabilities: [],
+                capabilities: [incidents],
                 incidentCategories,
             })
         await register(categories)
@@ -124,7 +142,7 @@ integrationTest('the management registration validates the declared categories',
             {
                 identity,
                 leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-                capabilities: [],
+                capabilities: [incidents],
                 incidentCategories,
             },
             new AbortController().signal,

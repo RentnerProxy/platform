@@ -337,6 +337,7 @@
                 "upstreamProbe": "Vérifier la joignabilité des upstreams",
                 "upstreamMonitoring": "Surveiller les upstreams en continu",
                 "notificationsPublish": "Envoyer des notifications",
+                "notificationsIncidents": "Signaler des incidents de notification",
                 "auditRecord": "Écrire dans le journal d’audit",
                 "eventsSubscribe": "Recevoir les événements de modification",
                 "providerRegister": "S’enregistrer comme fournisseur",
@@ -720,7 +721,8 @@
                 "ddns": "DNS dynamique",
                 "proxy_configuration": "Configuration du proxy",
                 "backup": "Sauvegardes",
-                "host_availability": "Pannes et rétablissement des hôtes"
+                "host_availability": "Pannes et rétablissement des hôtes",
+                "app_incident": "Incidents d'applications"
             },
             "severities": {
                 "warning": "Avertissement",

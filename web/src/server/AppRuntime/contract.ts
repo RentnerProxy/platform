@@ -38,6 +38,10 @@ export const appCapabilitySchema = z.discriminatedUnion('id', [
     }),
     z.strictObject({ id: z.literal('notifications.publish.v1'), scope: z.literal('installation') }),
     z.strictObject({
+        id: z.literal('notifications.incidents.manage.v1'),
+        scope: z.literal('installation'),
+    }),
+    z.strictObject({
         id: z.literal('docker.inventory.observe.v1'),
         scope: z.literal('dockerConnections'),
     }),
@@ -139,7 +143,7 @@ export const appUpstreamProbeBatch = z.strictObject({
         .max(APP_UPSTREAM_PROBE_BATCH_LIMIT)
         .refine((probes) => new Set(probes.map(({ hostId }) => hostId)).size === probes.length),
 })
-export const appIncidentCategorySchema = z.strictObject({
+const appIncidentCategorySchema = z.strictObject({
     id: appRecordId,
     name: z.string().regex(/^[^\p{Cc}\p{Cs}\p{Cf}]{1,80}$/u),
     resource: z.enum(['proxyHost', 'none']),
@@ -154,6 +158,28 @@ export const appNotification = z.strictObject({
     title: z.string().regex(/^[^\p{Cc}\p{Cs}]{1,80}$/u),
     message: z.string().regex(/^[^\p{Cc}\p{Cs}]{1,400}$/u),
 })
+/** App text renders as plain text: no control, surrogate or format characters and no links. */
+const linkLike = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)/iu
+const isPlainText = (value: string) => !linkLike.test(value)
+const incidentTitle = z
+    .string()
+    .regex(/^[^\p{Cc}\p{Cs}\p{Cf}]{1,80}$/u)
+    .refine(isPlainText)
+const incidentMessage = z
+    .string()
+    .regex(/^[^\p{Cc}\p{Cs}\p{Cf}]{1,400}$/u)
+    .refine(isPlainText)
+export const appIncidentChange = z.discriminatedUnion('status', [
+    z.strictObject({
+        status: z.literal('open'),
+        category: appRecordId,
+        severity: z.enum(['warning', 'error', 'critical']),
+        title: incidentTitle,
+        message: incidentMessage,
+        resourceId: appRecordId.optional(),
+    }),
+    z.strictObject({ status: z.literal('resolved') }),
+])
 const appLegacyHandoffDigest = z.string().regex(/^[a-f0-9]{64}$/u)
 export const appLegacyHandoffPartRequest = z.strictObject({
     digest: appLegacyHandoffDigest,
@@ -171,6 +197,7 @@ export const appAuditEvent = z.strictObject({
 })
 
 export type AppNotificationInput = z.infer<typeof appNotification>
+export type AppIncidentChangeInput = z.infer<typeof appIncidentChange>
 export type AppAuditEventInput = z.infer<typeof appAuditEvent>
 
 /** Bound decoded JSON before validating the v1 shapes or using any member. */

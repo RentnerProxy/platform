@@ -1,6 +1,10 @@
 import { bigint, index, jsonb, primaryKey, timestamp, varchar } from 'drizzle-orm/pg-core'
 
-import type { AppAuditEventInput, AppNotificationInput } from '../../server/AppRuntime/contract.ts'
+import type {
+    AppAuditEventInput,
+    AppIncidentChangeInput,
+    AppNotificationInput,
+} from '../../server/AppRuntime/contract.ts'
 import { appRuntimeInstallations } from './appRuntime.ts'
 import { rentnerProxySchema } from './base.ts'
 
@@ -11,11 +15,19 @@ export const appRuntimeMessages = rentnerProxySchema.table(
             .notNull()
             .references(() => appRuntimeInstallations.id, { onDelete: 'cascade' }),
         actor: varchar('actor', { length: 64 }).notNull(),
-        kind: varchar('kind', { length: 16 }).$type<'audit' | 'notification'>().notNull(),
+        kind: varchar('kind', { length: 16 })
+            .$type<'audit' | 'notification' | 'incident'>()
+            .notNull(),
         key: varchar('idempotency_key', { length: 64 }).notNull(),
         fingerprint: varchar('fingerprint', { length: 64 }).notNull(),
         generation: bigint('generation', { mode: 'number' }).notNull(),
-        payload: jsonb('payload').$type<AppAuditEventInput | AppNotificationInput>().notNull(),
+        payload: jsonb('payload')
+            .$type<
+                | AppAuditEventInput
+                | AppNotificationInput
+                | (AppIncidentChangeInput & { readonly incidentKey: string })
+            >()
+            .notNull(),
         createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
             .defaultNow()
             .notNull(),

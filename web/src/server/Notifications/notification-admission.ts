@@ -1,4 +1,5 @@
 import type {
+    AppIncidentContext,
     NotificationEngineConfiguration,
     NotificationIncident,
 } from './Types/notification-state.types.ts'
@@ -6,6 +7,30 @@ import { NOTIFICATION_SEVERITIES } from '@/config/notifications.config.ts'
 
 type Channel = NotificationEngineConfiguration['channels'][number]
 type Admission = readonly [NotificationIncident, Channel]
+
+function severityRank(severity: NotificationIncident['severity']) {
+    return NOTIFICATION_SEVERITIES.indexOf(severity)
+}
+
+/** The qualified key by which a channel subscribes to an app incident category. */
+function appIncidentCategoryKey(app: Pick<AppIncidentContext, 'appId' | 'categoryId'>) {
+    return `${app.appId}/${app.categoryId}`
+}
+
+/**
+ * Whether the channel receives the incident's category at all. An app incident also needs the
+ * channel's subscription to its qualified category; the other categories need only the event.
+ */
+export function channelAcceptsIncident(
+    channel: Pick<Channel, 'events' | 'appCategories'>,
+    incident: Pick<NotificationIncident, 'category' | 'app'>,
+) {
+    if (!channel.events.includes(incident.category)) return false
+    return (
+        incident.app === undefined ||
+        channel.appCategories?.includes(appIncidentCategoryKey(incident.app)) === true
+    )
+}
 
 export function deferredHostFailure(incident: NotificationIncident, channel: Channel) {
     return (
@@ -32,11 +57,23 @@ export function pendingNotificationAdmission(
     incident: NotificationIncident,
     channel: Channel,
     now: number,
-): 'incident' | 'recovery' | null {
-    if (!channel.enabled || !channel.events.includes(incident.category)) return null
+): 'incident' | 'recovery' | 'escalation' | null {
+    if (!channel.enabled || !channelAcceptsIncident(channel, incident)) return null
     const marker = incident.channels.find(
         (item) => item.channelId === channel.id && item.channelRevision === channel.revision,
     )
+    // A severity above the last failure notice of an app incident notifies the channel again.
+    if (
+        incident.app !== undefined &&
+        incident.recoveredAt === null &&
+        marker !== undefined &&
+        marker.failure !== 'pending' &&
+        marker.recovery === null &&
+        marker.severity !== undefined &&
+        severityRank(incident.severity) > severityRank(marker.severity) &&
+        severityRank(incident.severity) >= severityRank(channel.minimumSeverity)
+    )
+        return 'escalation'
     if (incident.recoveredAt !== null && !deferredHostFailure(incident, channel)) {
         return marker?.failure === 'succeeded' && marker.recovery === null && channel.recovery
             ? 'recovery'

@@ -181,3 +181,103 @@ test('backup failure mail describes a failed completed job with no made-up incid
     expect(template.text).toContain('Ergebnis: Fehlgeschlagen')
     expect(template.text).not.toContain('Beginn der Störung')
 })
+
+describe('app incident emails', () => {
+    const app = {
+        appName: 'acme.monitor',
+        categoryName: 'Disk <b>space</b>',
+        title: '<script>alert(1)</script> & "quotes"',
+        message: 'Free space is below 2% on /data',
+        resource: { type: 'proxyHost' as const, hostname: 'service.example.test' },
+    }
+    const incident = {
+        ...PAYLOAD,
+        category: 'app_incident' as const,
+        code: 'app_incident' as const,
+        resourceId: 'installation:disk-full',
+        app,
+    }
+
+    test('renders app text as escaped plain text and never as a link', () => {
+        const template = createNotificationEmailTemplate(incident, options)
+        for (const value of [app.title, app.categoryName]) {
+            expect(template.html).toContain(Bun.escapeHTML(value))
+            expect(template.html).not.toContain(value)
+        }
+        expect(template.text).toContain(`Titel: ${app.title}`)
+        expect(template.text).toContain(`Meldung: ${app.message}`)
+        expect(template.text).toContain('Host: service.example.test')
+        // Only the platform's own logo image carries a URL; the app's words never become an anchor.
+        expect(template.html).not.toContain('<a ')
+        expect(template.html).not.toContain('href=')
+        expect(template.text).not.toContain('Host-Verwaltung')
+        // The internal key is not shown; the platform's copy introduces the report.
+        expect(template.text).not.toContain('installation:disk-full')
+        expect(template.subject).toBe('RentnerProxy: Eine App meldet eine Störung')
+    })
+
+    test('a recovery the platform caused says why in the platform copy', () => {
+        const template = createNotificationEmailTemplate(
+            {
+                ...incident,
+                type: 'recovery',
+                code: 'operation_recovered',
+                app: { ...app, resource: undefined, resolution: 'grantRevoked' },
+            },
+            options,
+        )
+        expect(template.text).toContain('Berechtigung zum Melden von Störungen entzogen')
+        expect(template.text).not.toContain('Host:')
+        expect(template.subject).toBe('RentnerProxy: Entwarnung: Meldung einer App')
+    })
+})
+
+describe('app incident emails', () => {
+    const app = {
+        appName: 'acme.monitor',
+        categoryName: 'Disk <b>space</b>',
+        title: '<script>alert(1)</script> & "quotes"',
+        message: 'Free space is below 2% on /data',
+        resource: { type: 'proxyHost' as const, hostname: 'service.example.test' },
+    }
+    const incident = {
+        ...PAYLOAD,
+        category: 'app_incident' as const,
+        code: 'app_incident' as const,
+        resourceId: 'installation:disk-full',
+        app,
+    }
+
+    test('renders app text as escaped plain text and never as a link', () => {
+        const template = createNotificationEmailTemplate(incident, options)
+        for (const value of [app.title, app.categoryName]) {
+            expect(template.html).toContain(Bun.escapeHTML(value))
+            expect(template.html).not.toContain(value)
+        }
+        expect(template.text).toContain(`Titel: ${app.title}`)
+        expect(template.text).toContain(`Meldung: ${app.message}`)
+        expect(template.text).toContain('Host: service.example.test')
+        // Only the platform's own logo image carries a URL; the app's words never become an anchor.
+        expect(template.html).not.toContain('<a ')
+        expect(template.html).not.toContain('href=')
+        expect(template.text).not.toContain('Host-Verwaltung')
+        // The internal key is not shown; the platform's copy introduces the report.
+        expect(template.text).not.toContain('installation:disk-full')
+        expect(template.subject).toBe('RentnerProxy: Eine App meldet eine Störung')
+    })
+
+    test('a recovery the platform caused says why in the platform copy', () => {
+        const template = createNotificationEmailTemplate(
+            {
+                ...incident,
+                type: 'recovery',
+                code: 'operation_recovered',
+                app: { ...app, resource: undefined, resolution: 'grantRevoked' },
+            },
+            options,
+        )
+        expect(template.text).toContain('Berechtigung zum Melden von Störungen entzogen')
+        expect(template.text).not.toContain('Host:')
+        expect(template.subject).toBe('RentnerProxy: Entwarnung: Meldung einer App')
+    })
+})

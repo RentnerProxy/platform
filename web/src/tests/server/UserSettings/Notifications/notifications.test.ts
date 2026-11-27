@@ -252,7 +252,7 @@ describe('personal notification authorization and delivery', () => {
         const settings = await fixture.service.getPersonalNotificationSettingsService()
         const status = await fixture.service.getPersonalNotificationStatusService()
         expect(settings.configuration.channels.map((item) => item.id)).toEqual([ownId])
-        expect(settings.allowedCategories).toEqual(['certificate_renewal', 'ddns'])
+        expect(settings.allowedCategories).toEqual(['certificate_renewal', 'ddns', 'app_incident'])
         expect(settings.canUsePrivateDestinations).toBe(false)
         expect(settings.smtpConfigured).toBe(false)
         expect(status.deliveries.map((item) => item.channelId)).toEqual([ownId])

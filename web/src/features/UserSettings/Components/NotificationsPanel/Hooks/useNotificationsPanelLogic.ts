@@ -25,6 +25,7 @@ function channelInput(channel: Channel): ChannelInput {
         minimumSeverity: channel.minimumSeverity,
         thresholdSeconds: channel.thresholdSeconds,
         recovery: channel.recovery,
+        ...(channel.appCategories ? { appCategories: [...channel.appCategories] } : {}),
     }
 }
 

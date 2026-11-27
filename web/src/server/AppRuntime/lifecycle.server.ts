@@ -42,6 +42,7 @@ import {
     type AppRuntimeRegistration,
 } from './Types/authority.types.ts'
 
+const INCIDENT_CAPABILITY_ID = 'notifications.incidents.manage.v1'
 const maxGrants = 256
 const maxLeaseLifetimeMs = 5 * 60 * 1000
 
@@ -107,7 +108,10 @@ export async function registerAppRuntimeGenerationInTransaction(
         !permissionKeys.every(isLocalAppRuntimePermissionKey) ||
         new Set(permissionKeys).size !== permissionKeys.length ||
         !appProviderProfilesSchema.safeParse(providerProfiles).success ||
-        !appIncidentCategoriesSchema.safeParse(incidentCategories).success
+        !appIncidentCategoriesSchema.safeParse(incidentCategories).success ||
+        // An app declares categories exactly when it may raise incidents.
+        incidentCategories.length > 0 !==
+            capabilities.some(({ id }) => id === INCIDENT_CAPABILITY_ID)
     )
         throw new AppRuntimeAuthorityError('invalid_input')
 

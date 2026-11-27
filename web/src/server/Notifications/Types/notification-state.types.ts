@@ -1,4 +1,5 @@
 import type {
+    AppIncidentResolution,
     NotificationCategory,
     NotificationChannelPolicy,
     NotificationDeliveryError,
@@ -31,6 +32,8 @@ interface NotificationIncidentChannel {
     channelRevision: number
     failure: NotificationAdmissionStatus
     recovery: NotificationAdmissionStatus | null
+    /** The severity of the latest failure notice of an app incident; a rise notifies again. */
+    severity?: NotificationSeverity | undefined
 }
 
 export interface NotificationIncident {
@@ -47,6 +50,22 @@ export interface NotificationIncident {
     recoveryEvidence: string | null
     channels: NotificationIncidentChannel[]
     host?: HostAvailabilityNotificationContext | undefined
+    app?: AppIncidentContext | undefined
+}
+
+/** What an app asserted about one of its incidents, as the platform keeps it. */
+export interface AppIncidentContext {
+    installationId: string
+    appId: string
+    appName?: string | undefined
+    categoryId: string
+    categoryName: string
+    key: string
+    title: string
+    message: string
+    resource: { type: 'proxyHost'; proxyHostId: string } | null
+    /** Set when the platform closed the incident because the app could no longer assert it. */
+    resolution?: AppIncidentResolution | undefined
 }
 
 interface HostAvailabilityNotificationContext extends HostAvailabilityNotification {

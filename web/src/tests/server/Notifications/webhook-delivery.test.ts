@@ -299,6 +299,41 @@ describe('bounded webhook delivery', () => {
         expect(received).not.toContain('must-not-leave')
         expect(received).not.toContain('attacker.invalid')
     })
+    test('app incident webhook context carries only the allowlisted app block', async () => {
+        let received = ''
+        const destination = await receiver((request, response) => {
+            request.on('data', (chunk: Buffer) => {
+                received += chunk.toString()
+            })
+            request.on('end', () => {
+                response.writeHead(200)
+                response.end()
+            })
+        })
+        const source = {
+            ...PAYLOAD,
+            category: 'app_incident' as const,
+            code: 'app_incident' as const,
+            app: {
+                appName: 'acme.monitor',
+                categoryName: 'Disk space',
+                title: 'Disk almost full',
+                message: 'The data volume has 2% left.',
+                resource: { type: 'proxyHost' as const, hostname: 'service.example.test' },
+                installationId: 'must-not-leave',
+                secret: 'must-not-leave',
+            },
+        }
+        expect(await deliverNotification(destination, source)).toEqual({ success: true })
+        expect(JSON.parse(received).app).toEqual({
+            appName: 'acme.monitor',
+            categoryName: 'Disk space',
+            title: 'Disk almost full',
+            message: 'The data volume has 2% left.',
+            resource: { type: 'proxyHost', hostname: 'service.example.test' },
+        })
+        expect(received).not.toContain('must-not-leave')
+    })
     test('never follows redirects and safely classifies retry responses', async () => {
         await Promise.all(
             [302, 400, 408, 429, 503].map(async (status) => {

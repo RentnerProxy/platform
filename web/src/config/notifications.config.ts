@@ -4,7 +4,15 @@ export const NOTIFICATION_CATEGORIES = [
     'backup',
     'proxy_configuration',
     'host_availability',
+    'app_incident',
 ] as const
+/** Bounds of the incidents an app raises; the app contract fixes the text limits. */
+export const APP_INCIDENT_LIMITS = {
+    title: 80,
+    message: 400,
+    openPerInstallation: 32,
+    channelCategories: 64,
+} as const
 export const NOTIFICATION_SEVERITIES = ['warning', 'error', 'critical'] as const
 export const NOTIFICATION_SETTINGS_KEY = 'notification_configuration_v1'
 export const NOTIFICATION_STATE_KEY = 'notification_delivery_state_v1'

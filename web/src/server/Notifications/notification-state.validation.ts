@@ -1,11 +1,17 @@
 import { z } from 'zod'
 import {
+    APP_INCIDENT_LIMITS,
     NOTIFICATION_CATEGORIES,
     NOTIFICATION_LIMITS,
     NOTIFICATION_SEVERITIES,
 } from '@/config/notifications.config.ts'
 import type { NotificationState } from './Types/notification-state.types.ts'
-import { hostAvailabilityNotificationSchema } from '@/lib/Notifications/validation.ts'
+import { appIdSchema, appRecordId } from '@/lib/AppUi/identifiers.ts'
+import {
+    appIncidentNotificationSchema,
+    appIncidentText,
+    hostAvailabilityNotificationSchema,
+} from '@/lib/Notifications/validation.ts'
 
 const time = z.number().int().min(0).max(8_640_000_000_000_000)
 const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
@@ -44,6 +50,7 @@ const payload = z.strictObject({
         'ddns_update_failed',
         'proxy_apply_failed',
         'host_unavailable',
+        'app_incident',
         'operation_recovered',
         'notification_test',
         'backup_succeeded',
@@ -53,6 +60,19 @@ const payload = z.strictObject({
     startedAt: z.iso.datetime(),
     failures: counter,
     host: hostAvailabilityNotificationSchema.optional(),
+    app: appIncidentNotificationSchema.optional(),
+})
+const appIncident = z.strictObject({
+    installationId: z.string().min(1).max(64),
+    appId: appIdSchema,
+    appName: z.string().min(1).max(97).optional(),
+    categoryId: appRecordId,
+    categoryName: appIncidentText(APP_INCIDENT_LIMITS.title),
+    key: appRecordId,
+    title: appIncidentText(APP_INCIDENT_LIMITS.title),
+    message: appIncidentText(APP_INCIDENT_LIMITS.message),
+    resource: z.strictObject({ type: z.literal('proxyHost'), proxyHostId: z.uuid() }).nullable(),
+    resolution: z.enum(['appStopped', 'grantRevoked', 'resourceUnavailable']).optional(),
 })
 
 export const notificationStateSchema: z.ZodType<NotificationState> = z
@@ -89,6 +109,7 @@ export const notificationStateSchema: z.ZodType<NotificationState> = z
                                 channelRevision: revision,
                                 failure: admission,
                                 recovery: admission.nullable(),
+                                severity: z.enum(NOTIFICATION_SEVERITIES).optional(),
                             }),
                         )
                         .max(NOTIFICATION_LIMITS.totalChannels),
@@ -109,6 +130,7 @@ export const notificationStateSchema: z.ZodType<NotificationState> = z
                                 .optional(),
                         })
                         .optional(),
+                    app: appIncident.optional(),
                 }),
             )
             .max(NOTIFICATION_LIMITS.incidents),
@@ -149,6 +171,12 @@ export const notificationStateSchema: z.ZodType<NotificationState> = z
         for (const incident of state.incidents) {
             if ((incident.category === 'host_availability') !== Boolean(incident.host))
                 context.addIssue({ code: 'custom', message: 'Invalid host incident context' })
+            if (
+                (incident.category === 'app_incident') !== Boolean(incident.app) ||
+                (incident.app &&
+                    incident.resourceId !== `${incident.app.installationId}:${incident.app.key}`)
+            )
+                context.addIssue({ code: 'custom', message: 'Invalid app incident context' })
             const key = JSON.stringify([incident.category, incident.resourceId])
             if (incidentIds.has(incident.id) || (incident.recoveredAt === null && open.has(key)))
                 context.addIssue({ code: 'custom', message: 'Duplicate incident' })
@@ -184,6 +212,11 @@ export const notificationStateSchema: z.ZodType<NotificationState> = z
                     Boolean(delivery.payload.host)
             )
                 context.addIssue({ code: 'custom', message: 'Invalid host delivery context' })
+            if (
+                delivery.payload.type !== 'test' &&
+                (delivery.payload.category === 'app_incident') !== Boolean(delivery.payload.app)
+            )
+                context.addIssue({ code: 'custom', message: 'Invalid app delivery context' })
             if (deliveryIds.has(delivery.id) || delivery.id !== delivery.payload.id)
                 context.addIssue({ code: 'custom', message: 'Invalid delivery identity' })
             deliveryIds.add(delivery.id)

@@ -57,6 +57,10 @@ export default function useChannelEditorLogic(props: ChannelEditorProps) {
                 minimumSeverity: value.minimumSeverity,
                 thresholdSeconds,
                 recovery: value.recovery,
+                // The editor keeps the app categories it does not edit yet.
+                ...(props.editor.channel?.appCategories
+                    ? { appCategories: [...props.editor.channel.appCategories] }
+                    : {}),
             }
             if (value.replaceDestination) {
                 if (value.kind === 'email') {

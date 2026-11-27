@@ -316,6 +316,7 @@
                 "upstreamProbe": "Bereikbaarheid van upstreams controleren",
                 "upstreamMonitoring": "Upstreams doorlopend bewaken",
                 "notificationsPublish": "Meldingen versturen",
+                "notificationsIncidents": "Meldingsincidenten melden",
                 "auditRecord": "Vermeldingen in het auditlogboek schrijven",
                 "eventsSubscribe": "Wijzigingsgebeurtenissen ontvangen",
                 "providerRegister": "Registreren als provider",
@@ -699,7 +700,8 @@
                 "ddns": "Dynamische DNS",
                 "proxy_configuration": "Proxyconfiguratie",
                 "backup": "Back-ups",
-                "host_availability": "Hostuitval en herstel"
+                "host_availability": "Hostuitval en herstel",
+                "app_incident": "Meldingen van apps"
             },
             "severities": {
                 "warning": "Waarschuwing",

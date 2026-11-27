@@ -16,6 +16,20 @@ export interface HostAvailabilityNotification {
     readonly managementUrl?: string | undefined
 }
 
+/** Why the platform, not the app, closed an incident. */
+export type AppIncidentResolution = 'appStopped' | 'grantRevoked' | 'resourceUnavailable'
+
+/** What a delivery of an app incident shows. The platform renders the host name when it sends. */
+export interface AppIncidentNotification {
+    readonly appName: string
+    readonly categoryName: string
+    readonly title: string
+    readonly message: string
+    readonly resource?:
+        { readonly type: 'proxyHost'; readonly hostname?: string | undefined } | undefined
+    readonly resolution?: AppIncidentResolution | undefined
+}
+
 export interface NotificationPayload {
     readonly schemaVersion: 1
     readonly id: string
@@ -30,6 +44,7 @@ export interface NotificationPayload {
         | 'ddns_update_failed'
         | 'proxy_apply_failed'
         | 'host_unavailable'
+        | 'app_incident'
         | 'operation_recovered'
         | 'notification_test'
         | 'backup_succeeded'
@@ -38,6 +53,7 @@ export interface NotificationPayload {
     readonly startedAt: string
     readonly failures: number
     readonly host?: HostAvailabilityNotification | undefined
+    readonly app?: AppIncidentNotification | undefined
 }
 
 export interface NotificationChannelPolicy {
@@ -50,6 +66,8 @@ export interface NotificationChannelPolicy {
     readonly minimumSeverity: NotificationSeverity
     readonly thresholdSeconds: number
     readonly recovery: boolean
+    /** Qualified `appId/categoryId` keys of the app incident categories the channel receives. */
+    readonly appCategories?: readonly string[] | undefined
 }
 
 export type NotificationDestination =
