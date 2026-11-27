@@ -6,13 +6,15 @@ import {
     isPackageSourceOutage,
     sameCatalogLifecycle,
     sameCatalogRelease,
+    type CatalogEntry,
+    type CatalogGrant,
     type CatalogLifecycleInput,
     type CatalogLifecycle,
     type CatalogRelease,
 } from '@/lib/AppCatalog/contract.ts'
+import { revokeGrantRequest } from '@/lib/AppCatalog/grantApproval.ts'
 import {
     catalogBlockedRelease,
-    catalogEntryAvailability,
     catalogInstallationActions,
 } from '@/lib/AppCatalog/installationActions.ts'
 import { keepCatalogProgress, type CatalogQueryResult } from '@/lib/AppCatalog/installProgress.ts'
@@ -22,7 +24,11 @@ import {
     manageCatalogInstallation,
 } from '@/lib/AppCatalog/requests.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
-import type { CatalogConfirmation, CatalogInstallationView } from '../Types/app-catalog.types.ts'
+import type {
+    CatalogApprovalRequest,
+    CatalogConfirmation,
+    CatalogInstallationView,
+} from '../Types/app-catalog.types.ts'
 import { getAppCatalogHandler } from '../middleware.ts'
 
 export default function useAppCatalogLogic() {
@@ -30,6 +36,7 @@ export default function useAppCatalogLogic() {
     const inventory = useAppUi()
     const queryClient = useQueryClient()
     const [confirmation, setConfirmation] = useState<CatalogConfirmation | null>(null)
+    const [approval, setApproval] = useState<CatalogApprovalRequest | null>(null)
     const [previousReceipt, setPreviousReceipt] = useState<CatalogLifecycle | null>(null)
     const queryKey = ['app-catalog', inventory?.sessionId ?? null] as const
     const query = useQuery({
@@ -135,7 +142,7 @@ export default function useAppCatalogLogic() {
     const catalogNames = new Map(catalogEntries.map((entry) => [entry.appId, entry]))
     const availableReleases = new Map<string, CatalogRelease>(
         catalogEntries
-            .filter((entry) => catalogEntryAvailability(entry) === 'available')
+            .filter((entry) => entry.availability === 'available')
             .map(({ appId, version, archiveSha256 }) => [appId, { version, archiveSha256 }]),
     )
     const accessibleApps = new Map(inventory?.apps.map((app) => [app.installationId, app]))
@@ -170,9 +177,7 @@ export default function useAppCatalogLogic() {
     )
     const entries = catalogEntries
         .filter((entry) => !installedAppIds.has(entry.appId))
-        .map((listed) => {
-            // Show a release that requests grants as needing them until it can be approved here.
-            const entry = { ...listed, availability: catalogEntryAvailability(listed) }
+        .map((entry) => {
             return {
                 entry,
                 isRetry: install?.status === 'failed' && sameCatalogRelease(install, entry),
@@ -197,7 +202,39 @@ export default function useAppCatalogLogic() {
         ({ installation }) => installation.installationId === reportedAction?.installationId,
     )?.name
 
-    function handleAction({ name }: CatalogInstallationView, request: CatalogLifecycleInput) {
+    function listedEntry(appId: string, target: CatalogRelease | undefined) {
+        return target
+            ? catalogEntries.find(
+                  (entry) =>
+                      entry.availability === 'available' &&
+                      sameCatalogRelease(entry, { appId, ...target }),
+              )
+            : undefined
+    }
+
+    function handleInstall(entry: CatalogEntry) {
+        if (!canManage) return
+        if (entry.grants.length === 0) {
+            installMutation.mutate(entry)
+            return
+        }
+        const { appId, version, archiveSha256 } = entry
+        setApproval({
+            kind: 'install',
+            name: entry.name,
+            version,
+            requested: entry.grants,
+            permissionKeys: entry.permissionKeys,
+            previous: null,
+            submit: (grants) =>
+                installMutation.mutate({ appId, version, archiveSha256, approval: grants }),
+        })
+    }
+
+    function handleAction(
+        { name, installation }: CatalogInstallationView,
+        request: CatalogLifecycleInput,
+    ) {
         if (!canManage) return
         if (
             request.action === 'uninstall' ||
@@ -207,7 +244,35 @@ export default function useAppCatalogLogic() {
             setConfirmation({ name, request })
             return
         }
+        // An update that requests more than the current approval, and every reinstall of a
+        // release with grants, starts only after the Owner approves its access.
+        const reviewed =
+            (request.action === 'update' && installation.updateRequiresApproval) ||
+            request.action === 'reinstall'
+        const entry = reviewed ? listedEntry(installation.appId, request.target) : undefined
+        if (request.action === 'update' && installation.updateRequiresApproval && !entry) return
+        if (entry && entry.grants.length > 0) {
+            setApproval({
+                kind: request.action === 'update' ? 'update' : 'reinstall',
+                name,
+                version: entry.version,
+                requested: entry.grants,
+                permissionKeys: entry.permissionKeys,
+                previous: installation.grants,
+                submit: (grants) => lifecycleMutation.mutate({ ...request, approval: grants }),
+            })
+            return
+        }
         lifecycleMutation.mutate(request)
+    }
+
+    function handleRevoke(
+        { name, installation }: CatalogInstallationView,
+        grant: CatalogGrant,
+        label: string,
+    ) {
+        if (!canManage) return
+        setConfirmation({ name, request: revokeGrantRequest(installation, grant), grant: label })
     }
 
     return {
@@ -222,6 +287,14 @@ export default function useAppCatalogLogic() {
             isConnected: snapshot?.isConnected === true,
             canManage,
             confirmation,
+            // The Owner's approval starts the operation only while the catalog can manage apps.
+            approval: approval && {
+                ...approval,
+                submit: (grants: Parameters<CatalogApprovalRequest['submit']>[0]) => {
+                    setApproval(null)
+                    if (canManage) approval.submit(grants)
+                },
+            },
             installFailure:
                 install?.status === 'failed' ? (install.error ?? 'installFailed') : null,
             operation: reportedAction?.action,
@@ -236,8 +309,12 @@ export default function useAppCatalogLogic() {
                     : undefined,
         },
         handler: {
-            handleInstall: installMutation.mutate,
+            handleInstall,
             handleAction,
+            handleRevoke,
+            handleApprovalChange: (open: boolean) => {
+                if (!open) setApproval(null)
+            },
             handleConfirm: () => {
                 if (!canManage || !confirmation) return
                 setConfirmation(null)

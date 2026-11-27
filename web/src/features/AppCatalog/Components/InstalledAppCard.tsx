@@ -1,10 +1,11 @@
 import { Link } from '@tanstack/react-router'
 import { ArrowUp, ExternalLink, Package } from 'lucide-react'
 
-import type { CatalogLifecycleInput } from '@/lib/AppCatalog/contract.ts'
+import type { CatalogGrant, CatalogLifecycleInput } from '@/lib/AppCatalog/contract.ts'
 import { buttonClassName } from '@/shared/Buttons/buttonStyles.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import type { CatalogInstallationView } from '../Types/app-catalog.types.ts'
+import ApprovedGrantList from './ApprovedGrantList.tsx'
 
 const statusColors = {
     running: 'bg-success-bg text-success-text',
@@ -19,10 +20,12 @@ export default function InstalledAppCard({
     app,
     canManage,
     onAction,
+    onRevoke,
 }: {
     app: CatalogInstallationView
     canManage: boolean
     onAction: (app: CatalogInstallationView, request: CatalogLifecycleInput) => void
+    onRevoke: (app: CatalogInstallationView, grant: CatalogGrant, label: string) => void
 }) {
     const { t } = useTranslationStore()
     const {
@@ -59,6 +62,13 @@ export default function InstalledAppCard({
                         <p className="mt-1 text-sm wrap-anywhere text-warning-text">
                             {t(`appCatalog.management.blocked.${blockedRelease.availability}`, {
                                 version: blockedRelease.version,
+                            })}
+                        </p>
+                    ) : null}
+                    {installation.updateRequiresApproval && installation.update ? (
+                        <p className="mt-1 text-sm wrap-anywhere text-warning-text">
+                            {t('appCatalog.management.updateRequiresApproval', {
+                                version: installation.update.version,
                             })}
                         </p>
                     ) : null}
@@ -106,13 +116,18 @@ export default function InstalledAppCard({
                         (request.action === 'update' || request.action === 'reinstall')
                             ? t(
                                   request.action === 'update'
-                                      ? 'appCatalog.management.updateTo'
+                                      ? installation.updateRequiresApproval
+                                          ? 'appCatalog.management.reviewUpdate'
+                                          : 'appCatalog.management.updateTo'
                                       : 'appCatalog.management.reinstall',
                                   { version: request.target.version },
                               )
                             : t(`appCatalog.management.actions.${request.action}`)}
                     </button>
                 ))}
+            </div>
+            <div className="basis-full empty:hidden">
+                <ApprovedGrantList app={app} canManage={canManage} onRevoke={onRevoke} />
             </div>
         </li>
     )

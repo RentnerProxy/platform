@@ -57,8 +57,14 @@ let snapshot = ready
 let apps: AppUiSummary[] = []
 const refreshApps = mock(async () => [])
 
+const proxyHosts = [
+    { id: '2f9c4b1e-6a3d-4e8f-9b7c-0d1e2f3a4b5c', hostname: 'app.example.com', enabled: true },
+    { id: '8a7b6c5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d', hostname: 'old.example.com', enabled: false },
+]
+
 await mock.module('@/features/AppCatalog/middleware.ts', () => ({
     getAppCatalogHandler: () => Promise.resolve(snapshot),
+    getAppCatalogProxyHostsHandler: () => Promise.resolve(proxyHosts),
 }))
 await mock.module('@/features/AppUi/AppUiProvider.tsx', () => ({
     useAppUi: () => ({ apps, sessionId: 'owner-session', refresh: refreshApps }),
@@ -368,7 +374,7 @@ test('explains newer releases that the appliance cannot offer for an installed a
     try {
         await waitFor(() => button('Update to 1.0.1')?.disabled === false)
         expect(container.textContent).toContain(
-            'Version 1.0.2 requires additional grants, so it is not offered.',
+            'Version 1.0.2 requests access this appliance cannot grant, so it is not offered.',
         )
         expect(button('Install')).toBeUndefined()
 
@@ -393,35 +399,235 @@ test('explains newer releases that the appliance cannot offer for an installed a
                 ) === true,
         )
         expect(button('Update to 1.0.1')).toBeUndefined()
-        expect(container.textContent).not.toContain('requires additional grants')
+        expect(container.textContent).not.toContain('cannot grant')
     } finally {
         await unmount()
     }
 })
 
-test('shows a release that requests grants as needing approval instead of offering it', async () => {
+const readHosts = { id: 'proxy.hosts.read.v1', scope: 'proxyHosts' }
+const notify = { id: 'notifications.publish.v1', scope: 'installation' }
+const support = [
+    { id: 'app.events.subscribe', scope: 'installation' },
+    { id: 'app.audit.record', scope: 'installation' },
+]
+const requesting = (...capabilities: { id: string; scope: string }[]) =>
+    [...capabilities, ...support].map((capability) => ({ capability, allowService: true }))
+
+function openDialog() {
+    return document.querySelector<HTMLElement>('[role="dialog"]')
+}
+
+function dialogButton(label: string) {
+    return Array.from(openDialog()?.querySelectorAll('button') ?? []).find(
+        (candidate) => candidate.textContent === label,
+    )
+}
+
+async function pick(trigger: HTMLButtonElement, label: string) {
+    await act(async () => {
+        trigger.dispatchEvent(
+            new MouseEvent('click', { bubbles: true, button: 0, cancelable: true }),
+        )
+    })
+    await waitFor(() => document.querySelector('[role="option"]') !== null)
+    const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(
+        (candidate) => candidate.textContent?.includes(label),
+    )
+    expect(option).toBeDefined()
+    await act(async () => {
+        option!.dispatchEvent(
+            new PointerEvent('pointerup', { bubbles: true, button: 0, pointerType: 'mouse' }),
+        )
+        option!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+}
+
+test('installs a release with capabilities only after the Owner approves its access', async () => {
+    snapshot = {
+        ...ready,
+        entries: [{ ...ready.entries[0]!, grants: requesting(readHosts, notify) }],
+    }
+    apps = []
+    const post = spyOn(globalThis, 'fetch').mockResolvedValue(
+        Response.json(pending, { status: 202 }),
+    )
+    const { button, unmount } = await mountCatalog()
+    try {
+        await waitFor(() => button('Install')?.disabled === false)
+        await act(async () => button('Install')!.click())
+        await waitFor(() => openDialog()?.textContent?.includes('Review requested access') === true)
+        expect(openDialog()!.textContent).toContain('Read proxy hosts')
+        expect(openDialog()!.textContent).toContain('Receive change events')
+        expect(dialogButton('Approve and install')?.disabled).toBe(true)
+        // Declining sends nothing.
+        await act(async () => dialogButton('Decline')!.click())
+        await waitFor(() => openDialog() === null)
+        expect(post).not.toHaveBeenCalled()
+
+        await act(async () => button('Install')!.click())
+        await waitFor(
+            () =>
+                openDialog()?.querySelector<HTMLButtonElement>('button[role="combobox"]')
+                    ?.disabled === false,
+        )
+        await pick(
+            openDialog()!.querySelector<HTMLButtonElement>('button[role="combobox"]')!,
+            'app.example.com',
+        )
+        await waitFor(() => dialogButton('Approve and install')?.disabled === false)
+        await act(async () => dialogButton('Approve and install')!.click())
+        await waitFor(() => post.mock.calls.length === 1)
+        expect(post).toHaveBeenCalledWith(
+            APP_CATALOG_INSTALL_PATH,
+            expect.objectContaining({
+                method: 'POST',
+                body: JSON.stringify({
+                    ...selection,
+                    approval: [
+                        {
+                            capability: readHosts,
+                            resourceId: proxyHosts[0]!.id,
+                            allowService: true,
+                        },
+                        { capability: notify, allowService: true },
+                        { capability: support[0], allowService: true },
+                        { capability: support[1], allowService: true },
+                    ],
+                }),
+            }),
+        )
+        await waitFor(() => openDialog() === null)
+    } finally {
+        await unmount()
+        post.mockRestore()
+    }
+})
+
+test('reviews an update that requests more access and revokes approved access', async () => {
+    const target = { version: '1.1.0', archiveSha256: 'b'.repeat(64) }
+    const approved = [
+        { capability: support[1]!, resourceId: current.installationId, allowService: true },
+        { capability: support[0]!, resourceId: current.installationId, allowService: true },
+        { capability: readHosts, resourceId: proxyHosts[0]!.id, allowService: true },
+    ]
+    const installation = { ...current, grants: approved, update: target }
+    const expected = { generation: current.generation, version, archiveSha256 }
     snapshot = {
         ...ready,
         entries: [
-            {
-                ...ready.entries[0]!,
-                grants: [
-                    {
-                        capability: { id: 'app.provider.register', scope: 'providerProfiles' },
-                        resourceId: 'monitoring',
-                        allowService: true,
-                    },
-                ],
-            },
+            { ...ready.entries[0]!, grants: requesting(readHosts) },
+            { ...ready.entries[0]!, ...target, grants: requesting(readHosts, notify) },
         ],
+        installations: [{ ...installation, updateRequiresApproval: true }],
     }
     apps = []
+    const receipt = (action: CatalogLifecycleInput['action'], extra: object) =>
+        Response.json(
+            {
+                action,
+                installationId: current.installationId,
+                expected,
+                ...extra,
+                status: 'pending',
+            },
+            { status: 202 },
+        )
+    const post = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(receipt('update', { target }))
+        .mockResolvedValueOnce(receipt('revoke', {}))
     const { container, button, unmount } = await mountCatalog()
     try {
-        await waitFor(() => container.textContent?.includes('Additional grants required') === true)
-        expect(button('Install')).toBeUndefined()
+        await waitFor(() => button('Review update to 1.1.0')?.disabled === false)
+        expect(container.textContent).toContain(
+            'Version 1.1.0 requests additional access. Review it before updating.',
+        )
+        expect(container.textContent).toContain('Read proxy hosts: app.example.com')
+        await act(async () => button('Review update to 1.1.0')!.click())
+        // The approved host is preselected, so only the new capability needs a decision.
+        await waitFor(() => dialogButton('Approve and update to 1.1.0')?.disabled === false)
+        expect(openDialog()!.textContent).toContain('Send notifications')
+        await act(async () => dialogButton('Approve and update to 1.1.0')!.click())
+        await waitFor(() => post.mock.calls.length === 1)
+        expect(post).toHaveBeenLastCalledWith(
+            APP_CATALOG_LIFECYCLE_PATH,
+            expect.objectContaining({
+                body: JSON.stringify({
+                    action: 'update',
+                    installationId: current.installationId,
+                    expected,
+                    target,
+                    approval: [
+                        {
+                            capability: readHosts,
+                            resourceId: proxyHosts[0]!.id,
+                            allowService: true,
+                        },
+                        { capability: notify, allowService: true },
+                        { capability: support[0], allowService: true },
+                        { capability: support[1], allowService: true },
+                    ],
+                }),
+            }),
+        )
+
+        snapshot = {
+            ...snapshot,
+            installations: [installation],
+            lifecycle: {
+                action: 'update',
+                installationId: current.installationId,
+                expected,
+                target,
+                status: 'succeeded',
+            },
+        }
+        await act(async () => button('Refresh catalog')!.click())
+        await waitFor(() => button('Update to 1.1.0')?.disabled === false)
+        const revoke = Array.from(container.querySelectorAll('button')).filter(
+            (candidate) => candidate.textContent === 'Revoke',
+        )
+        expect(revoke).toHaveLength(3)
+        // Capabilities come before support grants.
+        await act(async () => revoke[0]!.click())
+        await waitFor(
+            () => openDialog()?.textContent?.includes('Revoke “Read proxy hosts') === true,
+        )
+        expect(post).toHaveBeenCalledTimes(1)
+        await act(async () => dialogButton('Revoke grants')!.click())
+        await waitFor(() => post.mock.calls.length === 2)
+        expect(post).toHaveBeenLastCalledWith(
+            APP_CATALOG_LIFECYCLE_PATH,
+            expect.objectContaining({
+                body: JSON.stringify({
+                    action: 'revoke',
+                    installationId: current.installationId,
+                    expected,
+                    grants: [{ capability: readHosts, resourceId: proxyHosts[0]!.id }],
+                }),
+            }),
+        )
+
+        snapshot = {
+            ...snapshot,
+            lifecycle: {
+                action: 'revoke',
+                installationId: current.installationId,
+                expected,
+                status: 'failed',
+                error: 'revokedAppStopped',
+            },
+        }
+        await act(async () => button('Refresh catalog')!.click())
+        await waitFor(
+            () =>
+                container.textContent?.includes(
+                    'The access was revoked, but the running app could not apply the change',
+                ) === true,
+        )
     } finally {
         await unmount()
+        post.mockRestore()
     }
 })
 

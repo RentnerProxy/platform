@@ -1040,7 +1040,7 @@ async fn check_approved_restarts(
     );
     let failed = ui_outcome(&revoke).await;
     assert_eq!(failed["status"], "failed", "{failed}");
-    assert_eq!(failed["error"], "unavailable", "{failed}");
+    assert_eq!(failed["error"], "revokedAppStopped", "{failed}");
     let fenced = installation(controller).await;
     assert_eq!(fenced["running"], false);
     assert_eq!(fenced["recoveryRequired"], true);

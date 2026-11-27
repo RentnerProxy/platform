@@ -1,7 +1,9 @@
 import { createServerFn, createServerOnlyFn } from '@tanstack/react-start'
 import { getRequest, setResponseHeader } from '@tanstack/react-start/server'
 import type { CatalogSnapshot } from '@/lib/AppCatalog/contract.ts'
+import type { CatalogProxyHost } from '@/lib/AppCatalog/grantApproval.ts'
 import { requireOwnerSessionService } from '@/server/Auth/Access/authorization.service.ts'
+import { listCatalogProxyHosts } from '@/server/AppRuntime/catalog/hosts.server.ts'
 import {
     handleCatalogInstall,
     handleCatalogLifecycle,
@@ -23,6 +25,19 @@ export const getAppCatalogHandler = createServerFn({ method: 'GET' }).handler(
             return null
         }
         return null
+    },
+)
+
+/** The proxy hosts an Owner can approve for an app that requests access to selected hosts. */
+export const getAppCatalogProxyHostsHandler = createServerFn({ method: 'GET' }).handler(
+    async (): Promise<CatalogProxyHost[] | 'forbidden'> => {
+        setResponseHeader('Cache-Control', 'private, no-store')
+        try {
+            await requireOwnerSessionService()
+        } catch {
+            return 'forbidden'
+        }
+        return listCatalogProxyHosts()
     },
 )
 
