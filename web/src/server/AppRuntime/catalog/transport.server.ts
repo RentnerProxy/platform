@@ -7,11 +7,14 @@ import {
     catalogTargetCheckSchema,
     sameCatalogLifecycle,
     sameCatalogRelease,
+    type CatalogInstallInput,
     type CatalogLifecycleInput,
-    type CatalogSelector,
 } from '@/lib/AppCatalog/contract.ts'
 import type { AppRuntimeEnvironment } from '@/lib/ApplicationVersion/Types/app-requirements.types.ts'
 import { nativeAppRuntimeJson, uiProblems } from '../ui/transport.server.ts'
+
+/** An install or lifecycle request, or its receipt, with an approval of up to 128 grants. */
+export const APP_CATALOG_REQUEST_BYTES = 64 * 1024
 
 export function nativeAppCatalog(signal: AbortSignal) {
     return nativeAppRuntimeJson(
@@ -48,14 +51,14 @@ export async function nativeCatalogLifecycle(input: CatalogLifecycleInput, signa
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(input),
         },
-        1_024,
+        APP_CATALOG_REQUEST_BYTES,
     )
     if (result.status !== 'pending' || !sameCatalogLifecycle(result, input))
         throw uiProblems.unavailable
     return result
 }
 
-export async function nativeCatalogInstall(input: CatalogSelector, signal: AbortSignal) {
+export async function nativeCatalogInstall(input: CatalogInstallInput, signal: AbortSignal) {
     const result = await nativeAppRuntimeJson(
         catalogInstallSchema,
         '/v1/catalog/install',
@@ -65,7 +68,7 @@ export async function nativeCatalogInstall(input: CatalogSelector, signal: Abort
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(input),
         },
-        1_024,
+        APP_CATALOG_REQUEST_BYTES,
     )
     if (!sameCatalogRelease(result, input)) throw uiProblems.unavailable
     return result

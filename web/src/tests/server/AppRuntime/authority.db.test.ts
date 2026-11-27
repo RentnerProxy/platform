@@ -45,6 +45,8 @@ import {
     revokeAppRuntimeGenerationInTransaction,
     setAppRuntimeRolePermissionInTransaction,
 } from '@/server/AppRuntime/lifecycle.server.ts'
+import { requireAppRuntimeAuthorization } from '@/server/AppRuntime/authority-policy.server.ts'
+import { withAppRuntimeErrors } from '@/server/AppRuntime/services.server.ts'
 import { createOpaqueToken, hashOpaqueToken } from '@/server/Auth/Core/tokens.server.ts'
 
 const integrationEnabled =
@@ -97,6 +99,130 @@ integrationTest('retirement waits for a registration that has not committed', as
         })
     }
 })
+
+integrationTest(
+    'revoking a grant of the active generation refuses its next call at once',
+    async () => {
+        const { db } = await import('@/db/index.ts')
+        const rolledBack = new Error('grant revocation test rollback')
+        const originalEncryptionKey = process.env.APP_ENCRYPTION_KEY
+        // Event cursors are sealed with the app encryption key.
+        process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 52).toString('base64')
+        try {
+            await expect(
+                db.transaction(async (transaction) => {
+                    const installationId = crypto.randomUUID()
+                    const identity = {
+                        installationId,
+                        appId: 'fixture.revocation',
+                        uid: 40_497,
+                        generation: 1,
+                    }
+                    const credentials = { identity }
+                    const leaseExpiresAt = new Date(Date.now() + 60_000)
+                    const read = { id: 'proxy.hosts.read.v1', scope: 'proxyHosts' }
+                    const host = crypto.randomUUID()
+                    const granted = [
+                        { capability: read, resourceId: host, allowService: true },
+                        {
+                            capability: APP_RUNTIME_SUPPORT_CAPABILITIES.events,
+                            resourceId: installationId,
+                            allowService: true,
+                        },
+                    ]
+                    await registerAppRuntimeGenerationInTransaction(transaction, {
+                        identity,
+                        leaseExpiresAt,
+                        capabilities: [read],
+                    })
+                    await replaceAppRuntimeGrantsInTransaction(transaction, identity, granted)
+                    await activateAppRuntimeGenerationInTransaction(
+                        transaction,
+                        identity,
+                        leaseExpiresAt,
+                    )
+                    const before = await resolveAppRuntimePrincipalInTransaction(
+                        transaction,
+                        credentials,
+                    )
+                    expect(before.kind).toBe('service')
+                    expect(isAppRuntimeAuthorized(before, read, host)).toBe(true)
+                    await appendAppRuntimeEventInTransaction(transaction, {
+                        installationId,
+                        type: 'proxyHostChanged',
+                        capability: read,
+                        resourceId: host,
+                    })
+                    const replay = await replayAppRuntimeEventsInTransaction(
+                        transaction,
+                        credentials,
+                    )
+                    expect(replay.events).toHaveLength(1)
+
+                    // The app manager publishes the remaining approval for the same live generation.
+                    await replaceAppRuntimeGrantsInTransaction(
+                        transaction,
+                        identity,
+                        granted.slice(1),
+                    )
+                    const after = await resolveAppRuntimePrincipalInTransaction(
+                        transaction,
+                        credentials,
+                    )
+                    expect(after.identity.generation).toBe(1)
+                    expect(after.authorizationEpoch).toBe(before.authorizationEpoch + 1n)
+                    await expect(
+                        withAppRuntimeErrors(async () => {
+                            requireAppRuntimeAuthorization(after, read, host)
+                        }),
+                    ).rejects.toMatchObject({ status: 403 })
+                    const generations = await transaction
+                        .select({
+                            generation: appRuntimeGenerations.generation,
+                            state: appRuntimeGenerations.state,
+                        })
+                        .from(appRuntimeGenerations)
+                        .where(eq(appRuntimeGenerations.installationId, installationId))
+                    expect(generations).toEqual([{ generation: 1, state: 'active' }])
+                    // The epoch is part of the event cursor, so a cursor from before the change expires.
+                    await expect(
+                        replayAppRuntimeEventsInTransaction(
+                            transaction,
+                            credentials,
+                            replay.cursor,
+                        ),
+                    ).rejects.toMatchObject({ code: 'cursor_expired' })
+                    expect(
+                        (await replayAppRuntimeEventsInTransaction(transaction, credentials))
+                            .events,
+                    ).toEqual([])
+                    // Publishing an identical set changes nothing, so every launch may republish it.
+                    await replaceAppRuntimeGrantsInTransaction(
+                        transaction,
+                        identity,
+                        granted.slice(1),
+                    )
+                    const unchanged = await resolveAppRuntimePrincipalInTransaction(
+                        transaction,
+                        credentials,
+                    )
+                    expect(unchanged.authorizationEpoch).toBe(after.authorizationEpoch)
+                    // Revoking the event subscription refuses the next replay as well.
+                    await replaceAppRuntimeGrantsInTransaction(transaction, identity, [])
+                    await expect(
+                        withAppRuntimeErrors(() =>
+                            replayAppRuntimeEventsInTransaction(transaction, credentials),
+                        ),
+                    ).rejects.toMatchObject({ status: 403 })
+                    throw rolledBack
+                }),
+            ).rejects.toBe(rolledBack)
+        } finally {
+            if (originalEncryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY
+            else process.env.APP_ENCRYPTION_KEY = originalEncryptionKey
+        }
+    },
+)
 
 integrationTest('removal and data purge wait while the app owns a proxy host', async () => {
     const { db } = await import('@/db/index.ts')

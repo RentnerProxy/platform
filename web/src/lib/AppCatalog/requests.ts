@@ -15,6 +15,7 @@ const requestErrors = {
     403: 'forbidden',
     409: 'conflict',
     413: 'invalid',
+    422: 'approvalRequired',
     429: 'rateLimited',
 } as const
 

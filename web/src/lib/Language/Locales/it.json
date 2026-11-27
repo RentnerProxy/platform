@@ -256,7 +256,8 @@
                 "recover": "Riprova l’attivazione",
                 "rollback": "Torna alla versione precedente",
                 "purge": "Elimina i dati conservati",
-                "reinstall": "Reinstalla"
+                "reinstall": "Reinstalla",
+                "revoke": "Revoca autorizzazioni"
             },
             "pending": {
                 "update": "Aggiornamento dell’app…",
@@ -266,7 +267,8 @@
                 "recover": "Nuovo tentativo di attivazione…",
                 "rollback": "Ripristino della versione precedente…",
                 "purge": "Eliminazione dei dati conservati…",
-                "reinstall": "Reinstallazione dell’app…"
+                "reinstall": "Reinstallazione dell’app…",
+                "revoke": "Revoca delle autorizzazioni…"
             },
             "succeeded": {
                 "update": "App aggiornata.",
@@ -276,7 +278,8 @@
                 "recover": "App attivata.",
                 "rollback": "Versione precedente ripristinata.",
                 "purge": "Dati conservati eliminati.",
-                "reinstall": "App reinstallata."
+                "reinstall": "App reinstallata.",
+                "revoke": "Autorizzazioni revocate."
             },
             "confirm": {
                 "uninstall": "Disinstallare {{name}}? L’app verrà rimossa e i suoi dati saranno conservati per una reinstallazione.",
@@ -294,7 +297,8 @@
                 "packageSourceUnavailable": "La fonte dei pacchetti non è raggiungibile, quindi non è stato possibile scaricare la versione. L’app non è stata modificata.",
                 "networkUnavailable": "Né il catalogo delle app né la fonte dei pacchetti sono raggiungibili. Controlla la connessione Internet di questo dispositivo. L’app non è stata modificata.",
                 "incompatibleData": "La versione selezionata non è compatibile con i dati salvati.",
-                "operationFailed": "Controlla lo stato attuale dell’app prima di riprovare."
+                "operationFailed": "Controlla lo stato attuale dell’app prima di riprovare.",
+                "approvalRequired": "La versione selezionata richiede autorizzazioni non approvate. L’app non è stata modificata."
             }
         },
         "status": {
@@ -315,7 +319,8 @@
             "catalogUnavailable": "Il catalogo delle app firmato non è raggiungibile, quindi non è stato possibile verificare la versione. Riprova quando il catalogo sarà disponibile.",
             "packageSourceUnavailable": "La fonte dei pacchetti non è raggiungibile, quindi non è stato possibile scaricare la versione. Riprova quando la fonte sarà disponibile.",
             "networkUnavailable": "Né il catalogo delle app né la fonte dei pacchetti sono raggiungibili. Controlla la connessione Internet di questo dispositivo e riprova.",
-            "installFailed": "L’installazione non è riuscita. Puoi riprovare."
+            "installFailed": "L’installazione non è riuscita. Puoi riprovare.",
+            "approvalRequired": "Questa versione richiede autorizzazioni non approvate, quindi non è stata installata."
         }
     },
     "appUi": {
@@ -2851,7 +2856,8 @@
                     "crowdsec": "CrowdSec",
                     "npm-import": "Importazione NPM",
                     "config-import": "Importazione configurazione",
-                    "config-export": "Esportazione configurazione"
+                    "config-export": "Esportazione configurazione",
+                    "app-grants": "Autorizzazioni delle app"
                 }
             },
             "metadata": {
@@ -2869,7 +2875,9 @@
                 "eventId": "ID evento",
                 "certificateStage": "Fase del certificato",
                 "occurredAt": "Data e ora dell’evento",
-                "certificateErrorCode": "Codice di errore del certificato"
+                "certificateErrorCode": "Codice di errore del certificato",
+                "appId": "ID dell’app",
+                "installationId": "Installazione dell’app"
             },
             "details": {
                 "noMetadata": "Nessun altro metadato sicuro."

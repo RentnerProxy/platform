@@ -254,7 +254,8 @@
                 "recover": "Aktivierung wiederholen",
                 "rollback": "Zurücksetzen",
                 "purge": "Aufbewahrte Daten löschen",
-                "reinstall": "Erneut installieren"
+                "reinstall": "Erneut installieren",
+                "revoke": "Berechtigungen entziehen"
             },
             "pending": {
                 "update": "App wird aktualisiert …",
@@ -264,7 +265,8 @@
                 "recover": "Aktivierung wird wiederholt …",
                 "rollback": "App wird zurückgesetzt …",
                 "purge": "Aufbewahrte Daten werden gelöscht …",
-                "reinstall": "App wird erneut installiert …"
+                "reinstall": "App wird erneut installiert …",
+                "revoke": "Berechtigungen werden entzogen…"
             },
             "succeeded": {
                 "update": "App wurde aktualisiert.",
@@ -274,7 +276,8 @@
                 "recover": "App wurde aktiviert.",
                 "rollback": "App wurde zurückgesetzt.",
                 "purge": "Aufbewahrte App-Daten wurden gelöscht.",
-                "reinstall": "App wurde erneut installiert."
+                "reinstall": "App wurde erneut installiert.",
+                "revoke": "Berechtigungen entzogen."
             },
             "confirm": {
                 "uninstall": "{{name}} deinstallieren? Die App wird entfernt und ihre Daten bleiben für eine erneute Installation erhalten.",
@@ -292,7 +295,8 @@
                 "packageSourceUnavailable": "Die Paketquelle war nicht erreichbar, daher konnte die Version nicht heruntergeladen werden. Die App wurde nicht verändert.",
                 "networkUnavailable": "Weder der App-Katalog noch die Paketquelle waren erreichbar. Prüfe die Internetverbindung dieser Appliance. Die App wurde nicht verändert.",
                 "incompatibleData": "Die gewählte Version ist mit den gespeicherten App-Daten inkompatibel.",
-                "operationFailed": "Überprüfe den aktuellen Zustand der App und versuche es erneut."
+                "operationFailed": "Überprüfe den aktuellen Zustand der App und versuche es erneut.",
+                "approvalRequired": "Die ausgewählte Version fordert Berechtigungen an, die nicht freigegeben wurden. Die App wurde nicht geändert."
             }
         },
         "status": {
@@ -313,7 +317,8 @@
             "catalogUnavailable": "Der signierte App-Katalog war nicht erreichbar, daher konnte die Version nicht geprüft werden. Versuche es erneut, sobald der Katalog verfügbar ist.",
             "packageSourceUnavailable": "Die Paketquelle war nicht erreichbar, daher konnte die Version nicht heruntergeladen werden. Versuche es erneut, sobald die Quelle verfügbar ist.",
             "networkUnavailable": "Weder der App-Katalog noch die Paketquelle waren erreichbar. Prüfe die Internetverbindung dieser Appliance und versuche es dann erneut.",
-            "installFailed": "Die Installation ist fehlgeschlagen. Du kannst es erneut versuchen."
+            "installFailed": "Die Installation ist fehlgeschlagen. Du kannst es erneut versuchen.",
+            "approvalRequired": "Diese Version fordert Berechtigungen an, die nicht freigegeben wurden. Sie wurde daher nicht installiert."
         }
     },
     "appUi": {
@@ -2837,7 +2842,8 @@
                     "crowdsec": "CrowdSec",
                     "npm-import": "NPM-Import",
                     "config-import": "Konfigurationsimport",
-                    "config-export": "Konfigurationsexport"
+                    "config-export": "Konfigurationsexport",
+                    "app-grants": "App-Berechtigungen"
                 }
             },
             "metadata": {
@@ -2855,7 +2861,9 @@
                 "eventId": "Ereignis-ID",
                 "certificateStage": "Zertifikatsschritt",
                 "occurredAt": "Aufgetreten am",
-                "certificateErrorCode": "Zertifikat-Fehlercode"
+                "certificateErrorCode": "Zertifikat-Fehlercode",
+                "appId": "App-ID",
+                "installationId": "App-Installation"
             },
             "details": {
                 "noMetadata": "Keine weiteren sicheren Metadaten."

@@ -256,7 +256,8 @@
                 "recover": "Réessayer l’activation",
                 "rollback": "Revenir à la version précédente",
                 "purge": "Supprimer les données conservées",
-                "reinstall": "Réinstaller"
+                "reinstall": "Réinstaller",
+                "revoke": "Révoquer les autorisations"
             },
             "pending": {
                 "update": "Mise à jour de l’application…",
@@ -266,7 +267,8 @@
                 "recover": "Nouvelle tentative d’activation…",
                 "rollback": "Retour à la version précédente…",
                 "purge": "Suppression des données conservées…",
-                "reinstall": "Réinstallation de l’application…"
+                "reinstall": "Réinstallation de l’application…",
+                "revoke": "Révocation des autorisations…"
             },
             "succeeded": {
                 "update": "Application mise à jour.",
@@ -276,7 +278,8 @@
                 "recover": "Application activée.",
                 "rollback": "Version précédente restaurée.",
                 "purge": "Données conservées supprimées.",
-                "reinstall": "Application réinstallée."
+                "reinstall": "Application réinstallée.",
+                "revoke": "Autorisations révoquées."
             },
             "confirm": {
                 "uninstall": "Désinstaller {{name}} ? L’application sera supprimée et ses données seront conservées pour une réinstallation.",
@@ -294,7 +297,8 @@
                 "packageSourceUnavailable": "La source de paquets est injoignable, la version n’a donc pas pu être téléchargée. L’application n’a pas été modifiée.",
                 "networkUnavailable": "Ni le catalogue d’applications ni la source de paquets ne sont joignables. Vérifiez la connexion Internet de cet appareil. L’application n’a pas été modifiée.",
                 "incompatibleData": "La version sélectionnée est incompatible avec les données enregistrées.",
-                "operationFailed": "Vérifiez l’état actuel de l’application avant de réessayer."
+                "operationFailed": "Vérifiez l’état actuel de l’application avant de réessayer.",
+                "approvalRequired": "La version sélectionnée demande des autorisations qui n’ont pas été approuvées. L’application n’a pas été modifiée."
             }
         },
         "status": {
@@ -315,7 +319,8 @@
             "catalogUnavailable": "Le catalogue d’applications signé est injoignable, la version n’a donc pas pu être vérifiée. Réessayez lorsque le catalogue sera disponible.",
             "packageSourceUnavailable": "La source de paquets est injoignable, la version n’a donc pas pu être téléchargée. Réessayez lorsque la source sera disponible.",
             "networkUnavailable": "Ni le catalogue d’applications ni la source de paquets ne sont joignables. Vérifiez la connexion Internet de cet appareil, puis réessayez.",
-            "installFailed": "L’installation a échoué. Vous pouvez réessayer."
+            "installFailed": "L’installation a échoué. Vous pouvez réessayer.",
+            "approvalRequired": "Cette version demande des autorisations qui n’ont pas été approuvées ; elle n’a donc pas été installée."
         }
     },
     "appUi": {
@@ -2839,7 +2844,8 @@
                     "crowdsec": "CrowdSec",
                     "npm-import": "Import NPM",
                     "config-import": "Import de configuration",
-                    "config-export": "Export de configuration"
+                    "config-export": "Export de configuration",
+                    "app-grants": "Autorisations d’applications"
                 }
             },
             "metadata": {
@@ -2857,7 +2863,9 @@
                 "eventId": "ID de l’événement",
                 "certificateStage": "Étape du certificat",
                 "occurredAt": "Survenu le",
-                "certificateErrorCode": "Code d’erreur du certificat"
+                "certificateErrorCode": "Code d’erreur du certificat",
+                "appId": "ID de l’application",
+                "installationId": "Installation de l’application"
             },
             "details": {
                 "noMetadata": "Aucune autre métadonnée sûre."

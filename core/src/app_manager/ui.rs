@@ -50,6 +50,8 @@ const MAX_LIST_PROBES: usize = 16;
 const MAX_LIST_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CATALOG_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_INSTALL_BYTES: usize = 4 * 1024;
+// An install or lifecycle request with an approval or revocation of up to 128 grants.
+const MAX_CATALOG_REQUEST_BYTES: usize = 64 * 1024;
 // 256 installations with their release identity, state and provider profiles.
 const MAX_TARGET_CHECK_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_OPERATIONS_PER_INSTALLATION: usize = 4;
@@ -334,13 +336,18 @@ async fn handle(
         {
             return Err(StatusCode::BAD_REQUEST);
         }
-        let bytes = read_body_limited(incoming, MAX_INSTALL_BYTES).await?;
+        let bytes = read_body_limited(incoming, MAX_CATALOG_REQUEST_BYTES).await?;
         let map_failure = |error| match error {
             catalog::Failure::Conflict => StatusCode::CONFLICT,
+            catalog::Failure::ApprovalRequired => StatusCode::UNPROCESSABLE_ENTITY,
             _ => StatusCode::SERVICE_UNAVAILABLE,
         };
         let mut reply = if path == "/v1/catalog/install" {
-            let selection = serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+            let selection: catalog::Selection =
+                serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+            if !selection.valid() {
+                return Err(StatusCode::BAD_REQUEST);
+            }
             let install = catalog.submit(selection).map_err(map_failure)?;
             json(&install, MAX_INSTALL_BYTES)?
         } else {

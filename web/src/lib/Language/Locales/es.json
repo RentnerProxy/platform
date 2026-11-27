@@ -256,7 +256,8 @@
                 "recover": "Reintentar activación",
                 "rollback": "Volver a la versión anterior",
                 "purge": "Eliminar datos conservados",
-                "reinstall": "Reinstalar"
+                "reinstall": "Reinstalar",
+                "revoke": "Revocar permisos"
             },
             "pending": {
                 "update": "Actualizando la aplicación…",
@@ -266,7 +267,8 @@
                 "recover": "Reintentando la activación…",
                 "rollback": "Volviendo a la versión anterior…",
                 "purge": "Eliminando los datos conservados…",
-                "reinstall": "Reinstalando la aplicación…"
+                "reinstall": "Reinstalando la aplicación…",
+                "revoke": "Revocando permisos…"
             },
             "succeeded": {
                 "update": "Aplicación actualizada.",
@@ -276,7 +278,8 @@
                 "recover": "Aplicación activada.",
                 "rollback": "Se restauró la versión anterior.",
                 "purge": "Se eliminaron los datos conservados.",
-                "reinstall": "Aplicación reinstalada."
+                "reinstall": "Aplicación reinstalada.",
+                "revoke": "Permisos revocados."
             },
             "confirm": {
                 "uninstall": "¿Desinstalar {{name}}? La aplicación se eliminará y sus datos se conservarán para una futura reinstalación.",
@@ -294,7 +297,8 @@
                 "packageSourceUnavailable": "No se pudo acceder a la fuente de paquetes, por lo que no se pudo descargar la versión. La aplicación no se modificó.",
                 "networkUnavailable": "No se pudo acceder ni al catálogo de aplicaciones ni a la fuente de paquetes. Comprueba la conexión a internet de este dispositivo. La aplicación no se modificó.",
                 "incompatibleData": "La versión seleccionada es incompatible con los datos guardados.",
-                "operationFailed": "Comprueba el estado actual de la aplicación antes de volver a intentarlo."
+                "operationFailed": "Comprueba el estado actual de la aplicación antes de volver a intentarlo.",
+                "approvalRequired": "La versión seleccionada solicita permisos que no se han aprobado. La aplicación no se modificó."
             }
         },
         "status": {
@@ -315,7 +319,8 @@
             "catalogUnavailable": "No se pudo acceder al catálogo de aplicaciones firmado, por lo que no se pudo verificar la versión. Vuelve a intentarlo cuando el catálogo esté disponible.",
             "packageSourceUnavailable": "No se pudo acceder a la fuente de paquetes, por lo que no se pudo descargar la versión. Vuelve a intentarlo cuando la fuente esté disponible.",
             "networkUnavailable": "No se pudo acceder ni al catálogo de aplicaciones ni a la fuente de paquetes. Comprueba la conexión a internet de este dispositivo y vuelve a intentarlo.",
-            "installFailed": "La instalación ha fallado. Puedes volver a intentarlo."
+            "installFailed": "La instalación ha fallado. Puedes volver a intentarlo.",
+            "approvalRequired": "Esta versión solicita permisos que no se han aprobado, por lo que no se instaló."
         }
     },
     "appUi": {
@@ -2839,7 +2844,8 @@
                     "crowdsec": "CrowdSec",
                     "npm-import": "Importación de NPM",
                     "config-import": "Importación de configuración",
-                    "config-export": "Exportación de configuración"
+                    "config-export": "Exportación de configuración",
+                    "app-grants": "Permisos de aplicaciones"
                 }
             },
             "metadata": {
@@ -2857,7 +2863,9 @@
                 "eventId": "ID del evento",
                 "certificateStage": "Etapa del certificado",
                 "occurredAt": "Ocurrió el",
-                "certificateErrorCode": "Código de error del certificado"
+                "certificateErrorCode": "Código de error del certificado",
+                "appId": "ID de la aplicación",
+                "installationId": "Instalación de la aplicación"
             },
             "details": {
                 "noMetadata": "No hay más metadatos seguros."

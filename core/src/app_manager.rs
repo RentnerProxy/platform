@@ -14,7 +14,10 @@ mod storage;
 mod tests;
 mod ui;
 
-use crate::app_install::{Installer, StagedPackage};
+use crate::app_install::{
+    Installer, StagedPackage,
+    grants::{self, ApprovedGrant, Decision},
+};
 use crate::appliance_process::{SCAN_BUDGET, uid_in_use, verify_uid_stopped};
 use control::Command;
 pub use control::run_app_control;
@@ -81,8 +84,44 @@ struct Manager {
 
 enum PackageRequest {
     Current,
-    Selected(String),
+    /// An exact listed archive, which the gate admits from its freshly signed manifest.
+    Selected(String, Gate),
     Recorded(Release),
+}
+
+/// The grants a launch publishes.
+#[derive(Clone, Copy)]
+enum Approved<'a> {
+    /// The release's stored approval. A release approved before approvals were recorded
+    /// publishes this set instead, or keeps the grants the web authority holds without one.
+    Stored(Option<&'a [Grant]>),
+    /// Root's replacement from the control CLI. Only the save that commits the activation
+    /// records it, so a refused or failed activation, its fallback and every later recovery run
+    /// with the approval the release had before.
+    Replacement(&'a [Grant]),
+}
+
+/// Decides from a signed manifest which grants a staged release receives, or refuses it.
+type Gate = Arc<dyn Fn(&Value) -> io::Result<Decision> + Send + Sync>;
+
+/// A gate for a release staged for `installation_id`: it receives exactly the Owner's
+/// `approval`, or without one the `carried` grants if they still cover what it requests,
+/// narrowed to the release's own `stored` approval.
+fn gate(
+    installation_id: String,
+    approval: Option<Vec<ApprovedGrant>>,
+    carried: Vec<Grant>,
+    stored: Option<Vec<Grant>>,
+) -> Gate {
+    Arc::new(move |manifest| {
+        Ok(grants::approve(
+            manifest,
+            approval.as_deref(),
+            &carried,
+            stored.as_deref(),
+            &installation_id,
+        )?)
+    })
 }
 
 struct Drain {
@@ -116,8 +155,10 @@ impl Manager {
                     let installer = Installer::open_appliance(config.as_deref())?;
                     let package = match request {
                         PackageRequest::Current => installer.stage(&app, &version)?,
-                        PackageRequest::Selected(digest) => {
-                            installer.stage_selected(&app, &version, &digest)?
+                        PackageRequest::Selected(digest, gate) => {
+                            installer.stage_selected(&app, &version, &digest, |manifest| {
+                                gate(manifest).map(drop)
+                            })?
                         }
                         PackageRequest::Recorded(record) => recover(&installer, &app, &record)?,
                     };
@@ -156,12 +197,15 @@ impl Manager {
         Err(bad("No unused installation UID"))
     }
 
+    /// Stage a candidate. With a `gate`, which `download` already applied before fetching the
+    /// package, record the grants it decides as the candidate's approval in the same save.
     async fn stage(
         &mut self,
         id: &str,
         app: String,
         version: String,
         download: impl Future<Output = io::Result<StagedPackage>>,
+        gate: Option<Gate>,
     ) -> io::Result<()> {
         if app.len() > 98 || version.len() > 128 {
             return Err(bad("Invalid package selector"));
@@ -175,16 +219,23 @@ impl Manager {
             return Err(bad("Installation belongs to another app"));
         }
         let package = self.during(Operation::Stage(id), download).await?;
+        let decision = gate.map(|gate| gate(&package.manifest)).transpose()?;
         let mut slot = match self.journal.slots().get(id) {
             Some(s) => s.clone(),
             None => self.allocate(app).await?,
         };
-        slot.candidate = Some(Release {
+        let candidate = Release {
             version,
             archive_sha256: package.archive_sha256,
             manifest_sha256: package.manifest_sha256,
             catalog_revision: package.catalog_revision,
-        });
+        };
+        if let Some(decision) = decision {
+            // The gate read the stored approval of this archive, which must name this manifest.
+            slot.approval_for(&candidate)?;
+            slot.record(&candidate, decision);
+        }
+        slot.candidate = Some(candidate);
         self.journal.save(id, slot)
     }
 
@@ -298,15 +349,24 @@ impl Manager {
         .await?
     }
 
+    /// Start `release` in a new generation with the `approved` grants for exactly that release.
     async fn launch(
         &mut self,
         id: &str,
         release: Release,
-        grants: Option<&[Grant]>,
+        approved: Approved<'_>,
         policy: DataPolicy,
         mut boot_lock_retries: Option<&mut usize>,
     ) -> io::Result<()> {
         let slot = self.journal.slot(id)?.clone();
+        let grants = match approved {
+            Approved::Replacement(grants) => Some(grants.to_vec()),
+            Approved::Stored(legacy) => match slot.approval_for(&release)? {
+                Some(stored) => Some(stored.to_vec()),
+                None => legacy.map(<[Grant]>::to_vec),
+            },
+        };
+        let grants = grants.as_deref();
         // Historical committed generations predate the explicit storage acknowledgement.
         let committed_data = slot.active.is_some()
             && (slot.generation > 0 || slot.storage_claimed == Some(true))
@@ -348,6 +408,11 @@ impl Manager {
             })
             .await?;
         let data = package.manifest.get("data").map(read_data).transpose()?;
+        // Every approval path already checked its grants. Recheck the set that this generation
+        // would publish against the verified manifest before anything changes.
+        if grants.is_some_and(|grants| !grants::within(&package.manifest, grants, id)) {
+            return Err(bad("Approved grants exceed what the release requests"));
+        }
         // Decide before the fence so that an incompatible release leaves the current one running.
         // The marker lives in app-owned data: the app can only mislead its own data plan with it.
         let recorded = if slot.database_provisioned {
@@ -483,6 +548,13 @@ impl Manager {
         if live.exited()? {
             return Err(bad("App exited during activation"));
         }
+        // Root's replacement and a pending decision of the Owner take effect with the commit.
+        if let Approved::Replacement(grants) = approved {
+            slot.approve(&release, grants.to_vec());
+        }
+        if let Ok(requested) = grants::requested(&package.manifest) {
+            slot.activate_approval(&release, &requested, id);
+        }
         slot.commit_release(release);
         slot.removal = Removal::Installed;
         slot.removed_release = None;
@@ -506,11 +578,11 @@ impl Manager {
         &mut self,
         id: &str,
         target: Release,
-        grants: Option<&[Grant]>,
+        approved: Approved<'_>,
         policy: DataPolicy,
     ) -> io::Result<()> {
         let before = self.journal.slot(id)?.clone();
-        match self.launch(id, target, grants, policy, None).await {
+        match self.launch(id, target, approved, policy, None).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 let after = self.journal.slot(id)?;
@@ -523,16 +595,22 @@ impl Manager {
                 if before.desired_running
                     && let Some(active) = before.active
                 {
-                    // The failed activation may have committed new grants. Replaying an old
-                    // grant set could also restore access an operator revoked during cutover.
-                    let uncertain = self.journal.slot(id)?.uncertain_grants();
+                    // The failed activation may have committed new grants. The old release
+                    // publishes its own approval again, which already lacks every revoked
+                    // grant. Without one, replaying an old grant set could restore access an
+                    // operator revoked during cutover, so uncertain grants are cleared.
+                    let fenced = self.journal.slot(id)?;
+                    let uncertain = fenced.uncertain_grants()
+                        && fenced
+                            .approval_for(&active)
+                            .is_ok_and(|approved| approved.is_none());
                     // After a completed migration the old release usually cannot open the data,
                     // which leaves the installation in recovery instead of losing those writes.
                     if self
                         .launch(
                             id,
                             active,
-                            uncertain.then_some([].as_slice()),
+                            Approved::Stored(uncertain.then_some([].as_slice())),
                             DataPolicy::OpenOnly,
                             None,
                         )
@@ -595,7 +673,7 @@ impl Manager {
                     version.clone(),
                     PackageRequest::Current,
                 );
-                self.stage(&installation_id, app_id, version, download)
+                self.stage(&installation_id, app_id, version, download, None)
                     .await?;
             }
             Command::Remove { installation_id } => self.remove(&installation_id).await?,
@@ -615,19 +693,35 @@ impl Manager {
             Command::Purge { installation_id } => self.purge(&installation_id).await?,
             Command::Activate {
                 installation_id,
-                grants,
+                mut grants,
             } => {
-                if grants.len() > 256 {
-                    return Err(bad("Too many requested grants"));
-                }
-                let target = self
-                    .journal
-                    .slot(&installation_id)?
+                let slot = self.journal.slot(&installation_id)?;
+                let target = slot
                     .candidate
                     .clone()
                     .ok_or_else(|| bad("No staged candidate"))?;
-                self.switch(&installation_id, target, Some(&grants), DataPolicy::Migrate)
+                // Root's escape hatch approves at most what the staged release requests, with
+                // the resources the approval flow allows, and secret reads.
+                let download = Self::package(
+                    self.config.clone(),
+                    slot.app_id.clone(),
+                    target.version.clone(),
+                    PackageRequest::Recorded(target.clone()),
+                );
+                let package = self
+                    .during(Operation::Launch(&installation_id), download)
                     .await?;
+                if !grants::within(&package.manifest, &grants, &installation_id) {
+                    return Err(bad("Grants exceed what the staged release requests"));
+                }
+                grants.sort();
+                self.switch(
+                    &installation_id,
+                    target,
+                    Approved::Replacement(&grants),
+                    DataPolicy::Migrate,
+                )
+                .await?;
             }
             Command::Rollback { installation_id } => {
                 let target = self
@@ -636,8 +730,13 @@ impl Manager {
                     .previous
                     .clone()
                     .ok_or_else(|| bad("No retained previous release"))?;
-                self.switch(&installation_id, target, Some(&[]), DataPolicy::OpenOnly)
-                    .await?;
+                self.switch(
+                    &installation_id,
+                    target,
+                    Approved::Stored(Some(&[])),
+                    DataPolicy::OpenOnly,
+                )
+                .await?;
             }
             Command::Stop { installation_id } => {
                 self.stop(&installation_id).await?;
@@ -661,7 +760,7 @@ impl Manager {
                 // staged release can open. Recovery finishes exactly that activation, never one
                 // the operator did not start, and does not migrate again.
                 let candidate = slot.migrated_candidate();
-                let grants = slot.uncertain_grants().then_some([].as_slice());
+                let grants = Approved::Stored(slot.uncertain_grants().then_some([].as_slice()));
                 let result = self
                     .switch(&installation_id, target, grants, DataPolicy::OpenOnly)
                     .await;
@@ -702,7 +801,7 @@ impl Manager {
                         .active
                         .take()
                         .ok_or_else(|| bad("No active release to recover"))?;
-                    let grants = slot.uncertain_grants().then_some([].as_slice());
+                    let grants = Approved::Stored(slot.uncertain_grants().then_some([].as_slice()));
                     let result = self
                         .launch(
                             &id,
@@ -772,7 +871,7 @@ impl Manager {
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            catalog.publish(self.local_installations())?;
+            self.publish_catalog(catalog)?;
             tokio::select! {
                 _ = tick.tick() => self.check_exits(None)?,
                 Some(job) = self.drains.join_next_with_id(), if !self.drains.is_empty() => {
@@ -782,12 +881,12 @@ impl Manager {
                     match request {
                         catalog::Request::Install(selection) => {
                             let result = self.install_catalog(&selection).await;
-                            catalog.publish(self.local_installations())?;
+                            self.publish_catalog(catalog)?;
                             catalog.finish(selection, result)?;
                         }
                         catalog::Request::Lifecycle(request) => {
                             let result = self.manage_lifecycle(&request).await;
-                            catalog.publish(self.local_installations())?;
+                            self.publish_catalog(catalog)?;
                             catalog.finish_lifecycle(request, result)?;
                         }
                     }
