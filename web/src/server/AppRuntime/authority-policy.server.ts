@@ -2,7 +2,12 @@ import '@tanstack/react-start/server-only'
 
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import type { PermissionKey } from '@/config/Types/permissions-config.types.ts'
-import { appCapabilitySchema, appProviderProfileSchema, appRecordId } from './contract.ts'
+import {
+    ALL_PROXY_HOSTS_RESOURCE,
+    appGrantCapabilitySchema,
+    appProviderProfileSchema,
+    appRecordId,
+} from './contract.ts'
 import {
     AppRuntimeAuthorityError,
     type AppRuntimeCapability,
@@ -63,8 +68,10 @@ export function isAppRuntimeGrantTarget(
         (capability.scope !== 'installation' || resourceId === installationId) &&
         (!sameAppRuntimeCapability(capability, APP_RUNTIME_SUPPORT_CAPABILITIES.provider) ||
             appProviderProfileSchema.safeParse(resourceId).success) &&
+        // A grant for all proxy hosts names no host, only the fixed resource.
+        (capability.scope !== 'allProxyHosts' || resourceId === ALL_PROXY_HOSTS_RESOURCE) &&
         (isAppRuntimeSupportCapability(capability) ||
-            appCapabilitySchema.safeParse(capability).success)
+            appGrantCapabilitySchema.safeParse(capability).success)
     )
 }
 
@@ -109,6 +116,20 @@ export function isAppRuntimeGrantAuthorized(
         : hasAppPermission
 }
 
+/** Whether a grant for all proxy hosts covers `capability` for selected proxy hosts. */
+export function coversAllProxyHosts(
+    grant: AppRuntimeGrant,
+    capability: AppRuntimeCapability,
+): boolean {
+    return (
+        capability.scope === 'proxyHosts' &&
+        grant.capability.id === capability.id &&
+        grant.capability.scope === 'allProxyHosts' &&
+        grant.resourceId === ALL_PROXY_HOSTS_RESOURCE &&
+        appGrantCapabilitySchema.safeParse(grant.capability).success
+    )
+}
+
 export function isAppRuntimeAuthorized(
     principal: AppRuntimeAuthorizationSubject,
     capability: AppRuntimeCapability,
@@ -117,8 +138,9 @@ export function isAppRuntimeAuthorized(
 ): boolean {
     return principal.grants.some(
         (grant) =>
-            grant.resourceId === resourceId &&
-            sameAppRuntimeCapability(grant.capability, capability) &&
+            (coversAllProxyHosts(grant, capability) ||
+                (grant.resourceId === resourceId &&
+                    sameAppRuntimeCapability(grant.capability, capability))) &&
             isAppRuntimeGrantAuthorized(principal, grant, extraPermissions),
     )
 }

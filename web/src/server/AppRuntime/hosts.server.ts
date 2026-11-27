@@ -22,7 +22,10 @@ import type { ProxyHostMutationActor } from '@/server/Admin/ProxyHostManagement/
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { inspectControllerDomain } from '@/server/Controller/domain-diagnostics.server.ts'
-import { readDomainDiagnosticsContextInTransaction } from '@/server/RuntimeDiagnostics/domain-diagnostics-data.ts'
+import {
+    readDomainDiagnosticsContextInTransaction,
+    readHostMonitoringContextsInTransaction,
+} from '@/server/RuntimeDiagnostics/domain-diagnostics-data.ts'
 import { DomainDiagnosticsError } from '@/server/RuntimeDiagnostics/domain-diagnostics.errors.ts'
 import { consumeRateLimit, RateLimitError } from '@/server/Valkey/rate-limiter.service.ts'
 import {
@@ -30,7 +33,7 @@ import {
     requireAppRuntimeAuthorization,
     resolveAppRuntimePrincipalInTransaction,
 } from './authority.server.ts'
-import { isAppRuntimeGrantAuthorized } from './authority-policy.server.ts'
+import { coversAllProxyHosts, isAppRuntimeGrantAuthorized } from './authority-policy.server.ts'
 import { appProxyHostQuery, appUpstreamProbe } from './contract.ts'
 import { appendAppRuntimeEventInTransaction } from './events.server.ts'
 import { AppRuntimeProblem } from './problem.ts'
@@ -38,7 +41,9 @@ import { AppRuntimeAuthorityError } from './Types/authority.types.ts'
 import type { AppRuntimeCredentials, AppRuntimePrincipal } from './Types/authority.types.ts'
 import type {
     AppOwnedProxyHostChange,
+    AppProxyHost,
     AppProxyHostPage,
+    AppProxyHostUpstream,
     AppProxyHostQuery,
     AppUpstreamProbe,
     AppUpstreamProbeResult,
@@ -70,6 +75,40 @@ function projectHost(host: ProxyHostSummary, id: string, hostname: string) {
     return { id, hostname, revision: appProxyHostRevision(host) }
 }
 
+/** An opaque lowercase hex revision derived from the host monitoring availability revision. */
+function appProbeRevision(availability: string): string {
+    return createHash('sha256').update(availability).digest('hex')
+}
+
+/** The upstream an app may see: targets, the failover pool policy and its health settings. */
+function upstreamSummary(host: ProxyHostSummary): AppProxyHostUpstream {
+    const pool = host.upstreamPool
+    return {
+        scheme: host.forwardScheme,
+        targets: pool
+            ? pool.members.map(({ host: address, port }) => ({ address, port }))
+            : [{ address: host.forwardHost, port: host.forwardPort }],
+        pool: pool
+            ? { policy: pool.policy, ...(pool.failover && { failover: pool.failover }) }
+            : null,
+    }
+}
+
+/**
+ * One listed host. It names the host by the app's own ID when the app owns it, and never carries
+ * certificates, access policies, trusted CA material or other secrets.
+ */
+function listedHost(host: ProxyHostSummary, id: string, probeRevision: string): AppProxyHost {
+    return {
+        ...projectHost(host, id, host.domains[0]!),
+        ...(id === host.id ? {} : { platformHostId: host.id }),
+        enabled: host.enabled,
+        domains: [...host.domains],
+        upstream: upstreamSummary(host),
+        probeRevision,
+    }
+}
+
 export async function listAppProxyHosts(
     credentials: AppRuntimeCredentials,
     raw: AppProxyHostQuery,
@@ -86,17 +125,21 @@ export async function listAppProxyHosts(
         await setAppRuntimeTransactionTimeout(transaction)
         signal?.throwIfAborted()
         const principal = await resolveAppRuntimePrincipalInTransaction(transaction, credentials)
-        const allowed = principal.grants.flatMap((grant) =>
-            grant.capability.id === readHosts.id &&
-            grant.capability.scope === readHosts.scope &&
-            isAppRuntimeGrantAuthorized(principal, grant)
+        const authorized = principal.grants.filter((grant) =>
+            isAppRuntimeGrantAuthorized(principal, grant),
+        )
+        // A grant for all proxy hosts includes every host, also one created after the approval.
+        const everyHost = authorized.some((grant) => coversAllProxyHosts(grant, readHosts))
+        const allowed = authorized.flatMap((grant) =>
+            grant.capability.id === readHosts.id && grant.capability.scope === readHosts.scope
                 ? [grant.resourceId]
                 : [],
         )
         signal?.throwIfAborted()
         if (principal.expiresAt.getTime() <= Date.now())
             throw new AppRuntimeAuthorityError('unauthorized')
-        if (allowed.length === 0) return { page: { hosts: [] }, expiresAt: principal.expiresAt }
+        if (!everyHost && allowed.length === 0)
+            return { page: { hosts: [] }, expiresAt: principal.expiresAt }
         const rows = await transaction
             .select({
                 ...proxyHostSummaryColumns,
@@ -114,27 +157,43 @@ export async function listAppProxyHosts(
             )
             .where(
                 and(
-                    or(
-                        inArray(
-                            proxyHosts.id,
-                            allowed.filter((id) => platformHostId.safeParse(id).success),
-                        ),
-                        inArray(appRuntimeOwnedProxyHosts.hostId, allowed),
-                    ),
+                    everyHost
+                        ? undefined
+                        : or(
+                              inArray(
+                                  proxyHosts.id,
+                                  allowed.filter((id) => platformHostId.safeParse(id).success),
+                              ),
+                              inArray(appRuntimeOwnedProxyHosts.hostId, allowed),
+                          ),
                     cursor === undefined ? undefined : gt(proxyHosts.id, cursor),
                     sql`exists (select 1 from ${hostDomains} d where d.proxy_host_id = "proxy_hosts"."id")`,
                 ),
             )
             .orderBy(asc(proxyHosts.id))
             .limit(limit + 1)
-        const hosts = rows.slice(0, limit).flatMap((row) => {
-            const domain = row.domains[0]
-            return domain
+        const listed = rows
+            .slice(0, limit)
+            .map((row) => ({ row, summary: toProxyHostSummary(row, row.domains) }))
+            .filter(({ summary }) => summary.domains.length > 0)
+        // The probe revision changes only with what an upstream probe observes, as for the
+        // platform's own host monitoring.
+        const contexts = await readHostMonitoringContextsInTransaction(
+            transaction,
+            listed.map(({ summary }) => ({
+                hostType: 'proxy' as const,
+                hostId: summary.id,
+                domain: summary.domains[0]!,
+            })),
+        )
+        const hosts = listed.flatMap(({ row, summary }) => {
+            const context = contexts.get(summary.id)
+            return context
                 ? [
-                      projectHost(
-                          toProxyHostSummary(row, row.domains),
+                      listedHost(
+                          summary,
                           row.ownedHostId ?? row.id,
-                          domain,
+                          appProbeRevision(context.availability.revision),
                       ),
                   ]
                 : []
@@ -262,6 +321,7 @@ export async function applyAppOwnedProxyHostChange(
     const actor: ProxyHostMutationActor = {
         userId: principal.user?.id ?? null,
         operationId,
+        installationId: principal.identity.installationId,
         ...(!previous && platformHostId.safeParse(input.hostId).success
             ? { proxyHostId: input.hostId }
             : {}),

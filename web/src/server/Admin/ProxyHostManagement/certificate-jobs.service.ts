@@ -27,6 +27,10 @@ import {
     updateProxyHostInTransaction,
 } from './proxy-hosts.mutations.server.ts'
 import {
+    proxyHostChange,
+    recordProxyHostEventsInTransaction,
+} from '@/server/AppRuntime/host-events.server.ts'
+import {
     assertNoActiveHostJob,
     canonicalHostForDigest,
     certificateCoversHostDomains,
@@ -234,6 +238,16 @@ async function requestJobTransaction(
                     updatedAt: new Date(),
                 })
                 .where(eq(proxyHosts.id, hostState.host.id))
+            const type = proxyHostChange(hostState.host, {
+                ...hostState.host,
+                enabled: false,
+                certificateId: null,
+                forceHttps: false,
+            })
+            if (type)
+                await recordProxyHostEventsInTransaction(transaction, [
+                    { proxyHostId: hostState.host.id, type },
+                ])
             await appendAuditEventInTransactionService(transaction, {
                 actorUserId: actorId,
                 actorKind: 'user',

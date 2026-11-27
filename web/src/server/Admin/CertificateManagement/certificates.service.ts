@@ -79,6 +79,7 @@ import {
     appendAuditEventsInTransactionService,
 } from '@/server/Audit/audit.service.ts'
 import { recordMutationFailureBestEffort } from '@/server/ProxyRuntime/audit-mutation.ts'
+import { recordProxyHostEventsInTransaction } from '@/server/AppRuntime/host-events.server.ts'
 
 const certificateDeletionRuntime: CertificateDeletionRuntime = {
     reconcile: reconcileProxyConfigurationWithAudit,
@@ -575,6 +576,10 @@ async function detachCertificateAssignments(
             .update(proxyHosts)
             .set({ certificateId: null, forceHttps: false, updatedAt })
             .where(eq(proxyHosts.certificateId, certificateId))
+        await recordProxyHostEventsInTransaction(
+            transaction,
+            proxyHostIds.map((proxyHostId) => ({ proxyHostId, type: 'proxyHostUpdated' as const })),
+        )
     }
     if (redirectHostIds.length > 0) {
         await transaction

@@ -7,6 +7,16 @@ import {
 } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import { randomUUID } from 'node:crypto'
 import { bulkHostServices } from '@/server/Admin/HostBulkActions/bulk-hosts.storage.server.ts'
+import { replayAppRuntimeEventsInTransaction } from '@/server/AppRuntime/events.server.ts'
+import {
+    allHostsGrant,
+    grantEventApp,
+    hostEventsOf,
+    installEventApp,
+    probeHosts,
+    readHosts,
+    removeEventApps,
+} from '@/tests/Helpers/appHostEvents.ts'
 import type {
     BulkHostAction,
     BulkHostResult,
@@ -3001,3 +3011,88 @@ integrationTest(
         await runAsUser(owner.id, () => deleteProxyHostService(created.id))
     },
 )
+
+describe('App host events with PostgreSQL', () => {
+    integrationTest(
+        'records exactly one event per platform host change for each app whose grant covers it',
+        async () => {
+            const owner = await createTestUser([SYSTEM_ROLES.OWNER])
+            const everyHost = await installEventApp([allHostsGrant(readHosts.id)])
+            const selected = await installEventApp([])
+            const unrelated = await installEventApp([])
+            // Event cursors are encrypted with the app encryption key.
+            const encryptionKey = process.env.APP_ENCRYPTION_KEY
+            process.env.APP_ENCRYPTION_KEY = Buffer.from(new Uint8Array(32).fill(9)).toString(
+                'base64',
+            )
+            try {
+                const input = proxyHostInput('events')
+                const created = await runAsUser(owner.id, () => createProxyHostService(input))
+                await grantEventApp(selected, [
+                    { capability: probeHosts, resourceId: created.id, allowService: true },
+                ])
+                const update = { ...input, proxyHostId: created.id }
+                // A save without a change records nothing.
+                await runAsUser(owner.id, () => updateProxyHostService(update))
+                await runAsUser(owner.id, () =>
+                    updateProxyHostService({ ...update, forwardPort: 8_081 }),
+                )
+                await runAsUser(owner.id, () => disableProxyHostService(created.id))
+                await runAsUser(owner.id, () => enableProxyHostService(created.id))
+                const action: BulkHostAction = { type: 'disable' }
+                const preview = await runAsUser(owner.id, () =>
+                    bulkHostServices.preview({ kind: 'proxy', hostIds: [created.id], action }),
+                )
+                await runAsUser(owner.id, () =>
+                    bulkHostServices.apply(bulkApplyInput(preview, action)),
+                )
+                await runAsUser(owner.id, () => deleteProxyHostService(created.id))
+
+                const event = (capabilityId: string, type: string) => ({
+                    type,
+                    capabilityId,
+                    scope: 'proxyHosts',
+                    resourceId: created.id,
+                })
+                const changes = [
+                    'proxyHostUpdated',
+                    'proxyHostDisabled',
+                    'proxyHostEnabled',
+                    'proxyHostDisabled',
+                    'proxyHostRemoved',
+                ]
+                expect(await hostEventsOf(everyHost.installationId)).toEqual(
+                    ['proxyHostCreated', ...changes].map((type) => event(readHosts.id, type)),
+                )
+                // The selected host was granted after its creation, so only later changes reach it.
+                expect(await hostEventsOf(selected.installationId)).toEqual(
+                    changes.map((type) => event(probeHosts.id, type)),
+                )
+                expect(await hostEventsOf(unrelated.installationId)).toEqual([])
+
+                // Resuming from a cursor continues after it without repeating an event.
+                const replay = (cursor?: string) =>
+                    getAuthDatabase().transaction((transaction) =>
+                        replayAppRuntimeEventsInTransaction(
+                            transaction,
+                            { identity: everyHost },
+                            cursor,
+                        ),
+                    )
+                const page = await replay()
+                expect(page.events.map(({ type, resourceId }) => [type, resourceId])).toEqual(
+                    ['proxyHostCreated', ...changes].map((type) => [type, created.id]),
+                )
+                const resumed = await replay(page.events[2]!.cursor)
+                expect(resumed.events.map(({ id }) => id)).toEqual(
+                    page.events.slice(3).map(({ id }) => id),
+                )
+                expect((await replay(page.cursor)).events).toEqual([])
+            } finally {
+                if (encryptionKey === undefined) delete process.env.APP_ENCRYPTION_KEY
+                else process.env.APP_ENCRYPTION_KEY = encryptionKey
+                await removeEventApps([everyHost, selected, unrelated])
+            }
+        },
+    )
+})

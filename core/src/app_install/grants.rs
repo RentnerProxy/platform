@@ -20,6 +20,13 @@ pub(crate) const MAX_GRANTS: usize = 128;
 const INSTALLATION: &str = "installation";
 const PROVIDER_PROFILES: &str = "providerProfiles";
 const PROXY_HOSTS: &str = "proxyHosts";
+/// Every platform proxy host, including hosts created after the approval. Only the Owner chooses
+/// it, in place of selected hosts, and only for capabilities that read or probe hosts.
+const ALL_PROXY_HOSTS: &str = "allProxyHosts";
+/// The resource of an `allProxyHosts` grant.
+const ALL_HOSTS: &str = "all";
+const DYNAMIC_HOST_CAPABILITIES: [&str; 2] =
+    ["proxy.hosts.read.v1", "diagnostics.upstream.probe.v1"];
 
 /// Capabilities with a working platform endpoint. The other contract capabilities have none yet,
 /// and owned proxy hosts wait for their own approval flow, so a release that requests one of them
@@ -221,7 +228,8 @@ pub(crate) fn decide(
             && requested
                 .iter()
                 .any(|request| serves(request, grant, installation_id))
-    }) && covered(requested, &grants, installation_id);
+    }) && covered(requested, &grants, installation_id)
+        && !mixes_host_scopes(&grants);
     if !exact {
         return Err(ApprovalRequired);
     }
@@ -438,10 +446,22 @@ pub(crate) fn within(manifest: &Value, grants: &[Grant], installation_id: &str) 
         })
 }
 
-/// Whether an approved `scope` covers the scope a release requests. Scopes are compared as they
-/// are; a later contract may let a wider scope cover a narrower one.
+/// Whether an approved `scope` covers the scope a release requests. All proxy hosts cover
+/// selected proxy hosts; every other scope covers only itself.
 fn covers(approved: &str, requested: &str) -> bool {
-    approved == requested
+    approved == requested || (approved == ALL_PROXY_HOSTS && requested == PROXY_HOSTS)
+}
+
+/// Whether one capability is approved both for all proxy hosts and for selected ones, which
+/// would make the selection meaningless.
+fn mixes_host_scopes(grants: &[Grant]) -> bool {
+    grants.iter().any(|all| {
+        all.capability.scope == ALL_PROXY_HOSTS
+            && grants.iter().any(|selected| {
+                selected.capability.scope == PROXY_HOSTS
+                    && selected.capability.id == all.capability.id
+            })
+    })
 }
 
 /// Whether a decision about the requested items covers `grant`: the release requests its
@@ -458,10 +478,17 @@ fn serves(request: &RequestedGrant, grant: &Grant, installation_id: &str) -> boo
     request.capability.id == grant.capability.id
         && covers(&grant.capability.scope, &request.capability.scope)
         && (request.allow_service || !grant.allow_service)
-        && match request.capability.scope.as_str() {
-            INSTALLATION => grant.resource_id == installation_id,
-            PROVIDER_PROFILES => request.resource_id.as_ref() == Some(&grant.resource_id),
-            PROXY_HOSTS => platform_host_id(&grant.resource_id),
+        && match (
+            request.capability.scope.as_str(),
+            grant.capability.scope.as_str(),
+        ) {
+            (INSTALLATION, _) => grant.resource_id == installation_id,
+            (PROVIDER_PROFILES, _) => request.resource_id.as_ref() == Some(&grant.resource_id),
+            (PROXY_HOSTS, ALL_PROXY_HOSTS) => {
+                DYNAMIC_HOST_CAPABILITIES.contains(&grant.capability.id.as_str())
+                    && grant.resource_id == ALL_HOSTS
+            }
+            (PROXY_HOSTS, _) => platform_host_id(&grant.resource_id),
             _ => false,
         }
 }

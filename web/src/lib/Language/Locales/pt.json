@@ -347,7 +347,8 @@
                 "proxyHosts": "Para os hosts proxy que selecionar",
                 "providerProfiles": "Perfil de fornecedor {{resource}}",
                 "secretReferences": "Segredo {{resource}}",
-                "unknown": "Âmbito {{scope}}"
+                "unknown": "Âmbito {{scope}}",
+                "allProxyHosts": "Para todos os hosts proxy, incluindo os criados mais tarde"
             },
             "allowService": "Permitir em segundo plano",
             "allowServiceHint": "A aplicação pode usar esta permissão sem um utilizador com sessão iniciada, por exemplo para verificações agendadas.",
@@ -360,7 +361,10 @@
                 "empty": "Ainda não há hosts proxy para selecionar.",
                 "required": "Selecione pelo menos um host proxy.",
                 "loadFailed": "Não foi possível carregar os hosts proxy.",
-                "disabled": "{{hostname}} (inativo)"
+                "disabled": "{{hostname}} (inativo)",
+                "all": "Todos os hosts proxy",
+                "allHint": "A aplicação recebe esta permissão também para os hosts proxy criados mais tarde.",
+                "every": "todos os hosts proxy"
             },
             "approveInstall": "Aprovar e instalar",
             "approveUpdate": "Aprovar e atualizar para {{version}}",

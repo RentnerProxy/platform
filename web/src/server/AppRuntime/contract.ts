@@ -53,6 +53,22 @@ export const appCapabilitySchema = z.discriminatedUnion('id', [
     }),
 ])
 
+/** The resource of a grant for all proxy hosts. */
+export const ALL_PROXY_HOSTS_RESOURCE = 'all'
+
+/**
+ * A capability as a grant names it: the scope the manifest requests, or all proxy hosts, which the
+ * Owner may approve instead of selected hosts for reading and probing. It includes hosts created
+ * later; managing hosts stays limited to owned hosts.
+ */
+export const appGrantCapabilitySchema = z.union([
+    appCapabilitySchema,
+    z.strictObject({
+        id: z.enum(['proxy.hosts.read.v1', 'diagnostics.upstream.probe.v1']),
+        scope: z.literal('allProxyHosts'),
+    }),
+])
+
 export const appProviderRegistrationSchema = z.strictObject({
     id: appRecordId,
     profile: appProviderProfileSchema,
