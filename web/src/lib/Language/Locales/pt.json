@@ -335,6 +335,7 @@
             "names": {
                 "proxyHostsRead": "Ler hosts proxy",
                 "upstreamProbe": "Verificar a acessibilidade dos upstreams",
+                "upstreamMonitoring": "Monitorar os upstreams continuamente",
                 "notificationsPublish": "Enviar notificações",
                 "auditRecord": "Escrever entradas no registo de auditoria",
                 "eventsSubscribe": "Receber eventos de alteração",

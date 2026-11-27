@@ -76,7 +76,7 @@ function projectHost(host: ProxyHostSummary, id: string, hostname: string) {
 }
 
 /** An opaque lowercase hex revision derived from the host monitoring availability revision. */
-function appProbeRevision(availability: string): string {
+export function appProbeRevision(availability: string): string {
     return createHash('sha256').update(availability).digest('hex')
 }
 

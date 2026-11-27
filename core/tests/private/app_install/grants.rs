@@ -770,6 +770,49 @@ fn the_owner_may_approve_all_proxy_hosts_for_reading_and_probing() {
 }
 
 #[test]
+fn the_owner_may_approve_the_monitoring_class_probe_for_selected_or_all_hosts() {
+    let probing = manifest(
+        json!([{"id": "diagnostics.upstream.probe.v2", "scope": "proxyHosts"}]),
+        json!([]),
+    );
+    let request = requested_or_panic(&probing);
+    let support = [
+        approved("app.events.subscribe", "installation", None),
+        approved("app.audit.record", "installation", None),
+    ];
+    let selected = [
+        vec![approved(
+            "diagnostics.upstream.probe.v2",
+            "proxyHosts",
+            Some(HOST),
+        )],
+        support.to_vec(),
+    ]
+    .concat();
+    let decided = decide(&request, &keys(), &selected, ID).unwrap();
+    assert!(decided.contains(&grant("diagnostics.upstream.probe.v2", "proxyHosts", HOST)));
+    let every = [
+        vec![approved(
+            "diagnostics.upstream.probe.v2",
+            "allProxyHosts",
+            Some("all"),
+        )],
+        support.to_vec(),
+    ]
+    .concat();
+    let decided = decide(&request, &keys(), &every, ID).unwrap();
+    assert!(decided.contains(&grant(
+        "diagnostics.upstream.probe.v2",
+        "allProxyHosts",
+        "all"
+    )));
+    assert!(within(&probing, &decided, ID));
+    // Selected hosts and all hosts are never mixed for the same capability.
+    let mixed = [every, vec![selected[0].clone()]].concat();
+    assert_eq!(decide(&request, &keys(), &mixed, ID), Err(ApprovalRequired));
+}
+
+#[test]
 fn all_proxy_hosts_carry_to_releases_that_still_read_hosts() {
     let requested = requested(&monitoring()).unwrap();
     let decided = decide(&requested, &keys(), &all_hosts_approval(), ID).unwrap();

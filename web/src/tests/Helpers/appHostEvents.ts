@@ -21,6 +21,7 @@ import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 
 export const readHosts = { id: 'proxy.hosts.read.v1', scope: 'proxyHosts' } as const
 export const probeHosts = { id: 'diagnostics.upstream.probe.v1', scope: 'proxyHosts' } as const
+export const monitorHosts = { id: 'diagnostics.upstream.probe.v2', scope: 'proxyHosts' } as const
 
 export function allHostsGrant(capabilityId: string): AppRuntimeGrant {
     return {
@@ -43,7 +44,7 @@ export async function installEventApp(
         await registerAppRuntimeGenerationInTransaction(transaction, {
             identity,
             leaseExpiresAt,
-            capabilities: [readHosts, probeHosts],
+            capabilities: [readHosts, probeHosts, monitorHosts],
         })
         await activateAppRuntimeGenerationInTransaction(transaction, identity, leaseExpiresAt)
     })

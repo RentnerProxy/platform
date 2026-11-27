@@ -314,6 +314,7 @@
             "names": {
                 "proxyHostsRead": "Proxyhosts lezen",
                 "upstreamProbe": "Bereikbaarheid van upstreams controleren",
+                "upstreamMonitoring": "Upstreams doorlopend bewaken",
                 "notificationsPublish": "Meldingen versturen",
                 "auditRecord": "Vermeldingen in het auditlogboek schrijven",
                 "eventsSubscribe": "Wijzigingsgebeurtenissen ontvangen",
