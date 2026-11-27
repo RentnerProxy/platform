@@ -32,7 +32,7 @@ fn next_revision(catalog: &[u8]) -> Vec<u8> {
 }
 
 /// Add a signed Greeting release whose manifest requests a capability the installed
-/// releases never had. No archive exists for it.
+/// releases never had, and which this appliance cannot grant. No archive exists for it.
 fn escalated_catalog(current: &[u8]) -> Vec<u8> {
     let mut catalog: Value = serde_json::from_slice(current).unwrap();
     let mut release = catalog["releases"]
@@ -46,7 +46,9 @@ fn escalated_catalog(current: &[u8]) -> Vec<u8> {
     for package in release["packages"].as_array_mut().unwrap() {
         let manifest = &mut package["manifest"];
         manifest["version"] = ESCALATED_VERSION.into();
-        manifest["capabilities"] = json!([{"id": "proxy.hosts.read.v1", "scope": "proxyHosts"}]);
+        // Docker inventory has no platform endpoint yet, so no Owner can approve it.
+        manifest["capabilities"] =
+            json!([{"id": "docker.inventory.observe.v1", "scope": "dockerConnections"}]);
         // A distinct identity keeps the cached 1.0.1 archive from satisfying this release,
         // so any staging attempt would have to request its release asset.
         let identity = format!(
@@ -151,7 +153,7 @@ async fn refused_submission(path: &str, request: &Value) -> u16 {
 }
 
 /// The authority fixture records the generation of the last grant publication and rejects
-/// any non-empty grant set for Greeting. Updates and restarts keep the approved grants.
+/// any non-empty grant set for Greeting. Every launch publishes the approved, empty set.
 fn grants_record() -> String {
     fs::read_to_string(Path::new(APP_API_SOCKET).with_file_name("last-grants-generation")).unwrap()
 }
@@ -617,8 +619,9 @@ async fn privileged_published_greeting_distribution_gates() {
         read_greeting(&installation_id, new_generation).await,
         PERSISTED_GREETING
     );
-    // The update keeps the grants approved at install and publishes none of its own.
-    assert_eq!(grants_record(), first_generation.to_string());
+    // The update carries the empty approval from the install and publishes it for its own
+    // generation.
+    assert_eq!(grants_record(), new_generation.to_string());
     // UI documents and API calls bound to the replaced generation are rejected.
     let stale_generation = format!("/v1/apps/{installation_id}/{old_generation}");
     let stale_calls = [

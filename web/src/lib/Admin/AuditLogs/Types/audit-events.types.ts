@@ -47,6 +47,8 @@ export interface AuditMetadata {
     readonly certificateStage?: CertificateOperationStage
     readonly occurredAt?: string
     readonly certificateErrorCode?: CertificateErrorCode
+    readonly appId?: string
+    readonly installationId?: string
 }
 
 export interface AuditEventInput {

@@ -274,6 +274,13 @@
       "when": 1795556823470,
       "tag": "0038_legacy_feature_handoff_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1795731448851,
+      "tag": "0039_app_grant_audit",
+      "breakpoints": true
     }
   ]
 }

@@ -53,6 +53,7 @@ export const AUDIT_RESOURCES = [
     'npm-import',
     'config-import',
     'config-export',
+    'app-grants',
 ] as const
 
 export const AUDIT_AUTHENTICATION_METHODS = [

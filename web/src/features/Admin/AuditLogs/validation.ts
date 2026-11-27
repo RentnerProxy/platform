@@ -3,6 +3,7 @@ import {
     CERTIFICATE_ERROR_CODES,
     CERTIFICATE_OPERATION_STAGES,
 } from '@/config/certificates.config.ts'
+import { appIdSchema, appRecordId } from '@/lib/AppUi/identifiers.ts'
 
 import {
     AUDIT_ACTIONS,
@@ -57,6 +58,8 @@ export const auditMetadataSchema = z.strictObject({
     certificateStage: z.enum(CERTIFICATE_OPERATION_STAGES).optional(),
     occurredAt: utcDateSchema.optional(),
     certificateErrorCode: z.enum(CERTIFICATE_ERROR_CODES).optional(),
+    appId: appIdSchema.optional(),
+    installationId: appRecordId.optional(),
 })
 
 export const auditEventInputSchema = z

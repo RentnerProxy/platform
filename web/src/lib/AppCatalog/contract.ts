@@ -20,12 +20,66 @@ const releaseSchema = z.strictObject({
 
 export const catalogSelectorSchema = releaseSchema.extend({ appId: appIdSchema })
 
+/** The most grants one approval or revocation holds; the Rust app manager enforces the same. */
+export const APP_CATALOG_MAX_GRANTS = 128
+
+const grantCapabilitySchema = z.strictObject({
+    id: z
+        .string()
+        .max(64)
+        .regex(/^[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+$/u),
+    scope: z
+        .string()
+        .max(32)
+        .regex(/^[a-z][A-Za-z]*$/u),
+})
+const permissionKeySchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/u)
+
+/** A grant the signed manifest requests. Selectable scopes have no resource; the Owner picks. */
+const requestedGrantSchema = z.strictObject({
+    capability: grantCapabilitySchema,
+    resourceId: appRecordId.optional(),
+    allowService: z.boolean(),
+})
+
+/** A grant the Rust app manager recorded for an installed release. */
+const grantSchema = z.strictObject({
+    capability: grantCapabilitySchema,
+    resourceId: appRecordId,
+    allowService: z.boolean(),
+    permissionKey: permissionKeySchema.optional(),
+})
+
+/** The Owner's decision for one requested grant. The core fills the installation itself. */
+const approvedGrantSchema = z.strictObject({
+    capability: grantCapabilitySchema,
+    resourceId: appRecordId.optional(),
+    allowService: z.boolean(),
+    permissionKey: permissionKeySchema.optional(),
+})
+const approvalSchema = z.array(approvedGrantSchema).max(APP_CATALOG_MAX_GRANTS)
+
+const revokedGrantSchema = z.strictObject({
+    capability: grantCapabilitySchema,
+    resourceId: appRecordId,
+})
+
+/** An install request; the approval must match exactly what the release requests. */
+export const catalogInstallInputSchema = catalogSelectorSchema.extend({
+    approval: approvalSchema.optional(),
+})
+
 const catalogEntrySchema = catalogSelectorSchema.extend({
     name: displayText(80),
     summary: displayText(400),
     publisher: displayText(80),
     hasUi: z.boolean(),
     providers: appProviderProfilesSchema,
+    /** The grants the signed manifest requests, for the Owner to approve. */
+    grants: z.array(requestedGrantSchema).max(32),
+    /** The app-owned permission keys an approved grant may name. */
+    permissionKeys: z.array(permissionKeySchema).max(64),
+    /** `grantsRequired`: the release requests a capability this appliance cannot grant. */
     availability: z.enum(['available', 'incompatible', 'grantsRequired']),
     /** The package store holds this archive, so installing needs no package download. */
     cached: z.boolean(),
@@ -43,7 +97,15 @@ export const catalogInstallSchema = z.discriminatedUnion('status', [
     catalogSelectorSchema.extend({ status: z.literal('installed'), installationId: appRecordId }),
     catalogSelectorSchema.extend({
         status: z.literal('failed'),
-        error: z.enum(['conflict', 'unavailable', ...sourceOutages, 'installFailed']).optional(),
+        error: z
+            .enum([
+                'conflict',
+                'approvalRequired',
+                'unavailable',
+                ...sourceOutages,
+                'installFailed',
+            ])
+            .optional(),
     }),
 ])
 
@@ -58,7 +120,11 @@ const installationSchema = installedReleaseSchema.extend({
     /** Display name from the verified manifest of the installed release, when known. */
     name: displayText(80).nullable(),
     providers: appProviderProfilesSchema.nullable(),
+    /** The grants approved for this exact release; null if it predates recorded approvals. */
+    grants: z.array(grantSchema).max(APP_CATALOG_MAX_GRANTS).nullable(),
     update: releaseSchema.nullable(),
+    /** The offered update requests grants that the current approval does not cover. */
+    updateRequiresApproval: z.boolean(),
     previous: releaseSchema.nullable(),
 })
 
@@ -81,7 +147,7 @@ export const catalogTargetCheckSchema = z.strictObject({
         ),
 })
 
-const lifecycleInput = z.strictObject({
+const lifecycleReceipt = z.strictObject({
     action: z.enum([
         'update',
         'deactivate',
@@ -91,28 +157,46 @@ const lifecycleInput = z.strictObject({
         'rollback',
         'purge',
         'reinstall',
+        'revoke',
     ]),
     installationId: appRecordId,
     expected: installedReleaseSchema,
     target: releaseSchema.optional(),
 })
+/** Receipts never repeat an approval or the revoked grants. */
+const lifecycleInput = lifecycleReceipt.extend({
+    approval: approvalSchema.optional(),
+    grants: z.array(revokedGrantSchema).min(1).max(APP_CATALOG_MAX_GRANTS).optional(),
+})
 
-function hasExpectedLifecycleTarget({ action, target }: z.infer<typeof lifecycleInput>) {
+function hasExpectedLifecycleTarget({ action, target }: z.infer<typeof lifecycleReceipt>) {
     return (
         (action === 'update' || action === 'rollback' || action === 'reinstall') ===
         (target !== undefined)
     )
 }
 
-export const catalogLifecycleInputSchema = lifecycleInput.refine(hasExpectedLifecycleTarget)
+function hasExpectedLifecycleGrants({ action, approval, grants }: z.infer<typeof lifecycleInput>) {
+    return (
+        (approval === undefined || action === 'update' || action === 'reinstall') &&
+        (action === 'revoke') === (grants !== undefined) &&
+        (grants === undefined ||
+            new Set(grants.map((grant) => JSON.stringify(grant))).size === grants.length)
+    )
+}
+
+export const catalogLifecycleInputSchema = lifecycleInput.refine(
+    (input) => hasExpectedLifecycleTarget(input) && hasExpectedLifecycleGrants(input),
+)
 export const catalogLifecycleSchema = z
     .discriminatedUnion('status', [
-        lifecycleInput.extend({ status: z.literal('pending') }),
-        lifecycleInput.extend({ status: z.literal('succeeded') }),
-        lifecycleInput.extend({
+        lifecycleReceipt.extend({ status: z.literal('pending') }),
+        lifecycleReceipt.extend({ status: z.literal('succeeded') }),
+        lifecycleReceipt.extend({
             status: z.literal('failed'),
             error: z.enum([
                 'conflict',
+                'approvalRequired',
                 'dependencyBlocked',
                 'unavailable',
                 ...sourceOutages,
@@ -132,6 +216,7 @@ export const catalogSnapshotSchema = z.strictObject({
 })
 
 export type CatalogSelector = z.infer<typeof catalogSelectorSchema>
+export type CatalogInstallInput = z.infer<typeof catalogInstallInputSchema>
 export type CatalogEntry = z.infer<typeof catalogEntrySchema>
 export type CatalogInstall = z.infer<typeof catalogInstallSchema>
 export type CatalogRelease = z.infer<typeof releaseSchema>
