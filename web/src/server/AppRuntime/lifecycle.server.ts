@@ -126,11 +126,10 @@ export async function registerAppRuntimeGenerationInTransaction(
     const declaredCapabilities = capabilities.map(({ id }) => id).toSorted()
     const declaredPermissions = permissionKeys.toSorted()
     const declaredProviders = providerProfiles.toSorted()
-    const declaredCategories = incidentCategories.map(({ id, name, resource }) => ({
-        id,
-        name,
-        resource,
-    }))
+    // Like the other declared lists, categories are stored and compared in a stable order.
+    const declaredCategories = incidentCategories
+        .map(({ id, name, resource }) => ({ id, name, resource }))
+        .toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
     const now = Date.now()
     if (previous && previous.generation >= generation) {
         if (
