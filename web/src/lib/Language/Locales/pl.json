@@ -349,7 +349,8 @@
                 "proxyHosts": "Dla wybranych hostów proxy",
                 "providerProfiles": "Profil dostawcy {{resource}}",
                 "secretReferences": "Sekret {{resource}}",
-                "unknown": "Zakres {{scope}}"
+                "unknown": "Zakres {{scope}}",
+                "allProxyHosts": "Dla wszystkich hostów proxy, także utworzonych później"
             },
             "allowService": "Zezwalaj w tle",
             "allowServiceHint": "Aplikacja może korzystać z tego uprawnienia bez zalogowanego użytkownika, na przykład do zaplanowanych kontroli.",
@@ -362,7 +363,10 @@
                 "empty": "Nie ma jeszcze hostów proxy do wyboru.",
                 "required": "Wybierz co najmniej jeden host proxy.",
                 "loadFailed": "Nie udało się wczytać hostów proxy.",
-                "disabled": "{{hostname}} (nieaktywny)"
+                "disabled": "{{hostname}} (nieaktywny)",
+                "all": "Wszystkie hosty proxy",
+                "allHint": "Aplikacja otrzymuje to uprawnienie także do hostów proxy utworzonych później.",
+                "every": "wszystkie hosty proxy"
             },
             "approveInstall": "Zatwierdź i zainstaluj",
             "approveUpdate": "Zatwierdź i zaktualizuj do {{version}}",

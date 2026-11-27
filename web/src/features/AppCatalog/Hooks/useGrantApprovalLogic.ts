@@ -14,7 +14,7 @@ export default function useGrantApprovalLogic(request: CatalogApprovalRequest) {
     const [draft, setDraft] = useState(() =>
         grantDraft(request.requested, request.permissionKeys, request.previous),
     )
-    const needsHosts = draft.some((item) => item.selectable)
+    const needsHosts = draft.some((item) => item.selectable && !item.allHosts)
     const { hosts, isLoading, isError } = useCatalogProxyHosts(needsHosts)
     // A preselected host that no longer exists is neither shown nor approved.
     const known = new Set(hosts?.map((host) => host.id))
@@ -39,7 +39,10 @@ export default function useGrantApprovalLogic(request: CatalogApprovalRequest) {
             handleChange: (
                 index: number,
                 change: Partial<
-                    Pick<GrantDraftItem, 'allowService' | 'permissionKey' | 'resources'>
+                    Pick<
+                        GrantDraftItem,
+                        'allowService' | 'permissionKey' | 'resources' | 'allHosts'
+                    >
                 >,
             ) => setDraft((current) => updateGrantDraft(current, index, change)),
             handleApprove: () => {

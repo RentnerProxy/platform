@@ -32,6 +32,7 @@ import { TrustedCaDomainError } from './trusted-cas.errors.ts'
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
 import { recordMutationFailureBestEffort } from '@/server/ProxyRuntime/audit-mutation.ts'
 import { invalidateHostMonitoringForHostsInTransaction } from '@/server/HostMonitoring/host-monitoring.repository.ts'
+import { recordProxyHostEventsInTransaction } from '@/server/AppRuntime/host-events.server.ts'
 
 function parseInput<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
     const parsed = schema.safeParse(input)
@@ -157,6 +158,14 @@ async function persistTrustedCa(
                     await invalidateHostMonitoringForHostsInTransaction(
                         transaction,
                         affected.map((host) => host.id),
+                    )
+                    // The probe revision of these hosts covers the trusted CA they verify against.
+                    await recordProxyHostEventsInTransaction(
+                        transaction,
+                        affected.map((host) => ({
+                            proxyHostId: host.id,
+                            type: 'proxyHostUpdated' as const,
+                        })),
                     )
                 }
                 await appendAuditEventInTransactionService(transaction, {

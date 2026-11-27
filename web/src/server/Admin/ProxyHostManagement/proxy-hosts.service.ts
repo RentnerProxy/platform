@@ -44,6 +44,7 @@ import { appendAuditEventInTransactionService } from '@/server/Audit/audit.servi
 import { recordMutationFailureBestEffort } from '@/server/ProxyRuntime/audit-mutation.ts'
 import { certificateJobSummary } from './certificate-jobs.storage.server.ts'
 import { invalidateHostMonitoringForHostsInTransaction } from '@/server/HostMonitoring/host-monitoring.repository.ts'
+import { recordProxyHostEventsInTransaction } from '@/server/AppRuntime/host-events.server.ts'
 import { readDiscoveryRegistry } from '@/server/Admin/DockerDiscovery/discovery-storage.server.ts'
 import {
     createProxyHostInTransaction,
@@ -310,6 +311,12 @@ async function setProxyHostEnabledService(
                     'monitoring_disabled',
                 )
 
+            await recordProxyHostEventsInTransaction(transaction, [
+                {
+                    proxyHostId: proxyHost.id,
+                    type: enabled ? 'proxyHostEnabled' : 'proxyHostDisabled',
+                },
+            ])
             await appendAuditEventInTransactionService(transaction, {
                 actorUserId: actor.id,
                 actorKind: 'user',

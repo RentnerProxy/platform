@@ -7,6 +7,8 @@ export type ProxyHostMutationActor =
           readonly userId: string | null
           readonly operationId: string
           readonly proxyHostId?: string
+          /** The installation whose owned-host operation makes the change. */
+          readonly installationId?: string
           readonly authorize: (permission: PermissionKey) => void
       }
 

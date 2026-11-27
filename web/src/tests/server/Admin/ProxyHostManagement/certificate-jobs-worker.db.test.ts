@@ -29,6 +29,13 @@ import {
     buildValidCertificateMetadata,
     runWithCertificateJobSession as asUser,
 } from '@/tests/Helpers/certificateJobsFixture.ts'
+import {
+    allHostsGrant,
+    hostEventsOf,
+    installEventApp,
+    readHosts,
+    removeEventApps,
+} from '@/tests/Helpers/appHostEvents.ts'
 
 const enabled = process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() !== null
 const integrationTest = enabled ? test : test.skip
@@ -453,8 +460,15 @@ describe('certificate job worker with PostgreSQL', () => {
         )
         runtime.setAvailable(true)
         await makeDue(fixture.id, true)
+        const app = await installEventApp([allHostsGrant(readHosts.id)])
 
         await runCertificateJobsOnce(controller.controller, runtime.runtime)
+        // Binding the issued certificate records one update of the host.
+        const events = await hostEventsOf(app.installationId)
+        await removeEventApps([app])
+        expect(events.map(({ type, resourceId }) => [type, resourceId])).toEqual([
+            ['proxyHostUpdated', fixture.hostId],
+        ])
         const job = await readJob(fixture.id)
         expectCompletedJob(job)
         expect(job.attemptCount).toBe(1)

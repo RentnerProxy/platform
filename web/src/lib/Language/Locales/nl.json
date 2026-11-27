@@ -326,7 +326,8 @@
                 "proxyHosts": "Voor de proxyhosts die je selecteert",
                 "providerProfiles": "Providerprofiel {{resource}}",
                 "secretReferences": "Geheim {{resource}}",
-                "unknown": "Bereik {{scope}}"
+                "unknown": "Bereik {{scope}}",
+                "allProxyHosts": "Voor alle proxyhosts, ook later aangemaakte"
             },
             "allowService": "Op de achtergrond toestaan",
             "allowServiceHint": "De app mag deze machtiging ook zonder aangemelde gebruiker gebruiken, bijvoorbeeld voor geplande controles.",
@@ -339,7 +340,10 @@
                 "empty": "Er zijn nog geen proxyhosts om te selecteren.",
                 "required": "Selecteer ten minste één proxyhost.",
                 "loadFailed": "De proxyhosts konden niet worden geladen.",
-                "disabled": "{{hostname}} (inactief)"
+                "disabled": "{{hostname}} (inactief)",
+                "all": "Alle proxyhosts",
+                "allHint": "De app krijgt deze machtiging ook voor proxyhosts die later worden aangemaakt.",
+                "every": "alle proxyhosts"
             },
             "approveInstall": "Goedkeuren en installeren",
             "approveUpdate": "Goedkeuren en bijwerken naar {{version}}",
