@@ -12,7 +12,8 @@ stop_postgres() {
     exit "$status"
 }
 
-if [[ ${1:-} == --container || ${1:-} == --gates || ${1:-} == --migrations || ${1:-} == --restore ]]; then
+if [[ ${1:-} == --container || ${1:-} == --gates || ${1:-} == --migrations || ${1:-} == --grants ||
+    ${1:-} == --restore ]]; then
     postgres=/usr/lib/postgresql/18/bin
     database=/tmp/greeting-postgres
     install -d -m 0700 -o postgres -g postgres "$database" /var/run/postgresql
@@ -33,6 +34,9 @@ if [[ ${1:-} == --container || ${1:-} == --gates || ${1:-} == --migrations || ${
     elif [[ $1 == --migrations ]]; then
         /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::data_migrations::privileged_published_greeting_data_migrations --nocapture
         test -s "$RP_GREETING_MIGRATIONS_REPORT"
+    elif [[ $1 == --grants ]]; then
+        /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::grants::privileged_published_greeting_grants --nocapture
+        test -s "$RP_GREETING_GRANTS_REPORT"
     else
         /app-tests --ignored --exact app_manager::tests::lifecycle::published_greeting::portable_backup::privileged_restore_published_greeting --nocapture
         test -s "$RP_GREETING_RECOVERY_REPORT"
@@ -79,7 +83,7 @@ output=$(realpath "$output")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 rm -f -- "$output/greeting-lifecycle.json" "$output/greeting-gates.json" "$output/greeting-migrations.json" \
-    "$output/greeting-recovery.json"
+    "$output/greeting-grants.json" "$output/greeting-recovery.json"
 mkdir -m 0700 "$work/portable"
 
 download() {
@@ -132,8 +136,8 @@ fi
 run_fixture() {
     local mode=$1 state=1024m
     shift
-    # Four repackaged releases keep their archives and staged packages in the store.
-    if [[ $mode == --migrations ]]; then
+    # Repackaged releases keep their archives and staged packages in the store.
+    if [[ $mode == --migrations || $mode == --grants ]]; then
         state=3072m
     fi
     # Signed metadata and release assets use separate loopback hosts, as in production.
@@ -184,6 +188,15 @@ run_fixture --migrations \
     --mount "type=bind,source=$work,target=/greeting,readonly" \
     --env RP_GREETING_FIXTURE=/greeting \
     --env RP_GREETING_MIGRATIONS_REPORT=/evidence/greeting-migrations.json
+
+# Another fresh appliance state installs repackaged signed releases with capabilities only after
+# the Owner approves them, carries and revokes grants, and keeps them through rollback, restart
+# and reinstall.
+run_fixture --grants \
+    --cap-add NET_BIND_SERVICE \
+    --mount "type=bind,source=$work,target=/greeting,readonly" \
+    --env RP_GREETING_FIXTURE=/greeting \
+    --env RP_GREETING_GRANTS_REPORT=/evidence/greeting-grants.json
 
 # A fresh volume and PostgreSQL cluster have only the backup and an independent public pin.
 run_fixture --restore \

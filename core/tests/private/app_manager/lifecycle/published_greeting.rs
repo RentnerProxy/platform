@@ -17,8 +17,12 @@ mod data_migrations;
 mod distribution;
 #[path = "published_greeting/distribution_gates.rs"]
 mod distribution_gates;
+#[path = "published_greeting/grants.rs"]
+mod grants;
 #[path = "published_greeting/portable_backup.rs"]
 mod portable_backup;
+#[path = "published_greeting/repackage.rs"]
+mod repackage;
 
 use distribution::{ArchiveResponse, Distribution};
 
@@ -210,12 +214,18 @@ async fn start_manager(
     child
 }
 
-async fn start_authority(installation_id: &str) -> Child {
+/// Start the authority stub for `installation_id`. With `grant_log`, it records every grant
+/// publication in that file instead of accepting only an empty set before activation.
+async fn start_authority(installation_id: &str, grant_log: Option<&Path>) -> Child {
     let api = Path::new(APP_API_SOCKET).parent().unwrap();
     fs::create_dir_all(api).unwrap();
     chown(api, Some(10002), Some(10002)).unwrap();
     fs::set_permissions(api, fs::Permissions::from_mode(0o700)).unwrap();
-    let mut child = Process::new(std::env::current_exe().unwrap())
+    let mut process = Process::new(std::env::current_exe().unwrap());
+    if let Some(log) = grant_log {
+        process.env(GRANT_LOG, log);
+    }
+    let mut child = process
         .args([
             "--ignored",
             "--exact",
@@ -319,7 +329,7 @@ async fn privileged_published_greeting_lifecycle() {
         "app-{}",
         &marketplace_artifacts::digest(APP_ID.as_bytes())[..32]
     );
-    let mut authority = start_authority(&installation_id).await;
+    let mut authority = start_authority(&installation_id, None).await;
 
     let installer = InstallerFixture::new(&fixture.root);
     let (config, token, store) = (&installer.config, &installer.token, &installer.store);
