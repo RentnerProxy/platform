@@ -1,5 +1,6 @@
 import type { AuthenticatedUser } from '@/lib/Auth/Types/auth.types.ts'
 import type {
+    AppIncidentCategoryGroup,
     NotificationConfiguration,
     NotificationCategory,
     PersonalNotificationSettings,
@@ -24,6 +25,8 @@ export interface ChannelEditorState {
 export interface ChannelEditorProps {
     editor: ChannelEditorState
     settings: PersonalNotificationSettings
+    /** The app categories a channel can subscribe to; undefined until they are loaded. */
+    appCategories?: readonly AppIncidentCategoryGroup[] | undefined
     email: string
     pending: boolean
     onClose: () => void
@@ -45,9 +48,18 @@ export interface ChannelFormValues {
     minimumSeverity: 'warning' | 'error' | 'critical'
     thresholdSeconds: string
     recovery: boolean
+    appCategories: string[]
     replaceDestination: boolean
     recipients: string
     url: string
     token: string
     cidrs: string
+}
+export interface AppCategoryOptionsProps {
+    groups: readonly AppIncidentCategoryGroup[]
+    selected: readonly string[]
+    /** Subscriptions of apps that are no longer available, listed so they can be cleared. */
+    unavailable: readonly string[]
+    disabled: boolean
+    onToggle: (key: string, checked: boolean) => void
 }

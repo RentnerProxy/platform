@@ -3,6 +3,7 @@ import '@tanstack/react-start/server-only'
 import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 
 import { ACTIVE_OWNER_ADVISORY_LOCK_ID } from '@/config/auth.config.ts'
+import { APP_INCIDENT_CAPABILITY } from '@/config/notifications.config.ts'
 import {
     appRuntimeDelegations,
     appRuntimeGenerations,
@@ -42,7 +43,6 @@ import {
     type AppRuntimeRegistration,
 } from './Types/authority.types.ts'
 
-const INCIDENT_CAPABILITY_ID = 'notifications.incidents.manage.v1'
 const maxGrants = 256
 const maxLeaseLifetimeMs = 5 * 60 * 1000
 
@@ -111,7 +111,7 @@ export async function registerAppRuntimeGenerationInTransaction(
         !appIncidentCategoriesSchema.safeParse(incidentCategories).success ||
         // An app declares categories exactly when it may raise incidents.
         incidentCategories.length > 0 !==
-            capabilities.some(({ id }) => id === INCIDENT_CAPABILITY_ID)
+            capabilities.some(({ id }) => id === APP_INCIDENT_CAPABILITY)
     )
         throw new AppRuntimeAuthorityError('invalid_input')
 

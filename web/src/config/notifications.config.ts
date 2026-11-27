@@ -6,6 +6,8 @@ export const NOTIFICATION_CATEGORIES = [
     'host_availability',
     'app_incident',
 ] as const
+/** The grant that lets an installed app raise incidents. */
+export const APP_INCIDENT_CAPABILITY = 'notifications.incidents.manage.v1'
 /** Bounds of the incidents an app raises; the app contract fixes the text limits. */
 export const APP_INCIDENT_LIMITS = {
     title: 80,

@@ -159,6 +159,7 @@ export default function NotificationsPanel(props: NotificationsPanelProps) {
                 <ChannelEditor
                     editor={state.editor}
                     settings={state.settings}
+                    appCategories={state.appCategories}
                     email={props.user.email}
                     pending={state.pending}
                     onClose={handler.handleClose}
