@@ -157,7 +157,7 @@ RUN set -eux; \
         /etc/crowdsec/online_api_credentials.yaml; \
     cp -aL /etc/crowdsec/. /opt/rentnerproxy/crowdsec-config/
 
-FROM mirror.gcr.io/valkey/valkey:9.2.0-alpine AS valkey-runtime
+FROM mirror.gcr.io/valkey/valkey:9.2.1-alpine AS valkey-runtime
 
 # Already published app executables use the v1 GNU/Linux ABI. Keep its narrowly
 # scoped libraries and loader paths while the appliance services move to musl.
