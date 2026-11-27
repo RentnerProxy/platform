@@ -191,12 +191,15 @@ run_fixture --migrations \
 
 # Another fresh appliance state installs repackaged signed releases with capabilities only after
 # the Owner approves them, carries and revokes grants, and keeps them through rollback, restart
-# and reinstall.
-run_fixture --grants \
-    --cap-add NET_BIND_SERVICE \
-    --mount "type=bind,source=$work,target=/greeting,readonly" \
-    --env RP_GREETING_FIXTURE=/greeting \
-    --env RP_GREETING_GRANTS_REPORT=/evidence/greeting-grants.json
+# and reinstall. Coverage runs skip it to stay within the Rust job's time budget; the native
+# reference job runs it on both architectures, and the signed lifecycle covers the same paths.
+if [[ $# == 1 ]]; then
+    run_fixture --grants \
+        --cap-add NET_BIND_SERVICE \
+        --mount "type=bind,source=$work,target=/greeting,readonly" \
+        --env RP_GREETING_FIXTURE=/greeting \
+        --env RP_GREETING_GRANTS_REPORT=/evidence/greeting-grants.json
+fi
 
 # A fresh volume and PostgreSQL cluster have only the backup and an independent public pin.
 run_fixture --restore \
