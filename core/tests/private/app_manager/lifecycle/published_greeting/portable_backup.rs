@@ -276,7 +276,7 @@ async fn privileged_restore_published_greeting() {
         "app-{}",
         &marketplace_artifacts::digest(APP_ID.as_bytes())[..32]
     );
-    let mut authority = start_authority(&installation_id).await;
+    let mut authority = start_authority(&installation_id, None).await;
     let mut manager = start_manager(
         &controller,
         config,

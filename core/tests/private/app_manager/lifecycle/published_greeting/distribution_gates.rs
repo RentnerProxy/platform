@@ -345,7 +345,7 @@ async fn privileged_published_greeting_distribution_gates() {
         "app-{}",
         &marketplace_artifacts::digest(APP_ID.as_bytes())[..32]
     );
-    let mut authority = start_authority(&installation_id).await;
+    let mut authority = start_authority(&installation_id, None).await;
     let installer = InstallerFixture::new(&fixture.root);
     let (config, token, store) = (&installer.config, &installer.token, &installer.store);
     let checkpoint = store.join(CHECKPOINT);
