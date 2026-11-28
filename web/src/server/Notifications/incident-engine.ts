@@ -79,6 +79,44 @@ function isActive(delivery: NotificationQueuedDelivery) {
     return delivery.status === 'pending' || delivery.status === 'inflight'
 }
 
+/**
+ * A built-in outage notice that was in flight when the monitoring app continued the outage settles
+ * the continuation's placeholder for its channel: a success counts as the continuation's failure
+ * notice, a final failure lets the continuation announce the outage itself.
+ */
+function settleHandedOverNotice(
+    state: NotificationState,
+    incident: NotificationIncident,
+    delivery: NotificationQueuedDelivery,
+    succeeded: boolean,
+) {
+    if (incident.category !== 'host_availability') return
+    const continuation = state.incidents.find(
+        (item) =>
+            item.app?.key === incident.id && item.app.resource?.proxyHostId === incident.resourceId,
+    )
+    if (!continuation) return
+    const same = (item: { channelId: string; channelRevision: number }) =>
+        item.channelId === delivery.channelId && item.channelRevision === delivery.channelRevision
+    const index = continuation.channels.findIndex(
+        (item) => same(item) && item.failure === 'pending' && item.notified === undefined,
+    )
+    if (index < 0) return
+    // A pending notice of the continuation itself owns that marker.
+    if (
+        state.deliveries.some(
+            (item) => item.payload.incidentId === continuation.id && same(item) && isActive(item),
+        )
+    )
+        return
+    const placeholder = continuation.channels[index]!
+    if (!succeeded) continuation.channels.splice(index, 1)
+    else {
+        placeholder.failure = 'succeeded'
+        placeholder.notified = true
+    }
+}
+
 function markTerminal(state: NotificationState, delivery: NotificationQueuedDelivery) {
     if (delivery.payload.type === 'test') return
     const incident = state.incidents.find((item) => item.id === delivery.payload.incidentId)
@@ -93,6 +131,7 @@ function markTerminal(state: NotificationState, delivery: NotificationQueuedDeli
         marker.recovery = status
         return
     }
+    settleHandedOverNotice(state, incident!, delivery, status === 'succeeded')
     marker.failure = status
     if (status !== 'succeeded') return
     marker.notified = true

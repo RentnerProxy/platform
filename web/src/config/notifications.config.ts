@@ -13,6 +13,8 @@ export const APP_INCIDENT_LIMITS = {
     title: 80,
     message: 400,
     openPerInstallation: 32,
+    // Continuations of exported built-in outages count apart; there is at most one per policy.
+    openContinuationsPerInstallation: 1_000,
     channelCategories: 64,
 } as const
 export const NOTIFICATION_SEVERITIES = ['warning', 'error', 'critical'] as const

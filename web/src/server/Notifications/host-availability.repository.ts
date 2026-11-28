@@ -13,6 +13,7 @@ import { readHostMonitoringContextInTransaction } from '@/server/RuntimeDiagnost
 import { DomainDiagnosticsError } from '@/server/RuntimeDiagnostics/domain-diagnostics.errors.ts'
 import {
     cancelHostAvailabilityIncidents,
+    freezeHostAvailabilityIncidents,
     observeHostAvailabilityTransition,
 } from './host-availability.ts'
 import { resolveEffectiveNotificationConfigurationInTransaction } from './notification-access.ts'
@@ -27,7 +28,7 @@ import type {
     HostAvailabilityIncidentSource,
     NotificationDeliveryClaim,
 } from './Types/notification-internal.types.ts'
-import type { NotificationState } from './Types/notification-state.types.ts'
+import type { NotificationIncident, NotificationState } from './Types/notification-state.types.ts'
 
 export async function cancelHostAvailabilityForHostsInTransaction(
     transaction: AuthTransaction,
@@ -48,6 +49,28 @@ export async function cancelHostAvailabilityForHostsInTransaction(
             .map((incident) => incident.id),
     )
     const engine = cancelHostAvailabilityIncidents(runtime.engine, invalid, Date.now())
+    if (engine !== runtime.engine)
+        await writeNotificationRuntime(transaction, { ...runtime, engine })
+}
+
+/**
+ * Stop built-in host outages from announcing themselves anew; the monitoring handoff commit calls
+ * it. Notices admitted before stay deliverable, and so does the recovery owed for them.
+ */
+export async function freezeHostAvailabilityNotificationsInTransaction(
+    transaction: AuthTransaction,
+): Promise<void> {
+    const snapshot = await readNotificationRuntime(transaction)
+    if (
+        !snapshot.engine.incidents.some(
+            (incident) =>
+                incident.category === 'host_availability' && incident.recoveredAt === null,
+        )
+    )
+        return
+    const configuration = await lockNotificationConfiguration(transaction)
+    const runtime = await lockNotificationRuntime(transaction)
+    const engine = freezeHostAvailabilityIncidents(runtime.engine, configuration.channels)
     if (engine !== runtime.engine)
         await writeNotificationRuntime(transaction, { ...runtime, engine })
 }
@@ -122,6 +145,14 @@ export async function reconcileHostAvailabilityInTransaction(
     const committedAt = await readLegacyFeatureCommittedAtInTransaction(transaction, 'monitoring')
     const handoverEnded =
         committedAt !== null && now - committedAt.getTime() >= HOST_AVAILABILITY_HANDOVER_MS
+    // An outage the app continues ends with its continuation, whenever the app resolves it.
+    const continued = (incident: NotificationIncident) =>
+        state.incidents.some(
+            (candidate) =>
+                candidate.recoveredAt === null &&
+                candidate.app?.key === incident.id &&
+                candidate.app.resource?.proxyHostId === incident.resourceId,
+        )
     const policies = await transaction
         .select({ policy: hostCheckPolicies })
         .from(hostCheckPolicies)
@@ -149,7 +180,7 @@ export async function reconcileHostAvailabilityInTransaction(
                 const host = incident.host!
                 const policy = current.get(host.policyId)
                 return (
-                    (handoverEnded && incident.recoveredAt === null) ||
+                    (handoverEnded && incident.recoveredAt === null && !continued(incident)) ||
                     !policy ||
                     policy.proxyHostId !== incident.resourceId ||
                     policy.version !== host.policyVersion ||

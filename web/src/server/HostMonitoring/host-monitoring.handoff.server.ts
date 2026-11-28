@@ -1,11 +1,12 @@
 import '@tanstack/react-start/server-only'
 
-import { sql, type SQL } from 'drizzle-orm'
+import { inArray, sql, type SQL } from 'drizzle-orm'
 import { HOST_MONITORING_HANDOFF } from '@/config/host-monitoring.config.ts'
 import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
 import { hostCheckIncidents, hostCheckObservations, hostCheckPolicies } from '@/db/schema.ts'
 import type { AppRuntimeJsonValue } from '@/server/AppRuntime/Types/authority.types.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { freezeHostAvailabilityNotificationsInTransaction } from '@/server/Notifications/host-availability.repository.ts'
 import type {
     LegacyFeatureHandoffSource,
     LegacyFeatureInspection,
@@ -106,6 +107,22 @@ function columns(): Record<HostMonitoringHandoffRowKind, string[]> {
     return { policies: [...policies], observations: [...observations], incidents: [...incidents] }
 }
 
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
+
+/** The given keys that name exported built-in incidents, which an app may continue. */
+export async function readExportedHostMonitoringIncidentIds(
+    transaction: AuthTransaction,
+    keys: readonly string[],
+): Promise<ReadonlySet<string>> {
+    const ids = [...new Set(keys.filter((key) => uuid.test(key)))]
+    if (ids.length === 0) return new Set()
+    const rows = await transaction
+        .select({ id: hostCheckIncidents.id })
+        .from(hostCheckIncidents)
+        .where(inArray(hostCheckIncidents.id, ids))
+    return new Set(rows.map(({ id }) => id))
+}
+
 /**
  * Hand built-in monitoring over to the monitoring app. Every built-in writer runs behind the fence,
  * so the export sees state no platform worker changes; the single cursor snapshot also keeps a host
@@ -158,6 +175,8 @@ export const hostMonitoringHandoffSource: LegacyFeatureHandoffSource = {
      * Commit leaves every table and row in place for the removal step: the committed journal marks
      * them retired, the fence keeps every built-in writer out and the worker gate stops for good.
      * No lease survives the transfer, so no claimed probe can still complete against these rows.
+     * Open built-in outages announce themselves to no further channel; the notices they admitted
+     * before stay deliverable and keep their recovery, until the app's continuation takes over.
      */
     async retire(transaction) {
         // A row a host removal is deleting goes away anyway; skipping it avoids waiting on that
@@ -171,5 +190,6 @@ export const hostMonitoringHandoffSource: LegacyFeatureHandoffSource = {
                 for update skip locked
             ) leased
             where policy.id = leased.id`)
+        await freezeHostAvailabilityNotificationsInTransaction(transaction)
     },
 }

@@ -19,10 +19,20 @@ import type { HOST_MONITORING_HANDOFF } from '@/config/host-monitoring.config.ts
  * Platform-internal values stay out: leases, the configuration proofs a probe compared and the
  * platform user who saved a policy.
  *
- * An open incident has a null `closedReason`. After commit an app continues it without a second
- * outage notice by opening an app incident whose key is the incident ID and whose resource is the
- * policy's `proxyHostId`: the platform hands the outage notices it already sent over to that
- * incident once, and the app's resolve sends the recovery notice.
+ * An open incident has a null `closedReason`. After commit the app must open every exported open
+ * incident as an app incident whose key is the incident ID and whose resource is the policy's
+ * `proxyHostId`, and then resolve it according to its own next observation, also when the host
+ * recovered during the handoff. Only that ends the built-in outage with a recovery notice; one the
+ * app never continues is dropped without one 24 hours after commit. The continuation does not count
+ * against the ordinary open incident limit.
+ *
+ * Every notification channel hears of each outage once and of its end once, whatever it subscribes
+ * to; the handoff migrates no subscription. A channel that accepts the continuation (the
+ * `app_incident` event and the app's category) moves to it: an outage notice it already got counts
+ * as the continuation's, otherwise the continuation announces the outage, and the app's resolve
+ * sends its recovery notice. Every other channel that got the built-in outage notice, such as one
+ * subscribed only to `host_availability`, gets the built-in recovery notice when the app resolves
+ * the continuation. From commit on, built-in outages announce themselves to no further channel.
  */
 export type HostMonitoringHandoffRowKind = keyof typeof HOST_MONITORING_HANDOFF.columns
 

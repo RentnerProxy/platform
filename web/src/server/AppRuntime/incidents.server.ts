@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { APP_INCIDENT_CAPABILITY } from '@/config/notifications.config.ts'
 import { appRuntimeMessages, appRuntimeOwnedProxyHosts, proxyHosts } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { readExportedHostMonitoringIncidentIds } from '@/server/HostMonitoring/host-monitoring.handoff.server.ts'
 import { readLegacyFeatureOwnerInTransaction } from '@/server/LegacyHandoff/ownership.server.ts'
 import { observeAppIncident } from '@/server/Notifications/app-incidents.ts'
 import { resolveEffectiveNotificationConfigurationInTransaction } from '@/server/Notifications/notification-access.ts'
@@ -73,6 +74,12 @@ async function readCoveredProxyHost(
     return proxyHostId
 }
 
+/** Whether the installation committed the monitoring handoff and so continues built-in outages. */
+async function ownsMonitoring(transaction: AuthTransaction, installationId: string) {
+    const monitoring = await readLegacyFeatureOwnerInTransaction(transaction, 'monitoring')
+    return monitoring.owner === 'app' && monitoring.installationId === installationId
+}
+
 async function describeChange(
     transaction: AuthTransaction,
     principal: AppRuntimePrincipal,
@@ -80,8 +87,15 @@ async function describeChange(
     change: AppIncidentChangeInput,
 ): Promise<AppIncidentChange> {
     const { installationId, appId } = principal.identity
+    // The app that committed monitoring continues an exported open outage under its incident ID.
     if (change.status === 'resolved')
-        return { kind: 'resolve', subject: { installationId, key: incidentKey } }
+        return {
+            kind: 'resolve',
+            subject: { installationId, key: incidentKey },
+            ...((await ownsMonitoring(transaction, installationId))
+                ? { continues: incidentKey }
+                : {}),
+        }
     const categories = await readAppIncidentCategoriesInTransaction(transaction, installationId)
     const category = categories.find(({ id }) => id === change.category)
     if (!category)
@@ -97,13 +111,8 @@ async function describeChange(
         change.resourceId === undefined
             ? undefined
             : await readCoveredProxyHost(transaction, principal, change.resourceId)
-    // The app that committed monitoring continues an exported open outage under its incident ID.
-    const monitoring =
-        proxyHostId === undefined
-            ? undefined
-            : await readLegacyFeatureOwnerInTransaction(transaction, 'monitoring')
     const continues =
-        monitoring?.owner === 'app' && monitoring.installationId === installationId
+        proxyHostId !== undefined && (await ownsMonitoring(transaction, installationId))
             ? incidentKey
             : undefined
     return {
@@ -177,10 +186,25 @@ export async function setAppRuntimeIncidentInTransaction(
         stored,
     )
     const runtime = await lockNotificationRuntime(transaction)
+    // Which of the app's open incidents continue exported outages decides their separate bound.
+    const continuations =
+        asserted.kind === 'open' && (await ownsMonitoring(transaction, installationId))
+            ? await readExportedHostMonitoringIncidentIds(
+                  transaction,
+                  runtime.engine.incidents.flatMap((incident) =>
+                      incident.app?.installationId === installationId &&
+                      incident.recoveredAt === null
+                          ? [incident.app.key]
+                          : [],
+                  ),
+              )
+            : undefined
     const outcome = observeAppIncident(
         runtime.engine,
         configuration,
-        asserted,
+        asserted.kind === 'open' && continuations !== undefined
+            ? { ...asserted, continuations: [...continuations] }
+            : asserted,
         Date.now(),
         randomUUID,
     )

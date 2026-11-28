@@ -17,8 +17,15 @@ export type AppIncidentChange =
            * committed the monitoring handoff, with the key that names the exported incident.
            */
           readonly continues?: string
+          /** Keys of the installation's open incidents that continue exported built-in outages. */
+          readonly continuations?: readonly string[]
       }
-    | { readonly kind: 'resolve'; readonly subject: AppIncidentSubject }
+    | {
+          readonly kind: 'resolve'
+          readonly subject: AppIncidentSubject
+          /** Set like `continues` on open: resolving the continuation also ends the built-in outage. */
+          readonly continues?: string
+      }
 
 export interface AppIncidentOutcome {
     readonly state: NotificationState
