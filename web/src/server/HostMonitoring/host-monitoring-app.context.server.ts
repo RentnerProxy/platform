@@ -25,7 +25,7 @@ import {
     type HostMonitoringAppContext,
 } from './host-monitoring-app.service.server.ts'
 
-async function readContext(
+export async function readContext(
     actorId: string,
     proxyHostIds: readonly string[],
 ): Promise<HostMonitoringAppContext> {
