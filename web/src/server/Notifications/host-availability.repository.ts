@@ -31,24 +31,24 @@ import type {
 } from './Types/notification-internal.types.ts'
 import type { NotificationIncident, NotificationState } from './Types/notification-state.types.ts'
 
+/**
+ * End the built-in host outages of changed hosts silently. A frozen outage is left alone: after the
+ * monitoring handoff its end belongs to the app's continuation, and its notices still in flight and
+ * the recoveries it owes stay with it.
+ */
 export async function cancelHostAvailabilityForHostsInTransaction(
     transaction: AuthTransaction,
     proxyHostIds: readonly string[],
 ): Promise<void> {
     const ids = new Set(proxyHostIds)
     if (ids.size === 0) return
+    const changed = (incident: NotificationIncident) =>
+        incident.host !== undefined && incident.frozen !== true && ids.has(incident.resourceId)
     const snapshot = await readNotificationRuntime(transaction)
-    if (
-        !snapshot.engine.incidents.some((incident) => incident.host && ids.has(incident.resourceId))
-    )
-        return
+    if (!snapshot.engine.incidents.some(changed)) return
     await lockNotificationConfiguration(transaction)
     const runtime = await lockNotificationRuntime(transaction)
-    const invalid = new Set(
-        runtime.engine.incidents
-            .filter((incident) => incident.host && ids.has(incident.resourceId))
-            .map((incident) => incident.id),
-    )
+    const invalid = new Set(runtime.engine.incidents.filter(changed).map((incident) => incident.id))
     const engine = cancelHostAvailabilityIncidents(runtime.engine, invalid, Date.now())
     if (engine !== runtime.engine)
         await writeNotificationRuntime(transaction, { ...runtime, engine })
@@ -149,6 +149,22 @@ export async function reconcileHostAvailabilityInTransaction(
     // An outage the app continues ends with its continuation, whenever the app resolves it.
     const continued = (incident: NotificationIncident) =>
         findHostAvailabilityContinuation(state, incident)?.recoveredAt === null
+    const frozen = incidents.filter((incident) => incident.frozen === true)
+    const existing =
+        frozen.length === 0
+            ? new Set<string>()
+            : new Set(
+                  (
+                      await transaction
+                          .select({ id: proxyHosts.id })
+                          .from(proxyHosts)
+                          .where(
+                              inArray(proxyHosts.id, [
+                                  ...new Set(frozen.map((incident) => incident.resourceId)),
+                              ]),
+                          )
+                  ).map(({ id }) => id),
+              )
     const policies = await transaction
         .select({ policy: hostCheckPolicies })
         .from(hostCheckPolicies)
@@ -173,6 +189,15 @@ export async function reconcileHostAvailabilityInTransaction(
     const invalid = new Set(
         incidents
             .filter((incident) => {
+                // A frozen outage no longer follows the retired policy: it ends with its
+                // continuation, or silently when nothing continues it and its host is gone or the
+                // handover window passed.
+                if (incident.frozen === true)
+                    return (
+                        incident.recoveredAt === null &&
+                        !continued(incident) &&
+                        (handoverEnded || !existing.has(incident.resourceId))
+                    )
                 const host = incident.host!
                 const policy = current.get(host.policyId)
                 return (
@@ -209,6 +234,15 @@ export async function authorizeHostAvailabilityDeliveryInTransaction(
         Date.now(),
     )
     if (!currentState.incidents.some((candidate) => candidate.id === incident.id)) return false
+    // A frozen outage's notices describe the host as it was announced; the host must still exist.
+    if (incident.frozen === true) {
+        const [exists] = await transaction
+            .select({ id: proxyHosts.id })
+            .from(proxyHosts)
+            .where(eq(proxyHosts.id, incident.resourceId))
+            .limit(1)
+        return exists !== undefined
+    }
     try {
         const current = await readHostMonitoringContextInTransaction(transaction, {
             hostType: 'proxy',

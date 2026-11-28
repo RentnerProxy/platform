@@ -31,6 +31,11 @@ export interface LegacyFeatureHandoffSource {
      * never calls it a second time.
      */
     retire(transaction: AuthTransaction): Promise<void>
+    /**
+     * Catch platform state up after an abort returned the domain: apply what fenced writers had to
+     * skip during the handoff, before platform workers resume. It runs once per abort, inside it.
+     */
+    restore?(transaction: AuthTransaction): Promise<void>
 }
 
 export type LegacyFeatureOwner =

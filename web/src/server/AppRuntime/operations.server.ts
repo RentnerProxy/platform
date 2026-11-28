@@ -168,6 +168,13 @@ function hostChangeProblem(error: unknown): AppRuntimeProblem | null {
         return new AppRuntimeProblem(409, 'hostNameConflict', 'Proxy host name is unavailable')
     if (hostError?.code === 'discovery_managed')
         return new AppRuntimeProblem(409, 'hostOwnershipConflict', 'Proxy host ownership changed')
+    // An open monitoring handoff keeps a monitored host until it commits or is aborted.
+    if (hostError?.code === 'monitoring_handoff_open')
+        return new AppRuntimeProblem(
+            409,
+            'hostOwnershipConflict',
+            'Proxy host monitoring is being handed over',
+        )
     if (hostError?.code === 'proxy_host_not_found')
         return new AppRuntimeProblem(409, 'hostRevisionConflict', 'Proxy host revision changed')
     if (

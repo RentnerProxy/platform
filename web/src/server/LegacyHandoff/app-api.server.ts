@@ -35,6 +35,7 @@ import {
     readLegacyFeatureHandoffPartInTransaction,
 } from './journal.server.ts'
 import { readLegacyFeatureOwnerInTransaction } from './ownership.server.ts'
+import { legacyFeatureHandoffSources } from './sources.server.ts'
 import type {
     LegacyFeatureHandoffSources,
     LegacyHandoffPart,
@@ -344,6 +345,7 @@ async function runRequest(
 export async function abortInstallationLegacyHandoffsInTransaction(
     transaction: AuthTransaction,
     installationId: string,
+    sources: LegacyFeatureHandoffSources = legacyFeatureHandoffSources,
 ): Promise<void> {
     const rows = await transaction
         .select({ domain: legacyFeatureHandoffs.domain })
@@ -361,7 +363,12 @@ export async function abortInstallationLegacyHandoffsInTransaction(
     for (const domain of domains) {
         // oxlint-disable-next-line no-await-in-loop -- Domain locks are taken one at a time in order.
         await journal(() =>
-            abortLegacyFeatureHandoffInTransaction(transaction, domain, installationId),
+            abortLegacyFeatureHandoffInTransaction(
+                transaction,
+                domain,
+                installationId,
+                sources[domain],
+            ),
         )
     }
 }

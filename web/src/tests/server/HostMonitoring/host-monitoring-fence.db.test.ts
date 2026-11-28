@@ -115,16 +115,21 @@ async function claimAll(): Promise<HostMonitoringClaim[]> {
 /** Record what a begin, a commit or an abort leaves in the journal, then signal like they do. */
 async function journal(state: 'exported' | 'committed' | null) {
     const { db } = await import('@/db/index.ts')
-    await db.delete(legacyFeatureHandoffs).where(eq(legacyFeatureHandoffs.domain, 'monitoring'))
-    if (state !== null)
-        await db.insert(legacyFeatureHandoffs).values({
-            domain: 'monitoring',
-            installationId,
-            state,
-            digest: 'a'.repeat(64),
-            partCount: 0,
-            ...(state === 'committed' && { committedAt: new Date() }),
-        })
+    // One transaction, so no reader sees platform ownership between the old and the new row.
+    await db.transaction(async (transaction) => {
+        await transaction
+            .delete(legacyFeatureHandoffs)
+            .where(eq(legacyFeatureHandoffs.domain, 'monitoring'))
+        if (state !== null)
+            await transaction.insert(legacyFeatureHandoffs).values({
+                domain: 'monitoring',
+                installationId,
+                state,
+                digest: 'a'.repeat(64),
+                partCount: 0,
+                ...(state === 'committed' && { committedAt: new Date() }),
+            })
+    })
     signalLegacyFeatureOwnership(['monitoring'])
 }
 
@@ -207,13 +212,26 @@ function holdBegin() {
             })
         })
         .catch((error: unknown) => {
+            held.reject(error)
             if (!(error instanceof Error && error.message === 'begin rolled back')) throw error
         })
+    // A test that waits for the lock instead of `held` still sees the failure through `done`.
+    held.promise.catch(() => undefined)
+    let decidedOnce = false
+    const decide = (commit: boolean) => {
+        decidedOnce = true
+        decided.resolve(commit)
+    }
     return {
         held: held.promise,
         done,
-        commit: () => decided.resolve(true),
-        rollBack: () => decided.resolve(false),
+        commit: () => decide(true),
+        rollBack: () => decide(false),
+        /** Roll back a begin nobody decided, and wait for its transaction to end. */
+        settle: async () => {
+            if (!decidedOnce) decide(false)
+            await done.catch(() => undefined)
+        },
     }
 }
 
@@ -221,12 +239,27 @@ function holdBegin() {
 function holdWriter() {
     const held = Promise.withResolvers<void>()
     const released = Promise.withResolvers<void>()
-    const done = getAuthDatabase().transaction(async (transaction) => {
-        await shareLegacyFeatureDomain(transaction, 'monitoring')
-        held.resolve()
-        await released.promise
-    })
-    return { held: held.promise, done, release: () => released.resolve() }
+    const done = getAuthDatabase()
+        .transaction(async (transaction) => {
+            await shareLegacyFeatureDomain(transaction, 'monitoring')
+            held.resolve()
+            await released.promise
+        })
+        .catch((error: unknown) => {
+            held.reject(error)
+            throw error
+        })
+    held.promise.catch(() => undefined)
+    return {
+        held: held.promise,
+        done,
+        release: () => released.resolve(),
+        /** Release the writer and wait for its transaction to end. */
+        settle: async () => {
+            released.resolve()
+            await done.catch(() => undefined)
+        },
+    }
 }
 
 /** Wait until at least `count` sessions queue for the monitoring domain lock in the mode. */
@@ -394,45 +427,57 @@ describe('built-in monitoring writers behind the handoff fence', () => {
             // A begin that holds the domain, and one that only waits behind a running writer.
             for (const queued of [false, true]) {
                 const writer = queued ? holdWriter() : undefined
-                // oxlint-disable-next-line no-await-in-loop -- Each begin runs alone.
-                if (writer) await writer.held
-                const begin = holdBegin()
-                // oxlint-disable-next-line no-await-in-loop -- See above.
-                if (queued) await awaitLockWaiter('ExclusiveLock', 1)
-                // oxlint-disable-next-line no-await-in-loop -- See above.
-                else await begin.held
-                const reset = getAuthDatabase().transaction((transaction) =>
-                    invalidateHostMonitoringForHostsInTransaction(
-                        transaction,
-                        [host!.id],
-                        'monitoring_disabled',
-                    ),
-                )
-                const policy = queued ? otherOriginal : original
-                const save = monitoring.savePolicy({
-                    proxyHostId: queued ? other!.id : host!.id,
-                    expectedVersion: queued ? policy.version : null,
-                    settings: { ...settingsOf(policy), intervalSeconds: 120 },
-                })
-                // A refused save must not settle while the begin is undecided.
-                save.catch(() => undefined)
-                // oxlint-disable-next-line no-await-in-loop -- Both writers queue for the domain.
-                await awaitLockWaiter('ShareLock', 2)
-                writer?.release()
-                begin.rollBack()
-                // oxlint-disable-next-line no-await-in-loop -- See above.
-                await begin.done
-                // oxlint-disable-next-line no-await-in-loop -- The writers then apply.
-                await reset
+                let begin: ReturnType<typeof holdBegin> | undefined
+                const pending: Promise<unknown>[] = []
+                let reset: Promise<unknown> | undefined
+                let save: Promise<unknown> | undefined
+                try {
+                    // oxlint-disable-next-line no-await-in-loop -- Each begin runs alone.
+                    if (writer) await writer.held
+                    begin = holdBegin()
+                    // oxlint-disable-next-line no-await-in-loop -- See above.
+                    if (queued) await awaitLockWaiter('ExclusiveLock', 1)
+                    // oxlint-disable-next-line no-await-in-loop -- See above.
+                    else await begin.held
+                    reset = getAuthDatabase().transaction((transaction) =>
+                        invalidateHostMonitoringForHostsInTransaction(
+                            transaction,
+                            [host!.id],
+                            'monitoring_disabled',
+                        ),
+                    )
+                    const policy = queued ? otherOriginal : original
+                    save = monitoring.savePolicy({
+                        proxyHostId: queued ? other!.id : host!.id,
+                        expectedVersion: queued ? policy.version : null,
+                        settings: { ...settingsOf(policy), intervalSeconds: 120 },
+                    })
+                    pending.push(reset, save)
+                    // A refused save must not settle while the begin is undecided.
+                    save.catch(() => undefined)
+                    // oxlint-disable-next-line no-await-in-loop -- Both writers queue for the domain.
+                    await awaitLockWaiter('ShareLock', 2)
+                    writer?.release()
+                    begin.rollBack()
+                    // oxlint-disable-next-line no-await-in-loop -- See above.
+                    await begin.done
+                    // oxlint-disable-next-line no-await-in-loop -- The writers then apply.
+                    await reset
+                } finally {
+                    // oxlint-disable-next-line no-await-in-loop -- Nothing may hold the domain on.
+                    await Promise.all([writer?.settle(), begin?.settle()])
+                    // oxlint-disable-next-line no-await-in-loop -- See above.
+                    await Promise.allSettled(pending)
+                }
                 if (queued) {
                     // oxlint-disable-next-line no-await-in-loop -- See above.
-                    expect(await save).toMatchObject({
+                    expect(await save!).toMatchObject({
                         settings: { intervalSeconds: 120 },
                     })
                 } else {
                     // The first save named a stale version: it reached the policy, not the fence.
                     // oxlint-disable-next-line no-await-in-loop -- See above.
-                    await expect(save).rejects.toEqual(new HostMonitoringError('conflict'))
+                    await expect(save!).rejects.toEqual(new HostMonitoringError('conflict'))
                 }
             }
             expect((await policyOf(host!.id)).version).not.toBe(original.version)
@@ -442,22 +487,29 @@ describe('built-in monitoring writers behind the handoff fence', () => {
             // A begin that commits fences the writers that waited for it.
             const before = await snapshot()
             const begin = holdBegin()
-            await begin.held
-            const reset = getAuthDatabase().transaction((transaction) =>
-                invalidateHostMonitoringForHostsInTransaction(transaction, [other!.id]),
-            )
-            const current = await policyOf(other!.id)
-            const save = monitoring.savePolicy({
-                proxyHostId: other!.id,
-                expectedVersion: current.version,
-                settings: { ...settingsOf(current), intervalSeconds: 300 },
-            })
-            save.catch(() => undefined)
-            await awaitLockWaiter('ShareLock', 2)
-            begin.commit()
-            await begin.done
-            await reset
-            await expect(save).rejects.toEqual(new HostMonitoringError('handed_off'))
+            const pending: Promise<unknown>[] = []
+            try {
+                await begin.held
+                const current = await policyOf(other!.id)
+                const reset = getAuthDatabase().transaction((transaction) =>
+                    invalidateHostMonitoringForHostsInTransaction(transaction, [other!.id]),
+                )
+                const save = monitoring.savePolicy({
+                    proxyHostId: other!.id,
+                    expectedVersion: current.version,
+                    settings: { ...settingsOf(current), intervalSeconds: 300 },
+                })
+                pending.push(reset, save)
+                save.catch(() => undefined)
+                await awaitLockWaiter('ShareLock', 2)
+                begin.commit()
+                await begin.done
+                await reset
+                await expect(save).rejects.toEqual(new HostMonitoringError('handed_off'))
+            } finally {
+                await begin.settle()
+                await Promise.allSettled(pending)
+            }
             expect(await snapshot()).toEqual(before)
         },
         30_000,

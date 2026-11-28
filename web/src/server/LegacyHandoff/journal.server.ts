@@ -235,11 +235,15 @@ export async function commitLegacyFeatureHandoffInTransaction(
     return toLegacyFeatureOwner(committed!)
 }
 
-/** Return an uncommitted domain to platform; its untouched state lets platform workers resume. */
+/**
+ * Return an uncommitted domain to platform; its untouched state lets platform workers resume. The
+ * domain's source restores what fenced writers skipped meanwhile, under the same domain lock.
+ */
 export async function abortLegacyFeatureHandoffInTransaction(
     transaction: AuthTransaction,
     domain: LegacyFeatureDomain,
     installationId: string,
+    source?: LegacyFeatureHandoffSource,
 ): Promise<void> {
     const row = await lockJournalRow(transaction, domain)
     if (!row) return
@@ -247,6 +251,7 @@ export async function abortLegacyFeatureHandoffInTransaction(
         throw new LegacyFeatureHandoffError('conflict')
     await deleteParts(transaction, domain)
     await transaction.delete(legacyFeatureHandoffs).where(eq(legacyFeatureHandoffs.domain, domain))
+    await source?.restore?.(transaction)
 }
 
 /**

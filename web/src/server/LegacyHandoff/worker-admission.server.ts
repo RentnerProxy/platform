@@ -107,8 +107,9 @@ export function createLegacyFeatureWorkerGate(
                 // A handoff may have begun during the drain, also in another process: read again.
                 return apply()
             }
-            running = true
+            // Only a start that returned counts; a throwing one is retried on the poll.
             worker.start()
+            running = true
             state('idle')
             return
         }

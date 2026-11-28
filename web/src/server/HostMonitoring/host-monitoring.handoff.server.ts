@@ -7,6 +7,7 @@ import { hostCheckIncidents, hostCheckObservations, hostCheckPolicies } from '@/
 import type { AppRuntimeJsonValue } from '@/server/AppRuntime/Types/authority.types.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { freezeHostAvailabilityNotificationsInTransaction } from '@/server/Notifications/host-availability.repository.ts'
+import { restoreHostMonitoringAfterAbortInTransaction } from './host-monitoring.repository.ts'
 import type {
     LegacyFeatureHandoffSource,
     LegacyFeatureInspection,
@@ -176,4 +177,7 @@ export const hostMonitoringHandoffSource: LegacyFeatureHandoffSource = {
             where policy.id = leased.id`)
         await freezeHostAvailabilityNotificationsInTransaction(transaction)
     },
+
+    /** Host changes the fence kept from monitoring are applied before the worker resumes. */
+    restore: restoreHostMonitoringAfterAbortInTransaction,
 }

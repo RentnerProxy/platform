@@ -2024,7 +2024,8 @@
                 "proxy_host_not_found": "L’hôte proxy n’existe plus.",
                 "invalid_status_transition": "L’hôte proxy est déjà dans cet état. Actualisez la liste et réessayez.",
                 "invalid_input": "Vérifiez les valeurs de l’hôte proxy et réessayez.",
-                "discovery_managed": "Cet hôte est géré par les labels Docker. Détachez-le de Docker Discovery avant de le modifier ou de le supprimer."
+                "discovery_managed": "Cet hôte est géré par les labels Docker. Détachez-le de Docker Discovery avant de le modifier ou de le supprimer.",
+                "monitoring_handoff_open": "La surveillance de cet hôte est en cours de transfert vers une app. Supprimez l’hôte une fois le transfert terminé."
             },
             "validation": {
                 "domain": "Saisissez un nom DNS valide sans URL, adresse IP ni joker.",

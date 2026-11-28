@@ -13,7 +13,11 @@ import {
 } from '@/db/schema.ts'
 import { AuthDomainError } from '@/server/Auth/Core/errors.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
-import { withSettledPlatformOwnedLegacyFeature } from '@/server/LegacyHandoff/ownership.server.ts'
+import {
+    readLegacyFeatureOwnerInTransaction,
+    shareLegacyFeatureDomain,
+    withSettledPlatformOwnedLegacyFeature,
+} from '@/server/LegacyHandoff/ownership.server.ts'
 import { cancelHostAvailabilityForHostsInTransaction } from '@/server/Notifications/host-availability.repository.ts'
 import type {
     HostMonitoringHistory,
@@ -149,6 +153,62 @@ async function invalidatePoliciesInTransaction(
                     isNull(hostCheckIncidents.closedReason),
                 ),
             )
+}
+
+/**
+ * Whether removing the host would delete monitoring rows of an open handoff. Its export and an abort
+ * rely on those rows, so a host with a policy waits until the handoff commits or is aborted. A
+ * begin, commit or abort still running is awaited under the caller's lock timeout.
+ */
+export async function isHostMonitoringHandoffOpenInTransaction(
+    transaction: AuthTransaction,
+    proxyHostId: string,
+): Promise<boolean> {
+    await shareLegacyFeatureDomain(transaction, 'monitoring')
+    const ownership = await readLegacyFeatureOwnerInTransaction(transaction, 'monitoring')
+    if (ownership.owner !== 'handoff') return false
+    const [policy] = await transaction
+        .select({ id: hostCheckPolicies.id })
+        .from(hostCheckPolicies)
+        .where(eq(hostCheckPolicies.proxyHostId, proxyHostId))
+        .limit(1)
+    return policy !== undefined
+}
+
+/**
+ * After an aborted handoff, reset the policies whose host changed meanwhile in a way no probe will
+ * notice: a host that was disabled or lost the monitored domain is never claimed again, so its
+ * fenced reset and incident closure are applied now. Policies already reset stay untouched.
+ */
+export async function restoreHostMonitoringAfterAbortInTransaction(
+    transaction: AuthTransaction,
+): Promise<void> {
+    await lockMonitoring(transaction)
+    const stale = await transaction.execute<{ proxy_host_id: string; disabled: boolean }>(sql`
+        select p.proxy_host_id, not coalesce(h.enabled, false) as disabled
+        from ${hostCheckPolicies} p
+        left join ${proxyHosts} h on h.id = p.proxy_host_id
+        where (
+                h.enabled is not true
+                or not exists (
+                    select from ${hostDomains} d
+                    where d.proxy_host_id = p.proxy_host_id and d.domain = p.domain
+                )
+            )
+            and (
+                p.state <> 'unknown' or p.failure_count > 0 or p.recovery_count > 0
+                or p.context_proof is not null or p.lease_token is not null
+                or exists (
+                    select from ${hostCheckIncidents} i
+                    where i.policy_id = p.id and i.closed_reason is null
+                )
+            )`)
+    const disabled = stale.filter((row) => row.disabled).map((row) => row.proxy_host_id)
+    const changed = stale.filter((row) => !row.disabled).map((row) => row.proxy_host_id)
+    if (disabled.length > 0)
+        await invalidatePoliciesInTransaction(transaction, disabled, 'monitoring_disabled')
+    if (changed.length > 0)
+        await invalidatePoliciesInTransaction(transaction, changed, 'policy_changed')
 }
 
 export async function saveHostMonitoringPolicy(

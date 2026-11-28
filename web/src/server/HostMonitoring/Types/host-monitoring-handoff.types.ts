@@ -28,13 +28,26 @@ import type { HOST_MONITORING_HANDOFF } from '@/config/host-monitoring.config.ts
  * ordinary open incident limit, any other key does. A continuation keeps its host and category:
  * opening its key with another one is refused with 409 `incidentContinuationConflict`.
  *
+ * A host that no longer exists cannot be continued: opening its incident answers 404 like any
+ * uncovered host, and the app skips it while it still continues every other exported incident.
+ * Its built-in outage ends without a recovery notice, because nothing can observe that host
+ * recover. When a continued host goes away later, the platform closes the continuation with the
+ * resolution `resourceUnavailable` and the built-in outage ends silently with it. A host with a
+ * monitoring policy cannot be deleted while the handoff is open, so the export never loses rows.
+ *
  * Every notification channel hears of each outage once and of its end once, whatever it subscribes
  * to; the handoff migrates no subscription. A channel that accepts the continuation (the
  * `app_incident` event and the app's category) moves to it: an outage notice it already got counts
  * as the continuation's, otherwise the continuation announces the outage, and the app's resolve
  * sends its recovery notice. Every other channel that got the built-in outage notice, such as one
  * subscribed only to `host_availability`, gets the built-in recovery notice when the app resolves
- * the continuation. From commit on, built-in outages announce themselves to no further channel.
+ * the continuation, also after the host was edited meanwhile. From commit on, built-in outages
+ * announce themselves to no further channel.
+ *
+ * Delivery history belongs to a channel revision, so the guarantee holds for every channel left
+ * unchanged since it was told. Editing a channel starts a new revision without that history: the
+ * built-in outage owes the revised channel no recovery, while a continuation it accepts announces
+ * the outage to it once and later sends its recovery.
  */
 export type HostMonitoringHandoffRowKind = keyof typeof HOST_MONITORING_HANDOFF.columns
 

@@ -36,7 +36,10 @@ import { assertDiscoveryHostEditable } from '@/server/Admin/DockerDiscovery/disc
 import { validateTrustedCaAssignmentInTransaction } from '@/server/Admin/TrustedCaManagement/trusted-cas.service.ts'
 import { validateCertificateAssignmentInTransaction } from '@/server/Admin/CertificateManagement/certificates.service.ts'
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
-import { invalidateHostMonitoringForHostsInTransaction } from '@/server/HostMonitoring/host-monitoring.repository.ts'
+import {
+    invalidateHostMonitoringForHostsInTransaction,
+    isHostMonitoringHandoffOpenInTransaction,
+} from '@/server/HostMonitoring/host-monitoring.repository.ts'
 import {
     proxyHostChange,
     recordProxyHostEventsInTransaction,
@@ -580,6 +583,13 @@ export async function deleteProxyHostInTransaction(
     await writeProxyHostHttpSettings(transaction, host.id, {})
     await writeResponseCacheSettings(transaction, host.id, null)
     await assertDiscoveryHostEditable(transaction, host.id)
+    // Deleting the host would cascade into the monitoring rows an open handoff exports and an
+    // abort hands back to platform.
+    if (await isHostMonitoringHandoffOpenInTransaction(transaction, host.id))
+        throw new ProxyHostDomainError(
+            'monitoring_handoff_open',
+            'Proxy host monitoring is being handed over to an app.',
+        )
     await assignHostTagsInTransaction(transaction, 'proxy', host.id, [])
     await transaction.delete(proxyHosts).where(eq(proxyHosts.id, host.id))
     await invalidateHostMonitoringForHostsInTransaction(transaction, [host.id])

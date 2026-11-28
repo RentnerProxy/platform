@@ -30,6 +30,7 @@ import { appRpcLimits } from '@/server/AppRuntime/contract.ts'
 import { createAppRuntimeGateway } from '@/server/AppRuntime/gateway.server.ts'
 import { manageAppRuntime } from '@/server/AppRuntime/management.server.ts'
 import { executeAppRuntimeCall } from '@/server/AppRuntime/services.server.ts'
+import { deleteProxyHostInTransaction } from '@/server/Admin/ProxyHostManagement/proxy-hosts.mutations.server.ts'
 import { ensureAuthorizationRegistryInTransaction } from '@/server/Auth/Access/registry.service.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
@@ -53,6 +54,7 @@ import { appendNotificationIncident } from '@/server/Notifications/incident-engi
 import { resolveEffectiveNotificationConfigurationInTransaction } from '@/server/Notifications/notification-access.ts'
 import {
     acknowledgeNotificationDelivery,
+    authorizeNotificationDelivery,
     claimNextNotificationDelivery,
 } from '@/server/Notifications/notification-repository.ts'
 import {
@@ -477,6 +479,7 @@ async function createUser() {
             inArray(permissions.key, [
                 PERMISSIONS.PROXY_HOSTS_VIEW,
                 PERMISSIONS.PROXY_HOSTS_UPDATE,
+                PERMISSIONS.PROXY_HOSTS_DELETE,
             ]),
         )
     await db
@@ -514,6 +517,12 @@ describe('monitoring legacy handoff', () => {
             .from(legacyFeatureHandoffs)
             .where(eq(legacyFeatureHandoffs.domain, 'monitoring'))
         if (held) throw new Error('Another monitoring handoff exists; use an isolated database.')
+        // The hooks replace the global notification settings; never touch a configured database.
+        const [settings] = await db
+            .select({ key: systemSettings.key })
+            .from(systemSettings)
+            .where(inArray(systemSettings.key, notificationKeys))
+        if (settings) throw new Error('Notification settings exist; use an isolated database.')
         await db.transaction(ensureAuthorizationRegistryInTransaction)
     })
 
@@ -957,95 +966,98 @@ describe('monitoring legacy handoff', () => {
             ],
         ],
     ] as const)
-        integrationTest(
-            `${scenario}: a continued outage resolved at once ends once on every notified channel`,
-            async () => {
-                const [host] = await seedHosts(1, { failureThreshold: 1, recoveryThreshold: 1 })
-                await configureNotifications(channels.map(fixtureChannel))
-                const [claim] = await claimAll()
-                expect(
-                    await completeHostMonitoringClaim(
-                        claim!,
-                        unhealthy,
-                        async () => true,
-                        fixtureContext,
-                    ),
-                ).toBe(true)
-                const told = channels
-                    .filter(
-                        ({ events, thresholdSeconds }) =>
-                            subscribes(events, 'host_availability') && thresholdSeconds === 0,
-                    )
-                    .map(({ id }) => id)
-                const outage = await deliverTo()
-                expect(outage).toEqual(
-                    told.map((id) => [id, 'host_availability', 'incident']).toSorted(),
-                )
-                const incidentId = (await notificationEngine()).incidents.find(
-                    (incident) => incident.category === 'host_availability',
-                )!.id
-
-                const app = await install()
-                const handoff = exported(await app.begin())
-                await readParts(app, handoff)
-                expect((await app.commit(handoff.digest)).status).toBe(200)
-                // From commit on the built-in outage reaches no channel it had not reached.
-                const frozen = (await notificationEngine()).incidents.find(
-                    (incident) => incident.id === incidentId,
-                )!
-                expect(frozen.frozen).toBe(true)
-
-                // The app continues the outage and resolves it at once, as after a recovery
-                // during the handoff.
-                expect(
-                    (
-                        await app.incident(
-                            incidentId,
-                            {
-                                status: 'open',
-                                category: 'availability',
-                                severity: 'error',
-                                title: 'Host unavailable',
-                                message: 'The upstream did not answer.',
-                                resourceId: host!.id,
-                            },
-                            'continue-1',
+        for (const drained of [true, false])
+            integrationTest(
+                `${scenario}: a continued outage resolved at once ends once on every notified channel` +
+                    (drained ? '' : ' without a drain before the resolve'),
+                async () => {
+                    const [host] = await seedHosts(1, { failureThreshold: 1, recoveryThreshold: 1 })
+                    await configureNotifications(channels.map(fixtureChannel))
+                    const [claim] = await claimAll()
+                    expect(
+                        await completeHostMonitoringClaim(
+                            claim!,
+                            unhealthy,
+                            async () => true,
+                            fixtureContext,
+                        ),
+                    ).toBe(true)
+                    const told = channels
+                        .filter(
+                            ({ events, thresholdSeconds }) =>
+                                subscribes(events, 'host_availability') && thresholdSeconds === 0,
                         )
-                    ).status,
-                ).toBe(204)
-                const continued = channels
-                    .filter(({ events }) => subscribes(events, 'app_incident'))
-                    .map(({ id }) => id)
-                expect(await deliverTo()).toEqual(
-                    continued
+                        .map(({ id }) => id)
+                    const outage = await deliverTo()
+                    expect(outage).toEqual(
+                        told.map((id) => [id, 'host_availability', 'incident']).toSorted(),
+                    )
+                    const incidentId = (await notificationEngine()).incidents.find(
+                        (incident) => incident.category === 'host_availability',
+                    )!.id
+
+                    const app = await install()
+                    const handoff = exported(await app.begin())
+                    await readParts(app, handoff)
+                    expect((await app.commit(handoff.digest)).status).toBe(200)
+                    // From commit on the built-in outage reaches no channel it had not reached.
+                    const frozen = (await notificationEngine()).incidents.find(
+                        (incident) => incident.id === incidentId,
+                    )!
+                    expect(frozen.frozen).toBe(true)
+
+                    // The app continues the outage and resolves it at once, as after a recovery
+                    // during the handoff.
+                    expect(
+                        (
+                            await app.incident(
+                                incidentId,
+                                {
+                                    status: 'open',
+                                    category: 'availability',
+                                    severity: 'error',
+                                    title: 'Host unavailable',
+                                    message: 'The upstream did not answer.',
+                                    resourceId: host!.id,
+                                },
+                                'continue-1',
+                            )
+                        ).status,
+                    ).toBe(204)
+                    const continued = channels
+                        .filter(({ events }) => subscribes(events, 'app_incident'))
+                        .map(({ id }) => id)
+                    const announced = continued
                         .filter((id) => !told.includes(id))
                         .map((id) => [id, 'app_incident', 'incident'])
-                        .toSorted(),
-                )
-                expect(
-                    (await app.incident(incidentId, { status: 'resolved' }, 'resolve-1')).status,
-                ).toBe(204)
-                const heard = [...new Set([...told, ...continued])]
-                expect(await deliverTo()).toEqual(
-                    heard
-                        .map((id) => [
-                            id,
-                            continued.includes(id) ? 'app_incident' : 'host_availability',
-                            'recovery',
-                        ])
-                        .toSorted(),
-                )
-                expect(await deliverTo()).toEqual([])
-                expect(
-                    (await notificationEngine()).incidents.some(
-                        (incident) =>
-                            incident.category === 'host_availability' &&
-                            incident.recoveredAt === null,
-                    ),
-                ).toBe(false)
-            },
-            30_000,
-        )
+                    if (drained) expect(await deliverTo()).toEqual(announced.toSorted())
+                    expect(
+                        (await app.incident(incidentId, { status: 'resolved' }, 'resolve-1'))
+                            .status,
+                    ).toBe(204)
+                    const heard = [...new Set([...told, ...continued])]
+                    // Without the drain, the continuation's own outage notice goes out first.
+                    expect(await deliverTo()).toEqual(
+                        [
+                            ...(drained ? [] : announced),
+                            ...heard.map((id) => [
+                                id,
+                                continued.includes(id) ? 'app_incident' : 'host_availability',
+                                'recovery',
+                            ]),
+                        ].toSorted(),
+                    )
+                    expect(await deliverTo()).toEqual([])
+                    expect(
+                        (await notificationEngine()).incidents.some(
+                            (incident) =>
+                                incident.category === 'host_availability' &&
+                                incident.recoveredAt === null,
+                        ),
+                    ).toBe(false)
+                },
+                30_000,
+            )
 
     integrationTest(
         'more exported open outages than the ordinary incident limit can all be continued',
@@ -1101,34 +1113,188 @@ describe('monitoring legacy handoff', () => {
         },
         60_000,
     )
+    for (const outcome of ['succeeds', 'finally fails'] as const)
+        integrationTest(
+            `a built-in notice in flight across a host change that ${outcome} is heard once`,
+            async () => {
+                const [host] = await seedHosts(1, { failureThreshold: 1, recoveryThreshold: 1 })
+                await configureNotifications([fixtureChannel(bothChannel)])
+                await recordOutages()
+                // The built-in outage notice is still being sent when the app takes over.
+                const sending = await claimNextNotificationDelivery()
+                expect(sending?.payload).toMatchObject({
+                    category: 'host_availability',
+                    type: 'incident',
+                })
+                const incidentId = sending!.payload.incidentId
+                const app = await install()
+                await handOver(app)
+                expect(
+                    (await app.incident(incidentId, outageBody(host!.id), 'continue-1')).status,
+                ).toBe(204)
+                // A host change keeps the frozen outage and its send, so nothing is announced.
+                await getAuthDatabase().transaction((transaction) =>
+                    invalidateHostMonitoringForHostsInTransaction(transaction, [host!.id]),
+                )
+                expect(await deliverTo()).toEqual([])
+                await acknowledgeNotificationDelivery(
+                    sending!.leaseToken,
+                    outcome === 'succeeds'
+                        ? { success: true }
+                        : { success: false, code: 'destination_blocked', retryable: false },
+                )
+                // Only a send that never arrived is repeated, now by the continuation.
+                expect(await deliverTo()).toEqual(
+                    outcome === 'succeeds' ? [] : [[bothChannel.id, 'app_incident', 'incident']],
+                )
+                expect(
+                    (await app.incident(incidentId, { status: 'resolved' }, 'resolve-1')).status,
+                ).toBe(204)
+                expect(await deliverTo()).toEqual([[bothChannel.id, 'app_incident', 'recovery']])
+                expect(await deliverTo()).toEqual([])
+            },
+            30_000,
+        )
+
     integrationTest(
-        'a host change during an in-flight built-in notice lets the continuation announce it',
+        'a channel that stayed with the built-in outage gets its recovery after a host edit',
         async () => {
             const [host] = await seedHosts(1, { failureThreshold: 1, recoveryThreshold: 1 })
-            await configureNotifications([fixtureChannel(bothChannel)])
+            await configureNotifications([
+                fixtureChannel(hostOnlyChannel),
+                fixtureChannel(bothChannel),
+            ])
             await recordOutages()
-            // The built-in outage notice is still being sent when the app takes over.
-            const sending = await claimNextNotificationDelivery()
-            expect(sending?.payload).toMatchObject({
-                category: 'host_availability',
-                type: 'incident',
-            })
-            const incidentId = sending!.payload.incidentId
+            await deliverTo()
+            const incidentId = (await notificationEngine()).incidents[0]!.id
             const app = await install()
             await handOver(app)
             expect(
                 (await app.incident(incidentId, outageBody(host!.id), 'continue-1')).status,
             ).toBe(204)
-            expect(await deliverTo()).toEqual([])
-            // A host change ends the built-in incident before the send settled.
+            // The upstream changes after the continuation took over.
             await getAuthDatabase().transaction((transaction) =>
                 invalidateHostMonitoringForHostsInTransaction(transaction, [host!.id]),
             )
-            expect(await deliverTo()).toEqual([[bothChannel.id, 'app_incident', 'incident']])
+            expect(
+                (await notificationEngine()).incidents.find(
+                    (incident) => incident.id === incidentId,
+                )?.frozen,
+            ).toBe(true)
             expect(
                 (await app.incident(incidentId, { status: 'resolved' }, 'resolve-1')).status,
             ).toBe(204)
-            expect(await deliverTo()).toEqual([[bothChannel.id, 'app_incident', 'recovery']])
+            // The worker authorizes the built-in recovery although the host context changed.
+            const delivered: string[][] = []
+            for (;;) {
+                // oxlint-disable-next-line no-await-in-loop -- Deliveries are claimed one at a time.
+                const claim = await claimNextNotificationDelivery()
+                if (!claim) break
+                // oxlint-disable-next-line no-await-in-loop -- Each claim is authorized like a send.
+                expect(await authorizeNotificationDelivery(claim)).not.toBeNull()
+                delivered.push([claim.channelId, claim.payload.category, claim.payload.type])
+                // oxlint-disable-next-line no-await-in-loop -- See above.
+                await acknowledgeNotificationDelivery(claim.leaseToken, { success: true })
+            }
+            expect(delivered.toSorted()).toEqual(
+                [
+                    [hostOnlyChannel.id, 'host_availability', 'recovery'],
+                    [bothChannel.id, 'app_incident', 'recovery'],
+                ].toSorted(),
+            )
+        },
+        30_000,
+    )
+
+    integrationTest(
+        'a monitored host cannot be deleted while the handoff is open',
+        async () => {
+            const { db } = await import('@/db/index.ts')
+            const [host, other] = await seedHosts(2, { failureThreshold: 1 })
+            await recordOutages()
+            const actorId = await createUser()
+            const remove = (hostId: string) =>
+                getAuthDatabase().transaction((transaction) =>
+                    deleteProxyHostInTransaction(transaction, actorId, hostId),
+                )
+            const app = await install()
+            exported(await app.begin())
+            const before = await monitoringSnapshot()
+            await expect(remove(host!.id)).rejects.toMatchObject({
+                code: 'monitoring_handoff_open',
+            })
+            expect(await monitoringSnapshot()).toEqual(before)
+            // Once the handoff is aborted, or committed, the host can be deleted again.
+            expect((await app.control('removable')).status).toBe(204)
+            await remove(host!.id)
+            exported(await app.begin('begin-2'))
+            await handOver(app)
+            await remove(other!.id)
+            expect(
+                await db
+                    .select({ id: proxyHosts.id })
+                    .from(proxyHosts)
+                    .where(eq(proxyHosts.forwardHost, marker)),
+            ).toEqual([])
+        },
+        30_000,
+    )
+
+    integrationTest(
+        'an abort resets policies whose host lost its domain or was disabled meanwhile',
+        async () => {
+            const { db } = await import('@/db/index.ts')
+            const [renamed, disabled, untouched] = await seedHosts(3, { failureThreshold: 1 })
+            await recordOutages()
+            const app = await install()
+            exported(await app.begin())
+            // The fence keeps these host changes from resetting monitoring during the handoff.
+            await db.execute(
+                sql`delete from rentnerproxy.host_domains where proxy_host_id = ${renamed!.id}`,
+            )
+            await db
+                .update(proxyHosts)
+                .set({ enabled: false })
+                .where(eq(proxyHosts.id, disabled!.id))
+            await getAuthDatabase().transaction((transaction) =>
+                invalidateHostMonitoringForHostsInTransaction(transaction, [
+                    renamed!.id,
+                    disabled!.id,
+                ]),
+            )
+            const state = async (hostId: string) => {
+                const [row] = await db.execute<{
+                    state: string
+                    reason: string | null
+                    proof: string | null
+                }>(sql`
+                    select p.state, p.context_proof as proof,
+                        (select string_agg(coalesce(i.closed_reason, 'open'), ',')
+                         from rentnerproxy.host_check_incidents i where i.policy_id = p.id) as reason
+                    from ${hostCheckPolicies} p where p.proxy_host_id = ${hostId}`)
+                return row
+            }
+            expect(await state(renamed!.id)).toMatchObject({ state: 'unhealthy', reason: 'open' })
+            // The abort applies the skipped resets before the worker resumes, and only once.
+            expect((await app.control('removable')).status).toBe(204)
+            expect(await state(renamed!.id)).toEqual({
+                state: 'unknown',
+                reason: 'policy_changed',
+                proof: null,
+            })
+            expect(await state(disabled!.id)).toEqual({
+                state: 'unknown',
+                reason: 'monitoring_disabled',
+                proof: null,
+            })
+            expect(await state(untouched!.id)).toMatchObject({
+                state: 'unhealthy',
+                reason: 'open',
+            })
+            const reset = await monitoringSnapshot()
+            exported(await app.begin('begin-2'))
+            expect((await app.control('removable')).status).toBe(204)
+            expect(await monitoringSnapshot()).toEqual(reset)
         },
         30_000,
     )

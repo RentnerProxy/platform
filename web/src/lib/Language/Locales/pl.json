@@ -2040,7 +2040,8 @@
                 "proxy_host_not_found": "Ten host proxy już nie istnieje.",
                 "invalid_status_transition": "Host proxy jest już w tym stanie. Odśwież listę i spróbuj ponownie.",
                 "invalid_input": "Sprawdź dane hosta proxy i spróbuj ponownie.",
-                "discovery_managed": "Ten host jest zarządzany przez etykiety Docker. Odłącz go od Docker Discovery przed edycją lub usunięciem."
+                "discovery_managed": "Ten host jest zarządzany przez etykiety Docker. Odłącz go od Docker Discovery przed edycją lub usunięciem.",
+                "monitoring_handoff_open": "Monitorowanie tego hosta jest przekazywane aplikacji. Usuń hosta po zakończeniu przekazania."
             },
             "validation": {
                 "domain": "Wpisz prawidłową nazwę DNS bez adresu URL, adresu IP i nazwy wieloznacznej.",

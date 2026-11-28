@@ -4,3 +4,5 @@ export type ProxyHostDomainErrorCode =
     | 'invalid_status_transition'
     | 'invalid_input'
     | 'discovery_managed'
+    // The host's monitoring is being handed over to an app; delete it once that finished.
+    | 'monitoring_handoff_open'

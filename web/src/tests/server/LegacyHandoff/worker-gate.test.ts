@@ -11,7 +11,11 @@ import type { LegacyFeatureOwner } from '@/server/LegacyHandoff/Types/legacy-han
 type Owner = LegacyFeatureOwner['owner']
 
 /** A gate around a recording worker, with the journal, signals and poll timer in the test's hand. */
-function harness(initial: Owner | Error, stop: () => Promise<void> = async () => undefined) {
+function harness(
+    initial: Owner | Error,
+    stop: () => Promise<void> = async () => undefined,
+    start: () => void = () => undefined,
+) {
     let owner: Owner | Error = initial
     const events: string[] = []
     const listeners = new Set<() => void>()
@@ -20,7 +24,10 @@ function harness(initial: Owner | Error, stop: () => Promise<void> = async () =>
     const gate = createLegacyFeatureWorkerGate(
         'monitoring',
         {
-            start: () => events.push('start'),
+            start: () => {
+                start()
+                events.push('start')
+            },
             stop: async () => {
                 events.push('stop')
                 await stop()
@@ -151,6 +158,23 @@ test('a failed drain is settled before the worker may start again', async () => 
     run.set('platform')
     await run.tick()
     expect(run.events).toEqual(['start', 'stop', 'stop', 'start'])
+    await run.gate.stop()
+})
+
+test('a worker start that throws is retried on the poll', async () => {
+    let failing = true
+    const run = harness('platform', undefined, () => {
+        if (failing) throw new Error('start failed')
+    })
+    await run.gate.start()
+    expect(run.events).toEqual([])
+    expect(run.timers).toHaveLength(1)
+    failing = false
+    await run.tick()
+    expect(run.events).toEqual(['start'])
+    // A started worker is not started twice.
+    await run.signal()
+    expect(run.events).toEqual(['start'])
     await run.gate.stop()
 })
 
