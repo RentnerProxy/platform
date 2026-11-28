@@ -16,6 +16,7 @@ import {
     legacyFeatureHandoffRequests,
     roles,
     type AppRuntimeStoredGrant,
+    type AppRuntimeStoredIncidentCategory,
 } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { abortInstallationLegacyHandoffsInTransaction } from '@/server/LegacyHandoff/app-api.server.ts'
@@ -29,6 +30,7 @@ import {
 import { isAppRuntimeIdentity, lockAppRuntimeInstallation } from './authority.server.ts'
 import {
     appCapabilitySchema,
+    appIncidentCategoriesSchema,
     appProviderProfilesSchema,
     appProviderRegistrationsSchema,
 } from './contract.ts'
@@ -94,6 +96,7 @@ export async function registerAppRuntimeGenerationInTransaction(
         permissionKeys = [],
         providerProfiles = [],
         hasUi = false,
+        incidentCategories = [],
     } = registration
     if (
         !isAppRuntimeIdentity(identity) ||
@@ -103,7 +106,8 @@ export async function registerAppRuntimeGenerationInTransaction(
         permissionKeys.length > 64 ||
         !permissionKeys.every(isLocalAppRuntimePermissionKey) ||
         new Set(permissionKeys).size !== permissionKeys.length ||
-        !appProviderProfilesSchema.safeParse(providerProfiles).success
+        !appProviderProfilesSchema.safeParse(providerProfiles).success ||
+        !appIncidentCategoriesSchema.safeParse(incidentCategories).success
     )
         throw new AppRuntimeAuthorityError('invalid_input')
 
@@ -118,6 +122,10 @@ export async function registerAppRuntimeGenerationInTransaction(
     const declaredCapabilities = capabilities.map(({ id }) => id).toSorted()
     const declaredPermissions = permissionKeys.toSorted()
     const declaredProviders = providerProfiles.toSorted()
+    // Like the other declared lists, categories are stored and compared in a stable order.
+    const declaredCategories = incidentCategories
+        .map(({ id, name, resource }) => ({ id, name, resource }))
+        .toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
     const now = Date.now()
     if (previous && previous.generation >= generation) {
         if (
@@ -127,7 +135,8 @@ export async function registerAppRuntimeGenerationInTransaction(
             previous.hasUi === hasUi &&
             JSON.stringify(previous.capabilities) === JSON.stringify(declaredCapabilities) &&
             JSON.stringify(previous.permissionKeys) === JSON.stringify(declaredPermissions) &&
-            JSON.stringify(previous.providerProfiles) === JSON.stringify(declaredProviders)
+            JSON.stringify(previous.providerProfiles) === JSON.stringify(declaredProviders) &&
+            JSON.stringify(previous.incidentCategories) === JSON.stringify(declaredCategories)
         )
             return
         throw new AppRuntimeAuthorityError('conflict')
@@ -154,8 +163,26 @@ export async function registerAppRuntimeGenerationInTransaction(
         capabilities: sql`${JSON.stringify(declaredCapabilities)}::text::jsonb`,
         permissionKeys: sql`${JSON.stringify(declaredPermissions)}::text::jsonb`,
         providerProfiles: sql`${JSON.stringify(declaredProviders)}::text::jsonb`,
+        incidentCategories: sql`${JSON.stringify(declaredCategories)}::text::jsonb`,
         hasUi,
     })
+}
+
+/** The incident categories the installation's active generation declares, or none. */
+export async function readAppIncidentCategoriesInTransaction(
+    transaction: AuthTransaction,
+    installationId: string,
+): Promise<readonly AppRuntimeStoredIncidentCategory[]> {
+    const [active] = await transaction
+        .select({ incidentCategories: appRuntimeGenerations.incidentCategories })
+        .from(appRuntimeGenerations)
+        .where(
+            and(
+                eq(appRuntimeGenerations.installationId, installationId),
+                eq(appRuntimeGenerations.state, 'active'),
+            ),
+        )
+    return active?.incidentCategories ?? []
 }
 
 /** Record the broker-validated provider registrations once, while the generation is preparing. */

@@ -31,6 +31,12 @@ export interface AppRuntimeProviderRegistration {
     readonly version: string
 }
 
+export interface AppIncidentCategory {
+    readonly id: string
+    readonly name: string
+    readonly resource: 'proxyHost' | 'none'
+}
+
 export interface AppRuntimeRegistration {
     readonly identity: AppRuntimeIdentity
     readonly leaseExpiresAt: Date
@@ -38,6 +44,7 @@ export interface AppRuntimeRegistration {
     readonly providerProfiles?: readonly string[]
     readonly permissionKeys?: readonly string[]
     readonly hasUi?: boolean
+    readonly incidentCategories?: readonly AppIncidentCategory[]
 }
 
 interface AppRuntimePrincipalBase {
