@@ -98,7 +98,7 @@ fn dns_response(request: Message, state: &DnsState) -> Message {
                         .push(proof["content"].as_str().unwrap().to_owned());
                     response.add_answer(record(
                         TARGET,
-                        RData::TXT(TXT::new(vec![
+                        RData::TXT(txt_data(vec![
                             proof["content"].as_str().unwrap().to_owned(),
                         ])),
                     ));
@@ -534,4 +534,9 @@ async fn delegated_wait_rejects_cancelled_or_invalid_work_without_waiting() {
         runtime.certificate_store.get(ID).await.unwrap().operation,
         CertificateOperation::Issuing
     );
+}
+
+/// TXT record data from text values; `TXT::new` is deprecated since hickory 0.26.4.
+fn txt_data(values: Vec<String>) -> TXT {
+    TXT::try_new(values.into_iter().map(String::into_bytes)).unwrap()
 }
