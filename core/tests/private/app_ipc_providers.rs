@@ -40,6 +40,17 @@ fn monitoring(limit: u64) -> Value {
     json!({"profile": "monitoring", "payload": {"limit": limit}})
 }
 
+/// Samples the way the monitoring profile names hosts: a host, a state and a latency.
+fn host_samples(count: usize) -> Value {
+    let samples: Vec<_> = (0..count)
+        .map(|index| {
+            json!({"serviceId": format!("service-{index}"), "proxyHostId": format!("host-{index}"),
+                "observedAt": OBSERVED, "healthy": true, "state": "healthy", "latencyMs": 12})
+        })
+        .collect();
+    json!({"profile": "monitoring", "payload": {"samples": samples}})
+}
+
 fn dns_check(challenge: &str) -> Value {
     json!({"profile": "dns", "payload": {"action": "check", "challengeId": challenge}})
 }
@@ -395,6 +406,90 @@ async fn invokes_only_granted_providers_and_releases_only_matching_results() {
     .await;
     timeout(TEST_WAIT, app).await.unwrap().unwrap();
     timeout(TEST_WAIT, authority).await.unwrap().unwrap();
+    broker.abort();
+    assert!(broker.await.unwrap_err().is_cancelled());
+}
+
+fn contradicting_sample() -> Value {
+    let mut result = host_samples(1);
+    result["payload"]["samples"][0]["state"] = json!("unhealthy");
+    result
+}
+
+fn verify_large_app_request(parts: hyper::http::request::Parts, body: Bytes) {
+    assert_eq!(parts.uri.path(), MONITOR);
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body, monitoring(1_000));
+}
+
+#[tokio::test]
+async fn monitoring_invocations_are_bounded_to_one_thousand_samples() {
+    if uid() != 0 {
+        return;
+    }
+    let scratch = Scratch::create(&env::temp_dir());
+    let (core, broker) = start_broker(&scratch);
+    // Only the invocations the contract admits reach the authority and the app: the result
+    // released is authorized a second time, the one withheld for its size is not.
+    let authority = serve_replies(
+        &scratch.path("authority.sock"),
+        vec![
+            json_reply(StatusCode::OK, &monitor()),
+            json_reply(StatusCode::OK, &monitor()),
+            json_reply(StatusCode::OK, &monitor()),
+            json_reply(StatusCode::OK, &monitor()),
+        ],
+        verify_authority_request,
+    );
+    let app = serve_replies(
+        &scratch.path("app.sock"),
+        vec![
+            json_reply(StatusCode::OK, &host_samples(1_000)),
+            json_reply(StatusCode::OK, &host_samples(1_001)),
+            json_reply(StatusCode::OK, &contradicting_sample()),
+        ],
+        verify_large_app_request,
+    );
+    // The upper bound of the limit, answered with one sample per host and a state.
+    timeout(TEST_WAIT, async {
+        let response = open(&core)
+            .await
+            .send_request(invocation(MONITOR, &monitoring(1_000)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result: Value =
+            serde_json::from_slice(&response.collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(result, host_samples(1_000));
+    })
+    .await
+    .unwrap();
+    // More samples than the contract allows are withheld, though the request admitted them.
+    assert_provider_problem(
+        &core,
+        invocation(MONITOR, &monitoring(1_000)),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "platformUnavailable",
+    )
+    .await;
+    // A state that contradicts `healthy` makes the whole result invalid.
+    assert_provider_problem(
+        &core,
+        invocation(MONITOR, &monitoring(1_000)),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "platformUnavailable",
+    )
+    .await;
+    timeout(TEST_WAIT, app).await.unwrap().unwrap();
+    timeout(TEST_WAIT, authority).await.unwrap().unwrap();
+    // A limit above the bound is no valid request: neither the authority nor the app sees it.
+    assert_provider_problem(
+        &core,
+        invocation(MONITOR, &monitoring(1_001)),
+        StatusCode::BAD_REQUEST,
+        "invalidRequest",
+    )
+    .await;
     broker.abort();
     assert!(broker.await.unwrap_err().is_cancelled());
 }

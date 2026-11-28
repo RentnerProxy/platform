@@ -1141,6 +1141,37 @@ fn provider_results_must_answer_their_invocation() {
             json!({"connectionId": "docker-one", "observations": observed(3)})
         ));
     }
+    // The monitoring profile bounds its limit to 1,000: a result of that size answers it, and
+    // one item more never does, whichever way the limit is written.
+    for limit in ["1000", "1000.0", "1e3"] {
+        let request: Value = serde_json::from_str(&format!(r#"{{"limit":{limit}}}"#)).unwrap();
+        assert!(pair(
+            "monitoring",
+            request.clone(),
+            json!({"samples": observed(1000)})
+        ));
+        assert!(!pair(
+            "monitoring",
+            request,
+            json!({"samples": observed(1001)})
+        ));
+    }
+    assert!(!pair(
+        "monitoring",
+        json!({"limit": 999}),
+        json!({"samples": observed(1000)})
+    ));
+    // The bound holds for the result even when the request named a larger limit.
+    assert!(!pair(
+        "monitoring",
+        json!({"limit": 5000}),
+        json!({"samples": observed(1001)})
+    ));
+    assert!(!pair(
+        "docker-discovery",
+        json!({"connectionId": "docker-one", "limit": 500}),
+        json!({"connectionId": "docker-one", "observations": observed(101)})
+    ));
     let discovery = json!({"connectionId": "docker-one", "limit": 1});
     assert!(pair(
         "docker-discovery",
