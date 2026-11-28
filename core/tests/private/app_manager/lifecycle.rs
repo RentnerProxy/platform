@@ -252,6 +252,8 @@ async fn authority(
                 json!(["monitoring"])
             };
             assert_eq!(value["providerProfiles"], expected);
+            // A manifest without incident categories registers an empty declaration.
+            assert_eq!(value["incidentCategories"], json!([]));
             states.insert(
                 generation,
                 Recorded {

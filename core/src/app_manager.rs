@@ -475,6 +475,11 @@ impl Manager {
             .cloned()
             .unwrap_or_else(|| json!([]));
         registration["hasUi"] = package.manifest.get("ui").is_some().into();
+        registration["incidentCategories"] = package
+            .manifest
+            .get("incidentCategories")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
         self.gateway.post("register", registration).await?;
         let renewal = runtime::Renewal::start(self.gateway.clone(), who.clone(), deadline);
         slot.authority_recorded = Some(true);
