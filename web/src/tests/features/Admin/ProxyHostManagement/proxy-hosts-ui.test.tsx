@@ -1350,6 +1350,23 @@ describe('ProxyHost monitoring integration', () => {
         ).toBe(false)
         // The handoff is final, so the summary is neither retried nor polled again.
         expect(getHostMonitoringSummaryMock).toHaveBeenCalledTimes(1)
+
+        // Another host page asks once, without showing the column while it waits.
+        const answer = Promise.withResolvers<HostMonitoringSummary>()
+        getHostMonitoringSummaryMock.mockImplementation(() => answer.promise)
+        await setControlValue(document.querySelector('input[type="search"]')!, 'app.example')
+        await waitFor(() => getRows().length === 1)
+        await waitFor(() => getHostMonitoringSummaryMock.mock.calls.length === 2)
+        expect(document.body.textContent).not.toContain('Upstream availability')
+        // Only a summary of built-in monitoring, as after an aborted handoff, brings it back.
+        await act(async () => {
+            answer.resolve({
+                checkedAt: new Date(),
+                summaries: [{ proxyHostId: enabledHost.id, policy: monitoringPolicy }],
+            })
+            await answer.promise
+        })
+        await waitFor(() => document.body.textContent?.includes('Upstream availability') ?? false)
     })
 
     test('batch refresh updates availability without replacing or closing the open action menu', async () => {

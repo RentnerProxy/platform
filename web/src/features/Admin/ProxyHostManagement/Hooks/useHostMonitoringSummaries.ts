@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { HOST_MONITORING_UI } from '@/config/host-monitoring-ui.config.ts'
 import {
@@ -23,6 +23,10 @@ export default function useHostMonitoringSummaries(
 ): HostMonitoringSummaries {
     const { t, locale } = useTranslationStore()
     const ids = useMemo(() => hosts.map((host) => host.id).toSorted(), [hosts])
+    // The handoff outlives the query of one host page: a new page asks once, but neither polls nor
+    // shows the built-in column again until a summary reports built-in monitoring, as after an abort.
+    const [retiredAt, setRetiredAt] = useState<number | null>(null)
+    const retired = retiredAt !== null
     const query = useQuery({
         queryKey: hostMonitoringQueryKeys.summary(ids),
         queryFn: ({ signal }) => getHostMonitoringSummary(ids, signal),
@@ -30,7 +34,7 @@ export default function useHostMonitoringSummaries(
         staleTime: 5_000,
         // A handoff to an app is final: stop asking for built-in summaries once it is reported.
         refetchInterval: (current) =>
-            enabled && ids.length > 0 && !isHandedOff(current.state.error)
+            enabled && ids.length > 0 && !retired && !isHandedOff(current.state.error)
                 ? HOST_MONITORING_UI.pollIntervalMs
                 : false,
         refetchIntervalInBackground: false,
@@ -58,7 +62,11 @@ export default function useHostMonitoringSummaries(
             }),
         [locale],
     )
-    const handedOff = enabled && isHandedOff(query.error)
+    const reported = isHandedOff(query.error)
+    // Only a summary fetched after the handoff report proves built-in monitoring, not cached data.
+    if (reported && !retired) setRetiredAt(query.errorUpdatedAt)
+    else if (retired && query.isSuccess && query.dataUpdatedAt > retiredAt) setRetiredAt(null)
+    const handedOff = enabled && (retired || reported)
     const rows = useMemo(() => {
         const policies = new Map(
             enabled && !query.isError

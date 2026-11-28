@@ -77,6 +77,7 @@ let responseHistory: unknown
 let historyFactory: ((url: string) => unknown) | null
 let getStatus = 200
 let postStatus = 200
+let conflictCode = 'conflict'
 const requests: { url: string; method: string; body: string }[] = []
 let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, 'fetch'>>
 
@@ -127,6 +128,7 @@ beforeEach(() => {
     historyFactory = null
     getStatus = 200
     postStatus = 200
+    conflictCode = 'conflict'
     client = new QueryClient({
         defaultOptions: { queries: { retry: false, retryDelay: 0 }, mutations: { retry: false } },
     })
@@ -141,7 +143,7 @@ beforeEach(() => {
                     status === 403
                         ? { error: 'permission_denied' }
                         : status === 409
-                          ? { error: 'conflict' }
+                          ? { error: conflictCode }
                           : url.includes('history?')
                             ? (historyFactory?.(url) ?? responseHistory)
                             : responsePolicy,
@@ -521,6 +523,37 @@ test('save success and failure emit localized toasts once while preserving faile
     await flush()
     expect(successToast).toHaveBeenCalledTimes(1)
     expect(errorToast).toHaveBeenCalledTimes(1)
+})
+
+const saveRequests = () => requests.filter(({ method }) => method === 'POST').length
+
+test('a save refused by a monitoring handoff retires the settings form', async () => {
+    await render()
+    expect(logic.state.canUpdate).toBe(true)
+    await act(async () => {
+        logic.form.setFieldValue('intervalSeconds', 90)
+    })
+    postStatus = 409
+    conflictCode = 'handed_off'
+    await act(async () => {
+        await logic.form.handleSubmit()
+    })
+    await flush()
+    expect(errorToast).toHaveBeenCalledWith(
+        'An app now manages monitoring, so these built-in settings can no longer be changed.',
+        { title: 'Action failed' },
+    )
+    expect(logic.state.canUpdate).toBe(false)
+    expect(logic.state.dirty).toBe(false)
+    const before = saveRequests()
+    await act(async () => {
+        logic.form.setFieldValue('intervalSeconds', 120)
+    })
+    await act(async () => {
+        await logic.form.handleSubmit()
+    })
+    await flush()
+    expect(saveRequests()).toBe(before)
 })
 
 test.each(['close', 'unmount', 'host', 'permissions'] as const)(

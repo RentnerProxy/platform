@@ -43,7 +43,10 @@ export default function useHostMonitoringDialogLogic(props: HostMonitoringDialog
     const queryClient = useQueryClient()
     const id = useId()
     const canView = props.permissions.includes(PERMISSIONS.PROXY_HOSTS_VIEW)
-    const canUpdate = canView && props.permissions.includes(PERMISSIONS.PROXY_HOSTS_UPDATE)
+    // A save refused because an app took monitoring over retires the built-in settings form.
+    const [handedOff, setHandedOff] = useState(false)
+    const canUpdate =
+        canView && props.permissions.includes(PERMISSIONS.PROXY_HOSTS_UPDATE) && !handedOff
     const [tab, setTab] = useState<MonitoringTab>('overview')
     const [status, setStatus] = useState<HostMonitoringHistoryQuery['status']>('all')
     const [period, setPeriod] = useState<MonitoringPeriod>('recent')
@@ -180,6 +183,8 @@ export default function useHostMonitoringDialogLogic(props: HostMonitoringDialog
                         title: t('toast.titles.warning'),
                     })
             } else if (error instanceof HostMonitoringClientError && error.code === 'handed_off') {
+                setHandedOff(true)
+                form.reset()
                 // The table drops the built-in column once the summary reports the handoff too.
                 runAction(() =>
                     queryClient.invalidateQueries({ queryKey: hostMonitoringQueryKeys.all }),
