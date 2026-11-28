@@ -30,6 +30,11 @@ import type {
     MonitoringTab,
 } from '../Types/host-monitoring-dialog.types.ts'
 
+/** An app took monitoring over, or a handoff to one is open: the built-in settings are retired. */
+function isHandedOff(error: unknown) {
+    return error instanceof HostMonitoringClientError && error.code === 'handed_off'
+}
+
 function privateError(error: unknown) {
     return (
         error instanceof HostMonitoringClientError &&
@@ -43,7 +48,8 @@ export default function useHostMonitoringDialogLogic(props: HostMonitoringDialog
     const queryClient = useQueryClient()
     const id = useId()
     const canView = props.permissions.includes(PERMISSIONS.PROXY_HOSTS_VIEW)
-    const canUpdate = canView && props.permissions.includes(PERMISSIONS.PROXY_HOSTS_UPDATE)
+    // The dialog session in which a save was refused because an app takes monitoring over.
+    const [refusedScope, setRefusedScope] = useState<string | null>(null)
     const [tab, setTab] = useState<MonitoringTab>('overview')
     const [status, setStatus] = useState<HostMonitoringHistoryQuery['status']>('all')
     const [period, setPeriod] = useState<MonitoringPeriod>('recent')
@@ -125,6 +131,14 @@ export default function useHostMonitoringDialogLogic(props: HostMonitoringDialog
         refetchOnReconnect: true,
         retry: (count, error) => !privateError(error) && count < 3,
     })
+    // A refused save retires the settings form until the dialog closes; the next session asks
+    // again, as an aborted handoff returns monitoring to platform. A read reporting the handoff
+    // retires it too.
+    if (!props.open && refusedScope !== null) setRefusedScope(null)
+    const handedOff =
+        refusedScope === scope || isHandedOff(policyQuery.error) || isHandedOff(historyQuery.error)
+    const canUpdate =
+        canView && props.permissions.includes(PERMISSIONS.PROXY_HOSTS_UPDATE) && !handedOff
     const forbidden =
         !canView ||
         accessRevoked ||
@@ -178,6 +192,17 @@ export default function useHostMonitoringDialogLogic(props: HostMonitoringDialog
                 if (generation.current.active)
                     toast.warning(t('admin.hostMonitoring.conflict'), {
                         title: t('toast.titles.warning'),
+                    })
+            } else if (error instanceof HostMonitoringClientError && error.code === 'handed_off') {
+                setRefusedScope(scope)
+                form.reset()
+                // The table drops the built-in column once the summary reports the handoff too.
+                runAction(() =>
+                    queryClient.invalidateQueries({ queryKey: hostMonitoringQueryKeys.all }),
+                )
+                if (generation.current.active)
+                    toast.error(t('admin.hostMonitoring.handedOff'), {
+                        title: t('toast.titles.error'),
                     })
             } else {
                 if (generation.current.active)

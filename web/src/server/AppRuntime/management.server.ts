@@ -29,6 +29,7 @@ import {
     revokeAppRuntimeGenerationInTransaction,
     setAppRuntimeRolePermissionInTransaction,
 } from './lifecycle.server.ts'
+import { signalLegacyFeatureOwnership } from '@/server/LegacyHandoff/ownership-signal.server.ts'
 import { resolveRemovedAppIncidentsInTransaction } from '@/server/Notifications/app-incidents.repository.ts'
 import { AppRuntimeProblem } from './problem.ts'
 import { appRuntimeTransaction, parseAppInput, withAppRuntimeErrors } from './services.server.ts'
@@ -222,6 +223,8 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
             },
             readCommitted,
         )
+        // The removal check returned uncommitted domains to platform: their workers resume now.
+        if (action === 'removable') signalLegacyFeatureOwnership()
         const headers = { 'Cache-Control': 'no-store' }
         if (result !== undefined) return Response.json(result, { headers })
         return new Response(null, { status: 204, headers })

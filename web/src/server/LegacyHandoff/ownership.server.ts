@@ -6,6 +6,7 @@ import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
 import { legacyFeatureHandoffs } from '@/db/schema.ts'
 import { appProviderProfiles } from '@/server/AppRuntime/contract.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { signalLegacyFeatureOwnership } from './ownership-signal.server.ts'
 import type {
     LegacyFeatureDomain,
     LegacyFeatureOwner,
@@ -48,6 +49,18 @@ export async function lockLegacyFeatureDomain(
     await transaction.execute(sql`select pg_advisory_xact_lock(${domainLock(domain)})`)
 }
 
+/**
+ * Wait until no handoff of the domain is beginning, committing or aborting, and keep new ones out
+ * until this transaction ends. Writers that must not be skipped take it before their other locks
+ * of the domain, so a handoff, which waits on none of them, never closes a lock cycle.
+ */
+export async function shareLegacyFeatureDomain(
+    transaction: AuthTransaction,
+    domain: LegacyFeatureDomain,
+): Promise<void> {
+    await transaction.execute(sql`select pg_advisory_xact_lock_shared(${domainLock(domain)})`)
+}
+
 /** Keep handoffs from changing any domain's owner until this read-only transaction ends. */
 export async function shareLegacyFeatureDomains(transaction: AuthTransaction): Promise<void> {
     await transaction.execute(sql`
@@ -79,9 +92,25 @@ export async function readLegacyFeatureOwnerInTransaction(
     return row ? toLegacyFeatureOwner(row) : { owner: 'platform' }
 }
 
+/** When an app committed the domain; null while platform owns it or a handoff is still open. */
+export async function readLegacyFeatureCommittedAtInTransaction(
+    transaction: AuthTransaction,
+    domain: LegacyFeatureDomain,
+): Promise<Date | null> {
+    const [row] = await transaction
+        .select({ committedAt: legacyFeatureHandoffs.committedAt })
+        .from(legacyFeatureHandoffs)
+        .where(eq(legacyFeatureHandoffs.domain, domain))
+    return row?.committedAt ?? null
+}
+
 /**
  * Run one platform write of a built-in domain only while platform owns it. A handoff in progress
  * holds the exclusive domain lock, so the writer skips instead of waiting for it or racing its export.
+ * Only work that loses nothing when skipped belongs here, such as a worker's claim or retention:
+ * the try also fails while a begin is merely queued or about to roll back.
+ * A skipped writer signals the domain, so a worker gate in this process re-reads ownership and
+ * stops its worker instead of polling the fence.
  */
 export async function withPlatformOwnedLegacyFeature<T>(
     transaction: AuthTransaction,
@@ -91,8 +120,30 @@ export async function withPlatformOwnedLegacyFeature<T>(
     const [lock] = await transaction.execute<{ locked: boolean }>(
         sql`select pg_try_advisory_xact_lock_shared(${domainLock(domain)}) as locked`,
     )
-    if (!lock?.locked) return { owned: false }
+    if (!lock?.locked) return fenced(domain)
     const ownership = await readLegacyFeatureOwnerInTransaction(transaction, domain)
-    if (ownership.owner !== 'platform') return { owned: false }
+    if (ownership.owner !== 'platform') return fenced(domain)
     return { owned: true, value: await run() }
+}
+
+/**
+ * Run a platform write that must not be skipped while a handoff is only queued or may still roll
+ * back, such as resetting the monitoring state of a changed host or saving a policy. It waits for a
+ * running begin, commit or abort under the caller's lock timeout and then follows the journal, so a
+ * rolled-back begin leaves the write applied and a committed one fences it.
+ */
+export async function withSettledPlatformOwnedLegacyFeature<T>(
+    transaction: AuthTransaction,
+    domain: LegacyFeatureDomain,
+    run: () => Promise<T>,
+): Promise<PlatformOwnedResult<T>> {
+    await shareLegacyFeatureDomain(transaction, domain)
+    const ownership = await readLegacyFeatureOwnerInTransaction(transaction, domain)
+    if (ownership.owner !== 'platform') return fenced(domain)
+    return { owned: true, value: await run() }
+}
+
+function fenced(domain: LegacyFeatureDomain): PlatformOwnedResult<never> {
+    signalLegacyFeatureOwnership([domain])
+    return { owned: false }
 }

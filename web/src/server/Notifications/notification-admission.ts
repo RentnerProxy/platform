@@ -35,6 +35,7 @@ export function channelAcceptsIncident(
 export function deferredHostFailure(incident: NotificationIncident, channel: Channel) {
     return (
         incident.category === 'host_availability' &&
+        incident.frozen !== true &&
         incident.recoveredAt !== null &&
         incident.host?.subscriptions?.some(
             (subscription) =>
@@ -83,6 +84,7 @@ export function pendingNotificationAdmission(
             : null
     }
     return !marker &&
+        incident.frozen !== true &&
         NOTIFICATION_SEVERITIES.indexOf(incident.severity) >=
             NOTIFICATION_SEVERITIES.indexOf(channel.minimumSeverity) &&
         (incident.recoveredAt ?? now) - incident.startedAt >= channel.thresholdSeconds * 1000

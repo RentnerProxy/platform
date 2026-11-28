@@ -12,13 +12,21 @@ export type AppIncidentChange =
           readonly kind: 'open'
           readonly severity: NotificationSeverity
           readonly app: AppIncidentContext
+          /**
+           * A built-in host outage this incident may continue: set only for the installation that
+           * committed the monitoring handoff, with the key that names the exported incident.
+           */
+          readonly continues?: string
       }
     | { readonly kind: 'resolve'; readonly subject: AppIncidentSubject }
 
 export interface AppIncidentOutcome {
     readonly state: NotificationState
-    /** `unchanged` repeats the state the platform already keeps; the limits refuse a new incident. */
-    readonly result: 'applied' | 'unchanged' | 'limit' | 'saturated'
+    /**
+     * `unchanged` repeats the state the platform already keeps; the limits refuse a new incident;
+     * `continuationConflict` refuses moving a continuation to another host or category.
+     */
+    readonly result: 'applied' | 'unchanged' | 'limit' | 'saturated' | 'continuationConflict'
 }
 
 /** What the app tables say about the installations and hosts of open app incidents. */

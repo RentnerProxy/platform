@@ -8,6 +8,12 @@ export interface ProxyHostMonitoringRow {
     readonly duration: string | null
 }
 
+export interface HostMonitoringSummaries {
+    readonly rows: ReadonlyMap<string, ProxyHostMonitoringRow>
+    /** An app owns monitoring, so the table hides the built-in column and action. */
+    readonly handedOff: boolean
+}
+
 export interface ProxyHostMonitoringCellProps {
     readonly host: ProxyHostSummary
     readonly onMonitoring: (host: ProxyHostSummary) => void

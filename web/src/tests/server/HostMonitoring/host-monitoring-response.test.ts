@@ -351,6 +351,8 @@ describe('host monitoring HTTP adapter', () => {
         [new AuthDomainError('permission_denied', 'PRIVATE'), 403, 'permission_denied'],
         [new HostMonitoringError('host_not_found'), 404, 'host_not_found'],
         [new HostMonitoringError('conflict'), 409, 'conflict'],
+        // An app owns monitoring: reads and writes report the handoff instead of built-in data.
+        [new HostMonitoringError('handed_off'), 409, 'handed_off'],
         [new RateLimitError(21, 20, 1_501, 'private-scope'), 429, 'rate_limited'],
         [new AuthDomainError('service_unavailable', 'PRIVATE'), 503, 'service_unavailable'],
         [new AuthDomainError('user_not_active', 'PRIVATE'), 503, 'service_unavailable'],

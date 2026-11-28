@@ -77,6 +77,7 @@ let responseHistory: unknown
 let historyFactory: ((url: string) => unknown) | null
 let getStatus = 200
 let postStatus = 200
+let conflictCode = 'conflict'
 const requests: { url: string; method: string; body: string }[] = []
 let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, 'fetch'>>
 
@@ -127,6 +128,7 @@ beforeEach(() => {
     historyFactory = null
     getStatus = 200
     postStatus = 200
+    conflictCode = 'conflict'
     client = new QueryClient({
         defaultOptions: { queries: { retry: false, retryDelay: 0 }, mutations: { retry: false } },
     })
@@ -141,7 +143,7 @@ beforeEach(() => {
                     status === 403
                         ? { error: 'permission_denied' }
                         : status === 409
-                          ? { error: 'conflict' }
+                          ? { error: conflictCode }
                           : url.includes('history?')
                             ? (historyFactory?.(url) ?? responseHistory)
                             : responsePolicy,
@@ -521,6 +523,87 @@ test('save success and failure emit localized toasts once while preserving faile
     await flush()
     expect(successToast).toHaveBeenCalledTimes(1)
     expect(errorToast).toHaveBeenCalledTimes(1)
+})
+
+const saveRequests = () => requests.filter(({ method }) => method === 'POST').length
+
+test('a save refused by a monitoring handoff retires the settings form', async () => {
+    await render()
+    expect(logic.state.canUpdate).toBe(true)
+    await act(async () => {
+        logic.form.setFieldValue('intervalSeconds', 90)
+    })
+    postStatus = 409
+    conflictCode = 'handed_off'
+    await act(async () => {
+        await logic.form.handleSubmit()
+    })
+    await flush()
+    expect(errorToast).toHaveBeenCalledWith(
+        'An app now manages monitoring, so these built-in settings can no longer be changed.',
+        { title: 'Action failed' },
+    )
+    expect(logic.state.canUpdate).toBe(false)
+    expect(logic.state.dirty).toBe(false)
+    const before = saveRequests()
+    await act(async () => {
+        logic.form.setFieldValue('intervalSeconds', 120)
+    })
+    await act(async () => {
+        await logic.form.handleSubmit()
+    })
+    await flush()
+    expect(saveRequests()).toBe(before)
+})
+
+async function rerender(input: HostMonitoringDialogProps) {
+    await act(async () => {
+        root!.render(
+            withTestLanguage(
+                <QueryClientProvider client={client}>
+                    <Harness {...input} />
+                </QueryClientProvider>,
+            ),
+        )
+    })
+    await flush()
+}
+
+test('a read that reports a monitoring handoff retires already loaded settings', async () => {
+    await render()
+    expect(logic.state.canUpdate).toBe(true)
+    getStatus = 409
+    conflictCode = 'handed_off'
+    await act(async () => {
+        await client.invalidateQueries({ queryKey: hostMonitoringQueryKeys.all })
+    })
+    await flush()
+    expect(logic.state.canUpdate).toBe(false)
+})
+
+test('a new dialog session may save again after a handoff refused one', async () => {
+    await render()
+    await act(async () => {
+        logic.form.setFieldValue('intervalSeconds', 90)
+    })
+    postStatus = 409
+    conflictCode = 'handed_off'
+    await act(async () => {
+        await logic.form.handleSubmit()
+    })
+    await flush()
+    expect(logic.state.canUpdate).toBe(false)
+    // The refused session stays retired, also when its reads still serve built-in data.
+    await act(async () => {
+        await client.invalidateQueries({ queryKey: hostMonitoringQueryKeys.all })
+    })
+    await flush()
+    expect(logic.state.canUpdate).toBe(false)
+    // After an aborted handoff the next session asks the server again.
+    postStatus = 200
+    await rerender({ ...props, open: false })
+    await rerender(props)
+    expect(logic.state.canUpdate).toBe(true)
 })
 
 test.each(['close', 'unmount', 'host', 'permissions'] as const)(

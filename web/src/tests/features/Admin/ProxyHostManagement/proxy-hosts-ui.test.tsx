@@ -1332,6 +1332,43 @@ describe('ProxyHost monitoring integration', () => {
         expect(getHostMonitoringHistoryMock).not.toHaveBeenCalled()
     })
 
+    test('a handoff to an app retires the built-in monitoring column and action', async () => {
+        getHostMonitoringSummaryMock.mockReset().mockImplementation(async () => {
+            throw new HostMonitoringClientError('handed_off')
+        })
+        await renderPage([PERMISSIONS.PROXY_HOSTS_VIEW, PERMISSIONS.PROXY_HOSTS_UPDATE])
+        await waitFor(() => getRows().length === 2)
+        await waitFor(() => !document.body.textContent?.includes('Upstream availability'))
+        expect(
+            document.querySelector('[aria-label="Open monitoring for app.example.com"]'),
+        ).toBeNull()
+        await openMenu(getButton('Open actions for app.example.com'))
+        expect(
+            [...document.querySelectorAll('[role="menuitem"]')].some((item) =>
+                item.textContent?.includes('Monitoring'),
+            ),
+        ).toBe(false)
+        // The handoff is final, so the summary is neither retried nor polled again.
+        expect(getHostMonitoringSummaryMock).toHaveBeenCalledTimes(1)
+
+        // Another host page asks once, without showing the column while it waits.
+        const answer = Promise.withResolvers<HostMonitoringSummary>()
+        getHostMonitoringSummaryMock.mockImplementation(() => answer.promise)
+        await setControlValue(document.querySelector('input[type="search"]')!, 'app.example')
+        await waitFor(() => getRows().length === 1)
+        await waitFor(() => getHostMonitoringSummaryMock.mock.calls.length === 2)
+        expect(document.body.textContent).not.toContain('Upstream availability')
+        // Only a summary of built-in monitoring, as after an aborted handoff, brings it back.
+        await act(async () => {
+            answer.resolve({
+                checkedAt: new Date(),
+                summaries: [{ proxyHostId: enabledHost.id, policy: monitoringPolicy }],
+            })
+            await answer.promise
+        })
+        await waitFor(() => document.body.textContent?.includes('Upstream availability') ?? false)
+    })
+
     test('batch refresh updates availability without replacing or closing the open action menu', async () => {
         await renderPage([PERMISSIONS.PROXY_HOSTS_VIEW])
         await waitFor(() => getRows().length === 2)

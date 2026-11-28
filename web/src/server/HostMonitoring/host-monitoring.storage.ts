@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
 import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { withPlatformOwnedLegacyFeature } from '@/server/LegacyHandoff/ownership.server.ts'
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import type { HostMonitoringPolicy } from './Types/host-monitoring.repository.types.ts'
 export async function lockMonitoring(transaction: AuthTransaction): Promise<void> {
@@ -142,9 +143,12 @@ export async function pruneHistoryInTransaction(transaction: AuthTransaction): P
     `)
 }
 
+/** Retention deletes history, so it stops with every other writer once a handoff began. */
 export async function pruneHostMonitoringHistory(): Promise<void> {
     await getBackgroundDatabase('housekeeping').transaction(async (transaction) => {
         await prepareWorkerTransaction(transaction, false)
-        await pruneHistoryInTransaction(transaction)
+        await withPlatformOwnedLegacyFeature(transaction, 'monitoring', () =>
+            pruneHistoryInTransaction(transaction),
+        )
     })
 }

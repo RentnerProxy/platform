@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { APP_INCIDENT_CAPABILITY } from '@/config/notifications.config.ts'
 import { appRuntimeMessages, appRuntimeOwnedProxyHosts, proxyHosts } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { readLegacyFeatureOwnerInTransaction } from '@/server/LegacyHandoff/ownership.server.ts'
 import { observeAppIncident } from '@/server/Notifications/app-incidents.ts'
 import { resolveEffectiveNotificationConfigurationInTransaction } from '@/server/Notifications/notification-access.ts'
 import {
@@ -72,6 +73,12 @@ async function readCoveredProxyHost(
     return proxyHostId
 }
 
+/** Whether the installation committed the monitoring handoff and so continues built-in outages. */
+async function ownsMonitoring(transaction: AuthTransaction, installationId: string) {
+    const monitoring = await readLegacyFeatureOwnerInTransaction(transaction, 'monitoring')
+    return monitoring.owner === 'app' && monitoring.installationId === installationId
+}
+
 async function describeChange(
     transaction: AuthTransaction,
     principal: AppRuntimePrincipal,
@@ -79,6 +86,7 @@ async function describeChange(
     change: AppIncidentChangeInput,
 ): Promise<AppIncidentChange> {
     const { installationId, appId } = principal.identity
+    // The app that committed monitoring continues an exported open outage under its incident ID.
     if (change.status === 'resolved')
         return { kind: 'resolve', subject: { installationId, key: incidentKey } }
     const categories = await readAppIncidentCategoriesInTransaction(transaction, installationId)
@@ -96,9 +104,14 @@ async function describeChange(
         change.resourceId === undefined
             ? undefined
             : await readCoveredProxyHost(transaction, principal, change.resourceId)
+    const continues =
+        proxyHostId !== undefined && (await ownsMonitoring(transaction, installationId))
+            ? incidentKey
+            : undefined
     return {
         kind: 'open',
         severity: change.severity,
+        ...(continues === undefined ? {} : { continues }),
         app: {
             installationId,
             appId,
@@ -175,6 +188,12 @@ export async function setAppRuntimeIncidentInTransaction(
     )
     if (outcome.result === 'limit' || outcome.result === 'saturated')
         throw new AppRuntimeProblem(429, 'incidentLimit', 'Too many open app incidents.')
+    if (outcome.result === 'continuationConflict')
+        throw new AppRuntimeProblem(
+            409,
+            'incidentContinuationConflict',
+            'A continued built-in incident keeps its host and category.',
+        )
     if (outcome.state !== runtime.engine)
         await writeNotificationRuntime(transaction, { ...runtime, engine: outcome.state })
     // A change made while notifications are off must stay repeatable after they resume.

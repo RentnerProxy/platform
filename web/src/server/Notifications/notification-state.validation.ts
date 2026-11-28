@@ -133,9 +133,11 @@ export const notificationStateSchema: z.ZodType<NotificationState> = z
                         })
                         .optional(),
                     app: appIncident.optional(),
+                    frozen: z.literal(true).optional(),
+                    continuation: z.literal(true).optional(),
                 }),
             )
-            .max(NOTIFICATION_LIMITS.incidents),
+            .max(NOTIFICATION_LIMITS.incidents + NOTIFICATION_LIMITS.handoverIncidents),
         deliveries: z
             .array(
                 z.strictObject({

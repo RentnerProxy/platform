@@ -20,6 +20,69 @@ export const HOST_MONITORING_LIMITS = {
     advisoryLockId: 7_421_916,
 } as const
 
+/**
+ * The monitoring legacy handoff export. `Types/host-monitoring-handoff.types.ts` documents the
+ * format; a new column or kind needs a new version.
+ */
+export const HOST_MONITORING_HANDOFF = {
+    format: 'rentnerproxy.monitoring',
+    version: 1,
+    // Rows fetched per cursor read. Parts are cut by bytes, so this bounds memory, not the format.
+    fetchRows: 8_192,
+    columns: {
+        policies: [
+            'id',
+            'proxyHostId',
+            'domain',
+            'enabled',
+            'intervalSeconds',
+            'timeoutMs',
+            'expectedStatus',
+            'failureThreshold',
+            'recoveryThreshold',
+            'retentionDays',
+            'sampleLimit',
+            'incidentLimit',
+            'version',
+            'state',
+            'failureCount',
+            'recoveryCount',
+            'failureStartedAt',
+            'recoveryStartedAt',
+            'lastCheckedAt',
+            'lastOutcome',
+            'lastCode',
+            'lastDurationMs',
+            'lastHttpStatus',
+            'nextCheckAt',
+            'createdAt',
+            'updatedAt',
+        ],
+        observations: [
+            'id',
+            'policyId',
+            'policyVersion',
+            'checkedAt',
+            'status',
+            'code',
+            'durationMs',
+            'httpStatus',
+        ],
+        incidents: [
+            'id',
+            'policyId',
+            'startedAt',
+            'detectedAt',
+            'recoveryStartedAt',
+            'recoveredAt',
+            'failureCode',
+            'recoveryCode',
+            'closedReason',
+            'closedAt',
+        ],
+    },
+} as const
+
 export const HOST_MONITORING_DEFAULTS = {
     enabled: false,
     intervalSeconds: 60,

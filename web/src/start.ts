@@ -42,6 +42,20 @@ function whilePlatformOwns(domain: LegacyFeatureDomain) {
     }
 }
 
+/**
+ * Start a gated built-in worker unless an app committed its domain. The worker's own gate holds it
+ * during an open handoff and resumes it after an abort, also when the process started meanwhile.
+ */
+function unlessAppOwns(domain: LegacyFeatureDomain) {
+    return {
+        admit: async () => {
+            const { isLegacyFeatureAppOwned } =
+                await import('@/server/LegacyHandoff/worker-admission.server.ts')
+            return !(await isLegacyFeatureAppOwned(domain))
+        },
+    }
+}
+
 const startAppRuntimeLifecycle = createServerOnlyFn(async () => {
     if (process.env.RENTNERPROXY_APP_RUNTIME !== '1') return
     await startWorkerLifecycle(async () => {
@@ -179,7 +193,7 @@ const startHostMonitoringLifecycle = createServerOnlyFn(() =>
             return hostMonitoringWorker
         },
         'host_monitoring',
-        whilePlatformOwns('monitoring'),
+        unlessAppOwns('monitoring'),
     ),
 )
 if (typeof window === 'undefined')

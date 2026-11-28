@@ -1,13 +1,17 @@
 import { createHash } from 'node:crypto'
 import { NotificationDomainError } from './notification.errors.ts'
+import { channelAcceptsIncident } from './notification-admission.ts'
 import {
     appendNotificationIncident,
     admitNotificationIncidents,
     observeNotificationSignals,
+    settleHandedOverNotice,
 } from './incident-engine.ts'
 import type {
+    AppIncidentContext,
     HostAvailabilityNotificationTransition,
     NotificationEngineConfiguration,
+    NotificationIncident,
     NotificationState,
 } from './Types/notification-state.types.ts'
 
@@ -18,6 +22,18 @@ export function cancelHostAvailabilityIncidents(
 ): NotificationState {
     if (incidentIds.size === 0) return state
     const next = structuredClone(state)
+    // An outage notice still in flight will never settle a continuation's placeholder now: let the
+    // continuation announce the outage to that channel itself.
+    for (const incident of next.incidents) {
+        if (incident.category !== 'host_availability' || !incidentIds.has(incident.id)) continue
+        for (const delivery of next.deliveries)
+            if (
+                delivery.payload.incidentId === incident.id &&
+                delivery.payload.type === 'incident' &&
+                (delivery.status === 'pending' || delivery.status === 'inflight')
+            )
+                settleHandedOverNotice(next, incident, delivery, false)
+    }
     next.incidents = next.incidents.filter(
         (incident) => incident.category !== 'host_availability' || !incidentIds.has(incident.id),
     )
@@ -35,6 +51,165 @@ export function cancelHostAvailabilityIncidents(
         }
     }
     return next
+}
+
+/**
+ * The open built-in host outage an app incident may continue after the monitoring handoff: frozen
+ * by the commit, so it was open when the app took over, keyed by the exported incident ID and on
+ * the same host.
+ */
+export function findContinuedHostAvailabilityIncident(
+    state: NotificationState,
+    app: Pick<AppIncidentContext, 'key' | 'resource'>,
+): NotificationIncident | undefined {
+    const proxyHostId = app.resource?.proxyHostId
+    if (proxyHostId === undefined) return undefined
+    return state.incidents.find(
+        (candidate) =>
+            candidate.category === 'host_availability' &&
+            candidate.frozen === true &&
+            candidate.id === app.key &&
+            candidate.resourceId === proxyHostId &&
+            candidate.recoveredAt === null,
+    )
+}
+
+const sameChannel =
+    (channel: { id: string; revision: number }) =>
+    (item: { channelId: string; channelRevision: number }) =>
+        item.channelId === channel.id && item.channelRevision === channel.revision
+
+/**
+ * Stop built-in host outages from announcing themselves anew once an app committed monitoring. An
+ * open outage keeps the notices it already admitted, sent or not, and the recovery it owes for them;
+ * no channel, also one added or changed later, gets a new notice of it, and the outage moves to the
+ * handover's own capacity.
+ */
+export function freezeHostAvailabilityIncidents(state: NotificationState): NotificationState {
+    if (
+        !state.incidents.some(
+            (incident) =>
+                incident.category === 'host_availability' &&
+                incident.recoveredAt === null &&
+                incident.frozen !== true,
+        )
+    )
+        return state
+    const next = structuredClone(state)
+    for (const incident of next.incidents)
+        if (incident.category === 'host_availability' && incident.recoveredAt === null)
+            incident.frozen = true
+    return next
+}
+
+/**
+ * Hand an open built-in host outage over to the app incident that continues it after the monitoring
+ * handoff, so every channel hears of the outage once and of its end once.
+ *
+ * A channel that accepts the continuation (the app incident event and its category) moves to it. A
+ * delivered outage notice counts as the continuation's failure notice. A notice still in flight
+ * leaves a pending placeholder that blocks the continuation's own notice until the send settles:
+ * a success completes it, a final failure removes it so the continuation announces the outage. Any
+ * unsent notice is cancelled and the continuation announces the outage instead. The built-in
+ * incident keeps a marker for the channel that blocks notices of its own and owes it no recovery.
+ *
+ * Every other channel that got or is getting the outage notice stays with the built-in incident. It
+ * stays open for them, and for notices still in flight, until the app resolves the continuation,
+ * and then sends them its normal recovery notice. Without such a channel it ends silently at once.
+ */
+export function handOverHostAvailabilityIncident(
+    state: NotificationState,
+    configuration: NotificationEngineConfiguration,
+    app: AppIncidentContext,
+    now: number,
+): {
+    readonly state: NotificationState
+    readonly startedAt: number
+    readonly channels: NotificationIncident['channels']
+} | null {
+    const found = findContinuedHostAvailabilityIncident(state, app)
+    if (!found) return null
+    const next = structuredClone(state)
+    const incident = next.incidents.find((candidate) => candidate.id === found.id)!
+    const continuation = { category: 'app_incident' as const, app }
+    const channels: NotificationIncident['channels'] = []
+    let sendingToContinuation = false
+    for (const channel of configuration.channels) {
+        if (!channelAcceptsIncident(channel, continuation)) continue
+        const deliveries = next.deliveries.filter(
+            (delivery) =>
+                delivery.payload.incidentId === incident.id && sameChannel(channel)(delivery),
+        )
+        const sending = deliveries.some(
+            (delivery) => delivery.payload.type === 'incident' && delivery.status === 'inflight',
+        )
+        const marker = incident.channels.find(sameChannel(channel))
+        // A marker that already owes no recovery was handed over before; its channel heard the end.
+        if (marker && marker.recovery === null) {
+            if (marker.failure === 'succeeded' || marker.notified === true)
+                channels.push({
+                    channelId: channel.id,
+                    channelRevision: channel.revision,
+                    failure: 'succeeded',
+                    recovery: null,
+                    severity: incident.severity,
+                    notified: true,
+                })
+            else if (sending) {
+                channels.push({
+                    channelId: channel.id,
+                    channelRevision: channel.revision,
+                    failure: 'pending',
+                    recovery: null,
+                    severity: incident.severity,
+                })
+                sendingToContinuation = true
+            }
+        }
+        for (const delivery of deliveries) {
+            if (delivery.status !== 'pending') continue
+            delivery.status = 'cancelled'
+            delivery.error = 'cancelled'
+            delivery.updatedAt = now
+        }
+        if (marker) {
+            if (marker.failure === 'pending' && !sending) marker.failure = 'failed'
+            marker.recovery = 'failed'
+        }
+    }
+    const owesOthers = incident.channels.some(
+        (marker) =>
+            marker.recovery === null && (marker.failure !== 'failed' || marker.notified === true),
+    )
+    return {
+        state:
+            owesOthers || sendingToContinuation
+                ? next
+                : cancelHostAvailabilityIncidents(next, new Set([incident.id]), now),
+        startedAt: incident.startedAt,
+        channels,
+    }
+}
+
+/**
+ * End the built-in outage an app resolved through its continuation, with the built-in recovery
+ * notice for the channels that stayed with it. The caller admits the notices afterwards.
+ */
+export function recoverContinuedHostAvailabilityIncident(
+    state: NotificationState,
+    app: Pick<AppIncidentContext, 'key' | 'resource'>,
+    now: number,
+): void {
+    const incident = findContinuedHostAvailabilityIncident(state, app)
+    if (!incident?.host) return
+    incident.recoveredAt = Math.max(now, incident.observedAt)
+    incident.recoveryEvidence = createHash('sha256')
+        .update(`${incident.id}:recovered`)
+        .digest('hex')
+    incident.host = {
+        ...incident.host,
+        recoveryStartedAt: new Date(incident.recoveredAt).toISOString(),
+    }
 }
 
 export function observeHostAvailabilityTransition(

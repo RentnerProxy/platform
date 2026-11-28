@@ -18,6 +18,7 @@ import type {
 } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
 import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { withPlatformOwnedLegacyFeature } from '@/server/LegacyHandoff/ownership.server.ts'
 import { readHostMonitoringContextsInTransaction } from '@/server/RuntimeDiagnostics/domain-diagnostics-data.ts'
 import { recordHostAvailabilityTransitionInTransaction } from '@/server/Notifications/host-availability.repository.ts'
 import type { HostAvailabilityIncidentSource } from '@/server/Notifications/Types/notification-internal.types.ts'
@@ -74,58 +75,69 @@ export async function claimDueHostMonitoringPolicies(
         throw new Error('Invalid monitoring claim batch size.')
     return getBackgroundDatabase('monitoring').transaction(async (transaction) => {
         await prepareWorkerTransaction(transaction, false)
-        const [active] = await transaction
-            .select({ count: sql<number>`count(*)::integer` })
-            .from(hostCheckPolicies)
-            .where(gt(hostCheckPolicies.leaseExpiresAt, sql`clock_timestamp()`))
-        const available = HOST_MONITORING_LIMITS.maxActiveClaims - (active?.count ?? 0)
-        if (available <= 0) return []
-        // PostgreSQL's locking OF clause requires an unqualified relation name.
-        const candidatePolicy = alias(hostCheckPolicies, 'monitoring_policy')
-        const candidates = await transaction
-            .select({ policy: candidatePolicy })
-            .from(candidatePolicy)
-            .innerJoin(proxyHosts, eq(proxyHosts.id, candidatePolicy.proxyHostId))
-            .innerJoin(
-                hostDomains,
-                and(
-                    eq(hostDomains.proxyHostId, candidatePolicy.proxyHostId),
-                    eq(hostDomains.domain, candidatePolicy.domain),
+        // A handoff fences every claim, so no probe starts once an app takes monitoring over.
+        const claimed = await withPlatformOwnedLegacyFeature(transaction, 'monitoring', () =>
+            claimDuePoliciesInTransaction(transaction, limit),
+        )
+        return claimed.owned ? claimed.value : []
+    })
+}
+
+async function claimDuePoliciesInTransaction(
+    transaction: AuthTransaction,
+    limit: number,
+): Promise<HostMonitoringClaim[]> {
+    const [active] = await transaction
+        .select({ count: sql<number>`count(*)::integer` })
+        .from(hostCheckPolicies)
+        .where(gt(hostCheckPolicies.leaseExpiresAt, sql`clock_timestamp()`))
+    const available = HOST_MONITORING_LIMITS.maxActiveClaims - (active?.count ?? 0)
+    if (available <= 0) return []
+    // PostgreSQL's locking OF clause requires an unqualified relation name.
+    const candidatePolicy = alias(hostCheckPolicies, 'monitoring_policy')
+    const candidates = await transaction
+        .select({ policy: candidatePolicy })
+        .from(candidatePolicy)
+        .innerJoin(proxyHosts, eq(proxyHosts.id, candidatePolicy.proxyHostId))
+        .innerJoin(
+            hostDomains,
+            and(
+                eq(hostDomains.proxyHostId, candidatePolicy.proxyHostId),
+                eq(hostDomains.domain, candidatePolicy.domain),
+            ),
+        )
+        .where(
+            and(
+                eq(candidatePolicy.enabled, true),
+                eq(proxyHosts.enabled, true),
+                lte(candidatePolicy.nextCheckAt, sql`clock_timestamp()`),
+                or(
+                    isNull(candidatePolicy.leaseExpiresAt),
+                    lte(candidatePolicy.leaseExpiresAt, sql`clock_timestamp()`),
                 ),
-            )
-            .where(
-                and(
-                    eq(candidatePolicy.enabled, true),
-                    eq(proxyHosts.enabled, true),
-                    lte(candidatePolicy.nextCheckAt, sql`clock_timestamp()`),
-                    or(
-                        isNull(candidatePolicy.leaseExpiresAt),
-                        lte(candidatePolicy.leaseExpiresAt, sql`clock_timestamp()`),
-                    ),
-                ),
-            )
-            .orderBy(asc(candidatePolicy.nextCheckAt), asc(candidatePolicy.id))
-            .limit(Math.min(limit, available))
-            .for('update', { of: candidatePolicy, skipLocked: true })
-        if (candidates.length === 0) return []
-        const policies = await transaction
-            .update(hostCheckPolicies)
-            .set({
-                leaseToken: sql`gen_random_uuid()`,
-                leaseExpiresAt: sql`clock_timestamp() + ${HOST_MONITORING_LIMITS.leaseMs} * interval '1 millisecond'`,
-            })
-            .where(
-                inArray(
-                    hostCheckPolicies.id,
-                    candidates.map((candidate) => candidate.policy.id),
-                ),
-            )
-            .returning()
-        const admitted = new Map(policies.map((policy) => [policy.id, policy]))
-        return candidates.flatMap((candidate) => {
-            const policy = admitted.get(candidate.policy.id)
-            return policy?.leaseToken ? [{ policy, leaseToken: policy.leaseToken }] : []
+            ),
+        )
+        .orderBy(asc(candidatePolicy.nextCheckAt), asc(candidatePolicy.id))
+        .limit(Math.min(limit, available))
+        .for('update', { of: candidatePolicy, skipLocked: true })
+    if (candidates.length === 0) return []
+    const policies = await transaction
+        .update(hostCheckPolicies)
+        .set({
+            leaseToken: sql`gen_random_uuid()`,
+            leaseExpiresAt: sql`clock_timestamp() + ${HOST_MONITORING_LIMITS.leaseMs} * interval '1 millisecond'`,
         })
+        .where(
+            inArray(
+                hostCheckPolicies.id,
+                candidates.map((candidate) => candidate.policy.id),
+            ),
+        )
+        .returning()
+    const admitted = new Map(policies.map((policy) => [policy.id, policy]))
+    return candidates.flatMap((candidate) => {
+        const policy = admitted.get(candidate.policy.id)
+        return policy?.leaseToken ? [{ policy, leaseToken: policy.leaseToken }] : []
     })
 }
 
@@ -245,27 +257,38 @@ export async function releaseHostMonitoringClaims(
         throw new Error('Invalid monitoring release batch.')
     return getBackgroundDatabase('monitoring').transaction(async (transaction) => {
         await prepareWorkerTransaction(transaction, false)
-        const rows = await transaction.execute<{ slot: number }>(sql`
-            update "rentnerproxy"."host_check_policies" as policy
-            set lease_token = null,
-                lease_expires_at = null,
-                next_check_at = date_bin(policy.interval_seconds * interval '1 second', clock_timestamp(), policy.next_check_at)
-                    + policy.interval_seconds * interval '1 second',
-                updated_at = clock_timestamp()
-            from (values ${sql.join(
-                claims.map(
-                    (claim, index) =>
-                        sql`(${index}::integer, ${claim.policy.id}::uuid, ${claim.policy.version}::uuid, ${claim.leaseToken}::uuid)`,
-                ),
-                sql`, `,
-            )}) as owned(slot, id, version, token)
-            where policy.id = owned.id and policy.version = owned.version
-                and policy.lease_token = owned.token and policy.lease_expires_at > clock_timestamp()
-            returning owned.slot
-        `)
-        const released = new Set(rows.map((row) => row.slot))
-        return claims.map((_, index) => released.has(index))
+        // A fenced release owns nothing: the handoff export ignores leases and commit drops them.
+        const released = await withPlatformOwnedLegacyFeature(transaction, 'monitoring', () =>
+            releaseClaimsInTransaction(transaction, claims),
+        )
+        return released.owned ? released.value : claims.map(() => false)
     })
+}
+
+async function releaseClaimsInTransaction(
+    transaction: AuthTransaction,
+    claims: readonly HostMonitoringClaim[],
+): Promise<boolean[]> {
+    const rows = await transaction.execute<{ slot: number }>(sql`
+        update "rentnerproxy"."host_check_policies" as policy
+        set lease_token = null,
+            lease_expires_at = null,
+            next_check_at = date_bin(policy.interval_seconds * interval '1 second', clock_timestamp(), policy.next_check_at)
+                + policy.interval_seconds * interval '1 second',
+            updated_at = clock_timestamp()
+        from (values ${sql.join(
+            claims.map(
+                (claim, index) =>
+                    sql`(${index}::integer, ${claim.policy.id}::uuid, ${claim.policy.version}::uuid, ${claim.leaseToken}::uuid)`,
+            ),
+            sql`, `,
+        )}) as owned(slot, id, version, token)
+        where policy.id = owned.id and policy.version = owned.version
+            and policy.lease_token = owned.token and policy.lease_expires_at > clock_timestamp()
+        returning owned.slot
+    `)
+    const released = new Set(rows.map((row) => row.slot))
+    return claims.map((_, index) => released.has(index))
 }
 
 /** Atomically commits one observation, availability transition and notification input behind the caller's context fence. */
@@ -278,13 +301,16 @@ export async function completeHostMonitoringClaim(
     return getBackgroundDatabase('monitoring')
         .transaction(async (transaction) => {
             await prepareWorkerTransaction(transaction)
-            return completeHostMonitoringClaimInTransaction(
-                transaction,
-                claim,
-                outcome,
-                contextMatches,
-                context,
+            const completed = await withPlatformOwnedLegacyFeature(transaction, 'monitoring', () =>
+                completeHostMonitoringClaimInTransaction(
+                    transaction,
+                    claim,
+                    outcome,
+                    contextMatches,
+                    context,
+                ),
             )
+            return completed.owned && completed.value
         })
         .catch((error: unknown) => {
             if (error instanceof ExpiredHostMonitoringClaim) return false
@@ -449,52 +475,68 @@ export async function completeHostMonitoringClaims(
         throw new Error('Invalid monitoring completion batch size.')
     return getBackgroundDatabase('monitoring').transaction(async (transaction) => {
         await prepareWorkerTransaction(transaction)
-        const contexts = await readHostMonitoringContextsInTransaction(
-            transaction,
-            items.map(({ claim }) => ({
-                hostType: 'proxy',
-                hostId: claim.policy.proxyHostId,
-                domain: claim.policy.domain,
-            })),
+        // After a handoff began, no observation, incident or notification input is recorded.
+        const completed = await withPlatformOwnedLegacyFeature(transaction, 'monitoring', () =>
+            completeClaimsInTransaction(transaction, items),
         )
-        const results: PromiseSettledResult<boolean>[] = []
-        for (const item of items) {
-            try {
-                const after = contexts.get(item.claim.policy.proxyHostId)
-                // oxlint-disable-next-line no-await-in-loop -- Savepoints share one transaction connection and must run sequentially.
-                const value = await transaction.transaction((nested) =>
-                    completeHostMonitoringClaimInTransaction(
-                        nested,
-                        item.claim,
-                        item.outcome,
-                        async () =>
-                            Boolean(
-                                after?.enabled &&
-                                after.proof === item.before.proof &&
-                                after.revision === item.before.revision,
-                            ),
-                        item.before.availability,
-                        item.signal,
-                    ),
-                )
-                results.push({ status: 'fulfilled', value })
-            } catch (reason) {
-                results.push(
-                    reason instanceof ExpiredHostMonitoringClaim
-                        ? { status: 'fulfilled', value: false }
-                        : { status: 'rejected', reason },
-                )
-            }
-        }
-        if (
-            items.some(
-                (item, index) =>
-                    item.signal.aborted &&
-                    results[index]?.status === 'fulfilled' &&
-                    results[index].value,
-            )
-        )
-            throw new ExpiredHostMonitoringClaim()
-        return results
+        return completed.owned
+            ? completed.value
+            : items.map((): PromiseSettledResult<boolean> => ({
+                  status: 'fulfilled',
+                  value: false,
+              }))
     })
+}
+
+async function completeClaimsInTransaction(
+    transaction: AuthTransaction,
+    items: readonly HostMonitoringCompletion[],
+): Promise<PromiseSettledResult<boolean>[]> {
+    const contexts = await readHostMonitoringContextsInTransaction(
+        transaction,
+        items.map(({ claim }) => ({
+            hostType: 'proxy',
+            hostId: claim.policy.proxyHostId,
+            domain: claim.policy.domain,
+        })),
+    )
+    const results: PromiseSettledResult<boolean>[] = []
+    for (const item of items) {
+        try {
+            const after = contexts.get(item.claim.policy.proxyHostId)
+            // oxlint-disable-next-line no-await-in-loop -- Savepoints share one transaction connection and must run sequentially.
+            const value = await transaction.transaction((nested) =>
+                completeHostMonitoringClaimInTransaction(
+                    nested,
+                    item.claim,
+                    item.outcome,
+                    async () =>
+                        Boolean(
+                            after?.enabled &&
+                            after.proof === item.before.proof &&
+                            after.revision === item.before.revision,
+                        ),
+                    item.before.availability,
+                    item.signal,
+                ),
+            )
+            results.push({ status: 'fulfilled', value })
+        } catch (reason) {
+            results.push(
+                reason instanceof ExpiredHostMonitoringClaim
+                    ? { status: 'fulfilled', value: false }
+                    : { status: 'rejected', reason },
+            )
+        }
+    }
+    if (
+        items.some(
+            (item, index) =>
+                item.signal.aborted &&
+                results[index]?.status === 'fulfilled' &&
+                results[index].value,
+        )
+    )
+        throw new ExpiredHostMonitoringClaim()
+    return results
 }

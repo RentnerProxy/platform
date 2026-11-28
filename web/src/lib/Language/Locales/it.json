@@ -2031,7 +2031,8 @@
                 "proxy_host_not_found": "L’host proxy non esiste più.",
                 "invalid_status_transition": "L’host proxy è già in questo stato. Aggiorna l’elenco e riprova.",
                 "invalid_input": "Controlla i valori dell’host proxy e riprova.",
-                "discovery_managed": "Questo host è gestito dalle etichette Docker. Scollegalo da Docker Discovery prima di modificarlo o eliminarlo."
+                "discovery_managed": "Questo host è gestito dalle etichette Docker. Scollegalo da Docker Discovery prima di modificarlo o eliminarlo.",
+                "monitoring_handoff_open": "Il monitoraggio di questo host è in corso di trasferimento a un’app. Elimina l’host al termine del trasferimento."
             },
             "validation": {
                 "domain": "Inserisci un nome DNS valido, senza URL, indirizzi IP o wildcard.",
@@ -4097,6 +4098,7 @@
             "close": "Chiudi",
             "conflict": "Le impostazioni sono cambiate. La bozza viene conservata.",
             "saveError": "Impossibile salvare le impostazioni di monitoraggio.",
+            "handedOff": "Ora il monitoraggio è gestito da un’app, quindi queste impostazioni integrate non possono più essere modificate.",
             "saved": "Impostazioni di monitoraggio salvate.",
             "invalid": "Controlla le impostazioni e gli intervalli consentiti.",
             "dirty": "Modifiche non salvate",

@@ -4,6 +4,7 @@ import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import { inspectControllerDomain } from '@/server/Controller/domain-diagnostics.server.ts'
+import { createLegacyFeatureWorkerGate } from '@/server/LegacyHandoff/worker-admission.server.ts'
 import {
     publishApplicationChange,
     subscribeToApplicationChanges,
@@ -179,16 +180,24 @@ const worker = createHostMonitoringWorker({
         }),
 })
 
-export const hostMonitoringWorker = {
-    ...worker,
-    async stop() {
-        try {
-            await worker.stop()
-        } finally {
-            await hostMonitoringCapture?.flush()
-        }
+/**
+ * Probes run only while platform owns monitoring: a begun handoff stops them without a restart, an
+ * abort resumes them and a commit keeps them stopped. Every writer is fenced on its own as well.
+ */
+export const hostMonitoringWorker = createLegacyFeatureWorkerGate(
+    'monitoring',
+    {
+        start: () => worker.start(),
+        async stop() {
+            try {
+                await worker.stop()
+            } finally {
+                await hostMonitoringCapture?.flush()
+            }
+        },
     },
-}
+    { id: 'host_monitoring' },
+)
 
 workerObservability.sample('host_monitoring', {
     concurrency: HOST_MONITORING_LIMITS.workerConcurrency,

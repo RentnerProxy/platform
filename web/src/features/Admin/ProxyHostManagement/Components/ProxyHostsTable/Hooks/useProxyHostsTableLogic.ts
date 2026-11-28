@@ -39,7 +39,7 @@ export default function useProxyHostsTableLogic(
     const { locale, t } = useTranslationStore()
     const [showColumnFilters, setShowColumnFilters] = useState(false)
     const data = useMemo(() => [...props.proxyHosts], [props.proxyHosts])
-    const monitoringRows = useHostMonitoringSummaries(props.proxyHosts, Boolean(props.onMonitoring))
+    const monitoring = useHostMonitoringSummaries(props.proxyHosts, Boolean(props.onMonitoring))
     const selection = useHostBulkSelection<ProxyHostSummary>({
         kind: 'proxy',
         permissions: props.bulkPermissions ?? [],
@@ -49,7 +49,9 @@ export default function useProxyHostsTableLogic(
         ]),
         disabled: props.isPending || props.loading,
     })
-    const hostColumns = useProxyHostsTableColumns(props)
+    // Once an app owns monitoring, the built-in column and action are retired.
+    const { onMonitoring: _retired, ...withoutMonitoring } = props
+    const hostColumns = useProxyHostsTableColumns(monitoring.handedOff ? withoutMonitoring : props)
     const columns = useMemo(
         () => (selection.state.enabled ? [selection.column, ...hostColumns] : hostColumns),
         [hostColumns, selection.column, selection.state.enabled],
@@ -128,7 +130,8 @@ export default function useProxyHostsTableLogic(
     return {
         table: tableLogic.table,
         state: {
-            monitoringRows,
+            monitoringRows: monitoring.rows,
+            showMonitoring: Boolean(props.onMonitoring) && !monitoring.handedOff,
             bulkIds: selection.state.ids,
             bulkOpen: selection.state.open,
             bulkEnabled: selection.state.enabled,

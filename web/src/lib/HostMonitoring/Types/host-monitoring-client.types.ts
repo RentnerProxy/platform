@@ -8,6 +8,8 @@ export type HostMonitoringClientErrorCode =
     | 'invalid_input'
     | 'rate_limited'
     | 'limit_reached'
+    // An app owns monitoring: the built-in controls are retired.
+    | 'handed_off'
     | 'service_unavailable'
     | 'invalid_response'
     | 'aborted'
