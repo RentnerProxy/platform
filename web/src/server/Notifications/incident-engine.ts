@@ -31,7 +31,7 @@ function recoveryOwed(
         (incident.recoveredAt !== null &&
             incident.channels.some(
                 (marker) =>
-                    marker.failure === 'succeeded' &&
+                    (marker.failure === 'succeeded' || marker.notified === true) &&
                     marker.recovery === null &&
                     configuration.channels.some(
                         (channel) =>
@@ -89,8 +89,17 @@ function markTerminal(state: NotificationState, delivery: NotificationQueuedDeli
     )
     if (!marker) return
     const status = delivery.status === 'succeeded' ? 'succeeded' : 'failed'
-    if (delivery.payload.type === 'incident') marker.failure = status
-    else marker.recovery = status
+    if (delivery.payload.type !== 'incident') {
+        marker.recovery = status
+        return
+    }
+    marker.failure = status
+    if (status !== 'succeeded') return
+    marker.notified = true
+    // An app incident's baseline is the severity the channel was told, also after a pending
+    // notice was raised before it was sent.
+    const { severity } = delivery.payload
+    if (marker.severity !== undefined && severity !== 'info') marker.severity = severity
 }
 
 function terminate(
@@ -642,6 +651,15 @@ export function finishNotificationDelivery(
     return next
 }
 
+/** An app incident's resource ID names the installation, so the status shows its incident ID. */
+function visibleResourceId(
+    category: NotificationIncident['category'],
+    resourceId: string,
+    incidentId: string,
+) {
+    return category === 'app_incident' ? incidentId : resourceId
+}
+
 export function summarizeNotificationState(
     state: NotificationState,
     nowMs = Date.now(),
@@ -655,7 +673,14 @@ export function summarizeNotificationState(
                 // App text and installation IDs stay out of the status that channel owners read.
                 app: _app,
                 ...incident
-            }) => incident,
+            }) => {
+                incident.resourceId = visibleResourceId(
+                    incident.category,
+                    incident.resourceId,
+                    incident.id,
+                )
+                return incident
+            },
         ),
         deliveries: state.deliveries.slice(-50).map((delivery) => ({
             id: delivery.id,
@@ -664,7 +689,11 @@ export function summarizeNotificationState(
             channelRevision: delivery.channelRevision,
             type: delivery.payload.type,
             category: delivery.payload.category,
-            resourceId: delivery.payload.resourceId,
+            resourceId: visibleResourceId(
+                delivery.payload.category,
+                delivery.payload.resourceId,
+                delivery.payload.incidentId,
+            ),
             status: delivery.status,
             attempts: delivery.attempts,
             updatedAt: delivery.updatedAt,

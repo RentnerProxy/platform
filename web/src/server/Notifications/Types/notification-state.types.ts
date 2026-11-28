@@ -32,8 +32,10 @@ interface NotificationIncidentChannel {
     channelRevision: number
     failure: NotificationAdmissionStatus
     recovery: NotificationAdmissionStatus | null
-    /** The severity of the latest failure notice of an app incident; a rise notifies again. */
+    /** The severity of the latest delivered failure notice of an app incident; a rise notifies again. */
     severity?: NotificationSeverity | undefined
+    /** A failure notice reached the channel, so it is owed a recovery even after a failed escalation. */
+    notified?: true | undefined
 }
 
 export interface NotificationIncident {

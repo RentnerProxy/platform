@@ -185,6 +185,57 @@ describe('app incidents in the notification engine', () => {
         expect(second.state.deliveries).toHaveLength(3)
     })
 
+    test('a notice raised before it was sent sets the baseline the channel was told', () => {
+        let state = apply(createNotificationState(), open('warning'), 10_000).state
+        // The pending warning is raised to critical, and the channel receives critical.
+        state = apply(state, open('critical'), 10_500).state
+        const sent = send(state, 11_000)
+        expect(sent.delivery?.payload.severity).toBe('critical')
+        expect(sent.state.incidents[0]?.channels[0]?.severity).toBe('critical')
+        // Asserting critical again notifies nobody a second time.
+        const again = apply(sent.state, open('critical'), 12_000)
+        expect(again.state.deliveries).toHaveLength(1)
+    })
+
+    test('a failed escalation keeps the channel owed its recovery', () => {
+        let state = apply(createNotificationState(), open('warning'), 10_000).state
+        state = send(state, 11_000).state
+        state = apply(state, open('critical'), 12_000).state
+        const claimed = claimNotificationDelivery(state, configuration, 13_000, randomUUID)
+        expect(claimed.delivery?.payload.severity).toBe('critical')
+        state = finishNotificationDelivery(
+            claimed.state,
+            configuration,
+            claimed.delivery!.leaseToken,
+            { success: false, code: 'http_rejected', retryable: false },
+            13_001,
+        )
+        expect(state.incidents[0]?.channels[0]).toMatchObject({ failure: 'failed', notified: true })
+        // The warning reached the channel, so the resolution still sends its recovery.
+        const resolved = apply(state, resolveChange, 14_000)
+        expect(resolved.state.deliveries.map((delivery) => delivery.payload.type)).toEqual([
+            'incident',
+            'incident',
+            'recovery',
+        ])
+    })
+
+    test('a channel whose first notice failed is owed no recovery', () => {
+        let state = apply(createNotificationState(), open('warning'), 10_000).state
+        const claimed = claimNotificationDelivery(state, configuration, 11_000, randomUUID)
+        state = finishNotificationDelivery(
+            claimed.state,
+            configuration,
+            claimed.delivery!.leaseToken,
+            { success: false, code: 'http_rejected', retryable: false },
+            11_001,
+        )
+        const resolved = apply(state, resolveChange, 12_000)
+        expect(resolved.state.deliveries.map((delivery) => delivery.payload.type)).toEqual([
+            'incident',
+        ])
+    })
+
     test('resolving recovers the incident and notifies only channels that got the failure', () => {
         const quiet = {
             ...channel,
@@ -358,10 +409,15 @@ describe('app incidents in the notification engine', () => {
         const status = JSON.stringify(summarizeNotificationState(state, 11_000))
         expect(status).not.toContain('Disk almost full')
         expect(status).not.toContain('installationId')
-        expect(summarizeNotificationState(state, 11_000).incidents[0]).toMatchObject({
+        // The installation ID itself stays out of both projections, not only the property name.
+        expect(status).not.toContain(state.incidents[0]!.app!.installationId)
+        const summary = summarizeNotificationState(state, 11_000)
+        expect(summary.incidents[0]).toMatchObject({
             category: 'app_incident',
             severity: 'error',
+            resourceId: state.incidents[0]!.id,
         })
+        expect(summary.deliveries[0]?.resourceId).toBe(state.incidents[0]!.id)
     })
 
     test('the state schema keeps app incident context consistent and plain', () => {

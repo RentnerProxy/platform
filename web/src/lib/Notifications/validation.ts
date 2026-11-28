@@ -31,18 +31,25 @@ const appIncidentCategoryKeySchema = z.string().refine((value) => {
     )
 })
 
-/** App text renders as plain text: no control, surrogate or format characters and no links. */
+/**
+ * One line of plain text, counted in code points like the App API contract: no control,
+ * surrogate, format, line or paragraph separator characters.
+ */
+export const appIncidentName = (maximum: number) =>
+    z.string().regex(new RegExp(`^[^\\p{Cc}\\p{Cs}\\p{Cf}\\p{Zl}\\p{Zp}]{1,${maximum}}$`, 'u'))
+/** A link-like run, found after lowercasing only ASCII letters, as both contract SDKs do. */
+const linkLike = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)/u
+const isLinkLike = (value: string) =>
+    linkLike.test(value.replace(/[A-Z]/gu, (letter) => letter.toLowerCase()))
+
+/** App text renders as plain text on one line and without links, exactly as the contract admits it. */
 export const appIncidentText = (maximum: number) =>
-    z
-        .string()
-        .min(1)
-        .max(maximum)
-        .refine((value) => !/[\p{Cc}\p{Cs}\p{Cf}]/u.test(value))
-        .refine((value) => !/(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)/iu.test(value))
+    appIncidentName(maximum).refine((value) => !isLinkLike(value))
 
 export const appIncidentNotificationSchema = z.strictObject({
     appName: z.string().min(1).max(97),
-    categoryName: appIncidentText(APP_INCIDENT_LIMITS.title),
+    // The manifest admits category names by the plain line rule alone.
+    categoryName: appIncidentName(APP_INCIDENT_LIMITS.title),
     title: appIncidentText(APP_INCIDENT_LIMITS.title),
     message: appIncidentText(APP_INCIDENT_LIMITS.message),
     resource: z

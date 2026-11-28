@@ -8,6 +8,7 @@ import {
 import type { NotificationState } from './Types/notification-state.types.ts'
 import { appIdSchema, appRecordId } from '@/lib/AppUi/identifiers.ts'
 import {
+    appIncidentName,
     appIncidentNotificationSchema,
     appIncidentText,
     hostAvailabilityNotificationSchema,
@@ -67,7 +68,7 @@ const appIncident = z.strictObject({
     appId: appIdSchema,
     appName: z.string().min(1).max(97).optional(),
     categoryId: appRecordId,
-    categoryName: appIncidentText(APP_INCIDENT_LIMITS.title),
+    categoryName: appIncidentName(APP_INCIDENT_LIMITS.title),
     key: appRecordId,
     title: appIncidentText(APP_INCIDENT_LIMITS.title),
     message: appIncidentText(APP_INCIDENT_LIMITS.message),
@@ -110,6 +111,7 @@ export const notificationStateSchema: z.ZodType<NotificationState> = z
                                 failure: admission,
                                 recovery: admission.nullable(),
                                 severity: z.enum(NOTIFICATION_SEVERITIES).optional(),
+                                notified: z.literal(true).optional(),
                             }),
                         )
                         .max(NOTIFICATION_LIMITS.totalChannels),

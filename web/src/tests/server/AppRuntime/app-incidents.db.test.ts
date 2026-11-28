@@ -568,6 +568,23 @@ describe('app incidents through the App API', () => {
         },
     )
 
+    integrationTest('a crashed app whose lease ended resolves its incidents', async () => {
+        const app = await install()
+        expect((await app.incident('disk-full', open(), 'crash-1')).status).toBe(204)
+        await drain()
+        // No retire arrives: the active generation simply stops renewing its lease.
+        const { db } = await import('@/db/index.ts')
+        await db
+            .update(appRuntimeGenerations)
+            .set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+            .where(eq(appRuntimeGenerations.installationId, app.identity.installationId))
+        const recovery = await claimNextNotificationDelivery()
+        expect(recovery?.payload).toMatchObject({
+            type: 'recovery',
+            app: { resolution: 'appStopped' },
+        })
+    })
+
     integrationTest(
         'a restart retires the running generation first and keeps the incident open',
         async () => {

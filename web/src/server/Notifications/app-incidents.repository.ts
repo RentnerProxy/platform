@@ -60,11 +60,13 @@ async function readAppIncidentFacts(
     ]
     if (installationIds.length === 0)
         return { active: new Set(), grants: [], owned: new Map(), hostnames: new Map() }
+    // Sampled before the reads: a generation registered after them lands within a lease that
+    // still runs at this time, so its installation stays live.
+    const now = Date.now()
     const [generations, grants, owned, hosts] = await Promise.all([
         transaction
             .select({
                 installationId: appRuntimeGenerations.installationId,
-                state: appRuntimeGenerations.state,
                 leaseExpiresAt: appRuntimeGenerations.leaseExpiresAt,
             })
             .from(appRuntimeGenerations)
@@ -114,16 +116,13 @@ async function readAppIncidentFacts(
                   .from(proxyHosts)
                   .where(inArray(proxyHosts.id, hostIds)),
     ])
-    // A start or update retires the running generation before it registers the next one, so an
-    // installation stays live while a generation is not revoked or a revoked one's lease runs.
-    const now = Date.now()
+    // Liveness follows the lease alone, as the platform authority does. A start or update retires
+    // the running generation before it registers the next one within that lease, and a crashed
+    // app that renews nothing stops counting once its lease ends, whatever state its row keeps.
     return {
         active: new Set(
             generations
-                .filter(
-                    ({ state, leaseExpiresAt }) =>
-                        state !== 'revoked' || leaseExpiresAt.getTime() > now,
-                )
+                .filter(({ leaseExpiresAt }) => leaseExpiresAt.getTime() > now)
                 .map(({ installationId }) => installationId),
         ),
         grants,

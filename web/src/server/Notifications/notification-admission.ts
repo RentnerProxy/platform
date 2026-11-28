@@ -75,7 +75,10 @@ export function pendingNotificationAdmission(
     )
         return 'escalation'
     if (incident.recoveredAt !== null && !deferredHostFailure(incident, channel)) {
-        return marker?.failure === 'succeeded' && marker.recovery === null && channel.recovery
+        // A channel that got a failure notice is owed its recovery, also after a failed escalation.
+        return (marker?.failure === 'succeeded' || marker?.notified === true) &&
+            marker.recovery === null &&
+            channel.recovery
             ? 'recovery'
             : null
     }
