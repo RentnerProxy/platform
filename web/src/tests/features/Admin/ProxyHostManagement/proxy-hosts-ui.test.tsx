@@ -375,6 +375,16 @@ await mock.module('@/lib/HostMonitoring/hostMonitoringClient.ts', () => ({
     saveHostMonitoringPolicy: saveHostMonitoringPolicyMock,
 }))
 
+// The monitoring cell links to the app's host tab only when the app declares one.
+const appUiModule = await import('@/features/AppUi/AppUiProvider.tsx')
+const realUseAppUiSlot = appUiModule.useAppUiSlot
+let proxyHostTabApps: ReturnType<typeof realUseAppUiSlot> = []
+await mock.module('@/features/AppUi/AppUiProvider.tsx', () => ({
+    ...appUiModule,
+    useAppUiSlot: (slot: Parameters<typeof realUseAppUiSlot>[0]) =>
+        slot === 'proxyHostTab' ? proxyHostTabApps : realUseAppUiSlot(slot),
+}))
+
 const { default: ProxyHostManagementPage } =
     await import('@/features/Admin/ProxyHostManagement/index.tsx')
 const { default: ProxyHostFormModal } =
@@ -687,6 +697,7 @@ beforeEach(() => {
         .mockReset()
         .mockResolvedValue({ observations: [], incidents: [], nextCursor: null })
     saveHostMonitoringPolicyMock.mockReset().mockResolvedValue(monitoringPolicy)
+    proxyHostTabApps = []
     getHostMonitoringAppSummaryMock.mockReset().mockImplementation(async (ids) => ({
         status: 'available',
         installationId: 'monitoring-app',
@@ -1368,6 +1379,9 @@ describe('ProxyHost monitoring integration', () => {
         getHostMonitoringSummaryMock.mockReset().mockImplementation(async () => {
             throw new HostMonitoringClientError('handed_off')
         })
+        proxyHostTabApps = [
+            { installationId: 'monitoring-app', slots: ['proxyHostTab'] },
+        ] as unknown as typeof proxyHostTabApps
         await renderPage([PERMISSIONS.PROXY_HOSTS_VIEW, PERMISSIONS.PROXY_HOSTS_UPDATE])
         await waitFor(() => getRows().length === 2)
         // The column stays, but the monitoring app answers it, loaded apart from the host list.
@@ -1402,6 +1416,17 @@ describe('ProxyHost monitoring integration', () => {
             await answer.promise
         })
         await waitFor(() => findButtonContaining(BUILT_IN_CELL) !== null)
+        expect(findButtonContaining(APP_CELL)).toBeNull()
+    })
+
+    test('without a host tab the app column shows the state but offers no link', async () => {
+        getHostMonitoringSummaryMock.mockReset().mockImplementation(async () => {
+            throw new HostMonitoringClientError('handed_off')
+        })
+        await renderPage([PERMISSIONS.PROXY_HOSTS_VIEW, PERMISSIONS.PROXY_HOSTS_UPDATE])
+        await waitFor(() => getRows().length === 2)
+        await waitFor(() => getHostMonitoringAppSummaryMock.mock.calls.length > 0)
+        await waitFor(() => document.body.textContent?.includes('Healthy') ?? false)
         expect(findButtonContaining(APP_CELL)).toBeNull()
     })
 

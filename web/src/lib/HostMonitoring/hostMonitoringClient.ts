@@ -142,7 +142,8 @@ export async function getHostMonitoringAppSummary(
     const result = hostMonitoringAppSummaryResponseSchema.safeParse(
         await request('app-summary?' + params, signal),
     )
-    const requested = new Set(proxyHostIds)
+    // The request carried the validated IDs, so check the answer against those, not the caller's array.
+    const requested = new Set(input.data.proxyHostIds)
     if (
         !result.success ||
         (result.data.status === 'available' &&

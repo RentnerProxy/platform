@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import { TriangleExclamationPoint } from 'lucide-react'
+import { useAppUiSlot } from '@/features/AppUi/AppUiProvider.tsx'
 import HostAvailabilityBadge from '@/features/Admin/HostMonitoring/Components/HostAvailabilityBadge.tsx'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import type {
@@ -24,6 +25,10 @@ export default function ProxyHostAppMonitoringCell({
     const view = monitoring?.rows.get(host.id)
     const state = view?.state ?? 'loading'
     const installationId = monitoring?.installationId ?? null
+    // The cell opens the app's host tab, so it offers navigation only when that tab exists.
+    const hasHostTab = useAppUiSlot('proxyHostTab').some(
+        (app) => app.installationId === installationId,
+    )
     const content = (
         <>
             {state === 'unavailable' ? (
@@ -49,7 +54,13 @@ export default function ProxyHostAppMonitoringCell({
             ) : null}
         </>
     )
-    if (!onOpenApp || installationId === null || state === 'unavailable' || state === 'loading')
+    if (
+        !onOpenApp ||
+        installationId === null ||
+        !hasHostTab ||
+        state === 'unavailable' ||
+        state === 'loading'
+    )
         return <div className="grid gap-1.5">{content}</div>
     return (
         <button
