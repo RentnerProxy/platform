@@ -516,7 +516,7 @@ async fn cname_setup_distinguishes_ready_missing_wrong_target_and_conflicting_da
                 && request.queries[0].query_type() == RecordType::CNAME
                 && request.queries[0].name() == &name(OWNER)
             {
-                result.add_answer(record(OWNER, RData::TXT(TXT::new(vec!["conflict".into()]))));
+                result.add_answer(record(OWNER, RData::TXT(txt_data(vec!["conflict".into()]))));
             }
             result
         })
@@ -624,14 +624,14 @@ async fn manual_check_requires_every_saved_value_without_ca_or_journal_writes() 
             let mut result = response(&request);
             result.add_answer(record(
                 OWNER,
-                RData::TXT(TXT::new(vec!["a".repeat(20), "a".repeat(23)])),
+                RData::TXT(txt_data(vec!["a".repeat(20), "a".repeat(23)])),
             ));
             if complete {
-                result.add_answer(record(OWNER, RData::TXT(TXT::new(vec!["b".repeat(43)]))));
+                result.add_answer(record(OWNER, RData::TXT(txt_data(vec!["b".repeat(43)]))));
             }
             result.add_answer(record(
                 OWNER,
-                RData::TXT(TXT::new(vec!["foreign-secret-value".into()])),
+                RData::TXT(txt_data(vec!["foreign-secret-value".into()])),
             ));
             result
         })
@@ -716,7 +716,7 @@ async fn manual_cancellation_during_lookup_fences_ready_response() {
     let dns = DnsFixture::new(|request, _| {
         let mut result = response(&request);
         for value in ["a", "b"] {
-            result.add_answer(record(OWNER, RData::TXT(TXT::new(vec![value.repeat(43)]))));
+            result.add_answer(record(OWNER, RData::TXT(txt_data(vec![value.repeat(43)]))));
         }
         result
     })
@@ -1007,12 +1007,12 @@ async fn manual_check_rejects_saved_proofs_at_an_unrelated_answer_owner() {
         let mut result = response(&request);
         result.add_answer(record(
             OWNER,
-            RData::TXT(TXT::new(vec!["wrong-value".into()])),
+            RData::TXT(txt_data(vec!["wrong-value".into()])),
         ));
         for value in ["a", "b"] {
             result.add_answer(record(
                 "unrelated.example.net",
-                RData::TXT(TXT::new(vec![value.repeat(43)])),
+                RData::TXT(txt_data(vec![value.repeat(43)])),
             ));
         }
         result
@@ -1033,4 +1033,9 @@ async fn manual_check_rejects_saved_proofs_at_an_unrelated_answer_owner() {
     assert_eq!(result.records[0].status, CheckStatus::Pending);
     assert_eq!(fixture.bytes(), before);
     assert_eq!(fixture.api_calls.load(Ordering::SeqCst), 0);
+}
+
+/// TXT record data from text values; `TXT::new` is deprecated since hickory 0.26.4.
+fn txt_data(values: Vec<String>) -> TXT {
+    TXT::try_new(values.into_iter().map(String::into_bytes)).unwrap()
 }
