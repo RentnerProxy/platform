@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, io, path::Path};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use marketplace_app_catalog::{CatalogError, TrustedPackageCatalog, read_package_catalog};
-use marketplace_artifacts::{digest, invalid, read_file};
+use rentnerproxy_app_catalog::{CatalogError, TrustedPackageCatalog, read_package_catalog};
+use rentnerproxy_artifacts::{digest, invalid, read_file};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 

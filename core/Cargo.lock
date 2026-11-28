@@ -1498,61 +1498,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
-name = "marketplace-app-catalog"
-version = "0.1.0"
-source = "git+https://github.com/RentnerProxy/marketplace.git?rev=f37f8b43d57ccd94b91c8b4f7272a9eae5178e53#f37f8b43d57ccd94b91c8b4f7272a9eae5178e53"
-dependencies = [
- "ed25519-dalek",
- "hex",
- "marketplace-artifacts",
- "olpc-cjson",
- "rentnerproxy-app-contracts",
- "serde",
- "serde_json",
- "sha2",
- "time",
- "zeroize",
- "zip",
-]
-
-[[package]]
-name = "marketplace-app-pipeline"
-version = "0.1.0"
-source = "git+https://github.com/RentnerProxy/marketplace.git?rev=f37f8b43d57ccd94b91c8b4f7272a9eae5178e53#f37f8b43d57ccd94b91c8b4f7272a9eae5178e53"
-dependencies = [
- "getrandom 0.4.3",
- "hex",
- "httparse",
- "libc",
- "marketplace-artifacts",
- "regex",
- "rentnerproxy-app-contracts",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "time",
- "uuid",
- "windows-sys 0.61.2",
- "zstd",
-]
-
-[[package]]
-name = "marketplace-artifacts"
-version = "0.1.0"
-source = "git+https://github.com/RentnerProxy/marketplace.git?rev=f37f8b43d57ccd94b91c8b4f7272a9eae5178e53#f37f8b43d57ccd94b91c8b4f7272a9eae5178e53"
-dependencies = [
- "cap-fs-ext",
- "cap-std",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
-]
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2036,12 +1981,69 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
+name = "rentnerproxy-app-catalog"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756fd9cf38bf0ebf3cf7d0e1dc6aab719c100d4f49cf03fbcb5929c8317f4a48"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "olpc-cjson",
+ "rentnerproxy-app-contracts",
+ "rentnerproxy-artifacts",
+ "serde",
+ "serde_json",
+ "sha2",
+ "time",
+ "zip",
+]
+
+[[package]]
 name = "rentnerproxy-app-contracts"
 version = "1.0.0"
-source = "git+https://github.com/RentnerProxy/marketplace.git?rev=f37f8b43d57ccd94b91c8b4f7272a9eae5178e53#f37f8b43d57ccd94b91c8b4f7272a9eae5178e53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0e4005a93c66f0ec0a91e5522325474c7881e77b47d4d098392938fffff20d9"
 dependencies = [
  "jsonschema",
  "serde_json",
+]
+
+[[package]]
+name = "rentnerproxy-app-pipeline"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62d6ace1e02c1fbdab07eaa4500236bf93d8f50e1407910f3ef51e9d0e49f4d0"
+dependencies = [
+ "getrandom 0.4.3",
+ "hex",
+ "httparse",
+ "libc",
+ "regex",
+ "rentnerproxy-app-contracts",
+ "rentnerproxy-artifacts",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "uuid",
+ "windows-sys 0.61.2",
+ "zstd",
+]
+
+[[package]]
+name = "rentnerproxy-artifacts"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "167798416e6596a85c1b3d1e72d9ad48243b229ac509927827bad8cfbebcdfca"
+dependencies = [
+ "cap-fs-ext",
+ "cap-std",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -2064,11 +2066,11 @@ dependencies = [
  "ipnet",
  "jsonschema",
  "libc",
- "marketplace-app-catalog",
- "marketplace-app-pipeline",
- "marketplace-artifacts",
  "rcgen",
+ "rentnerproxy-app-catalog",
  "rentnerproxy-app-contracts",
+ "rentnerproxy-app-pipeline",
+ "rentnerproxy-artifacts",
  "reqwest",
  "rusqlite",
  "rustls",

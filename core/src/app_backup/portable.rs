@@ -9,7 +9,7 @@ use crate::{
     protected_files::PRIVATE_STAGING_PREFIX,
 };
 use envelope::{Kind, Member};
-use marketplace_artifacts::{file_identity, invalid};
+use rentnerproxy_artifacts::{file_identity, invalid};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},

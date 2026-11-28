@@ -1,5 +1,5 @@
 use super::*;
-use marketplace_artifacts::digest;
+use rentnerproxy_artifacts::digest;
 use serde_json::json;
 use std::fs;
 

@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 base64 = "0.23.1"
 flate2 = "1"
-marketplace-artifacts = { git = "https://github.com/RentnerProxy/marketplace.git", rev = "970ad0aa54fb359c8a7289d35fab1a6dd1ac7b10" }
+rentnerproxy-artifacts = "1.0.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"

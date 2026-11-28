@@ -6,13 +6,13 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
-use marketplace_app_catalog::{
+use rentnerproxy_app_catalog::{
     ReadOptions, SigningKeys, TrustedPackageCatalog, UpdateOptions, bootstrap_catalog,
     read_catalog, update_catalog,
 };
-use marketplace_app_pipeline::package::execute;
-use marketplace_artifacts::digest;
 use rentnerproxy_app_contracts::Contracts;
+use rentnerproxy_app_pipeline::package::execute;
+use rentnerproxy_artifacts::digest;
 use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 

@@ -8,9 +8,9 @@ use super::distribution::Distribution;
 use super::*;
 use crate::app_install::tests::pack_fixture_archive;
 use crate::app_install::tests::published_greeting::{PublishedGreeting, PublishedSnapshot};
-use marketplace_app_pipeline::package::execute;
-use marketplace_artifacts::{digest, file_identity};
 use rentnerproxy_app_contracts::Contracts;
+use rentnerproxy_app_pipeline::package::execute;
+use rentnerproxy_artifacts::{digest, file_identity};
 use time::OffsetDateTime;
 
 /// One repackaged release: its version, the manifest fields it sets and the files it adds.

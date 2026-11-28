@@ -4,7 +4,7 @@ use super::{
     read_data, runtime, storage, verify_recovered_release,
 };
 use crate::{app_install::StagedPackage, appliance_process::verify_uid_stopped};
-use marketplace_artifacts::read_file;
+use rentnerproxy_artifacts::read_file;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

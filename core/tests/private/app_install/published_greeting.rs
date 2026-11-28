@@ -5,12 +5,12 @@ use std::{
 };
 
 use ed25519_dalek::{Signer, SigningKey, pkcs8::EncodePrivateKey};
-use marketplace_app_catalog::{
+use rentnerproxy_app_catalog::{
     CatalogError, ReadOptions, SigningKeys, TrustedCatalog, UpdateOptions, bootstrap_catalog,
     read_catalog, update_catalog,
 };
-use marketplace_artifacts::{FileIdentity, digest, file_identity, read_file};
 use rentnerproxy_app_contracts::Contracts;
+use rentnerproxy_artifacts::{FileIdentity, digest, file_identity, read_file};
 use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 

@@ -327,7 +327,7 @@ async fn privileged_published_greeting_lifecycle() {
     let fixture = crate::app_install::tests::published_greeting::prepare(&fixture_path);
     let installation_id = format!(
         "app-{}",
-        &marketplace_artifacts::digest(APP_ID.as_bytes())[..32]
+        &rentnerproxy_artifacts::digest(APP_ID.as_bytes())[..32]
     );
     let mut authority = start_authority(&installation_id, None).await;
 
@@ -533,7 +533,7 @@ async fn privileged_published_greeting_lifecycle() {
     assert_eq!(deliveries, [second.archive_size_bytes]);
     let retry_payload_length = deliveries[0];
     let archived =
-        marketplace_artifacts::file_identity(&update_archive, second.archive_size_bytes).unwrap();
+        rentnerproxy_artifacts::file_identity(&update_archive, second.archive_size_bytes).unwrap();
     assert_eq!(archived.sha256, second.archive_sha256);
     assert_eq!(archived.size_bytes, second.archive_size_bytes);
     assert!(update_package.is_dir());

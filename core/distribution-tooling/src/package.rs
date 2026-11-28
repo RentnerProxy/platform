@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use flate2::read::MultiGzDecoder;
-use marketplace_artifacts::{invalid, read_file};
+use rentnerproxy_artifacts::{invalid, read_file};
 use serde::Deserialize;
 
 use crate::archive::{ARCHIVE_BYTES, File, verify_cpio, verify_tar};

@@ -11,7 +11,7 @@ use super::portable_backup::postgres;
 use super::repackage::{Repackaged, generation, installation, offer, repackage};
 use super::*;
 use crate::app_manager::migration::recorded_version;
-use marketplace_artifacts::digest;
+use rentnerproxy_artifacts::digest;
 
 /// SQL steps by name. Step `n` of a release migrates data version `n` to `n + 1`.
 const STEPS: [(&str, &str); 4] = [

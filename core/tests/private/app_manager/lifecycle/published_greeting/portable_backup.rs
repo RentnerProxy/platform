@@ -120,7 +120,7 @@ pub(super) async fn capture(
         directory.join(EARLIER_CHECKPOINT),
         serde_json::to_vec(&json!({
             "acceptedAt": time::OffsetDateTime::now_utc().unix_timestamp(),
-            "pinSha256": marketplace_artifacts::digest(&fs::read(&fixture.root).unwrap()),
+            "pinSha256": rentnerproxy_artifacts::digest(&fs::read(&fixture.root).unwrap()),
             "files": earlier_files,
         }))
         .unwrap(),
@@ -274,7 +274,7 @@ async fn privileged_restore_published_greeting() {
 
     let installation_id = format!(
         "app-{}",
-        &marketplace_artifacts::digest(APP_ID.as_bytes())[..32]
+        &rentnerproxy_artifacts::digest(APP_ID.as_bytes())[..32]
     );
     let mut authority = start_authority(&installation_id, None).await;
     let mut manager = start_manager(

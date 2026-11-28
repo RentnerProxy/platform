@@ -3,7 +3,7 @@ use super::{MAX_DATA, MAX_NODES};
 const MAX_OUTGOING_NODES: usize = 65_536;
 const DATABASE_URL: &str = "database-url";
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use marketplace_artifacts::invalid;
+use rentnerproxy_artifacts::invalid;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

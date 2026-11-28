@@ -62,7 +62,7 @@ pub fn run_read_npm_sqlite(mut arguments: impl Iterator<Item = String>) -> ExitC
 }
 
 fn read_source(path: &Path) -> Result<Value, SourceError> {
-    let (_file, metadata) = marketplace_artifacts::open_regular(path, MAXIMUM_INPUT)
+    let (_file, metadata) = rentnerproxy_artifacts::open_regular(path, MAXIMUM_INPUT)
         .map_err(|_| SourceError::Invalid)?;
     if metadata.len() < 100 {
         return Err(SourceError::Invalid);
