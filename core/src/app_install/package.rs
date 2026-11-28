@@ -5,12 +5,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use marketplace_app_pipeline::package::execute;
-use marketplace_artifacts::{
+use rentnerproxy_app_contracts::{DownloadAsset, Package};
+use rentnerproxy_app_pipeline::package::execute;
+use rentnerproxy_artifacts::{
     FileIdentity, StreamVerification, file_identity, invalid, parse_json, read_file,
     validate_wire_json, verify_stream,
 };
-use rentnerproxy_app_contracts::{DownloadAsset, Package};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 

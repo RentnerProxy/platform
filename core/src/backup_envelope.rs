@@ -223,7 +223,7 @@ fn seal(
     let mut chunk = Chunks::new(lengths);
     for ((name, expected_length), expected_hash) in NAMES.into_iter().zip(lengths).zip(hashes) {
         let path = source_directory.join(name);
-        let (mut input, before) = marketplace_artifacts::open_regular(&path, expected_length)?;
+        let (mut input, before) = rentnerproxy_artifacts::open_regular(&path, expected_length)?;
         if before.len() != expected_length {
             return Err(invalid());
         }
@@ -274,7 +274,7 @@ fn open(
     check: CapacityCheck,
 ) -> io::Result<()> {
     let size = sealed_bytes(lengths);
-    let (mut input, before) = marketplace_artifacts::open_regular(source, size)?;
+    let (mut input, before) = rentnerproxy_artifacts::open_regular(source, size)?;
     if before.len() != size {
         return Err(invalid());
     }
@@ -384,7 +384,7 @@ fn open_stream(
     check: CapacityCheck,
 ) -> io::Result<()> {
     let size = HEADER_BYTES as u64 + lengths.into_iter().sum::<u64>() + TAG_BYTES as u64;
-    let (mut input, before) = marketplace_artifacts::open_regular(source, size)?;
+    let (mut input, before) = rentnerproxy_artifacts::open_regular(source, size)?;
     if before.len() != size {
         return Err(invalid());
     }

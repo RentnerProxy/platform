@@ -4,9 +4,9 @@
 use std::{ffi::OsString, fs, io, path::Path};
 
 use ed25519_dalek::{Signer, SigningKey};
-use marketplace_app_catalog::{TrustedPackageCatalog, bootstrap_catalog};
-use marketplace_app_pipeline::package::execute;
-use marketplace_artifacts::digest;
+use rentnerproxy_app_catalog::{TrustedPackageCatalog, bootstrap_catalog};
+use rentnerproxy_app_pipeline::package::execute;
+use rentnerproxy_artifacts::digest;
 use serde_json::{Value, json};
 
 use super::{

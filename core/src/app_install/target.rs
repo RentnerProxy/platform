@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, io};
 
-use marketplace_artifacts::parse_json;
 use rentnerproxy_app_contracts::ManifestEnvironment;
+use rentnerproxy_artifacts::parse_json;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

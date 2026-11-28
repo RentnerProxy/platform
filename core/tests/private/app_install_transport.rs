@@ -4,7 +4,7 @@ use std::{
     thread,
 };
 
-use marketplace_artifacts::{FileIdentity, digest};
+use rentnerproxy_artifacts::{FileIdentity, digest};
 
 use crate::app_install::package::write_download;
 

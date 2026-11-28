@@ -2,7 +2,7 @@ mod files;
 mod portable;
 
 use crate::{app_install::Installer, app_manager, appliance_process};
-use marketplace_artifacts::{digest, invalid, read_file};
+use rentnerproxy_artifacts::{digest, invalid, read_file};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

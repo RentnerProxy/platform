@@ -37,7 +37,7 @@ fn owner_marker(dir: &Path, id: &str, slot: &Slot) -> io::Result<()> {
         || meta.uid() != 0
         || meta.gid() != 0
         || meta.mode() & 0o7777 != 0o400
-        || marketplace_artifacts::read_file(&marker, 256)?
+        || rentnerproxy_artifacts::read_file(&marker, 256)?
             != format!("{}\n{id}\n", slot.app_id).as_bytes()
     {
         return Err(bad("Persistent UID belongs to another installation"));

@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-use marketplace_artifacts::{digest, file_identity, invalid, read_file};
+use rentnerproxy_artifacts::{digest, file_identity, invalid, read_file};
 use serde::{Deserialize, Serialize};
 
 use crate::{BUNDLE_BYTES, decode};
@@ -291,7 +291,7 @@ pub fn verify_bound(root: &Path, expected: Workflow, output: impl Write) -> io::
             "Unassessed distribution candidate identity mismatch",
         ));
     }
-    let image_evidence = marketplace_artifacts::parse_json(&image)?;
+    let image_evidence = rentnerproxy_artifacts::parse_json(&image)?;
     let image: ImageEvidence = serde_json::from_value(image_evidence.clone())
         .map_err(|_| invalid("Invalid assessed image evidence"))?;
     if image.schema_version != 1

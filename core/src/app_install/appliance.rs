@@ -4,7 +4,7 @@ use std::{
 };
 
 use super::{Installer, filesystem};
-use marketplace_artifacts::invalid;
+use rentnerproxy_artifacts::invalid;
 
 const BUNDLED_INSTALLER_CONFIG: &str = "/usr/share/rentnerproxy/app-catalog/installer.json";
 

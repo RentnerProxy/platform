@@ -4,10 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use marketplace_app_catalog::{ReadOptions, UpdateOptions, read_catalog, update_catalog};
-use marketplace_app_pipeline::{evidence, package, publication};
-use marketplace_artifacts::digest;
+use rentnerproxy_app_catalog::{ReadOptions, UpdateOptions, read_catalog, update_catalog};
 use rentnerproxy_app_contracts::{Contracts, DownloadAsset};
+use rentnerproxy_app_pipeline::{evidence, package, publication};
+use rentnerproxy_artifacts::digest;
 use serde_json::{Value, json};
 
 use super::super::{Files, PIN, keys, now, pack_fixture_archive};

@@ -238,20 +238,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
-name = "marketplace-artifacts"
-version = "0.1.0"
-source = "git+https://github.com/RentnerProxy/marketplace.git?rev=970ad0aa54fb359c8a7289d35fab1a6dd1ac7b10#970ad0aa54fb359c8a7289d35fab1a6dd1ac7b10"
-dependencies = [
- "cap-fs-ext",
- "cap-std",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
-]
-
-[[package]]
 name = "maybe-owned"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -304,12 +290,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "rentnerproxy-artifacts"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "167798416e6596a85c1b3d1e72d9ad48243b229ac509927827bad8cfbebcdfca"
+dependencies = [
+ "cap-fs-ext",
+ "cap-std",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "rentnerproxy-distribution-verify"
 version = "0.0.0"
 dependencies = [
  "base64",
  "flate2",
- "marketplace-artifacts",
+ "rentnerproxy-artifacts",
  "serde",
  "serde_json",
  "tempfile",

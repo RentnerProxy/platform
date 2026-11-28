@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::read::MultiGzDecoder;
-use marketplace_artifacts::{digest, invalid};
+use rentnerproxy_artifacts::{digest, invalid};
 use serde::Deserialize;
 
 use crate::{BUNDLE_BYTES, read_bounded};

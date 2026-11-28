@@ -5,7 +5,7 @@ use crate::{
     app_manager::portable_backup::Inventory,
 };
 use aws_lc_rs::digest::{Context, SHA256};
-use marketplace_artifacts::{
+use rentnerproxy_artifacts::{
     FileIdentity, StreamVerification, hash_stream, invalid, parse_json, verify_stream,
 };
 use serde::{Deserialize, Serialize};
