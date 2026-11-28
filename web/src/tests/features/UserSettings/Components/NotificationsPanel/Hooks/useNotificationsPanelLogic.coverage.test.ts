@@ -59,6 +59,18 @@ const testChannel = mock(async (_input: unknown) => ({
     success: true,
     value: { success: true, code: 'ok' },
 }))
+const groups = [
+    {
+        appId: 'acme.monitor',
+        appName: 'Acme Monitor',
+        categories: [{ key: 'acme.monitor/disk', name: 'Disk space' }],
+    },
+]
+let categoriesFail = false
+const appCategories = mock(async () => {
+    if (categoriesFail) throw new Error('unavailable')
+    return groups
+})
 const success = mock(() => {})
 const error = mock(() => {})
 await mock.module('@/features/UserSettings/Notifications/middleware.ts', () => ({
@@ -70,6 +82,7 @@ await mock.module('@/features/UserSettings/Notifications/middleware.ts', () => (
         deferredCount: 0,
         saturationCount: 0,
     })),
+    getPersonalAppIncidentCategoriesHandler: appCategories,
     updatePersonalNotificationConfigurationHandler: update,
     testPersonalNotificationChannelHandler: testChannel,
 }))
@@ -170,5 +183,41 @@ test('notification edits use revision snapshots and preserve unrelated channels,
         rejected = false
         offline = false
         await hook.dispose()
+    }
+})
+
+test('app incident categories load only for users who may subscribe and a failed load is reported', async () => {
+    appCategories.mockClear()
+    const first = await mountHook(() => useNotificationsPanelLogic({ user, active: true }))
+    try {
+        await flushHook()
+        expect(appCategories).not.toHaveBeenCalled()
+        expect(first.value.state.appCategories).toBeUndefined()
+    } finally {
+        await first.dispose()
+    }
+    settings.allowedCategories.push('app_incident')
+    const loaded = await mountHook(() => useNotificationsPanelLogic({ user, active: true }))
+    try {
+        await flushHook()
+        expect(appCategories).toHaveBeenCalledTimes(1)
+        expect(loaded.value.state.appCategories).toEqual(groups)
+    } finally {
+        await loaded.dispose()
+    }
+    categoriesFail = true
+    error.mockClear()
+    const failed = await mountHook(() => useNotificationsPanelLogic({ user, active: true }))
+    try {
+        await flushHook()
+        expect(failed.value.state.appCategories).toBeUndefined()
+        expect(error).toHaveBeenCalledTimes(1)
+        expect(error).toHaveBeenCalledWith('account.notifications.appCategoriesLoadFailed', {
+            title: 'toast.titles.error',
+        })
+    } finally {
+        categoriesFail = false
+        settings.allowedCategories.pop()
+        await failed.dispose()
     }
 })

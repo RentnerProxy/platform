@@ -9,6 +9,8 @@ import {
     canUsePrivateNotificationDestinations,
     getAllowedNotificationCategories,
 } from '@/lib/Notifications/notification-access.ts'
+import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import type { NotificationState } from './Types/notification-state.types.ts'
 import { resolveActiveUserAccessInTransaction } from '@/server/Auth/Access/rbac.service.ts'
 import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import { resolveEffectiveNotificationConfigurationInTransaction } from './notification-access.ts'
@@ -34,8 +36,22 @@ import {
     authorizeHostAvailabilityDeliveryInTransaction,
     reconcileHostAvailabilityInTransaction,
 } from './host-availability.repository.ts'
+import {
+    authorizeAppIncidentDeliveryInTransaction,
+    reconcileAppIncidentsInTransaction,
+} from './app-incidents.repository.ts'
 import { nextNotificationDeliveryAt } from './notification-scheduling.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
+
+/** Drop the host availability and app incidents that the application tables no longer support. */
+async function reconcileNotificationState(transaction: AuthTransaction, state: NotificationState) {
+    const now = Date.now()
+    return reconcileAppIncidentsInTransaction(
+        transaction,
+        await reconcileHostAvailabilityInTransaction(transaction, state, now),
+        now,
+    )
+}
 
 /** Read scheduling and pending counts in one read-only notification-partition snapshot; disabled/restored queues retain unavailable evidence. */
 export async function readNextNotificationDeliveryAt(): Promise<number | null> {
@@ -104,11 +120,7 @@ export async function commitNotificationCollection(
             await lockNotificationConfiguration(transaction),
         )
         const runtime = await lockNotificationRuntime(transaction)
-        const engine = await reconcileHostAvailabilityInTransaction(
-            transaction,
-            runtime.engine,
-            Date.now(),
-        )
+        const engine = await reconcileNotificationState(transaction, runtime.engine)
         const committed = commitNotificationCollectedBatch(
             engine === runtime.engine ? runtime : { ...runtime, engine },
             configuration,
@@ -138,11 +150,7 @@ export async function claimNextNotificationDelivery(): Promise<NotificationDeliv
             await lockNotificationConfiguration(transaction),
         )
         const runtime = await lockNotificationRuntime(transaction)
-        const engine = await reconcileHostAvailabilityInTransaction(
-            transaction,
-            runtime.engine,
-            Date.now(),
-        )
+        const engine = await reconcileNotificationState(transaction, runtime.engine)
         const result = claimNotificationDelivery(engine, configuration, Date.now(), randomUUID)
         if (JSON.stringify(runtime.engine) !== JSON.stringify(result.state)) {
             runtime.engine = result.state
@@ -214,20 +222,27 @@ export async function authorizeNotificationDelivery(
             if (!channel) return null
             if (!(await authorizeHostAvailabilityDeliveryInTransaction(transaction, claim)))
                 return null
-            if (!channel.ownerUserId) return { channel, allowPrivateDestinations: true }
-            const owner = await resolveActiveUserAccessInTransaction(
-                transaction,
-                channel.ownerUserId,
-            )
+            const owner = channel.ownerUserId
+                ? await resolveActiveUserAccessInTransaction(transaction, channel.ownerUserId)
+                : null
             if (
-                !owner?.permissions.includes(PERMISSIONS.APP_ACCESS) ||
-                !getAllowedNotificationCategories(owner.permissions).includes(
-                    claim.payload.category,
-                )
+                channel.ownerUserId &&
+                (!owner?.permissions.includes(PERMISSIONS.APP_ACCESS) ||
+                    !getAllowedNotificationCategories(owner.permissions).includes(
+                        claim.payload.category,
+                    ))
             )
                 return null
+            const payload = await authorizeAppIncidentDeliveryInTransaction(
+                transaction,
+                claim,
+                owner?.permissions ?? null,
+            )
+            if (!payload) return null
+            if (!owner) return { channel, allowPrivateDestinations: true, payload }
             return {
                 channel,
+                payload,
                 allowPrivateDestinations: canUsePrivateNotificationDestinations(owner.permissions),
                 mailAppearance: {
                     themeMode: owner.themeMode,

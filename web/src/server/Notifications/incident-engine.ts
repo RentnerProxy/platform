@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto'
 import { NOTIFICATION_LIMITS } from '@/config/notifications.config.ts'
 import { selectNotificationDelivery } from './notification-scheduling.ts'
 import {
+    channelAcceptsIncident,
     deferredHostFailure,
     notificationAdmissionOrder,
     pendingNotificationAdmission,
 } from './notification-admission.ts'
 import type {
+    AppIncidentNotification,
     NotificationDeliveryResult,
     NotificationObservation,
     NotificationPayload,
@@ -29,14 +31,14 @@ function recoveryOwed(
         (incident.recoveredAt !== null &&
             incident.channels.some(
                 (marker) =>
-                    marker.failure === 'succeeded' &&
+                    (marker.failure === 'succeeded' || marker.notified === true) &&
                     marker.recovery === null &&
                     configuration.channels.some(
                         (channel) =>
                             channel.id === marker.channelId &&
                             channel.revision === marker.channelRevision &&
                             channel.enabled &&
-                            channel.events.includes(incident.category) &&
+                            channelAcceptsIncident(channel, incident) &&
                             channel.recovery,
                     ),
             ))
@@ -60,6 +62,19 @@ function deliveryLifetimeStartedAt(delivery: NotificationQueuedDelivery) {
         : delivery.createdAt
 }
 
+/** The channel's events, and for an app incident its category subscription, admit the delivery. */
+function channelAcceptsDelivery(
+    state: NotificationState,
+    delivery: NotificationQueuedDelivery,
+    channel: NotificationEngineConfiguration['channels'][number],
+) {
+    if (!channel.events.includes(delivery.payload.category)) return false
+    if (delivery.payload.category !== 'app_incident' || delivery.payload.type === 'test')
+        return true
+    const incident = state.incidents.find((item) => item.id === delivery.payload.incidentId)
+    return incident !== undefined && channelAcceptsIncident(channel, incident)
+}
+
 function isActive(delivery: NotificationQueuedDelivery) {
     return delivery.status === 'pending' || delivery.status === 'inflight'
 }
@@ -74,8 +89,17 @@ function markTerminal(state: NotificationState, delivery: NotificationQueuedDeli
     )
     if (!marker) return
     const status = delivery.status === 'succeeded' ? 'succeeded' : 'failed'
-    if (delivery.payload.type === 'incident') marker.failure = status
-    else marker.recovery = status
+    if (delivery.payload.type !== 'incident') {
+        marker.recovery = status
+        return
+    }
+    marker.failure = status
+    if (status !== 'succeeded') return
+    marker.notified = true
+    // An app incident's baseline is the severity the channel was told, also after a pending
+    // notice was raised before it was sent.
+    const { severity } = delivery.payload
+    if (marker.severity !== undefined && severity !== 'info') marker.severity = severity
 }
 
 function terminate(
@@ -125,7 +149,7 @@ function reconcile(
                     channel.enabled &&
                     channel.id === delivery.channelId &&
                     channel.revision === delivery.channelRevision &&
-                    channel.events.includes(delivery.payload.category),
+                    channelAcceptsDelivery(state, delivery, channel),
             )
         // An admitted network attempt may finish, but cannot be claimed again after policy revocation.
         if (
@@ -243,6 +267,44 @@ export function appendNotificationIncident(
     return true
 }
 
+function payloadCode(
+    incident: NotificationIncident,
+    recovery: boolean,
+): NotificationPayload['code'] {
+    if (recovery) return 'operation_recovered'
+    switch (incident.category) {
+        case 'certificate_renewal':
+            return incident.code ?? 'certificate_renewal_failed'
+        case 'ddns':
+            return 'ddns_update_failed'
+        case 'host_availability':
+            return 'host_unavailable'
+        case 'app_incident':
+            return 'app_incident'
+        default:
+            return 'proxy_apply_failed'
+    }
+}
+
+/**
+ * What a delivery shows of an app incident. The platform renders the host name when it sends. A
+ * recovery the platform caused names no host, because the app can no longer see it.
+ */
+function appPayload(
+    app: NonNullable<NotificationIncident['app']>,
+    recovery: boolean,
+): AppIncidentNotification {
+    const platformResolved = recovery && app.resolution !== undefined
+    return {
+        appName: app.appName ?? app.appId,
+        categoryName: app.categoryName,
+        title: app.title,
+        message: app.message,
+        ...(app.resource && !platformResolved ? { resource: { type: 'proxyHost' as const } } : {}),
+        ...(platformResolved ? { resolution: app.resolution } : {}),
+    }
+}
+
 export function admitNotificationIncidents(
     state: NotificationState,
     configuration: NotificationEngineConfiguration,
@@ -276,15 +338,7 @@ export function admitNotificationIncidents(
             category: incident.category,
             severity: recovery ? 'info' : incident.severity,
             resourceId: incident.resourceId,
-            code: recovery
-                ? 'operation_recovered'
-                : incident.category === 'certificate_renewal'
-                  ? (incident.code ?? 'certificate_renewal_failed')
-                  : incident.category === 'ddns'
-                    ? 'ddns_update_failed'
-                    : incident.category === 'host_availability'
-                      ? 'host_unavailable'
-                      : 'proxy_apply_failed',
+            code: payloadCode(incident, recovery),
             occurredAt: new Date(
                 recovery ? incident.recoveredAt! : incident.observedAt,
             ).toISOString(),
@@ -301,6 +355,7 @@ export function admitNotificationIncidents(
                       },
                   }
                 : {}),
+            ...(incident.app ? { app: appPayload(incident.app, recovery) } : {}),
         }
         if (
             new TextEncoder().encode(JSON.stringify(payload)).byteLength >
@@ -310,13 +365,23 @@ export function admitNotificationIncidents(
             continue
         }
         const existingMarker = marker
-        if (marker) marker.recovery = 'pending'
-        else {
+        const previous = marker && {
+            failure: marker.failure,
+            recovery: marker.recovery,
+            severity: marker.severity,
+        }
+        if (marker && recovery) marker.recovery = 'pending'
+        else if (marker) {
+            // A severity rise notifies a channel again.
+            marker.failure = 'pending'
+            marker.severity = incident.severity
+        } else {
             marker = {
                 channelId: channel.id,
                 channelRevision: channel.revision,
                 failure: 'pending',
                 recovery: null,
+                ...(incident.app ? { severity: incident.severity } : {}),
             }
             incident.channels.push(marker)
         }
@@ -336,8 +401,12 @@ export function admitNotificationIncidents(
         })
         if (!withinStateLimit(state)) {
             state.deliveries.pop()
-            if (existingMarker) existingMarker.recovery = null
-            else incident.channels.pop()
+            if (existingMarker && previous) {
+                existingMarker.failure = previous.failure
+                existingMarker.recovery = previous.recovery
+                if (previous.severity === undefined) delete existingMarker.severity
+                else existingMarker.severity = previous.severity
+            } else incident.channels.pop()
             defer(state)
         }
     }
@@ -545,7 +614,7 @@ export function finishNotificationDelivery(
                         channel.enabled &&
                         channel.id === delivery.channelId &&
                         channel.revision === delivery.channelRevision &&
-                        channel.events.includes(delivery.payload.category),
+                        channelAcceptsDelivery(next, delivery, channel),
                 )
             const terminalCode = [
                 'destination_blocked',
@@ -582,6 +651,15 @@ export function finishNotificationDelivery(
     return next
 }
 
+/** An app incident's resource ID names the installation, so the status shows its incident ID. */
+function visibleResourceId(
+    category: NotificationIncident['category'],
+    resourceId: string,
+    incidentId: string,
+) {
+    return category === 'app_incident' ? incidentId : resourceId
+}
+
 export function summarizeNotificationState(
     state: NotificationState,
     nowMs = Date.now(),
@@ -592,8 +670,17 @@ export function summarizeNotificationState(
                 evidence: _evidence,
                 recoveryEvidence: _recoveryEvidence,
                 channels: _channels,
+                // App text and installation IDs stay out of the status that channel owners read.
+                app: _app,
                 ...incident
-            }) => incident,
+            }) => {
+                incident.resourceId = visibleResourceId(
+                    incident.category,
+                    incident.resourceId,
+                    incident.id,
+                )
+                return incident
+            },
         ),
         deliveries: state.deliveries.slice(-50).map((delivery) => ({
             id: delivery.id,
@@ -602,7 +689,11 @@ export function summarizeNotificationState(
             channelRevision: delivery.channelRevision,
             type: delivery.payload.type,
             category: delivery.payload.category,
-            resourceId: delivery.payload.resourceId,
+            resourceId: visibleResourceId(
+                delivery.payload.category,
+                delivery.payload.resourceId,
+                delivery.payload.incidentId,
+            ),
             status: delivery.status,
             attempts: delivery.attempts,
             updatedAt: delivery.updatedAt,

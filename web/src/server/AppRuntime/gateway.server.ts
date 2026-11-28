@@ -37,6 +37,7 @@ const resourceRoutes: readonly [RegExp, AppRuntimeOperation][] = [
     [/^GET \/platform\/v1\/providers\/([^/]+)$/u, 'provider'],
     [/^GET \/platform\/v1\/operations\/([^/]+)$/u, 'operation'],
     [/^POST \/platform\/v1\/operations\/([^/]+)\/cancel$/u, 'cancelOperation'],
+    [/^POST \/platform\/v1\/incidents\/([^/]+)$/u, 'setIncident'],
     [/^GET \/platform\/v1\/legacy-handoffs\/([^/]+)$/u, 'getLegacyHandoff'],
     [/^POST \/platform\/v1\/legacy-handoffs\/([^/]+)\/begin$/u, 'beginLegacyHandoff'],
     [/^POST \/platform\/v1\/legacy-handoffs\/([^/]+)\/parts$/u, 'readLegacyHandoffPart'],
@@ -48,6 +49,7 @@ const keyedOperations: ReadonlySet<AppRuntimeOperation> = new Set([
     'cancelOperation',
     'audit',
     'notification',
+    'setIncident',
     'beginLegacyHandoff',
     'commitLegacyHandoff',
 ])

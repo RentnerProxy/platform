@@ -1,4 +1,7 @@
-import type { NotificationChannelPolicy } from '@/lib/Notifications/Types/notifications.types.ts'
+import type {
+    NotificationChannelPolicy,
+    NotificationPayload,
+} from '@/lib/Notifications/Types/notifications.types.ts'
 import type { NotificationState, NotificationClaimedDelivery } from './notification-state.types.ts'
 import type { MailAppearance } from '@/server/Mail/Types/mail-theme.types.ts'
 import type { HostMonitoringOutcomeCode } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
@@ -51,5 +54,7 @@ export interface NotificationDeliveryClaim extends NotificationClaimedDelivery {
 export interface NotificationDeliveryAuthorization {
     readonly channel: StoredNotificationChannel
     readonly allowPrivateDestinations: boolean
+    /** The payload to send: the claim's, with what the platform renders at send time. */
+    readonly payload?: NotificationPayload | undefined
     readonly mailAppearance?: MailAppearance | undefined
 }

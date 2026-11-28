@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from '@rentnerkev/toasts'
 import {
+    getPersonalAppIncidentCategoriesHandler,
     getPersonalNotificationSettingsHandler,
     getPersonalNotificationStatusHandler,
     updatePersonalNotificationConfigurationHandler,
@@ -25,6 +26,7 @@ function channelInput(channel: Channel): ChannelInput {
         minimumSeverity: channel.minimumSeverity,
         thresholdSeconds: channel.thresholdSeconds,
         recovery: channel.recovery,
+        ...(channel.appCategories ? { appCategories: [...channel.appCategories] } : {}),
     }
 }
 
@@ -42,6 +44,11 @@ export default function useNotificationsPanelLogic({ user, active }: Notificatio
         queryFn: () => getPersonalNotificationStatusHandler(),
         enabled: active,
     })
+    const appCategories = useQuery({
+        queryKey: [...queryKey, 'app-categories'],
+        queryFn: () => getPersonalAppIncidentCategoriesHandler(),
+        enabled: active && settings.data?.allowedCategories.includes('app_incident') === true,
+    })
     const [editor, setEditor] = useState<ChannelEditorState | null>(null)
     const [deleting, setDeleting] = useState<Channel | null>(null)
     const lastError = useRef<unknown>(null)
@@ -52,6 +59,15 @@ export default function useNotificationsPanelLogic({ user, active }: Notificatio
             toast.error(t('account.notifications.loadFailed'), { title: t('toast.titles.error') })
         }
     }, [error, t])
+    const lastCategoryError = useRef<unknown>(null)
+    useEffect(() => {
+        if (appCategories.error && lastCategoryError.current !== appCategories.error) {
+            lastCategoryError.current = appCategories.error
+            toast.error(t('account.notifications.appCategoriesLoadFailed'), {
+                title: t('toast.titles.error'),
+            })
+        }
+    }, [appCategories.error, t])
     const mutation = useMutation({
         mutationFn: (data: {
             channels: ChannelInput[]
@@ -121,6 +137,7 @@ export default function useNotificationsPanelLogic({ user, active }: Notificatio
         state: {
             settings: settings.data,
             status: status.data,
+            appCategories: appCategories.data,
             loading: settings.isPending,
             editor,
             deleting,

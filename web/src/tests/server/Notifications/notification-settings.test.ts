@@ -277,3 +277,69 @@ describe('notification channel secrets and revisions', () => {
         ).toBeFalse()
     })
 })
+
+const withCategories = (appCategories: unknown) => ({
+    ...input(),
+    channels: [{ ...input().channels[0]!, events: ['app_incident'], appCategories }],
+})
+
+const parse = (value: unknown) =>
+    updateNotificationConfigurationSchema.safeParse(withCategories(value)).success
+
+describe('app incident subscriptions on a channel', () => {
+    test('older channels without app categories stay valid', () => {
+        expect(updateNotificationConfigurationSchema.safeParse(input()).success).toBeTrue()
+        const channel = input().channels[0]!
+        expect(channel.appCategories).toBeUndefined()
+    })
+
+    test('accepts qualified app category keys and refuses everything else', () => {
+        expect(parse(['acme.monitor/disk', 'acme.monitor/upstream-down'])).toBeTrue()
+        expect(parse([])).toBeTrue()
+        expect(parse(['acme.monitor/disk', 'acme.monitor/disk'])).toBeFalse()
+        for (const key of [
+            'disk',
+            '/disk',
+            'acme.monitor/',
+            'Acme.Monitor/disk',
+            'acme.monitor/Disk',
+            'acme/disk',
+            'x'.repeat(300),
+        ])
+            expect(parse([key])).toBeFalse()
+        const many = Array.from({ length: 65 }, (_, index) => `acme.monitor/category-${index}`)
+        expect(parse(many.slice(0, 64))).toBeTrue()
+        expect(parse(many)).toBeFalse()
+    })
+
+    test('keeps the categories through edits, revisions and summaries', async () => {
+        const channel = {
+            ...input().channels[0]!,
+            events: ['app_incident' as const],
+            appCategories: ['acme.monitor/disk'],
+        }
+        const built = await buildNotificationConfiguration(DEFAULT_NOTIFICATION_CONFIGURATION, {
+            ...input(),
+            channels: [channel],
+        })
+        expect(storedNotificationConfigurationSchema.safeParse(built).success).toBeTrue()
+        expect(built.channels[0]?.appCategories).toEqual(['acme.monitor/disk'])
+        expect(summarizeNotificationConfiguration(built).channels[0]?.appCategories).toEqual([
+            'acme.monitor/disk',
+        ])
+        // The same policy without a new destination keeps its revision; a changed list revises it.
+        const { destination: _destination, ...policy } = channel
+        const same = await buildNotificationConfiguration(built, {
+            expectedRevision: built.revision,
+            enabled: true,
+            channels: [policy],
+        })
+        expect(same.channels[0]?.revision).toBe(built.channels[0]?.revision)
+        const changed = await buildNotificationConfiguration(built, {
+            expectedRevision: built.revision,
+            enabled: true,
+            channels: [{ ...policy, appCategories: ['acme.monitor/upstream'] }],
+        })
+        expect(changed.channels[0]?.revision).toBe(built.revision + 1)
+    })
+})
