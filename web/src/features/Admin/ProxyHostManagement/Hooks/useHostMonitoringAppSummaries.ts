@@ -32,6 +32,10 @@ export default function useHostMonitoringAppSummaries(
         refetchOnWindowFocus: true,
         retry: false,
     })
+    const formatter = useMemo(
+        () => new Intl.DateTimeFormat(locale, { dateStyle: 'short', timeStyle: 'medium' }),
+        [locale],
+    )
     const durationFormatter = useMemo(
         () =>
             new Intl.NumberFormat(locale, {
@@ -53,7 +57,7 @@ export default function useHostMonitoringAppSummaries(
             installationId,
             rows: new Map(
                 ids.map((id): [string, ProxyHostAppMonitoringRow] => {
-                    const empty = { latency: null, observedAt: null }
+                    const empty = { latency: null, observedAt: null, observedAtLabel: null }
                     if (query.isPending) return [id, { state: 'loading', ...empty }]
                     if (answer?.status !== 'available')
                         return [id, { state: 'unavailable', ...empty }]
@@ -68,10 +72,14 @@ export default function useHostMonitoringAppSummaries(
                                     ? null
                                     : durationFormatter.format(row.latencyMs),
                             observedAt: row.observedAt,
+                            observedAtLabel:
+                                row.observedAt === null
+                                    ? null
+                                    : formatter.format(new Date(row.observedAt)),
                         },
                     ]
                 }),
             ),
         }
-    }, [active, durationFormatter, ids, query.data, query.isError, query.isPending])
+    }, [active, durationFormatter, formatter, ids, query.data, query.isError, query.isPending])
 }

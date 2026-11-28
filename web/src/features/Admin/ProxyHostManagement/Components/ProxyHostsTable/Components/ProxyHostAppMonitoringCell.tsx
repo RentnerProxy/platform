@@ -41,7 +41,7 @@ export default function ProxyHostAppMonitoringCell({
             )}
             {view?.observedAt ? (
                 <time dateTime={view.observedAt} className="text-xs text-muted">
-                    {new Date(view.observedAt).toLocaleString()}
+                    {view.observedAtLabel}
                 </time>
             ) : null}
             {view?.latency ? (

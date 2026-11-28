@@ -19,6 +19,8 @@ export interface ProxyHostAppMonitoringRow {
     readonly state: HostMonitoringAppState | 'loading' | 'unavailable' | 'noData'
     readonly latency: string | null
     readonly observedAt: string | null
+    /** observedAt in the UI language, like the built-in column. */
+    readonly observedAtLabel: string | null
 }
 
 export interface HostMonitoringAppRows {
