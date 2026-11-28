@@ -140,7 +140,7 @@ fn response(request: &Message) -> Message {
 }
 
 fn txt(chunks: &[&str]) -> RData {
-    RData::TXT(TXT::new(
+    RData::TXT(txt_data(
         chunks.iter().map(|value| (*value).to_owned()).collect(),
     ))
 }
@@ -203,9 +203,16 @@ fn joins_chunks_and_requires_all_complete_values() {
 
 #[test]
 fn bounds_txt_bytes_and_record_count_even_for_unrelated_values() {
-    let huge = "x".repeat(MAX_TXT_BYTES + 1);
+    // One TXT record holds at most 65,535 bytes in character-strings of up to 255 bytes, so the
+    // total above the bound spans two valid records.
+    let half = "x".repeat(MAX_TXT_BYTES / 2 + 1);
+    let chunks: Vec<&str> = half
+        .as_bytes()
+        .chunks(255)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap())
+        .collect();
     assert!(matches!(
-        match_data_values(&[txt(&[&huge])], &values(&["x"])),
+        match_data_values(&[txt(&chunks), txt(&chunks)], &values(&["x"])),
         Err(CertificateError::ManualDnsLookupFailed)
     ));
     let many = vec![txt(&["x"]); MAX_TXT_RECORDS + 1];
@@ -716,4 +723,9 @@ async fn each_alias_question_gets_its_own_timeout_within_the_total_deadline() {
         "the chain must outlive a single question's budget"
     );
     assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+/// TXT record data from text values; `TXT::new` is deprecated since hickory 0.26.4.
+fn txt_data(values: Vec<String>) -> TXT {
+    TXT::try_new(values.into_iter().map(String::into_bytes)).unwrap()
 }
