@@ -15,6 +15,8 @@ let appResult: unknown
 let grants: string[]
 let platformPermissions: string[]
 let afterCall: () => void
+/** The operation permission is revoked as seen by the final, grant-bearing read. */
+let revokedAtFinalRead: boolean
 
 const realAuthority = await import('@/server/AppRuntime/authority.server.ts')
 const realServices = await import('@/server/AppRuntime/services.server.ts')
@@ -34,7 +36,10 @@ void mock.module('@/server/AppRuntime/authority.server.ts', () => ({
             kind: 'user',
             identity,
             expiresAt: new Date(Date.now() + 60_000),
-            appPermissions: ['app:rentnerproxy.monitoring:monitoring-read'],
+            appPermissions:
+                includeGrants && revokedAtFinalRead
+                    ? []
+                    : ['app:rentnerproxy.monitoring:monitoring-read'],
             permissions: platformPermissions,
             grants: includeGrants
                 ? grants.map((resourceId) => ({ resourceId, capability, allowService: false }))
@@ -82,6 +87,7 @@ beforeEach(() => {
     grants = ['host-a']
     platformPermissions = [PERMISSIONS.APP_ACCESS, PERMISSIONS.PROXY_HOSTS_VIEW]
     afterCall = () => undefined
+    revokedAtFinalRead = false
 })
 
 describe('executeAppUiCall result filtering', () => {
@@ -102,6 +108,12 @@ describe('executeAppUiCall result filtering', () => {
             grants = ['host-b']
         }
         await expect(run()).resolves.toEqual({ hosts: [{ hostId: 'host-b' }] })
+    })
+
+    test('withholds the answer when the final read no longer has the operation permission', async () => {
+        revokedAtFinalRead = true
+        await expect(run()).rejects.toMatchObject({ status: 403 })
+        expect(events.at(-1)).toBe('principal:grants')
     })
 
     test('fails closed on a result that is not a filterable list', async () => {

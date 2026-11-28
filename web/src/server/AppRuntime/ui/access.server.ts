@@ -110,20 +110,29 @@ export function authorizeAppUi(
                 actor,
                 policy?.resource !== undefined,
             )
-            if (policy) requireAppRuntimePermission(principal, policy.permissionKey)
-            if (policy?.resource) {
-                const { resourceIdField, capability } = policy.resource
-                const resourceId = appRecordId.safeParse(
-                    payload && Object.hasOwn(payload, resourceIdField)
-                        ? payload[resourceIdField]
-                        : undefined,
-                )
-                if (!resourceId.success) throw uiProblems.invalid
-                requireAppRuntimeAuthorization(principal, capability, resourceId.data)
-            }
+            if (policy) requireAppUiOperation(principal, policy, payload)
             return principal.appPermissions
         }),
     )
+}
+
+type AppUiOperationPrincipal = Parameters<typeof requireAppRuntimePermission>[0] &
+    Parameters<typeof requireAppRuntimeAuthorization>[0]
+
+/** The operation permission and, when declared, the requested resource. */
+function requireAppUiOperation(
+    principal: AppUiOperationPrincipal,
+    policy: AppUiOperationPolicy,
+    payload?: AppUiCallInput['payload'],
+) {
+    requireAppRuntimePermission(principal, policy.permissionKey)
+    if (!policy.resource) return
+    const { resourceIdField, capability } = policy.resource
+    const resourceId = appRecordId.safeParse(
+        payload && Object.hasOwn(payload, resourceIdField) ? payload[resourceIdField] : undefined,
+    )
+    if (!resourceId.success) throw uiProblems.invalid
+    requireAppRuntimeAuthorization(principal, capability, resourceId.data)
 }
 
 export async function executeAppUiCall(
@@ -137,10 +146,14 @@ export async function executeAppUiCall(
     const policy = await nativeAppUiPolicy(input, signal)
     await authorizeAppUi(sessionId, app, signal, policy, input.payload)
     const result = await nativeAppUiCall(input, signal)
-    await authorizeAppUi(sessionId, app, signal, policy, input.payload)
-    return policy.results
-        ? await filterAppUiResultForUser(sessionId, app, signal, policy.results, result)
-        : result
+    if (!policy.results) {
+        await authorizeAppUi(sessionId, app, signal, policy, input.payload)
+        return result
+    }
+    return authorizeAndFilterAppUiResult(sessionId, app, signal, policy, policy.results, {
+        payload: input.payload,
+        result,
+    })
 }
 
 type AppUiResultsPolicy = NonNullable<AppUiOperationPolicy['results']>
@@ -182,17 +195,23 @@ export function filterAppUiResult(
     } as AppUiPayload
 }
 
-function filterAppUiResultForUser(
+/**
+ * The final check after the app answered and the filter run in one transaction: a permission,
+ * resource or grant revoked after the call withholds or filters the answer, with no gap between.
+ */
+function authorizeAndFilterAppUiResult(
     sessionId: string,
     app: AppRuntimeIdentity,
     signal: AbortSignal,
+    policy: AppUiOperationPolicy,
     results: AppUiResultsPolicy,
-    result: unknown,
+    { payload, result }: { payload: AppUiCallInput['payload']; result: unknown },
 ): Promise<AppUiPayload> {
     return withAppRuntimeErrors(() =>
         appRuntimeTransaction(signal, async (transaction) => {
             const actor = await readAppUiActorInTransaction(transaction, sessionId)
             const principal = await readAppUiPrincipalInTransaction(transaction, app, actor, true)
+            requireAppUiOperation(principal, policy, payload)
             return filterAppUiResult(principal, results, result)
         }),
     )
