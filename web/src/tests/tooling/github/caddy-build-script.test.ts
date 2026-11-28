@@ -13,7 +13,7 @@ test.skipIf(process.env.RENTNERPROXY_CADDY_BUILD_FIXTURE !== '1' || process.plat
     /** Exercises selected failure gates with disposable stubs and checks the successful build's command ordering. */
     async () => {
         const owned = [
-            '/opt/rentnerproxy-responsecache',
+            '/opt/rentnerproxy-caddy-modules',
             '/opt/rentnerproxy-caddy-source',
             '/tmp/prepare-caddy-source.sh',
             '/usr/bin/caddy',
@@ -29,7 +29,7 @@ test.skipIf(process.env.RENTNERPROXY_CADDY_BUILD_FIXTURE !== '1' || process.plat
         await Promise.all([
             mkdir(bin),
             mkdir('/tmp/rentnerproxy-caddy'),
-            mkdir('/opt/rentnerproxy-responsecache'),
+            mkdir('/opt/rentnerproxy-caddy-modules'),
         ])
         try {
             await copyFile(
@@ -50,7 +50,7 @@ mkdir -p /opt/rentnerproxy-caddy-source
             const fakeCaddy = `#!/usr/bin/env -S bun --no-env-file
 const mode=process.env.FIXTURE_MODE
 if(process.argv[2]==='version')console.log(mode==='version'?'v0.0.0':'v2.11.9 fixture')
-else { if(mode!=='missing-cache')console.log('http.handlers.rentnerproxy_response_cache'); console.log('crowdsec');if(mode!=='missing-http')console.log('http.handlers.crowdsec');console.log('layer4');console.log('http.handlers.appsec') }
+else { if(mode!=='missing-cache')console.log('http.handlers.rentnerproxy_response_cache'); if(mode!=='missing-upstream')console.log('http.handlers.rentnerproxy_upstream'); if(mode!=='missing-admin')console.log('admin.api.rentnerproxy'); console.log('crowdsec');if(mode!=='missing-http')console.log('http.handlers.crowdsec');console.log('layer4');console.log('http.handlers.appsec') }
 `
             const fake = `#!/usr/bin/env -S bun --no-env-file
 import { basename } from 'node:path'
@@ -89,6 +89,8 @@ if(name==='xcaddy'){
                 'version',
                 'missing-http',
                 'missing-cache',
+                'missing-upstream',
+                'missing-admin',
             ]) {
                 const callsPath = join(directory, 'calls')
                 await writeFile(callsPath, '')
@@ -174,6 +176,11 @@ if(name==='xcaddy'){
                     assert.ok(
                         compile.includes(
                             'github.com/mholt/caddy-l4=github.com/mholt/caddy-l4@v0.1.3-0.20261029145729-f607ccea1b7d',
+                        ),
+                    )
+                    assert.ok(
+                        compile.includes(
+                            'github.com/RentnerProxy/platform/core/caddy-modules=/opt/rentnerproxy-caddy-modules',
                         ),
                     )
                 }

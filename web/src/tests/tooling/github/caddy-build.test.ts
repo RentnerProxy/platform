@@ -3,6 +3,13 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
+/** Module IDs the Rust core configures and the platform queries; both builders must ship them. */
+const ownCaddyModules = [
+    'http.handlers.rentnerproxy_response_cache',
+    'http.handlers.rentnerproxy_upstream',
+    'admin.api.rentnerproxy',
+]
+
 describe('upstream Caddy binary security metadata', () => {
     test('source preparation verifies the reviewed backport and preserves dependency manifests', async () => {
         const root = resolve(import.meta.dir, '../../../../..')
@@ -42,7 +49,7 @@ describe('upstream Caddy binary security metadata', () => {
         const root = resolve(import.meta.dir, '../../../../..')
         const [prepare, module, ...images] = await Promise.all([
             readFile(join(root, 'docker/caddy/tooling/prepare-source.sh'), 'utf8'),
-            readFile(join(root, 'core/caddy-modules/responsecache/go.mod'), 'utf8'),
+            readFile(join(root, 'core/caddy-modules/go.mod'), 'utf8'),
             ...['production', 'proxy-runtime'].map((image) =>
                 readFile(join(root, 'docker', image, 'Dockerfile'), 'utf8'),
             ),
@@ -88,10 +95,9 @@ describe('upstream Caddy binary security metadata', () => {
             expect(image).toContain(
                 'COPY docker/tooling/buildinfo/verify.go /tmp/verify-buildinfo.go',
             )
-            expect(image).toContain(
-                'COPY core/caddy-modules/responsecache/ /opt/rentnerproxy-responsecache/',
-            )
-            expect(image).toContain('http.handlers.rentnerproxy_response_cache')
+            expect(image).toContain('COPY core/caddy-modules/ /opt/rentnerproxy-caddy-modules/')
+            for (const module of ownCaddyModules)
+                expect(image).toContain('/usr/bin/caddy list-modules | grep -Fx ' + module)
             const runInstructions = image.replace(/\\\r?\n[ \t]*/gu, ' ').match(/^RUN .+$/gmu)
             expect(
                 runInstructions?.join('\n').match(/\/bin\/sh \/tmp\/build-caddy\.sh(?=\s|$)/gu),
@@ -116,7 +122,7 @@ describe('upstream Caddy binary security metadata', () => {
             'go mod edit -replace github.com/caddyserver/caddy/v2=/opt/rentnerproxy-caddy-source',
             '--replace github.com/caddyserver/caddy/v2=/opt/rentnerproxy-caddy-source',
             'go test -mod=readonly ./...',
-            '--with github.com/RentnerProxy/platform/core/caddy-modules/responsecache=/opt/rentnerproxy-responsecache',
+            '--with github.com/RentnerProxy/platform/core/caddy-modules=/opt/rentnerproxy-caddy-modules',
             '--replace github.com/mholt/caddy-l4=github.com/mholt/caddy-l4@${CADDY_LAYER4_VERSION:?Caddy builder must pin the upstream Layer 4 module}',
             '--replace github.com/crowdsecurity/crowdsec=github.com/crowdsecurity/crowdsec@v1.8.2',
             '--replace golang.org/x/net=golang.org/x/net@v0.62.0',
@@ -128,6 +134,8 @@ describe('upstream Caddy binary security metadata', () => {
             'test "${caddy_version%% *}" = "$CADDY_VERSION"',
         ])
             expect(shared).toContain(contract)
+        for (const module of ownCaddyModules)
+            expect(shared).toContain('/usr/bin/caddy list-modules | grep -Fx ' + module + '\n')
         expect(shared).toContain(
             'GOWORK=off go build -o /tmp/verify-buildinfo /tmp/verify-buildinfo.go',
         )
@@ -144,6 +152,7 @@ describe('upstream Caddy binary security metadata', () => {
             expect(context).toMatch(/^!docker\/caddy\/tooling\/(?:prepare-source\.sh|\*\*)$/mu)
             expect(context).toContain('!docker/caddy/patches/')
             expect(context).toContain('!docker/caddy/patches/**')
+            expect(context).toContain('!core/caddy-modules/\n!core/caddy-modules/**\n')
         }
         expect(images[0]).toContain(
             'COPY docker/tooling/buildinfo/verify.go /opt/verify-buildinfo.go',

@@ -3,7 +3,7 @@ set -eu
 
 test "$(go env GOVERSION)" = go1.27.4
 GOWORK=off go build -o /tmp/verify-buildinfo /tmp/verify-buildinfo.go
-cd /opt/rentnerproxy-responsecache
+cd /opt/rentnerproxy-caddy-modules
 GODEBUG="${GODEBUG:+$GODEBUG,}http2client=0" go mod download
 go mod verify
 /bin/sh /tmp/prepare-caddy-source.sh
@@ -20,7 +20,7 @@ cd /tmp/rentnerproxy-caddy
 GODEBUG="${GODEBUG:+$GODEBUG,}http2client=0" xcaddy build "${CADDY_VERSION:?Caddy builder must specify CADDY_VERSION}" --output /usr/bin/caddy \
         --replace github.com/caddyserver/caddy/v2=/opt/rentnerproxy-caddy-source \
         --with github.com/hslatman/caddy-crowdsec-bouncer/http@${CADDY_CROWDSEC_BOUNCER_VERSION:?Caddy builder must pin the upstream CrowdSec module} \
-        --with github.com/RentnerProxy/platform/core/caddy-modules/responsecache=/opt/rentnerproxy-responsecache \
+        --with github.com/RentnerProxy/platform/core/caddy-modules=/opt/rentnerproxy-caddy-modules \
         --replace github.com/mholt/caddy-l4=github.com/mholt/caddy-l4@${CADDY_LAYER4_VERSION:?Caddy builder must pin the upstream Layer 4 module} \
         --replace github.com/crowdsecurity/crowdsec=github.com/crowdsecurity/crowdsec@v1.8.2 \
         --replace golang.org/x/net=golang.org/x/net@v0.62.0 \
@@ -36,3 +36,5 @@ test "${caddy_version%% *}" = "$CADDY_VERSION"
 /usr/bin/caddy list-modules | grep -Fx crowdsec
 /usr/bin/caddy list-modules | grep -Fx http.handlers.crowdsec
 /usr/bin/caddy list-modules | grep -Fx http.handlers.rentnerproxy_response_cache
+/usr/bin/caddy list-modules | grep -Fx http.handlers.rentnerproxy_upstream
+/usr/bin/caddy list-modules | grep -Fx admin.api.rentnerproxy
