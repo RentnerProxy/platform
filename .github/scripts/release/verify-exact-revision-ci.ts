@@ -9,6 +9,7 @@ export const REQUIRED_CI_JOBS = [
     'Script Typecheck',
     'Web Tests',
     'Rust',
+    'Rust privileged fixtures',
     'Build',
     'Caddy Response Cache',
     'Coverage',
