@@ -37,7 +37,7 @@ jobs:
                     --health-timeout 5s
                     --health-retries 10
             valkey:
-                image: ${{ needs.changes.outputs.runtime != 'false' && 'mirror.gcr.io/valkey/valkey:9.2.0-alpine' || '' }}
+                image: ${{ needs.changes.outputs.runtime != 'false' && 'mirror.gcr.io/valkey/valkey:9.2.1-alpine' || '' }}
                 ports: [6379:6379]
                 options: >-
                     --health-cmd "valkey-cli ping"
