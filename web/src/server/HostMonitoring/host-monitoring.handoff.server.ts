@@ -160,9 +160,16 @@ export const hostMonitoringHandoffSource: LegacyFeatureHandoffSource = {
      * No lease survives the transfer, so no claimed probe can still complete against these rows.
      */
     async retire(transaction) {
+        // A row a host removal is deleting goes away anyway; skipping it avoids waiting on that
+        // removal, which itself waits for this commit before it resets monitoring.
         await transaction.execute(sql`
-            update ${hostCheckPolicies}
+            update ${hostCheckPolicies} as policy
             set lease_token = null, lease_expires_at = null
-            where lease_token is not null`)
+            from (
+                select id from ${hostCheckPolicies}
+                where lease_token is not null
+                for update skip locked
+            ) leased
+            where policy.id = leased.id`)
     },
 }

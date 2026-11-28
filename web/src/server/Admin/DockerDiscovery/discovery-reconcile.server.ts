@@ -26,6 +26,7 @@ import { appendAuditEventInTransactionService } from '@/server/Audit/audit.servi
 import { readProxyRuntimeSnapshot } from '@/server/ProxyRuntime/proxy-runtime-data.ts'
 import { ProxyRuntimeSnapshotError } from '@/server/ProxyRuntime/proxy-runtime-snapshot.ts'
 import { lockMonitoring } from '@/server/HostMonitoring/host-monitoring.storage.ts'
+import { shareLegacyFeatureDomain } from '@/server/LegacyHandoff/ownership.server.ts'
 import {
     lockNotificationConfiguration,
     lockNotificationRuntime,
@@ -89,7 +90,11 @@ export async function reconcileDiscoveryInTransaction(
     if (plan.changes.length > 0) {
         // Savepoints retain earlier candidates' audit locks. Acquire every later
         // monitoring/notification lock first, under the caller's runtime-settings lock.
-        if (plan.changes.some((change) => change.host)) await lockMonitoring(transaction)
+        if (plan.changes.some((change) => change.host)) {
+            // Host invalidation waits for a running monitoring handoff; take that lock first.
+            await shareLegacyFeatureDomain(transaction, 'monitoring')
+            await lockMonitoring(transaction)
+        }
         await lockNotificationConfiguration(transaction)
         await lockNotificationRuntime(transaction)
     }

@@ -102,8 +102,11 @@ export function createLegacyFeatureWorkerGate(
         if (owner === 'platform') {
             stopPolling()
             if (running) return
-            if (unsettledStop) await stopWorker()
-            if (!active) return
+            if (unsettledStop) {
+                await stopWorker()
+                // A handoff may have begun during the drain, also in another process: read again.
+                return apply()
+            }
             running = true
             worker.start()
             state('idle')
@@ -143,6 +146,8 @@ export function createLegacyFeatureWorkerGate(
             }
         })().finally(() => {
             reconciling = null
+            // A signal between the last pass and this cleanup found the old run and set `dirty`.
+            if (dirty && active) reconcileDetached()
         })
         return reconciling
     }

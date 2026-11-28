@@ -154,6 +154,50 @@ test('a failed drain is settled before the worker may start again', async () => 
     await run.gate.stop()
 })
 
+test('a handoff begun during a retried drain keeps the worker stopped', async () => {
+    let failing = true
+    let drained: PromiseWithResolvers<void> | undefined
+    const run = harness('platform', async () => {
+        if (failing) throw new Error('drain timeout')
+        await drained?.promise
+    })
+    await run.gate.start()
+    run.set('handoff')
+    await run.signal()
+    failing = false
+    drained = Promise.withResolvers()
+    run.set('platform')
+    await run.tick()
+    expect(run.events).toEqual(['start', 'stop', 'stop'])
+    // Another process begins a handoff while the drain runs; this process gets no signal.
+    run.set('handoff')
+    drained.resolve()
+    await Bun.sleep(1)
+    expect(run.events).toEqual(['start', 'stop', 'stop'])
+    expect(run.timers).toHaveLength(1)
+    await run.gate.stop()
+})
+
+test('a signal while a reconcile finishes still reaches the worker', async () => {
+    // Land the signal at every point between the last ownership read and the reconcile cleanup.
+    for (let offset = 0; offset < 12; offset += 1) {
+        const run = harness('platform')
+        // oxlint-disable-next-line no-await-in-loop -- Each offset runs its own gate.
+        await run.gate.start()
+        for (const listener of run.listeners) listener()
+        for (let hop = 0; hop < offset; hop += 1)
+            // oxlint-disable-next-line no-await-in-loop -- Advance one microtask at a time.
+            await Promise.resolve()
+        run.set('handoff')
+        for (const listener of run.listeners) listener()
+        // oxlint-disable-next-line no-await-in-loop -- Let every reconcile settle.
+        await Bun.sleep(2)
+        expect(run.events).toEqual(['start', 'stop'])
+        // oxlint-disable-next-line no-await-in-loop -- See above.
+        await run.gate.stop()
+    }
+})
+
 test('signals during a reconcile coalesce into one more ownership read', async () => {
     const run = harness('platform')
     const started = run.gate.start()

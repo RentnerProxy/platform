@@ -13,7 +13,7 @@ import {
 } from '@/db/schema.ts'
 import { AuthDomainError } from '@/server/Auth/Core/errors.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
-import { withPlatformOwnedLegacyFeature } from '@/server/LegacyHandoff/ownership.server.ts'
+import { withSettledPlatformOwnedLegacyFeature } from '@/server/LegacyHandoff/ownership.server.ts'
 import { cancelHostAvailabilityForHostsInTransaction } from '@/server/Notifications/host-availability.repository.ts'
 import type {
     HostMonitoringHistory,
@@ -96,7 +96,8 @@ export async function invalidateHostMonitoringForHostsInTransaction(
     reason: 'policy_changed' | 'monitoring_disabled' = 'policy_changed',
 ): Promise<void> {
     if (proxyHostIds.length === 0) return
-    await withPlatformOwnedLegacyFeature(transaction, 'monitoring', () =>
+    // A begin that is only queued may still roll back; wait for it instead of skipping the reset.
+    await withSettledPlatformOwnedLegacyFeature(transaction, 'monitoring', () =>
         invalidatePoliciesInTransaction(transaction, proxyHostIds, reason),
     )
     await cancelHostAvailabilityForHostsInTransaction(transaction, proxyHostIds)

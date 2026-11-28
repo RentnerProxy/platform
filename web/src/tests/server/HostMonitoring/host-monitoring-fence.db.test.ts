@@ -5,6 +5,7 @@ import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import {
     appRuntimeInstallations,
+    hostCheckIncidents,
     hostCheckPolicies,
     legacyFeatureHandoffs,
     permissions,
@@ -28,7 +29,16 @@ import {
 } from '@/server/HostMonitoring/host-monitoring.repository.ts'
 import { createHostMonitoringService } from '@/server/HostMonitoring/host-monitoring.service.ts'
 import type { HostMonitoringClaim } from '@/server/HostMonitoring/Types/host-monitoring.repository.types.ts'
-import { signalLegacyFeatureOwnership } from '@/server/LegacyHandoff/ownership-signal.server.ts'
+import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
+import { appProviderProfiles } from '@/server/AppRuntime/contract.ts'
+import {
+    signalLegacyFeatureOwnership,
+    subscribeToLegacyFeatureOwnership,
+} from '@/server/LegacyHandoff/ownership-signal.server.ts'
+import {
+    lockLegacyFeatureDomain,
+    shareLegacyFeatureDomain,
+} from '@/server/LegacyHandoff/ownership.server.ts'
 import { createLegacyFeatureWorkerGate } from '@/server/LegacyHandoff/worker-admission.server.ts'
 
 const enabled = process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() !== null
@@ -151,6 +161,92 @@ async function service() {
     })
 }
 
+async function expiredObservations() {
+    const { db } = await import('@/db/index.ts')
+    const [row] = await db.execute<{ count: number }>(sql`
+        select count(*)::integer as count from rentnerproxy.host_check_observations o
+        join ${hostCheckPolicies} p on p.id = o.policy_id
+        join ${proxyHosts} h on h.id = p.proxy_host_id
+        where h.forward_host = ${marker} and o.checked_at < statement_timestamp() - interval '30 days'`)
+    return Number(row?.count ?? 0)
+}
+
+function settingsOf(policy: typeof hostCheckPolicies.$inferSelect) {
+    const { domain, intervalSeconds, timeoutMs, expectedStatus, failureThreshold } = policy
+    const { recoveryThreshold, retentionDays, sampleLimit, incidentLimit } = policy
+    return {
+        domain,
+        enabled: policy.enabled,
+        intervalSeconds,
+        timeoutMs,
+        expectedStatus,
+        failureThreshold,
+        recoveryThreshold,
+        retentionDays,
+        sampleLimit,
+        incidentLimit,
+    }
+}
+
+/** A begin's domain lock, held until the test commits or rolls it back, like a begin's export. */
+function holdBegin() {
+    const held = Promise.withResolvers<void>()
+    const decided = Promise.withResolvers<boolean>()
+    const done = getAuthDatabase()
+        .transaction(async (transaction) => {
+            await transaction.execute(sql`select set_config('lock_timeout', '10000ms', true)`)
+            await lockLegacyFeatureDomain(transaction, 'monitoring')
+            held.resolve()
+            if (!(await decided.promise)) throw new Error('begin rolled back')
+            await transaction.insert(legacyFeatureHandoffs).values({
+                domain: 'monitoring',
+                installationId,
+                state: 'exported',
+                digest: 'a'.repeat(64),
+                partCount: 0,
+            })
+        })
+        .catch((error: unknown) => {
+            if (!(error instanceof Error && error.message === 'begin rolled back')) throw error
+        })
+    return {
+        held: held.promise,
+        done,
+        commit: () => decided.resolve(true),
+        rollBack: () => decided.resolve(false),
+    }
+}
+
+/** A platform writer inside the domain, so a begin has to queue behind it. */
+function holdWriter() {
+    const held = Promise.withResolvers<void>()
+    const released = Promise.withResolvers<void>()
+    const done = getAuthDatabase().transaction(async (transaction) => {
+        await shareLegacyFeatureDomain(transaction, 'monitoring')
+        held.resolve()
+        await released.promise
+    })
+    return { held: held.promise, done, release: () => released.resolve() }
+}
+
+/** Wait until at least `count` sessions queue for the monitoring domain lock in the mode. */
+async function awaitLockWaiter(mode: 'ExclusiveLock' | 'ShareLock', count: number) {
+    const { db } = await import('@/db/index.ts')
+    const key = appProviderProfiles.indexOf('monitoring')
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+        // oxlint-disable-next-line no-await-in-loop -- Poll the lock table until the waiters appear.
+        const [state] = await db.execute<{ waiting: number }>(sql`
+            select count(*)::integer as waiting from pg_locks
+            where locktype = 'advisory' and not granted and mode = ${mode}
+                and classid = (${LEGACY_HANDOFF_LIMITS.advisoryLockClass})::oid
+                and objid = (${key})::oid and objsubid = 2`)
+        if (Number(state?.waiting ?? 0) >= count) return
+        // oxlint-disable-next-line no-await-in-loop -- See above.
+        await Bun.sleep(10)
+    }
+    throw new Error('No session queued for the monitoring domain lock')
+}
+
 async function waitFor(condition: () => boolean, label: string) {
     for (let attempt = 0; attempt < 200; attempt += 1) {
         if (condition()) return
@@ -197,11 +293,13 @@ describe('built-in monitoring writers behind the handoff fence', () => {
     })
 
     integrationTest('an open handoff turns every writer away and keeps the reads', async () => {
-        const hosts = await seedHosts(3)
-        const inFlight = await claimAll()
+        const hosts = await seedHosts(4)
+        // Three probes run when the handoff begins; the fourth policy is due but unclaimed.
+        const inFlight = await claimDueHostMonitoringPolicies(3)
         expect(inFlight).toHaveLength(3)
         const monitoring = await service()
         const before = await snapshot()
+        expect(await expiredObservations()).toBe(4)
         await journal('exported')
 
         expect(await claimAll()).toEqual([])
@@ -221,6 +319,7 @@ describe('built-in monitoring writers behind the handoff fence', () => {
         ).toEqual([{ status: 'fulfilled', value: false }])
         expect(await releaseHostMonitoringClaims(inFlight.slice(2))).toEqual([false])
         await pruneHostMonitoringHistory()
+        expect(await expiredObservations()).toBe(4)
         await getAuthDatabase().transaction((transaction) =>
             invalidateHostMonitoringForHostsInTransaction(transaction, [hosts[0]!.id]),
         )
@@ -248,20 +347,147 @@ describe('built-in monitoring writers behind the handoff fence', () => {
 
         // Without a handoff the same writers work again on the untouched state.
         await journal(null)
-        expect(await releaseHostMonitoringClaims(inFlight)).toEqual([true, true, true])
+        const resumed = await claimAll()
+        expect(resumed).toHaveLength(1)
+        expect(inFlight.map(({ policy: claimed }) => claimed.id)).not.toContain(
+            resumed[0]!.policy.id,
+        )
+        expect(await releaseHostMonitoringClaims([...inFlight, ...resumed])).toEqual([
+            true,
+            true,
+            true,
+            true,
+        ])
+        await pruneHostMonitoringHistory()
+        expect(await expiredObservations()).toBe(0)
     })
+
+    integrationTest(
+        'resets and saves wait for a running begin and apply when it rolls back',
+        async () => {
+            const { db } = await import('@/db/index.ts')
+            const [host, other] = await seedHosts(2)
+            const monitoring = await service()
+            const policyOf = async (proxyHostId: string) =>
+                (
+                    await db
+                        .select()
+                        .from(hostCheckPolicies)
+                        .where(eq(hostCheckPolicies.proxyHostId, proxyHostId))
+                )[0]!
+            const [incident] = await db.execute<{ id: string }>(sql`
+                insert into rentnerproxy.host_check_incidents
+                    (policy_id, started_at, detected_at, failure_code)
+                select id, statement_timestamp(), statement_timestamp(), 'upstream_timeout'
+                from ${hostCheckPolicies} where proxy_host_id = ${host!.id}
+                returning id::text`)
+            const closedReason = async () =>
+                (
+                    await db
+                        .select({ closedReason: hostCheckIncidents.closedReason })
+                        .from(hostCheckIncidents)
+                        .where(eq(hostCheckIncidents.id, incident!.id))
+                )[0]!.closedReason
+            const original = await policyOf(host!.id)
+            const otherOriginal = await policyOf(other!.id)
+
+            // A begin that holds the domain, and one that only waits behind a running writer.
+            for (const queued of [false, true]) {
+                const writer = queued ? holdWriter() : undefined
+                // oxlint-disable-next-line no-await-in-loop -- Each begin runs alone.
+                if (writer) await writer.held
+                const begin = holdBegin()
+                // oxlint-disable-next-line no-await-in-loop -- See above.
+                if (queued) await awaitLockWaiter('ExclusiveLock', 1)
+                // oxlint-disable-next-line no-await-in-loop -- See above.
+                else await begin.held
+                const reset = getAuthDatabase().transaction((transaction) =>
+                    invalidateHostMonitoringForHostsInTransaction(
+                        transaction,
+                        [host!.id],
+                        'monitoring_disabled',
+                    ),
+                )
+                const policy = queued ? otherOriginal : original
+                const save = monitoring.savePolicy({
+                    proxyHostId: queued ? other!.id : host!.id,
+                    expectedVersion: queued ? policy.version : null,
+                    settings: { ...settingsOf(policy), intervalSeconds: 120 },
+                })
+                // A refused save must not settle while the begin is undecided.
+                save.catch(() => undefined)
+                // oxlint-disable-next-line no-await-in-loop -- Both writers queue for the domain.
+                await awaitLockWaiter('ShareLock', 2)
+                writer?.release()
+                begin.rollBack()
+                // oxlint-disable-next-line no-await-in-loop -- See above.
+                await begin.done
+                // oxlint-disable-next-line no-await-in-loop -- The writers then apply.
+                await reset
+                if (queued) {
+                    // oxlint-disable-next-line no-await-in-loop -- See above.
+                    expect(await save).toMatchObject({
+                        settings: { intervalSeconds: 120 },
+                    })
+                } else {
+                    // The first save named a stale version: it reached the policy, not the fence.
+                    // oxlint-disable-next-line no-await-in-loop -- See above.
+                    await expect(save).rejects.toEqual(new HostMonitoringError('conflict'))
+                }
+            }
+            expect((await policyOf(host!.id)).version).not.toBe(original.version)
+            expect(await closedReason()).toBe('monitoring_disabled')
+            expect((await policyOf(other!.id)).intervalSeconds).toBe(120)
+
+            // A begin that commits fences the writers that waited for it.
+            const before = await snapshot()
+            const begin = holdBegin()
+            await begin.held
+            const reset = getAuthDatabase().transaction((transaction) =>
+                invalidateHostMonitoringForHostsInTransaction(transaction, [other!.id]),
+            )
+            const current = await policyOf(other!.id)
+            const save = monitoring.savePolicy({
+                proxyHostId: other!.id,
+                expectedVersion: current.version,
+                settings: { ...settingsOf(current), intervalSeconds: 300 },
+            })
+            save.catch(() => undefined)
+            await awaitLockWaiter('ShareLock', 2)
+            begin.commit()
+            await begin.done
+            await reset
+            await expect(save).rejects.toEqual(new HostMonitoringError('handed_off'))
+            expect(await snapshot()).toEqual(before)
+        },
+        30_000,
+    )
 
     integrationTest('the gate stops and resumes its worker as the journal changes', async () => {
         const worker = { running: false, starts: 0 }
-        const gate = createLegacyFeatureWorkerGate('monitoring', {
-            start: () => {
-                worker.running = true
-                worker.starts += 1
+        let listening = 0
+        const gate = createLegacyFeatureWorkerGate(
+            'monitoring',
+            {
+                start: () => {
+                    worker.running = true
+                    worker.starts += 1
+                },
+                stop: async () => {
+                    worker.running = false
+                },
             },
-            stop: async () => {
-                worker.running = false
+            {
+                subscribe: (domain, listener) => {
+                    listening += 1
+                    const stop = subscribeToLegacyFeatureOwnership(domain, listener)
+                    return () => {
+                        listening -= 1
+                        stop()
+                    }
+                },
             },
-        })
+        )
         await gate.start()
         try {
             expect(worker).toEqual({ running: true, starts: 1 })
@@ -272,8 +498,8 @@ describe('built-in monitoring writers behind the handoff fence', () => {
             await journal('exported')
             await waitFor(() => !worker.running, 'the second handoff to stop the worker')
             await journal('committed')
-            await Bun.sleep(50)
-            // A writer the fence turned away also signals, but a commit is final.
+            // The gate stops listening once it read the commit, which is final.
+            await waitFor(() => listening === 0, 'the commit to end the gate')
             await journal(null)
             await Bun.sleep(50)
             expect(worker).toEqual({ running: false, starts: 2 })

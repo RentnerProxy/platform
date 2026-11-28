@@ -26,7 +26,7 @@ import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-se
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
 import {
     readLegacyFeatureOwnerInTransaction,
-    withPlatformOwnedLegacyFeature,
+    withSettledPlatformOwnedLegacyFeature,
 } from '@/server/LegacyHandoff/ownership.server.ts'
 import { consumeRateLimit } from '@/server/Valkey/rate-limiter.service.ts'
 import {
@@ -222,9 +222,12 @@ export function createHostMonitoringService(dependencies: HostMonitoringServiceD
                     actor.id,
                     PERMISSIONS.PROXY_HOSTS_UPDATE,
                 )
-                // A policy saved after a handoff began would never reach the app's export.
-                const saved = await withPlatformOwnedLegacyFeature(transaction, 'monitoring', () =>
-                    savePolicyInTransaction(transaction, actor.id, input.data, now),
+                // A policy saved after a handoff began would never reach the app's export; a
+                // begin still running is awaited, so only a committed one refuses the save.
+                const saved = await withSettledPlatformOwnedLegacyFeature(
+                    transaction,
+                    'monitoring',
+                    () => savePolicyInTransaction(transaction, actor.id, input.data, now),
                 )
                 if (!saved.owned) throw new HostMonitoringError('handed_off')
                 return saved.value
