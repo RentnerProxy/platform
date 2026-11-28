@@ -8,6 +8,7 @@ export type AppRuntimeOperation =
     | 'probe'
     | 'probeBatch'
     | 'notification'
+    | 'setIncident'
     | 'audit'
     | 'secret'
     | 'provider'

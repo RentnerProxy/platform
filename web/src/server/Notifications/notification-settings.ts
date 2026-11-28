@@ -96,6 +96,9 @@ export async function buildNotificationConfiguration(
                         minimumSeverity: existing.minimumSeverity,
                         thresholdSeconds: existing.thresholdSeconds,
                         recovery: existing.recovery,
+                        ...(existing.appCategories
+                            ? { appCategories: existing.appCategories }
+                            : {}),
                     })
             // Use the monotonic configuration generation so deleting and re-adding a
             // channel ID cannot alias a still-running delivery from its previous destination.
@@ -142,6 +145,7 @@ export function summarizeNotificationConfiguration(
             minimumSeverity: channel.minimumSeverity,
             thresholdSeconds: channel.thresholdSeconds,
             recovery: channel.recovery,
+            ...(channel.appCategories ? { appCategories: channel.appCategories } : {}),
             destinationConfigured: true,
             hasAuthorization: channel.hasAuthorization,
         })),

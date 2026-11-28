@@ -77,6 +77,39 @@ fn keys() -> Vec<String> {
 }
 
 #[test]
+fn the_incident_capability_is_approvable_for_the_installation() {
+    let incidents = manifest(
+        json!([{"id": "notifications.incidents.manage.v1", "scope": "installation"}]),
+        json!([]),
+    );
+    assert_eq!(
+        requested(&incidents).unwrap(),
+        [
+            item("notifications.incidents.manage.v1", "installation", None),
+            item("app.events.subscribe", "installation", None),
+            item("app.audit.record", "installation", None),
+        ]
+    );
+    // The capability is bound to the installation, never to hosts or all hosts.
+    for scope in ["proxyHosts", "allProxyHosts", "ownedProxyHosts"] {
+        let widened = manifest(
+            json!([{"id": "notifications.incidents.manage.v1", "scope": scope}]),
+            json!([]),
+        );
+        assert_eq!(requested(&widened), Err(Unapprovable));
+    }
+    let approval = [
+        approved("notifications.incidents.manage.v1", "installation", None),
+        approved("app.events.subscribe", "installation", None),
+        approved("app.audit.record", "installation", None),
+    ];
+    let grants = decide(&requested(&incidents).unwrap(), &[], &approval, ID).unwrap();
+    assert!(grants.iter().any(|grant| {
+        grant.capability.id == "notifications.incidents.manage.v1" && grant.resource_id == ID
+    }));
+}
+
+#[test]
 fn requested_grants_derive_from_capabilities_and_provider_profiles() {
     assert_eq!(
         requested(&monitoring()).unwrap(),

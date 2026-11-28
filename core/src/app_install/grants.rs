@@ -34,11 +34,12 @@ const DYNAMIC_HOST_CAPABILITIES: [&str; 3] = [
 /// Capabilities with a working platform endpoint. The other contract capabilities have none yet,
 /// and owned proxy hosts wait for their own approval flow, so a release that requests one of them
 /// cannot be approved on this appliance.
-const APPROVABLE: [(&str, &str); 4] = [
+const APPROVABLE: [(&str, &str); 5] = [
     ("proxy.hosts.read.v1", PROXY_HOSTS),
     ("diagnostics.upstream.probe.v1", PROXY_HOSTS),
     ("diagnostics.upstream.probe.v2", PROXY_HOSTS),
     ("notifications.publish.v1", INSTALLATION),
+    ("notifications.incidents.manage.v1", INSTALLATION),
 ];
 const PROVIDER: (&str, &str) = ("app.provider.register", PROVIDER_PROFILES);
 /// Support grants that an app with any capability needs for change events and its audit trail.

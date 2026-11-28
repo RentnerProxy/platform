@@ -108,7 +108,8 @@ describe('notification ownership and current access', () => {
                 PERMISSIONS.APP_ACCESS,
                 PERMISSIONS.NOTIFICATIONS_MANAGE,
             ]),
-        ).toEqual([])
+        ).toEqual(['app_incident'])
+        expect(getAllowedNotificationCategories([PERMISSIONS.NOTIFICATIONS_MANAGE])).toEqual([])
         expect(
             getAllowedNotificationCategories([
                 PERMISSIONS.CERTIFICATES_VIEW,

@@ -24,6 +24,7 @@ const grantNames = {
     'diagnostics.upstream.probe.v1': 'upstreamProbe',
     'diagnostics.upstream.probe.v2': 'upstreamMonitoring',
     'notifications.publish.v1': 'notificationsPublish',
+    'notifications.incidents.manage.v1': 'notificationsIncidents',
     'app.audit.record': 'auditRecord',
     'app.events.subscribe': 'eventsSubscribe',
     'app.provider.register': 'providerRegister',

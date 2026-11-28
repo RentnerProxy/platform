@@ -118,6 +118,7 @@ export function createNotificationAdminService(dependencies: NotificationAdminDe
                                 minimumSeverity,
                                 thresholdSeconds,
                                 recovery,
+                                appCategories,
                             }) => ({
                                 id,
                                 name,
@@ -128,6 +129,7 @@ export function createNotificationAdminService(dependencies: NotificationAdminDe
                                 minimumSeverity,
                                 thresholdSeconds,
                                 recovery,
+                                appCategories,
                             }),
                         ),
                     },

@@ -29,6 +29,7 @@ import {
     revokeAppRuntimeGenerationInTransaction,
     setAppRuntimeRolePermissionInTransaction,
 } from './lifecycle.server.ts'
+import { resolveRemovedAppIncidentsInTransaction } from '@/server/Notifications/app-incidents.repository.ts'
 import { AppRuntimeProblem } from './problem.ts'
 import { appRuntimeTransaction, parseAppInput, withAppRuntimeErrors } from './services.server.ts'
 
@@ -147,14 +148,23 @@ export function manageAppRuntime(action: string, body: unknown, signal: AbortSig
                     case 'removable':
                     case 'purge-data': {
                         const { identity } = parseAppInput(generationRequest, body)
-                        return checkAppRuntimeDependenciesInTransaction(
+                        await checkAppRuntimeDependenciesInTransaction(
                             transaction,
                             identity,
                             action,
                         )
+                        // An uninstalled app can no longer assert or resolve its incidents.
+                        if (action === 'purge-data')
+                            await resolveRemovedAppIncidentsInTransaction(
+                                transaction,
+                                identity.installationId,
+                            )
+                        return undefined
                     }
                     case 'revoke':
                     case 'retire': {
+                        // Every start and update retires the running generation first, so a stop
+                        // ends the app's incidents only through the reconcile after its lease.
                         const input = parseAppInput(generationRequest, body)
                         return revokeAppRuntimeGenerationInTransaction(
                             transaction,
