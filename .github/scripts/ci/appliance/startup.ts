@@ -110,7 +110,7 @@ export async function verifyApplianceStartup(context: ApplianceStartupContext) {
             '/opt/rentnerproxy/valkey/bin/valkey-server',
             '--version',
         ]),
-        /Valkey server v=9\.2\.0/u,
+        /Valkey server v=9\.2\.1/u,
         'bundled Valkey must match the production image version',
     )
     assert.equal(await context.valkeyCommand(id, ['PING']), 'PONG')
