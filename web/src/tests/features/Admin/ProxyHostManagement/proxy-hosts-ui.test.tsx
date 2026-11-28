@@ -5,6 +5,7 @@ import type {
     HostMonitoringPolicyView,
     HostMonitoringSummary,
 } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
+import type { HostMonitoringAppSummary } from '@/lib/HostMonitoring/Types/host-monitoring-app.types.ts'
 import BrowserCacheFields from '@/features/Admin/ProxyHostManagement/Components/BrowserCacheFields/index.tsx'
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -358,9 +359,17 @@ const getHostMonitoringHistoryMock = mock(async () => ({
     nextCursor: null,
 }))
 const saveHostMonitoringPolicyMock = mock(async () => monitoringPolicy)
+const getHostMonitoringAppSummaryMock = mock(
+    async (_ids: readonly string[]): Promise<HostMonitoringAppSummary> => ({
+        status: 'available',
+        installationId: 'monitoring-app',
+        hosts: [],
+    }),
+)
 await mock.module('@/lib/HostMonitoring/hostMonitoringClient.ts', () => ({
     HostMonitoringClientError,
     getHostMonitoringSummary: getHostMonitoringSummaryMock,
+    getHostMonitoringAppSummary: getHostMonitoringAppSummaryMock,
     getHostMonitoringPolicy: getHostMonitoringPolicyMock,
     getHostMonitoringHistory: getHostMonitoringHistoryMock,
     saveHostMonitoringPolicy: saveHostMonitoringPolicyMock,
@@ -592,6 +601,18 @@ async function waitForToast(
     })
 }
 
+// The built-in cell names itself in screen-reader text that also carries the state.
+const BUILT_IN_CELL = 'Open monitoring for app.example.com'
+const APP_CELL = 'Open the monitoring app tab for app.example.com'
+
+function findButtonContaining(text: string): HTMLButtonElement | null {
+    return (
+        [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) =>
+            (button.textContent ?? '').includes(text),
+        ) ?? null
+    )
+}
+
 function getButton(label: string): HTMLButtonElement {
     const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
         (candidate) =>
@@ -666,6 +687,18 @@ beforeEach(() => {
         .mockReset()
         .mockResolvedValue({ observations: [], incidents: [], nextCursor: null })
     saveHostMonitoringPolicyMock.mockReset().mockResolvedValue(monitoringPolicy)
+    getHostMonitoringAppSummaryMock.mockReset().mockImplementation(async (ids) => ({
+        status: 'available',
+        installationId: 'monitoring-app',
+        hosts: ids
+            .filter((proxyHostId) => proxyHostId === enabledHost.id)
+            .map((proxyHostId) => ({
+                proxyHostId,
+                state: 'healthy',
+                latencyMs: 12,
+                observedAt: new Date().toISOString(),
+            })),
+    }))
     dnsProvidersUnavailable = false
     getCertificateDnsProviders.mockClear()
     toast.dismissAll()
@@ -1324,24 +1357,25 @@ describe('ProxyHost monitoring integration', () => {
     test('without VIEW neither rows nor monitoring requests are exposed', async () => {
         await renderPage([PERMISSIONS.PROXY_HOSTS_UPDATE])
         expect(document.body.textContent).not.toContain('Upstream availability')
-        expect(
-            document.querySelector('[aria-label="Open monitoring for app.example.com"]'),
-        ).toBeNull()
+        expect(document.body.textContent).not.toContain('Open monitoring for app.example.com')
         expect(getHostMonitoringSummaryMock).not.toHaveBeenCalled()
+        expect(getHostMonitoringAppSummaryMock).not.toHaveBeenCalled()
         expect(getHostMonitoringPolicyMock).not.toHaveBeenCalled()
         expect(getHostMonitoringHistoryMock).not.toHaveBeenCalled()
     })
 
-    test('a handoff to an app retires the built-in monitoring column and action', async () => {
+    test('a handoff to an app replaces the built-in monitoring column and action with the app column', async () => {
         getHostMonitoringSummaryMock.mockReset().mockImplementation(async () => {
             throw new HostMonitoringClientError('handed_off')
         })
         await renderPage([PERMISSIONS.PROXY_HOSTS_VIEW, PERMISSIONS.PROXY_HOSTS_UPDATE])
         await waitFor(() => getRows().length === 2)
-        await waitFor(() => !document.body.textContent?.includes('Upstream availability'))
-        expect(
-            document.querySelector('[aria-label="Open monitoring for app.example.com"]'),
-        ).toBeNull()
+        // The column stays, but the monitoring app answers it, loaded apart from the host list.
+        await waitFor(() => findButtonContaining(APP_CELL) !== null)
+        expect(findButtonContaining(APP_CELL)?.textContent).toContain('Healthy')
+        expect(document.body.textContent).toContain('Upstream availability')
+        expect(getHostMonitoringAppSummaryMock).toHaveBeenCalled()
+        expect(findButtonContaining(BUILT_IN_CELL)).toBeNull()
         await openMenu(getButton('Open actions for app.example.com'))
         expect(
             [...document.querySelectorAll('[role="menuitem"]')].some((item) =>
@@ -1351,13 +1385,14 @@ describe('ProxyHost monitoring integration', () => {
         // The handoff is final, so the summary is neither retried nor polled again.
         expect(getHostMonitoringSummaryMock).toHaveBeenCalledTimes(1)
 
-        // Another host page asks once, without showing the column while it waits.
+        // Another host page asks once, keeping the app column while it waits.
         const answer = Promise.withResolvers<HostMonitoringSummary>()
         getHostMonitoringSummaryMock.mockImplementation(() => answer.promise)
         await setControlValue(document.querySelector('input[type="search"]')!, 'app.example')
         await waitFor(() => getRows().length === 1)
         await waitFor(() => getHostMonitoringSummaryMock.mock.calls.length === 2)
-        expect(document.body.textContent).not.toContain('Upstream availability')
+        expect(findButtonContaining(BUILT_IN_CELL)).toBeNull()
+        expect(findButtonContaining(APP_CELL)).not.toBeNull()
         // Only a summary of built-in monitoring, as after an aborted handoff, brings it back.
         await act(async () => {
             answer.resolve({
@@ -1366,7 +1401,24 @@ describe('ProxyHost monitoring integration', () => {
             })
             await answer.promise
         })
-        await waitFor(() => document.body.textContent?.includes('Upstream availability') ?? false)
+        await waitFor(() => findButtonContaining(BUILT_IN_CELL) !== null)
+        expect(findButtonContaining(APP_CELL)).toBeNull()
+    })
+
+    test('an unavailable monitoring app never shows its hosts as healthy', async () => {
+        getHostMonitoringSummaryMock.mockReset().mockImplementation(async () => {
+            throw new HostMonitoringClientError('handed_off')
+        })
+        getHostMonitoringAppSummaryMock.mockReset().mockResolvedValue({ status: 'unavailable' })
+        await renderPage([PERMISSIONS.PROXY_HOSTS_VIEW, PERMISSIONS.PROXY_HOSTS_UPDATE])
+        await waitFor(() => getRows().length === 2)
+        await waitFor(() => document.body.textContent?.includes('Monitoring unavailable') ?? false)
+        expect(document.body.textContent).not.toContain('Healthy')
+        expect(
+            [...document.querySelectorAll('button')].some((button) =>
+                (button.textContent ?? '').includes('Open monitoring for'),
+            ),
+        ).toBe(false)
     })
 
     test('batch refresh updates availability without replacing or closing the open action menu', async () => {
