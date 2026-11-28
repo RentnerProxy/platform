@@ -1,6 +1,6 @@
 import '@tanstack/react-start/server-only'
 
-import { inArray, sql, type SQL } from 'drizzle-orm'
+import { sql, type SQL } from 'drizzle-orm'
 import { HOST_MONITORING_HANDOFF } from '@/config/host-monitoring.config.ts'
 import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
 import { hostCheckIncidents, hostCheckObservations, hostCheckPolicies } from '@/db/schema.ts'
@@ -105,22 +105,6 @@ function createPartWriter(emit: (part: AppRuntimeJsonValue) => Promise<void>) {
 function columns(): Record<HostMonitoringHandoffRowKind, string[]> {
     const { policies, observations, incidents } = HOST_MONITORING_HANDOFF.columns
     return { policies: [...policies], observations: [...observations], incidents: [...incidents] }
-}
-
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
-
-/** The given keys that name exported built-in incidents, which an app may continue. */
-export async function readExportedHostMonitoringIncidentIds(
-    transaction: AuthTransaction,
-    keys: readonly string[],
-): Promise<ReadonlySet<string>> {
-    const ids = [...new Set(keys.filter((key) => uuid.test(key)))]
-    if (ids.length === 0) return new Set()
-    const rows = await transaction
-        .select({ id: hostCheckIncidents.id })
-        .from(hostCheckIncidents)
-        .where(inArray(hostCheckIncidents.id, ids))
-    return new Set(rows.map(({ id }) => id))
 }
 
 /**

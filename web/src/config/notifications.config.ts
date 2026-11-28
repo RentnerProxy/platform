@@ -31,6 +31,9 @@ export const NOTIFICATION_LIMITS = {
     channels: 16,
     totalChannels: 256,
     incidents: 1_024,
+    // Frozen built-in host outages and the app incidents continuing them, at most one of each per
+    // monitoring policy. They stay apart from the shared limit the other categories use.
+    handoverIncidents: 2_000,
     deliveries: 256,
     payloadBytes: 16_384,
     stateBytes: 4 * 1_024 * 1_024,

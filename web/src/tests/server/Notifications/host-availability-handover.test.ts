@@ -1,12 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, test } from 'bun:test'
 import { observeAppIncident, resolveAppIncidents } from '@/server/Notifications/app-incidents.ts'
+import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
+import { APP_INCIDENT_LIMITS } from '@/config/notifications.config.ts'
 import {
+    cancelHostAvailabilityIncidents,
     freezeHostAvailabilityIncidents,
     handOverHostAvailabilityIncident,
     observeHostAvailabilityTransition,
 } from '@/server/Notifications/host-availability.ts'
 import {
+    appendNotificationIncident,
     claimNotificationDelivery,
     createNotificationState,
     finishNotificationDelivery,
@@ -73,6 +77,10 @@ const resolution = {
 } as const
 
 function outage(configuration: NotificationEngineConfiguration) {
+    return announce(configuration)
+}
+
+function announce(configuration: NotificationEngineConfiguration) {
     return observeHostAvailabilityTransition(
         createNotificationState(),
         configuration,
@@ -150,7 +158,8 @@ function partlySentOutage() {
     const unsent = both.find((id) => id !== sent && id !== sending)!
     return {
         configuration,
-        state: restart(second.state),
+        // The app commits while one notice is in flight.
+        state: restart(freezeHostAvailabilityIncidents(second.state)),
         sent,
         sending,
         unsent,
@@ -254,7 +263,7 @@ describe('a built-in host outage handed over to the monitoring app', () => {
         ])
         const announced = sendAll(outage(configuration), configuration, 4_000)
         expect(announced.sent.map(([id]) => id).toSorted()).toEqual([hostOnly, both[0]].toSorted())
-        const frozen = freezeHostAvailabilityIncidents(announced.state, configuration.channels)
+        const frozen = freezeHostAvailabilityIncidents(announced.state)
         const opened = observeAppIncident(frozen, configuration, continuation(), 9_000, randomUUID)
         // Only the channel that never heard of the outage gets the continuation's notice.
         const continued = sendAll(restart(opened.state), configuration, 9_100)
@@ -283,7 +292,10 @@ describe('a built-in host outage handed over to the monitoring app', () => {
 
     test('needs the exported incident on the same host and is offered only once', () => {
         const configuration = configure(both.map((id) => channel(id)))
-        const state = sendAll(outage(configuration), configuration, 4_000).state
+        const announced = sendAll(outage(configuration), configuration, 4_000).state
+        // Before the commit froze it, the outage cannot be taken over either.
+        expect(handOverHostAvailabilityIncident(announced, configuration, app, 9_000)).toBeNull()
+        const state = freezeHostAvailabilityIncidents(announced)
         for (const change of [
             { kind: 'open', severity: 'error', app } as const,
             continuation({ continues: randomUUID() }),
@@ -298,13 +310,13 @@ describe('a built-in host outage handed over to the monitoring app', () => {
             }),
         ]) {
             const next = observeAppIncident(state, configuration, change, 9_000, randomUUID).state
-            // Without a matching handover the app incident is a new outage and the old one stays.
+            // Without a matching handover the app incident is an ordinary new one.
             expect(
                 next.incidents.find(({ category }) => category === 'host_availability')?.id,
             ).toBe(incidentId)
-            expect(
-                next.incidents.find(({ category }) => category === 'app_incident')?.startedAt,
-            ).toBe(9_000)
+            const ordinary = next.incidents.find(({ category }) => category === 'app_incident')!
+            expect(ordinary.startedAt).toBe(9_000)
+            expect(ordinary.continuation).toBeUndefined()
         }
         const handedOver = handOverHostAvailabilityIncident(state, configuration, app, 9_000)
         expect(handedOver?.startedAt).toBe(1_000)
@@ -320,7 +332,7 @@ describe('a built-in host outage handed over to the monitoring app', () => {
         ])
         const announced = sendAll(outage(configuration), configuration, 4_000).state
         const opened = observeAppIncident(
-            announced,
+            freezeHostAvailabilityIncidents(announced),
             configuration,
             continuation(),
             9_000,
@@ -345,18 +357,213 @@ describe('a built-in host outage handed over to the monitoring app', () => {
         expect(notices.sent).toEqual([[both[0]!, 'app_incident', 'recovery']])
     })
 
-    test('freezing after commit blocks new built-in notices but keeps the ones admitted', () => {
-        const later = channel(hostOnly, ['host_availability'])
-        const configuration = configure([channel(both[0]!)])
-        const state = outage(configuration)
-        const widened = configure([channel(both[0]!), later])
-        const frozen = freezeHostAvailabilityIncidents(state, widened.channels)
+    test('a frozen outage announces itself to no added or revised channel', () => {
+        const configuration = configure([
+            channel(both[0]!),
+            channel(hostOnly, ['host_availability']),
+        ])
+        const frozen = freezeHostAvailabilityIncidents(outage(configuration))
+        expect(freezeHostAvailabilityIncidents(frozen)).toBe(frozen)
+        // A channel added after commit and one revised after commit lose nothing and gain nothing.
+        const changed = configure([
+            channel(both[0]!),
+            { ...channel(hostOnly, ['host_availability']), revision: 2 },
+            channel(both[1]!),
+        ])
         const sent = sendAll(
-            observeNotificationSignals(frozen, widened, [], 5_000, randomUUID),
-            widened,
+            observeNotificationSignals(frozen, changed, [], 5_000, randomUUID),
+            changed,
             5_100,
         )
         expect(sent.sent).toEqual([[both[0]!, 'host_availability', 'incident']])
-        expect(freezeHostAvailabilityIncidents(frozen, widened.channels)).toBe(frozen)
+        // The continuation announces the outage to the channels the built-in incident never told.
+        const opened = observeAppIncident(sent.state, changed, continuation(), 9_000, randomUUID)
+        const continued = sendAll(opened.state, changed, 9_100)
+        expect(continued.sent).toEqual([[both[1]!, 'app_incident', 'incident']])
+        const resolved = observeAppIncident(
+            continued.state,
+            changed,
+            resolution,
+            10_000,
+            randomUUID,
+        )
+        expect(sendAll(resolved.state, changed, 10_100).sent.toSorted()).toEqual(
+            [
+                [both[0]!, 'app_incident', 'recovery'],
+                [both[1]!, 'app_incident', 'recovery'],
+            ].toSorted(),
+        )
+    })
+
+    test('ending the built-in incident during an in-flight send lets the continuation announce it', () => {
+        const run = partlySentOutage()
+        const opened = observeAppIncident(
+            run.state,
+            run.configuration,
+            continuation(),
+            9_000,
+            randomUUID,
+        ).state
+        // A host change cancels the built-in incident while its notice is still in flight.
+        const cancelled = cancelHostAvailabilityIncidents(opened, new Set([incidentId]), 9_500)
+        const continued = cancelled.incidents.find(({ category }) => category === 'app_incident')!
+        expect(
+            continued.channels.find(({ channelId }) => channelId === run.sending),
+        ).toBeUndefined()
+        const notices = sendAll(
+            observeNotificationSignals(cancelled, run.configuration, [], 9_600, randomUUID),
+            run.configuration,
+            9_700,
+        )
+        expect(notices.sent.filter(([id]) => id === run.sending)).toEqual([
+            [run.sending, 'app_incident', 'incident'],
+        ])
+        const resolved = observeAppIncident(
+            notices.state,
+            run.configuration,
+            resolution,
+            10_000,
+            randomUUID,
+        )
+        expect(
+            sendAll(resolved.state, run.configuration, 10_100).sent.filter(
+                ([id]) => id === run.sending,
+            ),
+        ).toEqual([[run.sending, 'app_incident', 'recovery']])
+    })
+
+    test('a continuation keeps its host and category', () => {
+        const configuration = configure([channel(both[0]!)])
+        const state = freezeHostAvailabilityIncidents(
+            sendAll(outage(configuration), configuration, 4_000).state,
+        )
+        const opened = observeAppIncident(
+            state,
+            configuration,
+            continuation(),
+            9_000,
+            randomUUID,
+        ).state
+        for (const moved of [
+            { ...app, categoryId: 'latency' },
+            {
+                ...app,
+                resource: {
+                    type: 'proxyHost' as const,
+                    proxyHostId: '00000000-0000-4000-8000-000000000398',
+                },
+            },
+        ]) {
+            const outcome = observeAppIncident(
+                opened,
+                configuration,
+                continuation({ app: moved }),
+                9_500,
+                randomUUID,
+            )
+            expect(outcome.result).toBe('continuationConflict')
+            expect(outcome.state).toBe(opened)
+        }
+        // New text on the same host and category still updates it in place.
+        const updated = observeAppIncident(
+            opened,
+            configuration,
+            continuation({ app: { ...app, message: 'Still down.' } }),
+            9_600,
+            randomUUID,
+        )
+        expect(updated.result).toBe('applied')
+    })
+
+    test('only a real takeover counts as a continuation, every other key against the ordinary limit', () => {
+        const configuration = configure([channel(hostOnly, ['host_availability'])])
+        const state = freezeHostAvailabilityIncidents(
+            sendAll(outage(configuration), configuration, 4_000).state,
+        )
+        let current = observeAppIncident(
+            state,
+            configuration,
+            continuation(),
+            9_000,
+            randomUUID,
+        ).state
+        expect(
+            current.incidents.find(({ category }) => category === 'app_incident')?.continuation,
+        ).toBe(true)
+        // Keys that name no frozen outage on their host stay ordinary, even when the app claims one.
+        for (let index = 0; index < APP_INCIDENT_LIMITS.openPerInstallation; index += 1) {
+            const outcome = observeAppIncident(
+                current,
+                configuration,
+                continuation({
+                    app: { ...app, key: 'ordinary-' + index },
+                    continues: 'ordinary-' + index,
+                }),
+                9_100 + index,
+                randomUUID,
+            )
+            expect(outcome.result).toBe('applied')
+            current = outcome.state
+        }
+        expect(
+            observeAppIncident(
+                current,
+                configuration,
+                continuation({ app: { ...app, key: 'one-more' }, continues: 'one-more' }),
+                9_500,
+                randomUUID,
+            ).result,
+        ).toBe('limit')
+    })
+
+    test('frozen outages and their continuations leave the shared incident limit to the other categories', () => {
+        const configuration = configure([channel(hostOnly, ['host_availability'])])
+        const base = outage(configuration).incidents[0]!
+        const state = createNotificationState()
+        // The most a handover can freeze: one open outage per monitoring policy.
+        for (let index = 0; index < HOST_MONITORING_LIMITS.maxPolicies; index += 1) {
+            const id = randomUUID()
+            const proxy = randomUUID()
+            state.incidents.push(
+                {
+                    ...structuredClone(base),
+                    id,
+                    resourceId: proxy,
+                    evidence: id,
+                    channels: [],
+                    frozen: true,
+                },
+                {
+                    id: randomUUID(),
+                    category: 'app_incident',
+                    resourceId: 'installation-one:' + id,
+                    severity: 'error',
+                    startedAt: 1_000,
+                    observedAt: 9_000,
+                    evidence: 'e'.repeat(64),
+                    failures: 1,
+                    recoveredAt: null,
+                    recoveryEvidence: null,
+                    channels: [],
+                    app: { ...app, key: id, resource: { type: 'proxyHost', proxyHostId: proxy } },
+                    continuation: true,
+                },
+            )
+        }
+        const certificate = {
+            id: randomUUID(),
+            category: 'certificate_renewal' as const,
+            resourceId: 'certificate-one',
+            severity: 'error' as const,
+            startedAt: 9_000,
+            observedAt: 9_000,
+            evidence: 'certificate-one',
+            failures: 1,
+            recoveredAt: null,
+            recoveryEvidence: null,
+            channels: [],
+        }
+        expect(appendNotificationIncident(state, configuration, certificate)).toBe(true)
+        expect(() => restart(state)).not.toThrow()
     })
 })

@@ -139,6 +139,14 @@ function open(
     if (current) {
         if (current.severity === severity && sameContext(current.app, app))
             return { state, result: 'unchanged' }
+        // A continuation stays bound to the built-in outage it took over: its host and category
+        // cannot change, or that outage would lose its end or be announced again.
+        if (
+            current.continuation === true &&
+            (current.app.categoryId !== app.categoryId ||
+                !sameResource(current.app.resource, app.resource))
+        )
+            return { state, result: 'continuationConflict' }
         if (
             current.app.categoryId !== app.categoryId ||
             !sameResource(current.app.resource, app.resource)
@@ -169,18 +177,17 @@ function open(
         }
     }
     if (!current) {
-        // Continuations of exported built-in outages have their own bound, so the monitoring app
-        // can continue every outage it took over and still raise its ordinary incidents.
-        const continuations = new Set(change.continuations)
+        // Continuations of frozen built-in outages have their own bound, so the monitoring app can
+        // continue every outage it took over and still raise its ordinary incidents. Only an
+        // incident that took an outage over counts as one; any other key is ordinary.
         const continuing =
             change.continues === app.key &&
             findContinuedHostAvailabilityIncident(next, app) !== undefined
-        const own = next.incidents.filter(
-            (incident): incident is AppNotificationIncident =>
-                isOpenAppIncident(incident) && incident.app.installationId === app.installationId,
-        )
-        const counted = own.filter(
-            (incident) => continuations.has(incident.app.key) === continuing,
+        const counted = next.incidents.filter(
+            (incident) =>
+                isOpenAppIncident(incident) &&
+                incident.app.installationId === app.installationId &&
+                (incident.continuation === true) === continuing,
         ).length
         if (
             counted >=
@@ -207,6 +214,7 @@ function open(
             recoveryEvidence: null,
             channels: handover ? [...handover.channels] : [],
             app: { ...app },
+            ...(handover ? { continuation: true as const } : {}),
         })
         if (!admitted) return { state, result: 'saturated' }
     }
@@ -216,11 +224,14 @@ function open(
     }
 }
 
-/** The built-in outages the given app incidents continue; they end with their continuation. */
+/** The built-in outages the given continuations took over; they end with their continuation. */
 function continuedIds(state: NotificationState, incidents: readonly AppNotificationIncident[]) {
     return new Set(
-        incidents.flatMap(({ app }) => {
-            const continued = findContinuedHostAvailabilityIncident(state, app)
+        incidents.flatMap((incident) => {
+            const continued =
+                incident.continuation === true
+                    ? findContinuedHostAvailabilityIncident(state, incident.app)
+                    : undefined
             return continued ? [continued.id] : []
         }),
     )
@@ -239,7 +250,7 @@ function resolve(
     if (!current) return { state, result: 'unchanged' }
     let next = structuredClone(state)
     const target = findOpen(next, subject)!
-    const continues = change.continues === subject.key
+    const continues = target.continuation === true
     if (!configuration.enabled || configuration.pausedAfterRestore) {
         // Nothing is delivered while notifications are off, and the incident would be stale later.
         discard(next, target, now)

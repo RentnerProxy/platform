@@ -6,6 +6,7 @@ import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
 import {
     APP_INCIDENT_LIMITS,
     HOST_AVAILABILITY_HANDOVER_MS,
+    NOTIFICATION_LIMITS,
     NOTIFICATION_SETTINGS_KEY,
     NOTIFICATION_STATE_KEY,
 } from '@/config/notifications.config.ts'
@@ -48,6 +49,8 @@ import { inspectLegacyFeaturesInTransaction } from '@/server/LegacyHandoff/journ
 import { legacyFeatureHandoffSources } from '@/server/LegacyHandoff/sources.server.ts'
 import { subscribeToLegacyFeatureOwnership } from '@/server/LegacyHandoff/ownership-signal.server.ts'
 import { createLegacyFeatureWorkerGate } from '@/server/LegacyHandoff/worker-admission.server.ts'
+import { appendNotificationIncident } from '@/server/Notifications/incident-engine.ts'
+import { resolveEffectiveNotificationConfigurationInTransaction } from '@/server/Notifications/notification-access.ts'
 import {
     acknowledgeNotificationDelivery,
     claimNextNotificationDelivery,
@@ -60,17 +63,24 @@ import {
     writeNotificationRuntime,
 } from '@/server/Notifications/notification-storage.ts'
 import type { StoredNotificationChannel } from '@/server/Notifications/Types/notification-internal.types.ts'
+import type { NotificationIncident } from '@/server/Notifications/Types/notification-state.types.ts'
 import { removeEventApps } from '@/tests/Helpers/appHostEvents.ts'
 
 const enabled = process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() !== null
 const integrationTest = enabled ? test : test.skip
+// The maximum-scale handover takes minutes; like the PostgreSQL profile it runs on request.
+const scaleTest = enabled && process.env.RENTNERPROXY_HANDOFF_SCALE === '1' ? test : test.skip
 const token = 'monitoring-handoff-bridge'
 const appId = 'test.monitoring'
 const marker = 'monitoring-handoff.invalid'
 const notificationKeys = [NOTIFICATION_SETTINGS_KEY, NOTIFICATION_STATE_KEY]
 const incidentGrant = { id: 'notifications.incidents.manage.v1', scope: 'installation' }
 const readHosts = { id: 'proxy.hosts.read.v1', scope: 'proxyHosts' }
-const categories = [{ id: 'availability', name: 'Host availability', resource: 'proxyHost' }]
+const categories = [
+    { id: 'availability', name: 'Host availability', resource: 'proxyHost' },
+    { id: 'latency', name: 'Host latency', resource: 'proxyHost' },
+    { id: 'service', name: 'Monitoring service', resource: 'none' },
+]
 const channelId = '00000000-0000-4000-8000-000000000b01'
 const fixtureContext = { proof: 'sha256:' + 'a'.repeat(64), revision: 'sha256:' + 'b'.repeat(64) }
 const unhealthy: HostMonitoringOutcome = {
@@ -167,6 +177,15 @@ async function install() {
     return {
         identity,
         control,
+        /** Keep a long-running app's lease alive, as its broker does. */
+        renew: async () =>
+            expect(
+                (
+                    await control('renew', {
+                        leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+                    })
+                ).status,
+            ).toBe(204),
         begin: (key = 'begin-1') =>
             send(route('/begin'), undefined, { 'Idempotency-Key': key }, 'POST'),
         part: (digest: string, sequence: number) => send(route('/parts'), { digest, sequence }),
@@ -304,13 +323,16 @@ async function monitoringSnapshot() {
     return row
 }
 
-async function configureNotifications(channels: readonly StoredNotificationChannel[]) {
+async function configureNotifications(
+    channels: readonly StoredNotificationChannel[],
+    revision = 1,
+) {
     const { db } = await import('@/db/index.ts')
     await db.transaction(async (transaction) => {
         await lockNotificationConfiguration(transaction)
         await writeNotificationConfiguration(transaction, {
             version: 1,
-            revision: 1,
+            revision,
             enabled: true,
             pausedAfterRestore: false,
             channels,
@@ -391,6 +413,48 @@ async function deliverTo() {
         // oxlint-disable-next-line no-await-in-loop -- Each acknowledgement precedes the next claim.
         await acknowledgeNotificationDelivery(claim.leaseToken, { success: true })
     }
+}
+
+const outageBody = (resourceId: string, category = 'availability') => ({
+    status: 'open',
+    category,
+    severity: 'error',
+    title: 'Host unavailable',
+    message: 'The upstream did not answer.',
+    resourceId,
+})
+
+/** Record an outage for every claimed policy, as built-in monitoring did before the handoff. */
+async function recordOutages() {
+    for (const claim of await claimAll()) {
+        // oxlint-disable-next-line no-await-in-loop -- Each outage is recorded on its own.
+        const recorded = await completeHostMonitoringClaim(
+            claim,
+            unhealthy,
+            async () => true,
+            fixtureContext,
+        )
+        expect(recorded).toBe(true)
+    }
+}
+
+/** Begin, import and commit the monitoring handoff for the app. */
+async function handOver(app: MonitoringApp) {
+    const handoff = exported(await app.begin())
+    const { rows } = decode(await readParts(app, handoff))
+    expect((await app.commit(handoff.digest)).status).toBe(200)
+    return rows
+}
+
+/** 1 when the ended incident sent or still owes the channel its recovery notice, else 0. */
+function owedRecoveries(incident: NotificationIncident | undefined, channel: string) {
+    const item = incident?.channels.find((entry) => entry.channelId === channel)
+    return item !== undefined &&
+        incident!.recoveredAt !== null &&
+        (item.failure === 'succeeded' || item.notified === true) &&
+        item.recovery !== 'failed'
+        ? 1
+        : 0
 }
 
 async function createUser() {
@@ -929,10 +993,7 @@ describe('monitoring legacy handoff', () => {
                 const frozen = (await notificationEngine()).incidents.find(
                     (incident) => incident.id === incidentId,
                 )!
-                for (const { id } of channels.filter(({ events }) =>
-                    subscribes(events, 'host_availability'),
-                ))
-                    expect(frozen.channels.map((item) => item.channelId)).toContain(id)
+                expect(frozen.frozen).toBe(true)
 
                 // The app continues the outage and resolves it at once, as after a recovery
                 // during the handoff.
@@ -1039,5 +1100,441 @@ describe('monitoring legacy handoff', () => {
             ).toHaveLength(outages + APP_INCIDENT_LIMITS.openPerInstallation)
         },
         60_000,
+    )
+    integrationTest(
+        'a host change during an in-flight built-in notice lets the continuation announce it',
+        async () => {
+            const [host] = await seedHosts(1, { failureThreshold: 1, recoveryThreshold: 1 })
+            await configureNotifications([fixtureChannel(bothChannel)])
+            await recordOutages()
+            // The built-in outage notice is still being sent when the app takes over.
+            const sending = await claimNextNotificationDelivery()
+            expect(sending?.payload).toMatchObject({
+                category: 'host_availability',
+                type: 'incident',
+            })
+            const incidentId = sending!.payload.incidentId
+            const app = await install()
+            await handOver(app)
+            expect(
+                (await app.incident(incidentId, outageBody(host!.id), 'continue-1')).status,
+            ).toBe(204)
+            expect(await deliverTo()).toEqual([])
+            // A host change ends the built-in incident before the send settled.
+            await getAuthDatabase().transaction((transaction) =>
+                invalidateHostMonitoringForHostsInTransaction(transaction, [host!.id]),
+            )
+            expect(await deliverTo()).toEqual([[bothChannel.id, 'app_incident', 'incident']])
+            expect(
+                (await app.incident(incidentId, { status: 'resolved' }, 'resolve-1')).status,
+            ).toBe(204)
+            expect(await deliverTo()).toEqual([[bothChannel.id, 'app_incident', 'recovery']])
+        },
+        30_000,
+    )
+
+    integrationTest(
+        'historical exported IDs and other hosts stay ordinary incidents',
+        async () => {
+            const { db } = await import('@/db/index.ts')
+            const [first, second] = await seedHosts(2, { failureThreshold: 1 })
+            await configureNotifications([fixtureChannel(hostOnlyChannel)])
+            await recordOutages()
+            const closed = await db.execute<{ id: string }>(sql`
+                insert into rentnerproxy.host_check_incidents
+                    (policy_id, started_at, detected_at, recovery_started_at, recovered_at,
+                     failure_code, recovery_code, closed_reason, closed_at)
+                select p.id, t - interval '3 minutes', t - interval '2 minutes',
+                    t - interval '1 minute', t, 'upstream_timeout', 'expected_status', 'recovered', t
+                from ${hostCheckPolicies} p
+                cross join generate_series(1, 40) n
+                cross join lateral (select statement_timestamp() - n * interval '1 hour' as t) times
+                where p.proxy_host_id = ${first!.id}
+                returning id::text`)
+            const app = await install()
+            const rows = await handOver(app)
+            const { columns } = HOST_MONITORING_HANDOFF
+            const open = rows.incidents.filter(
+                (row) => row[columns.incidents.indexOf('closedReason')] === null,
+            )
+            const openOn = async (hostId: string) => {
+                const [policy] = await db
+                    .select({ id: hostCheckPolicies.id })
+                    .from(hostCheckPolicies)
+                    .where(eq(hostCheckPolicies.proxyHostId, hostId))
+                return String(
+                    open.find(
+                        (row) => row[columns.incidents.indexOf('policyId')] === policy!.id,
+                    )![0],
+                )
+            }
+            const firstOutage = await openOn(first!.id)
+            const secondOutage = await openOn(second!.id)
+            // The real takeover is a continuation and leaves the ordinary limit untouched.
+            expect(
+                (await app.incident(firstOutage, outageBody(first!.id), 'continue-1')).status,
+            ).toBe(204)
+            // An open outage on another host, closed history with or without a host: ordinary.
+            const ordinary = [
+                app.incident(secondOutage, outageBody(first!.id), 'ordinary-0'),
+                app.incident(
+                    closed[0]!.id,
+                    { ...outageBody(first!.id), category: 'service', resourceId: undefined },
+                    'ordinary-1',
+                ),
+            ]
+            for (const reply of ordinary)
+                // oxlint-disable-next-line no-await-in-loop -- Opened in turn.
+                expect((await reply).status).toBe(204)
+            for (let index = 2; index < APP_INCIDENT_LIMITS.openPerInstallation; index += 1) {
+                // oxlint-disable-next-line no-await-in-loop -- Opened in turn.
+                const reply = await app.incident(
+                    closed[index]!.id,
+                    outageBody(first!.id),
+                    'ordinary-' + index,
+                )
+                expect(reply.status).toBe(204)
+            }
+            const refused = await app.incident(
+                closed[39]!.id,
+                outageBody(first!.id),
+                'ordinary-limit',
+            )
+            expect(refused).toMatchObject({ status: 429, body: { code: 'incidentLimit' } })
+            expect(
+                (await notificationEngine()).incidents.filter(
+                    (incident) => incident.continuation === true,
+                ),
+            ).toHaveLength(1)
+        },
+        30_000,
+    )
+
+    integrationTest(
+        'channels added or revised after commit get no new built-in outage notice',
+        async () => {
+            const [host] = await seedHosts(1, { failureThreshold: 1, recoveryThreshold: 1 })
+            await configureNotifications([
+                fixtureChannel(hostOnlyChannel),
+                fixtureChannel(bothChannel),
+            ])
+            await recordOutages()
+            expect(await deliverTo()).toEqual(
+                [
+                    [hostOnlyChannel.id, 'host_availability', 'incident'],
+                    [bothChannel.id, 'host_availability', 'incident'],
+                ].toSorted(),
+            )
+            const incidentId = (await notificationEngine()).incidents[0]!.id
+            const app = await install()
+            await handOver(app)
+            const added = { ...hostOnlyChannel, id: '00000000-0000-4000-8000-000000000c05' }
+            const addedBoth = { ...bothChannel, id: '00000000-0000-4000-8000-000000000c06' }
+            await configureNotifications(
+                [
+                    { ...fixtureChannel(hostOnlyChannel), revision: 2 },
+                    { ...fixtureChannel(bothChannel), revision: 2 },
+                    fixtureChannel(added),
+                    fixtureChannel(addedBoth),
+                ],
+                2,
+            )
+            expect(await deliverTo()).toEqual([])
+            expect(
+                (await app.incident(incidentId, outageBody(host!.id), 'continue-1')).status,
+            ).toBe(204)
+            // Only the continuation speaks to channels that may hear the app, once each.
+            expect(await deliverTo()).toEqual(
+                [
+                    [bothChannel.id, 'app_incident', 'incident'],
+                    [addedBoth.id, 'app_incident', 'incident'],
+                ].toSorted(),
+            )
+            expect(
+                (await app.incident(incidentId, { status: 'resolved' }, 'resolve-1')).status,
+            ).toBe(204)
+            expect(await deliverTo()).toEqual(
+                [
+                    [bothChannel.id, 'app_incident', 'recovery'],
+                    [addedBoth.id, 'app_incident', 'recovery'],
+                ].toSorted(),
+            )
+            expect(await deliverTo()).toEqual([])
+        },
+        30_000,
+    )
+
+    integrationTest(
+        're-opening a continuation on another host or category is refused',
+        async () => {
+            const [host, other] = await seedHosts(2, { failureThreshold: 1, recoveryThreshold: 1 })
+            await configureNotifications([fixtureChannel(bothChannel)])
+            await recordOutages()
+            await deliverTo()
+            const incidentId = (await notificationEngine()).incidents.find(
+                (incident) => incident.resourceId === host!.id,
+            )!.id
+            const app = await install()
+            await handOver(app)
+            expect(
+                (await app.incident(incidentId, outageBody(host!.id), 'continue-1')).status,
+            ).toBe(204)
+            for (const [body, key] of [
+                [outageBody(host!.id, 'latency'), 'moved-category'],
+                [outageBody(other!.id), 'moved-host'],
+            ] as const)
+                // oxlint-disable-next-line no-await-in-loop -- Each refusal is checked in turn.
+                expect(await app.incident(incidentId, body, key)).toMatchObject({
+                    status: 409,
+                    body: { code: 'incidentContinuationConflict' },
+                })
+            expect(
+                (await app.incident(incidentId, { status: 'resolved' }, 'resolve-1')).status,
+            ).toBe(204)
+            expect(await deliverTo()).toEqual([[bothChannel.id, 'app_incident', 'recovery']])
+        },
+        30_000,
+    )
+
+    integrationTest(
+        'continuations keep their own capacity next to a full shared incident limit',
+        async () => {
+            const { db } = await import('@/db/index.ts')
+            const hosts = await seedHosts(4, { failureThreshold: 1, recoveryThreshold: 1 })
+            await configureNotifications([fixtureChannel(hostOnlyChannel)])
+            await recordOutages()
+            await deliverTo()
+            // Other categories fill the rest of the shared limit with incidents nothing may evict.
+            const now = Date.now()
+            const certificate = (index: number): NotificationIncident => ({
+                id: randomUUID(),
+                category: 'certificate_renewal',
+                resourceId: 'certificate-' + index,
+                severity: 'error',
+                startedAt: now,
+                observedAt: now,
+                evidence: 'certificate-' + index,
+                failures: 1,
+                recoveredAt: null,
+                recoveryEvidence: null,
+                channels: [],
+            })
+            await db.transaction(async (transaction) => {
+                await lockNotificationConfiguration(transaction)
+                const runtime = await lockNotificationRuntime(transaction)
+                const filler = Array.from(
+                    { length: NOTIFICATION_LIMITS.incidents - runtime.engine.incidents.length },
+                    (_, index) => certificate(index),
+                )
+                await writeNotificationRuntime(transaction, {
+                    ...runtime,
+                    engine: {
+                        ...runtime.engine,
+                        incidents: [...runtime.engine.incidents, ...filler],
+                    },
+                })
+            })
+            const builtIn = (await notificationEngine()).incidents.filter(
+                (incident) => incident.category === 'host_availability',
+            )
+            expect(builtIn).toHaveLength(hosts.length)
+            const app = await install()
+            await handOver(app)
+            for (const incident of builtIn) {
+                // oxlint-disable-next-line no-await-in-loop -- Continued in turn.
+                const reply = await app.incident(
+                    incident.id,
+                    outageBody(incident.resourceId),
+                    'continue-' + incident.id,
+                )
+                expect(reply.status).toBe(204)
+            }
+            // The frozen outages moved out of the shared limit: another category fits again.
+            const engine = await notificationEngine()
+            const configuration = await db.transaction(async (transaction) =>
+                resolveEffectiveNotificationConfigurationInTransaction(
+                    transaction,
+                    await lockNotificationConfiguration(transaction),
+                ),
+            )
+            expect(
+                appendNotificationIncident(
+                    structuredClone(engine),
+                    configuration,
+                    certificate(9_999),
+                ),
+            ).toBe(true)
+            for (const incident of builtIn) {
+                // oxlint-disable-next-line no-await-in-loop -- Resolved in turn.
+                const reply = await app.incident(
+                    incident.id,
+                    { status: 'resolved' },
+                    'resolve-' + incident.id,
+                )
+                expect(reply.status).toBe(204)
+            }
+            // The outage notices used the channel's sends of this rate window.
+            await Bun.sleep(NOTIFICATION_LIMITS.rateWindowMs + 50)
+            expect(await deliverTo()).toEqual(
+                builtIn.map(() => [hostOnlyChannel.id, 'host_availability', 'recovery']),
+            )
+        },
+        30_000,
+    )
+
+    scaleTest(
+        'every one of the maximum open outages continues and ends once per channel',
+        async () => {
+            const { db } = await import('@/db/index.ts')
+            const started = performance.now()
+            const hosts = await seedHosts(HOST_MONITORING_LIMITS.maxPolicies)
+            const outages = await db.execute<{ id: string; policy_id: string }>(sql`
+                insert into rentnerproxy.host_check_incidents
+                    (policy_id, started_at, detected_at, failure_code)
+                select p.id, statement_timestamp() - interval '5 minutes',
+                    statement_timestamp() - interval '4 minutes', 'upstream_timeout'
+                from ${hostCheckPolicies} p join ${proxyHosts} h on h.id = p.proxy_host_id
+                where h.forward_host = ${marker}
+                returning id::text, policy_id::text`)
+            expect(outages).toHaveLength(hosts.length)
+            const policies = new Map(
+                (
+                    await db
+                        .select({
+                            id: hostCheckPolicies.id,
+                            proxyHostId: hostCheckPolicies.proxyHostId,
+                            version: hostCheckPolicies.version,
+                            domain: hostCheckPolicies.domain,
+                        })
+                        .from(hostCheckPolicies)
+                ).map((policy) => [policy.id, policy]),
+            )
+            const channels = [hostOnlyChannel, bothChannel]
+            await configureNotifications(channels.map(fixtureChannel))
+            // Built-in monitoring announced every outage to both channels before the handoff.
+            const now = Date.now()
+            const incidents: NotificationIncident[] = outages.map((outage) => {
+                const policy = policies.get(outage.policy_id)!
+                return {
+                    id: outage.id,
+                    category: 'host_availability',
+                    resourceId: policy.proxyHostId,
+                    severity: 'error',
+                    startedAt: now - 300_000,
+                    observedAt: now - 240_000,
+                    evidence: outage.id,
+                    failures: 1,
+                    recoveredAt: null,
+                    recoveryEvidence: null,
+                    channels: channels.map(({ id }) => ({
+                        channelId: id,
+                        channelRevision: 1,
+                        failure: 'succeeded',
+                        recovery: null,
+                        notified: true,
+                    })),
+                    host: {
+                        policyId: policy.id,
+                        policyVersion: policy.version,
+                        contextProof: fixtureContext.proof,
+                        contextRevision: fixtureContext.revision,
+                        domain: policy.domain,
+                        failureCode: 'upstream_timeout',
+                        detectedAt: new Date(now - 240_000).toISOString(),
+                        recoveryStartedAt: null,
+                        managementPath: '/proxy-hosts',
+                        subscriptions: channels.map(({ id }) => ({
+                            channelId: id,
+                            channelRevision: 1,
+                        })),
+                    },
+                }
+            })
+            await db.transaction(async (transaction) => {
+                await lockNotificationConfiguration(transaction)
+                const runtime = await lockNotificationRuntime(transaction)
+                await writeNotificationRuntime(transaction, {
+                    ...runtime,
+                    engine: { ...runtime.engine, incidents },
+                })
+            })
+            const app = await install()
+            const rows = await handOver(app)
+            expect(rows.incidents).toHaveLength(outages.length)
+            const seeded = performance.now()
+
+            for (const [index, incident] of incidents.entries()) {
+                // oxlint-disable-next-line no-await-in-loop -- The broker renews the lease meanwhile.
+                if (index % 250 === 0) await app.renew()
+                // oxlint-disable-next-line no-await-in-loop -- The app continues outages in turn.
+                const reply = await app.incident(
+                    incident.id,
+                    outageBody(incident.resourceId),
+                    'continue-' + incident.id,
+                )
+                expect(reply.status).toBe(204)
+            }
+            const continued = performance.now()
+            const engine = await notificationEngine()
+            expect(engine.incidents.filter((incident) => incident.continuation)).toHaveLength(
+                outages.length,
+            )
+            // The handover leaves the shared capacity to the other categories.
+            const configuration = await db.transaction(async (transaction) =>
+                resolveEffectiveNotificationConfigurationInTransaction(
+                    transaction,
+                    await lockNotificationConfiguration(transaction),
+                ),
+            )
+            expect(
+                appendNotificationIncident(structuredClone(engine), configuration, {
+                    id: randomUUID(),
+                    category: 'certificate_renewal',
+                    resourceId: 'certificate-fixture',
+                    severity: 'error',
+                    startedAt: now,
+                    observedAt: now,
+                    evidence: 'certificate-fixture',
+                    failures: 1,
+                    recoveredAt: null,
+                    recoveryEvidence: null,
+                    channels: [],
+                }),
+            ).toBe(true)
+
+            for (const [index, incident] of incidents.entries()) {
+                // oxlint-disable-next-line no-await-in-loop -- The broker renews the lease meanwhile.
+                if (index % 250 === 0) await app.renew()
+                // oxlint-disable-next-line no-await-in-loop -- The app resolves outages in turn.
+                const reply = await app.incident(
+                    incident.id,
+                    { status: 'resolved' },
+                    'resolve-' + incident.id,
+                )
+                expect(reply.status).toBe(204)
+            }
+            const resolved = performance.now()
+            // Every channel that heard of an outage is owed or sent exactly one end of it.
+            const final = await notificationEngine()
+            const byId = new Map(final.incidents.map((incident) => [incident.id, incident]))
+            for (const incident of incidents) {
+                const builtIn = byId.get(incident.id)
+                const continuation = final.incidents.find(
+                    (candidate) => candidate.continuation && candidate.app?.key === incident.id,
+                )
+                expect(owedRecoveries(builtIn, hostOnlyChannel.id)).toBe(1)
+                expect(owedRecoveries(continuation, hostOnlyChannel.id)).toBe(0)
+                expect(owedRecoveries(builtIn, bothChannel.id)).toBe(0)
+                expect(owedRecoveries(continuation, bothChannel.id)).toBe(1)
+            }
+            console.info('[monitoring-handoff] maximum continuation', {
+                outages: outages.length,
+                seedMs: Math.round(seeded - started),
+                continueMs: Math.round(continued - seeded),
+                resolveMs: Math.round(resolved - continued),
+                stateBytes: Buffer.byteLength(JSON.stringify(final)),
+            })
+        },
+        600_000,
     )
 })

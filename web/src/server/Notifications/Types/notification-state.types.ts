@@ -53,6 +53,13 @@ export interface NotificationIncident {
     channels: NotificationIncidentChannel[]
     host?: HostAvailabilityNotificationContext | undefined
     app?: AppIncidentContext | undefined
+    /**
+     * A built-in host outage the monitoring handoff commit froze: it admits no new outage notice,
+     * while the notices it admitted before and their recoveries stay deliverable.
+     */
+    frozen?: true | undefined
+    /** An app incident that took a frozen built-in host outage over, keyed by its incident ID. */
+    continuation?: true | undefined
 }
 
 /** What an app asserted about one of its incidents, as the platform keeps it. */

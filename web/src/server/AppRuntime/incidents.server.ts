@@ -6,7 +6,6 @@ import { z } from 'zod'
 import { APP_INCIDENT_CAPABILITY } from '@/config/notifications.config.ts'
 import { appRuntimeMessages, appRuntimeOwnedProxyHosts, proxyHosts } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
-import { readExportedHostMonitoringIncidentIds } from '@/server/HostMonitoring/host-monitoring.handoff.server.ts'
 import { readLegacyFeatureOwnerInTransaction } from '@/server/LegacyHandoff/ownership.server.ts'
 import { observeAppIncident } from '@/server/Notifications/app-incidents.ts'
 import { resolveEffectiveNotificationConfigurationInTransaction } from '@/server/Notifications/notification-access.ts'
@@ -89,13 +88,7 @@ async function describeChange(
     const { installationId, appId } = principal.identity
     // The app that committed monitoring continues an exported open outage under its incident ID.
     if (change.status === 'resolved')
-        return {
-            kind: 'resolve',
-            subject: { installationId, key: incidentKey },
-            ...((await ownsMonitoring(transaction, installationId))
-                ? { continues: incidentKey }
-                : {}),
-        }
+        return { kind: 'resolve', subject: { installationId, key: incidentKey } }
     const categories = await readAppIncidentCategoriesInTransaction(transaction, installationId)
     const category = categories.find(({ id }) => id === change.category)
     if (!category)
@@ -186,30 +179,21 @@ export async function setAppRuntimeIncidentInTransaction(
         stored,
     )
     const runtime = await lockNotificationRuntime(transaction)
-    // Which of the app's open incidents continue exported outages decides their separate bound.
-    const continuations =
-        asserted.kind === 'open' && (await ownsMonitoring(transaction, installationId))
-            ? await readExportedHostMonitoringIncidentIds(
-                  transaction,
-                  runtime.engine.incidents.flatMap((incident) =>
-                      incident.app?.installationId === installationId &&
-                      incident.recoveredAt === null
-                          ? [incident.app.key]
-                          : [],
-                  ),
-              )
-            : undefined
     const outcome = observeAppIncident(
         runtime.engine,
         configuration,
-        asserted.kind === 'open' && continuations !== undefined
-            ? { ...asserted, continuations: [...continuations] }
-            : asserted,
+        asserted,
         Date.now(),
         randomUUID,
     )
     if (outcome.result === 'limit' || outcome.result === 'saturated')
         throw new AppRuntimeProblem(429, 'incidentLimit', 'Too many open app incidents.')
+    if (outcome.result === 'continuationConflict')
+        throw new AppRuntimeProblem(
+            409,
+            'incidentContinuationConflict',
+            'A continued built-in incident keeps its host and category.',
+        )
     if (outcome.state !== runtime.engine)
         await writeNotificationRuntime(transaction, { ...runtime, engine: outcome.state })
     // A change made while notifications are off must stay repeatable after they resume.

@@ -79,22 +79,33 @@ function isActive(delivery: NotificationQueuedDelivery) {
     return delivery.status === 'pending' || delivery.status === 'inflight'
 }
 
+/** The app incident that took the built-in host outage over, if any. */
+export function findHostAvailabilityContinuation(
+    state: NotificationState,
+    incident: NotificationIncident,
+): NotificationIncident | undefined {
+    if (incident.category !== 'host_availability') return undefined
+    return state.incidents.find(
+        (item) =>
+            item.continuation === true &&
+            item.app?.key === incident.id &&
+            item.app.resource?.proxyHostId === incident.resourceId,
+    )
+}
+
 /**
  * A built-in outage notice that was in flight when the monitoring app continued the outage settles
  * the continuation's placeholder for its channel: a success counts as the continuation's failure
- * notice, a final failure lets the continuation announce the outage itself.
+ * notice; a final failure, or the end of the built-in incident before the send settled, lets the
+ * continuation announce the outage itself.
  */
-function settleHandedOverNotice(
+export function settleHandedOverNotice(
     state: NotificationState,
     incident: NotificationIncident,
-    delivery: NotificationQueuedDelivery,
+    delivery: Pick<NotificationQueuedDelivery, 'channelId' | 'channelRevision'>,
     succeeded: boolean,
 ) {
-    if (incident.category !== 'host_availability') return
-    const continuation = state.incidents.find(
-        (item) =>
-            item.app?.key === incident.id && item.app.resource?.proxyHostId === incident.resourceId,
-    )
+    const continuation = findHostAvailabilityContinuation(state, incident)
     if (!continuation) return
     const same = (item: { channelId: string; channelRevision: number }) =>
         item.channelId === delivery.channelId && item.channelRevision === delivery.channelRevision
@@ -276,14 +287,23 @@ function withinStateLimit(state: NotificationState) {
     )
 }
 
+/** Frozen built-in outages and their continuations use the handover's own capacity. */
+function sharesIncidentLimit(incident: NotificationIncident) {
+    return incident.frozen !== true && incident.continuation !== true
+}
+
 export function appendNotificationIncident(
     state: NotificationState,
     configuration: NotificationEngineConfiguration,
     incident: NotificationIncident,
 ): boolean {
-    if (state.incidents.length >= NOTIFICATION_LIMITS.incidents) {
+    if (
+        sharesIncidentLimit(incident) &&
+        state.incidents.filter(sharesIncidentLimit).length >= NOTIFICATION_LIMITS.incidents
+    ) {
         const resolved = state.incidents.findIndex(
             (candidate) =>
+                sharesIncidentLimit(candidate) &&
                 candidate.recoveredAt !== null &&
                 !recoveryOwed(candidate, configuration) &&
                 !state.deliveries.some(
@@ -711,6 +731,8 @@ export function summarizeNotificationState(
                 channels: _channels,
                 // App text and installation IDs stay out of the status that channel owners read.
                 app: _app,
+                frozen: _frozen,
+                continuation: _continuation,
                 ...incident
             }) => {
                 incident.resourceId = visibleResourceId(

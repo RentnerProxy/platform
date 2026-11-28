@@ -5,6 +5,7 @@ import {
     appendNotificationIncident,
     admitNotificationIncidents,
     observeNotificationSignals,
+    settleHandedOverNotice,
 } from './incident-engine.ts'
 import type {
     AppIncidentContext,
@@ -21,6 +22,18 @@ export function cancelHostAvailabilityIncidents(
 ): NotificationState {
     if (incidentIds.size === 0) return state
     const next = structuredClone(state)
+    // An outage notice still in flight will never settle a continuation's placeholder now: let the
+    // continuation announce the outage to that channel itself.
+    for (const incident of next.incidents) {
+        if (incident.category !== 'host_availability' || !incidentIds.has(incident.id)) continue
+        for (const delivery of next.deliveries)
+            if (
+                delivery.payload.incidentId === incident.id &&
+                delivery.payload.type === 'incident' &&
+                (delivery.status === 'pending' || delivery.status === 'inflight')
+            )
+                settleHandedOverNotice(next, incident, delivery, false)
+    }
     next.incidents = next.incidents.filter(
         (incident) => incident.category !== 'host_availability' || !incidentIds.has(incident.id),
     )
@@ -41,8 +54,9 @@ export function cancelHostAvailabilityIncidents(
 }
 
 /**
- * The open built-in host outage an app incident continues after the monitoring handoff: its key is
- * the exported incident ID and it names the same host.
+ * The open built-in host outage an app incident may continue after the monitoring handoff: frozen
+ * by the commit, so it was open when the app took over, keyed by the exported incident ID and on
+ * the same host.
  */
 export function findContinuedHostAvailabilityIncident(
     state: NotificationState,
@@ -53,56 +67,39 @@ export function findContinuedHostAvailabilityIncident(
     return state.incidents.find(
         (candidate) =>
             candidate.category === 'host_availability' &&
+            candidate.frozen === true &&
             candidate.id === app.key &&
             candidate.resourceId === proxyHostId &&
             candidate.recoveredAt === null,
     )
 }
 
-type Channel = NotificationEngineConfiguration['channels'][number]
-
 const sameChannel =
     (channel: { id: string; revision: number }) =>
     (item: { channelId: string; channelRevision: number }) =>
         item.channelId === channel.id && item.channelRevision === channel.revision
 
-/** Block every notice of the outage to a channel it never admitted, and owe that channel nothing. */
-type FrozenChannel = Pick<Channel, 'id' | 'revision' | 'events' | 'appCategories'>
-
-function blockUnadmitted(incident: NotificationIncident, channels: readonly FrozenChannel[]) {
-    let changed = false
-    for (const channel of channels) {
-        if (
-            !channelAcceptsIncident(channel, incident) ||
-            incident.channels.some(sameChannel(channel))
-        )
-            continue
-        incident.channels.push({
-            channelId: channel.id,
-            channelRevision: channel.revision,
-            failure: 'failed',
-            recovery: 'failed',
-        })
-        changed = true
-    }
-    return changed
-}
-
 /**
  * Stop built-in host outages from announcing themselves anew once an app committed monitoring. An
  * open outage keeps the notices it already admitted, sent or not, and the recovery it owes for them;
- * a channel it never admitted hears of the outage only from the app's continuation.
+ * no channel, also one added or changed later, gets a new notice of it, and the outage moves to the
+ * handover's own capacity.
  */
-export function freezeHostAvailabilityIncidents(
-    state: NotificationState,
-    channels: readonly FrozenChannel[],
-): NotificationState {
+export function freezeHostAvailabilityIncidents(state: NotificationState): NotificationState {
+    if (
+        !state.incidents.some(
+            (incident) =>
+                incident.category === 'host_availability' &&
+                incident.recoveredAt === null &&
+                incident.frozen !== true,
+        )
+    )
+        return state
     const next = structuredClone(state)
-    let changed = false
     for (const incident of next.incidents)
         if (incident.category === 'host_availability' && incident.recoveredAt === null)
-            changed = blockUnadmitted(incident, channels) || changed
-    return changed ? next : state
+            incident.frozen = true
+    return next
 }
 
 /**
@@ -180,8 +177,6 @@ export function handOverHostAvailabilityIncident(
             marker.recovery = 'failed'
         }
     }
-    // Nothing new starts from the built-in incident after the handover either.
-    blockUnadmitted(incident, configuration.channels)
     const owesOthers = incident.channels.some(
         (marker) =>
             marker.recovery === null && (marker.failure !== 'failed' || marker.notified === true),

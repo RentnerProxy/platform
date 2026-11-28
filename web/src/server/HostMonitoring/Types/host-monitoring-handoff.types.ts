@@ -23,8 +23,10 @@ import type { HOST_MONITORING_HANDOFF } from '@/config/host-monitoring.config.ts
  * incident as an app incident whose key is the incident ID and whose resource is the policy's
  * `proxyHostId`, and then resolve it according to its own next observation, also when the host
  * recovered during the handoff. Only that ends the built-in outage with a recovery notice; one the
- * app never continues is dropped without one 24 hours after commit. The continuation does not count
- * against the ordinary open incident limit.
+ * app never continues is dropped without one 24 hours after commit. Only an incident that was still
+ * open at commit, on its own host, becomes a continuation; continuations do not count against the
+ * ordinary open incident limit, any other key does. A continuation keeps its host and category:
+ * opening its key with another one is refused with 409 `incidentContinuationConflict`.
  *
  * Every notification channel hears of each outage once and of its end once, whatever it subscribes
  * to; the handoff migrates no subscription. A channel that accepts the continuation (the

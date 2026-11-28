@@ -16,6 +16,7 @@ import {
     freezeHostAvailabilityIncidents,
     observeHostAvailabilityTransition,
 } from './host-availability.ts'
+import { findHostAvailabilityContinuation } from './incident-engine.ts'
 import { resolveEffectiveNotificationConfigurationInTransaction } from './notification-access.ts'
 import {
     lockNotificationConfiguration,
@@ -68,9 +69,9 @@ export async function freezeHostAvailabilityNotificationsInTransaction(
         )
     )
         return
-    const configuration = await lockNotificationConfiguration(transaction)
+    await lockNotificationConfiguration(transaction)
     const runtime = await lockNotificationRuntime(transaction)
-    const engine = freezeHostAvailabilityIncidents(runtime.engine, configuration.channels)
+    const engine = freezeHostAvailabilityIncidents(runtime.engine)
     if (engine !== runtime.engine)
         await writeNotificationRuntime(transaction, { ...runtime, engine })
 }
@@ -147,12 +148,7 @@ export async function reconcileHostAvailabilityInTransaction(
         committedAt !== null && now - committedAt.getTime() >= HOST_AVAILABILITY_HANDOVER_MS
     // An outage the app continues ends with its continuation, whenever the app resolves it.
     const continued = (incident: NotificationIncident) =>
-        state.incidents.some(
-            (candidate) =>
-                candidate.recoveredAt === null &&
-                candidate.app?.key === incident.id &&
-                candidate.app.resource?.proxyHostId === incident.resourceId,
-        )
+        findHostAvailabilityContinuation(state, incident)?.recoveredAt === null
     const policies = await transaction
         .select({ policy: hostCheckPolicies })
         .from(hostCheckPolicies)
