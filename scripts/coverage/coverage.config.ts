@@ -16,7 +16,7 @@ export const goCoverageGroupNames = [
     'all',
     '.github/scripts/ci',
     'core/caddy-modules/responsecache',
-    'core/caddy-modules/responsecache/upstreamobserver',
+    'core/caddy-modules/upstreamobserver',
     'docker/tooling/buildinfo',
 ] as const
 

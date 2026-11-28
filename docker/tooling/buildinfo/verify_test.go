@@ -20,7 +20,7 @@ func fixture(profile string) *debug.BuildInfo {
 			{Path: "github.com/hslatman/caddy-crowdsec-bouncer", Version: "v0.14.2-0.20261030164527-4a6ce1d3094d"},
 			{Path: "github.com/mholt/caddy-l4", Version: "v0.1.3-0.20261029145729-f607ccea1b7d"},
 			{Path: caddyModule, Version: "v2.11.9", Replace: &debug.Module{Path: caddySource}},
-			{Path: responseCache, Replace: &debug.Module{Path: "/opt/rentnerproxy-responsecache", Version: "(devel)"}},
+			{Path: ownModules, Replace: &debug.Module{Path: ownModulesSource, Version: "(devel)"}},
 			{Path: "github.com/go-jose/go-jose/v4", Version: "v4.1.9"},
 		}
 		info.Settings = []debug.BuildSetting{{Key: "CGO_ENABLED", Value: "0"}}
@@ -171,13 +171,20 @@ func TestCaddyReplacementPolicy(t *testing.T) {
 		info = fixture("caddy")
 		info.Deps[5].Replace.Version = version
 		if err := validate("caddy", info); err != nil {
-			t.Fatalf("rejected local cache version %q: %v", version, err)
+			t.Fatalf("rejected local module version %q: %v", version, err)
 		}
-		for _, path := range []string{"/tmp/wrong-cache-source", "/opt/rentnerproxy-responsecache/other", "github.com/foreign/cache"} {
+		for _, path := range []string{"/tmp/wrong-cache-source", "/opt/rentnerproxy-responsecache", ownModulesSource + "/other", "github.com/foreign/cache"} {
 			info.Deps[5].Replace.Path = path
 			if err := validate("caddy", info); err == nil {
-				t.Fatalf("accepted wrong cache source %s with version %q", path, version)
+				t.Fatalf("accepted wrong module source %s with version %q", path, version)
 			}
+		}
+		// The retired per-package module path is no longer an approved local replacement.
+		info = fixture("caddy")
+		info.Deps[5].Path = ownModules + "/responsecache"
+		info.Deps[5].Replace.Version = version
+		if err := validate("caddy", info); err == nil {
+			t.Fatalf("accepted retired module path with version %q", version)
 		}
 	}
 }

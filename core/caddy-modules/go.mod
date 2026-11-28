@@ -1,4 +1,4 @@
-module github.com/RentnerProxy/platform/core/caddy-modules/responsecache
+module github.com/RentnerProxy/platform/core/caddy-modules
 
 go 1.27.3
 

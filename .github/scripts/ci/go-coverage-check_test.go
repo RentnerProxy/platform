@@ -14,7 +14,7 @@ import (
 
 func TestCanonicalSource(t *testing.T) {
 	for _, test := range []struct{ input, want string }{
-		{modulePath + "/cache.go", caddyPath + "/cache.go"},
+		{modulePath + "/responsecache/cache.go", caddyPath + "/responsecache/cache.go"},
 		{caddyPath + "/upstreamobserver/observer.go", caddyPath + "/upstreamobserver/observer.go"},
 		{"/workspace/docker/tooling/buildinfo/verify.go", buildinfoPath + "/verify.go"},
 		{`C:\repo\docker\tooling\buildinfo\verify.go`, buildinfoPath + "/verify.go"},
@@ -29,7 +29,7 @@ func TestCanonicalSource(t *testing.T) {
 		})
 	}
 	for _, invalid := range []string{
-		"/other/verify.go", modulePath + "/cache_test.go", caddyPath + "/../outside.go",
+		"/other/verify.go", modulePath + "/responsecache/cache_test.go", caddyPath + "/../outside.go",
 		"/workspace/../docker/tooling/buildinfo/verify.go", modulePath + "//cache.go",
 	} {
 		if _, err := canonicalSource(invalid); err == nil {
@@ -40,13 +40,13 @@ func TestCanonicalSource(t *testing.T) {
 
 func TestProfileUnionsCanonicalBlocksAndAcceptsAllGoModes(t *testing.T) {
 	for _, mode := range []string{"set", "count", "atomic"} {
-		input := "mode: " + mode + "\n" + modulePath + "/cache.go:1.1,2.1 9 0\n" +
-			caddyPath + "/cache.go:1.1,2.1 9 1\n" + modulePath + "/cache.go:2.1,3.1 1 0\n"
+		input := "mode: " + mode + "\n" + modulePath + "/responsecache/cache.go:1.1,2.1 9 0\n" +
+			caddyPath + "/responsecache/cache.go:1.1,2.1 9 1\n" + modulePath + "/responsecache/cache.go:2.1,3.1 1 0\n"
 		blocks, err := parseProfile(strings.NewReader(input))
 		if err != nil || len(blocks) != 2 {
 			t.Fatalf("parseProfile = %v, %v", blocks, err)
 		}
-		block := blocks[caddyPath+"/cache.go:1.1,2.1"]
+		block := blocks[caddyPath+"/responsecache/cache.go:1.1,2.1"]
 		if !block.Covered || block.Statements != 9 {
 			t.Fatalf("lost canonical block union: %+v", block)
 		}
@@ -54,7 +54,7 @@ func TestProfileUnionsCanonicalBlocksAndAcceptsAllGoModes(t *testing.T) {
 }
 
 func TestProfilePreservesRealGoEmptyBlocksWithoutInventingStatements(t *testing.T) {
-	blocks, err := parseProfile(strings.NewReader("mode: atomic\n" + modulePath + "/cache.go:139.296,139.296 0 2194\n"))
+	blocks, err := parseProfile(strings.NewReader("mode: atomic\n" + modulePath + "/responsecache/cache.go:139.296,139.296 0 2194\n"))
 	if err != nil || len(blocks) != 1 {
 		t.Fatalf("valid empty Go block rejected: %v, %v", blocks, err)
 	}
@@ -68,16 +68,16 @@ func TestProfilePreservesRealGoEmptyBlocksWithoutInventingStatements(t *testing.
 func TestProfileRejectsMalformedUnsafeAndInconsistentRecords(t *testing.T) {
 	for _, input := range []string{
 		"", "mode: unknown\n", "mode: atomic\n", "mode: atomic\n\n", "mode: atomic\nnot a record\n",
-		"mode: atomic\n" + modulePath + "/cache.go:0.1,2.1 1 1\n",
-		"mode: atomic\n" + modulePath + "/cache.go:1.0,2.1 1 1\n",
-		"mode: atomic\n" + modulePath + "/cache.go:2.1,1.1 1 1\n",
-		"mode: atomic\n" + modulePath + "/cache.go:1.2,1.2 1 1\n",
-		"mode: atomic\n" + modulePath + "/cache.go:1.1,2.0 1 1\n",
-		"mode: set\n" + modulePath + "/cache.go:1.1,2.1 1 2\n",
-		"mode: atomic\n" + modulePath + "/cache.go:1.1,2.1 -1 1\n",
-		"mode: atomic\n" + modulePath + "/cache.go:1.1,2.1 1 9007199254740992\n",
-		"mode: atomic\n" + modulePath + "/cache.go:18446744073709551616.1,2.1 1 1\n",
-		"mode: atomic\n" + modulePath + "/cache.go:1.1,2.1 1 0\n" + modulePath + "/cache.go:1.1,2.1 2 1\n",
+		"mode: atomic\n" + modulePath + "/responsecache/cache.go:0.1,2.1 1 1\n",
+		"mode: atomic\n" + modulePath + "/responsecache/cache.go:1.0,2.1 1 1\n",
+		"mode: atomic\n" + modulePath + "/responsecache/cache.go:2.1,1.1 1 1\n",
+		"mode: atomic\n" + modulePath + "/responsecache/cache.go:1.2,1.2 1 1\n",
+		"mode: atomic\n" + modulePath + "/responsecache/cache.go:1.1,2.0 1 1\n",
+		"mode: set\n" + modulePath + "/responsecache/cache.go:1.1,2.1 1 2\n",
+		"mode: atomic\n" + modulePath + "/responsecache/cache.go:1.1,2.1 -1 1\n",
+		"mode: atomic\n" + modulePath + "/responsecache/cache.go:1.1,2.1 1 9007199254740992\n",
+		"mode: atomic\n" + modulePath + "/responsecache/cache.go:18446744073709551616.1,2.1 1 1\n",
+		"mode: atomic\n" + modulePath + "/responsecache/cache.go:1.1,2.1 1 0\n" + modulePath + "/responsecache/cache.go:1.1,2.1 2 1\n",
 		"mode: atomic\n" + strings.Repeat("x", 100_000),
 		"mode: atomic\nforeign/package.go:1.1,2.1 1 1\n",
 	} {
@@ -87,15 +87,21 @@ func TestProfileRejectsMalformedUnsafeAndInconsistentRecords(t *testing.T) {
 	}
 }
 
+// inventoryFixture is the `go list ./...` output of the module root and its two packages.
+const inventoryFixture = modulePath + "\n" + modulePath + "/responsecache\n" + modulePath + "/upstreamobserver\n"
+
 func TestInventoryRequiresOwnPackagesAndRejectsDuplicates(t *testing.T) {
-	valid := modulePath + "\n" + modulePath + "/upstreamobserver\n"
+	valid := inventoryFixture
 	packages, err := packageInventory(strings.NewReader(valid))
-	if err != nil || len(packages) != 2 {
+	if err != nil || len(packages) != 3 {
 		t.Fatalf("inventory = %v, %v", packages, err)
 	}
 	for _, input := range []string{
 		"", modulePath + "\n", valid + modulePath + "\n", valid + "foreign/package\n",
 		valid + modulePath + "/nested/../other\n", strings.Repeat("x", 100_000),
+		modulePath + "\n" + modulePath + "/upstreamobserver\n",
+		modulePath + "\n" + modulePath + "/responsecache\n",
+		modulePath + "/responsecache\n" + modulePath + "/upstreamobserver\n",
 	} {
 		if _, err := packageInventory(strings.NewReader(input)); err == nil {
 			t.Errorf("accepted invalid inventory %.120q", input)
@@ -111,8 +117,8 @@ func reportFixture(t *testing.T) string {
 	t.Helper()
 	directory := t.TempDir()
 	for name, content := range map[string]string{
-		"caddy-packages.txt": modulePath + "\n" + modulePath + "/upstreamobserver\n",
-		"caddy.out": profile(modulePath+"/cache.go", 9, 1) +
+		"caddy-packages.txt": inventoryFixture,
+		"caddy.out": profile(modulePath+"/responsecache/cache.go", 9, 1) +
 			strings.TrimPrefix(profile(modulePath+"/upstreamobserver/observer.go", 9, 1), "mode: atomic\n"),
 		"buildinfo.out": profile("/workspace/"+buildinfoPath+"/verify.go", 9, 1),
 		"checker.out":   profile("/workspace/"+checkerPath+"/go-coverage-check.go", 9, 1),
@@ -132,8 +138,8 @@ func writeFixture(t *testing.T, directory, name, content string) {
 func TestReportUsesWeightedStatementsForEveryOwnPackageAndOverall(t *testing.T) {
 	directory := reportFixture(t)
 	file := filepath.Join(directory, "caddy.out")
-	if err := os.WriteFile(file, []byte(profile(modulePath+"/cache.go", 9, 1)+
-		modulePath+"/cache.go:1.1,2.1 9 0\n"+
+	if err := os.WriteFile(file, []byte(profile(modulePath+"/responsecache/cache.go", 9, 1)+
+		modulePath+"/responsecache/cache.go:1.1,2.1 9 0\n"+
 		strings.TrimPrefix(profile(modulePath+"/upstreamobserver/observer.go", 99, 1), "mode: atomic\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -145,11 +151,33 @@ func TestReportUsesWeightedStatementsForEveryOwnPackageAndOverall(t *testing.T) 
 		if group.Name == "all" && (group.Statements.Covered != 126 || group.Statements.Total != 130) {
 			t.Fatalf("overall statements incorrectly averaged or duplicated: %+v", group)
 		}
+		if group.Name == caddyPath {
+			t.Fatalf("statement-free module root reported as a coverage group: %+v", group)
+		}
+	}
+}
+
+func TestReportMeasuresTheModuleRootOnceItHoldsStatements(t *testing.T) {
+	directory := reportFixture(t)
+	writeFixture(t, directory, "caddy.out", profile(modulePath+"/responsecache/cache.go", 9, 1)+
+		strings.TrimPrefix(profile(modulePath+"/upstreamobserver/observer.go", 9, 1), "mode: atomic\n")+
+		strings.TrimPrefix(profile(modulePath+"/modules.go", 1, 9), "mode: atomic\n"))
+	report, err := makeReport(directory, 90)
+	if err != nil || len(report.Groups) != 6 {
+		t.Fatalf("report = %+v, %v", report, err)
+	}
+	for _, group := range report.Groups {
+		if group.Name == caddyPath && (group.Statements.Covered != 1 || group.Statements.Total != 10) {
+			t.Fatalf("module root statements were not measured: %+v", group)
+		}
+	}
+	if code := run([]string{directory}, io.Discard, io.Discard); code != 1 {
+		t.Fatal("an under-covered module root passed the minimum")
 	}
 }
 
 func TestReportRejectsMissingMalformedOrMisplacedOwnPackages(t *testing.T) {
-	for _, scenario := range []string{"inventory", "bad-inventory", "caddy.out", "buildinfo.out", "checker.out", "malformed", "unlisted", "missing-listed", "misplaced", "zero", "overflow"} {
+	for _, scenario := range []string{"inventory", "bad-inventory", "caddy.out", "buildinfo.out", "checker.out", "malformed", "unlisted", "missing-listed", "missing-package", "misplaced", "zero", "overflow"} {
 		t.Run(scenario, func(t *testing.T) {
 			directory := reportFixture(t)
 			switch scenario {
@@ -164,9 +192,12 @@ func TestReportRejectsMissingMalformedOrMisplacedOwnPackages(t *testing.T) {
 			case "unlisted":
 				writeFixture(t, directory, "caddy.out", profile(modulePath+"/unexpected/source.go", 9, 1))
 			case "missing-listed":
-				writeFixture(t, directory, "caddy-packages.txt", modulePath+"\n"+modulePath+"/upstreamobserver\n"+modulePath+"/newpackage\n")
+				writeFixture(t, directory, "caddy-packages.txt", inventoryFixture+modulePath+"/newpackage\n")
+			case "missing-package":
+				// Only the module root may be statement-free; a package without blocks fails.
+				writeFixture(t, directory, "caddy.out", profile(modulePath+"/upstreamobserver/observer.go", 9, 1))
 			case "misplaced":
-				writeFixture(t, directory, "buildinfo.out", profile(modulePath+"/cache.go", 9, 1))
+				writeFixture(t, directory, "buildinfo.out", profile(modulePath+"/responsecache/cache.go", 9, 1))
 			case "zero":
 				writeFixture(t, directory, "buildinfo.out", profile(buildinfoPath+"/verify.go", 0, 0))
 			case "overflow":

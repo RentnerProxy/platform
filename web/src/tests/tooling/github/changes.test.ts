@@ -84,12 +84,18 @@ describe('affected CI selection', () => {
             web: false,
             go: false,
         })
-        expect(selectChecks(['core/caddy-modules/responsecache/cache.go'])).toMatchObject({
-            go: true,
-            caddy: true,
-            runtime: true,
-            rust: false,
-        })
+        for (const path of [
+            'core/caddy-modules/go.mod',
+            'core/caddy-modules/modules.go',
+            'core/caddy-modules/responsecache/cache.go',
+            'core/caddy-modules/upstreamobserver/observer.go',
+        ])
+            expect(selectChecks([path]), path).toMatchObject({
+                go: true,
+                caddy: true,
+                runtime: true,
+                rust: false,
+            })
         expect(selectChecks(['.github/workflows/codeql.yml'])).toMatchObject({
             actions: true,
             web: true,

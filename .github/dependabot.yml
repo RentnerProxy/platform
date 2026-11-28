@@ -51,7 +51,7 @@ updates:
       # CrowdSec's workspace overlay has no local sources for Dependabot's tidy step.
       # The scheduled dependency audit checks it without changing the workspace locks.
       directories:
-          - '/core/caddy-modules/responsecache'
+          - '/core/caddy-modules'
           - '/docker/gosu/tooling'
       schedule:
           interval: 'cron'

@@ -635,9 +635,9 @@ jobs:
                   path: |
                       .cache/caddy-go/mod
                       .cache/caddy-go/build
-                  key: ${{ runner.os }}-${{ runner.arch }}-caddy-go-race-v1-${{ hashFiles('core/caddy-modules/responsecache/go.mod', 'core/caddy-modules/responsecache/go.sum', 'docker/proxy-runtime/Dockerfile', '.github/workflows/ci.yml') }}-${{ hashFiles('core/caddy-modules/responsecache/**') }}
+                  key: ${{ runner.os }}-${{ runner.arch }}-caddy-go-race-v1-${{ hashFiles('core/caddy-modules/go.mod', 'core/caddy-modules/go.sum', 'docker/proxy-runtime/Dockerfile', '.github/workflows/ci.yml') }}-${{ hashFiles('core/caddy-modules/**') }}
                   restore-keys: |
-                      ${{ runner.os }}-${{ runner.arch }}-caddy-go-race-v1-${{ hashFiles('core/caddy-modules/responsecache/go.mod', 'core/caddy-modules/responsecache/go.sum', 'docker/proxy-runtime/Dockerfile', '.github/workflows/ci.yml') }}-
+                      ${{ runner.os }}-${{ runner.arch }}-caddy-go-race-v1-${{ hashFiles('core/caddy-modules/go.mod', 'core/caddy-modules/go.sum', 'docker/proxy-runtime/Dockerfile', '.github/workflows/ci.yml') }}-
               if: "${{ needs.changes.outputs.go == 'true' }}"
 
             - name: Prepare isolated Caddy Go cache mounts
@@ -673,7 +673,7 @@ jobs:
                   path: |
                       .cache/caddy-go/mod
                       .cache/caddy-go/build
-                  key: ${{ runner.os }}-${{ runner.arch }}-caddy-go-race-v1-${{ hashFiles('core/caddy-modules/responsecache/go.mod', 'core/caddy-modules/responsecache/go.sum', 'docker/proxy-runtime/Dockerfile', '.github/workflows/ci.yml') }}-${{ hashFiles('core/caddy-modules/responsecache/**') }}
+                  key: ${{ runner.os }}-${{ runner.arch }}-caddy-go-race-v1-${{ hashFiles('core/caddy-modules/go.mod', 'core/caddy-modules/go.sum', 'docker/proxy-runtime/Dockerfile', '.github/workflows/ci.yml') }}-${{ hashFiles('core/caddy-modules/**') }}
 
             - name: Set up Docker Buildx
               if: "${{ needs.changes.outputs.caddy == 'true' }}"
@@ -700,7 +700,7 @@ jobs:
               if: "${{ needs.changes.outputs.caddy == 'true' }}"
               run: |
                   docker run --rm --entrypoint /bin/sh --workdir /src \
-                    --mount "type=bind,source=$GITHUB_WORKSPACE/core/caddy-modules/responsecache,target=/src,readonly" \
+                    --mount "type=bind,source=$GITHUB_WORKSPACE/core/caddy-modules,target=/src,readonly" \
                     --env RENTNERPROXY_CADDY_TEST_BINARY=/usr/bin/caddy \
                     response-cache-caddy:test \
                     -ec 'go test -mod=readonly -run TestCaddyRuntime -count=1 -v ./...'

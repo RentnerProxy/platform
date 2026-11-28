@@ -11,7 +11,8 @@ import (
 const crowdsecTags = "netgo,osusergo,expr_debug,nomsgpack,sqlite_omit_load_extension,re2_cgo,no_db_postgres"
 const caddyModule = "github.com/caddyserver/caddy/v2"
 const caddySource = "/opt/rentnerproxy-caddy-source"
-const responseCache = "github.com/RentnerProxy/platform/core/caddy-modules/responsecache"
+const ownModules = "github.com/RentnerProxy/platform/core/caddy-modules"
+const ownModulesSource = "/opt/rentnerproxy-caddy-modules"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -127,8 +128,8 @@ func allowedReplacement(profile, path string, replacement *debug.Module) bool {
 		if path == caddyModule {
 			return replacement.Path == caddySource && (replacement.Version == "" || replacement.Version == "(devel)")
 		}
-		if path == responseCache {
-			return replacement.Path == "/opt/rentnerproxy-responsecache" && (replacement.Version == "" || replacement.Version == "(devel)")
+		if path == ownModules {
+			return replacement.Path == ownModulesSource && (replacement.Version == "" || replacement.Version == "(devel)")
 		}
 		version := replacement.Version
 		return replacement.Path == path && len(version) >= 2 && version[0] == 'v' && version[1] >= '0' && version[1] <= '9'
