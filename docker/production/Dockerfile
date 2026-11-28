@@ -286,8 +286,8 @@ RUN chmod 0555 /usr/local/bin/rentnerproxy-production \
     && chmod 0555 /usr/local/bin/crowdsec /usr/local/bin/cscli \
     && chmod 0555 /usr/local/bin/bun \
     && chmod 0555 /opt/rentnerproxy/valkey/bin/valkey-server /opt/rentnerproxy/valkey/bin/valkey-cli \
-    && /opt/rentnerproxy/valkey/bin/valkey-server --version | grep -F 'v=9.2.0 ' \
-    && /opt/rentnerproxy/valkey/bin/valkey-cli --version | grep -Fx 'valkey-cli 9.2.0' \
+    && /opt/rentnerproxy/valkey/bin/valkey-server --version | grep -F 'v=9.2.1 ' \
+    && /opt/rentnerproxy/valkey/bin/valkey-cli --version | grep -Fx 'valkey-cli 9.2.1' \
     && postgres --version | grep -E '^postgres \(PostgreSQL\) 18\.' \
     && install -d -m 0555 -o root -g root /usr/share/rentnerproxy/crowdsec/plugins \
     && find /usr/share/rentnerproxy/crowdsec -type d -exec chmod 0555 {} + \

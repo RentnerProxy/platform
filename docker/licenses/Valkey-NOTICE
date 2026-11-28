@@ -1,7 +1,7 @@
-Valkey 9.2.0 bundled component notices
+Valkey 9.2.1 bundled component notices
 
-Source: https://github.com/valkey-io/valkey/tree/9.2.0
-Source archive SHA256: a02cb44db1269b699629e419d4949e6e51e984b1f0e9a984e8ee1e1b3b7cc36f
+Source: https://github.com/valkey-io/valkey/tree/9.2.1
+Source archive SHA256: fec5d34ac6f5c7f35cddcaae368734d8a789f1af2f7c29853e790f093d848d71
 
 Valkey and inherited Redis BSD-3-Clause licenses are reproduced in LICENSE.
 The following upstream notices accompany the redistributed server and CLI.
