@@ -556,6 +556,56 @@ test('a save refused by a monitoring handoff retires the settings form', async (
     expect(saveRequests()).toBe(before)
 })
 
+async function rerender(input: HostMonitoringDialogProps) {
+    await act(async () => {
+        root!.render(
+            withTestLanguage(
+                <QueryClientProvider client={client}>
+                    <Harness {...input} />
+                </QueryClientProvider>,
+            ),
+        )
+    })
+    await flush()
+}
+
+test('a read that reports a monitoring handoff retires already loaded settings', async () => {
+    await render()
+    expect(logic.state.canUpdate).toBe(true)
+    getStatus = 409
+    conflictCode = 'handed_off'
+    await act(async () => {
+        await client.invalidateQueries({ queryKey: hostMonitoringQueryKeys.all })
+    })
+    await flush()
+    expect(logic.state.canUpdate).toBe(false)
+})
+
+test('a new dialog session may save again after a handoff refused one', async () => {
+    await render()
+    await act(async () => {
+        logic.form.setFieldValue('intervalSeconds', 90)
+    })
+    postStatus = 409
+    conflictCode = 'handed_off'
+    await act(async () => {
+        await logic.form.handleSubmit()
+    })
+    await flush()
+    expect(logic.state.canUpdate).toBe(false)
+    // The refused session stays retired, also when its reads still serve built-in data.
+    await act(async () => {
+        await client.invalidateQueries({ queryKey: hostMonitoringQueryKeys.all })
+    })
+    await flush()
+    expect(logic.state.canUpdate).toBe(false)
+    // After an aborted handoff the next session asks the server again.
+    postStatus = 200
+    await rerender({ ...props, open: false })
+    await rerender(props)
+    expect(logic.state.canUpdate).toBe(true)
+})
+
 test.each(['close', 'unmount', 'host', 'permissions'] as const)(
     'late saves do not publish UI feedback after %s changes',
     async (change) => {
