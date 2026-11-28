@@ -8,6 +8,7 @@ import {
 import type {
     HostAvailabilityNotificationTransition,
     NotificationEngineConfiguration,
+    NotificationIncident,
     NotificationState,
 } from './Types/notification-state.types.ts'
 
@@ -35,6 +36,62 @@ export function cancelHostAvailabilityIncidents(
         }
     }
     return next
+}
+
+/**
+ * Hand an open built-in host outage over to the app incident that continues it after the monitoring
+ * handoff. Every channel that got the outage notice, or is being sent it, keeps it as the failure
+ * notice of the continuation, so the outage is not announced twice; the built-in incident ends
+ * silently with its unsent notices. Recovery notices then follow the app's resolve.
+ */
+export function handOverHostAvailabilityIncident(
+    state: NotificationState,
+    incidentId: string,
+    proxyHostId: string,
+    now: number,
+): {
+    readonly state: NotificationState
+    readonly startedAt: number
+    readonly channels: NotificationIncident['channels']
+} | null {
+    const incident = state.incidents.find(
+        (candidate) =>
+            candidate.category === 'host_availability' &&
+            candidate.id === incidentId &&
+            candidate.resourceId === proxyHostId &&
+            candidate.recoveredAt === null,
+    )
+    if (!incident) return null
+    const sending = new Set(
+        state.deliveries
+            .filter(
+                (delivery) =>
+                    delivery.payload.incidentId === incidentId &&
+                    delivery.payload.type === 'incident' &&
+                    delivery.status === 'inflight',
+            )
+            .map((delivery) => `${delivery.channelId}:${delivery.channelRevision}`),
+    )
+    const channels = incident.channels
+        .filter(
+            (marker) =>
+                marker.failure === 'succeeded' ||
+                marker.notified === true ||
+                sending.has(`${marker.channelId}:${marker.channelRevision}`),
+        )
+        .map((marker) => ({
+            channelId: marker.channelId,
+            channelRevision: marker.channelRevision,
+            failure: 'succeeded' as const,
+            recovery: null,
+            severity: incident.severity,
+            notified: true as const,
+        }))
+    return {
+        state: cancelHostAvailabilityIncidents(state, new Set([incidentId]), now),
+        startedAt: incident.startedAt,
+        channels,
+    }
 }
 
 export function observeHostAvailabilityTransition(

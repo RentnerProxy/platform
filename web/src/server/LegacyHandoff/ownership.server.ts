@@ -80,6 +80,18 @@ export async function readLegacyFeatureOwnerInTransaction(
     return row ? toLegacyFeatureOwner(row) : { owner: 'platform' }
 }
 
+/** When an app committed the domain; null while platform owns it or a handoff is still open. */
+export async function readLegacyFeatureCommittedAtInTransaction(
+    transaction: AuthTransaction,
+    domain: LegacyFeatureDomain,
+): Promise<Date | null> {
+    const [row] = await transaction
+        .select({ committedAt: legacyFeatureHandoffs.committedAt })
+        .from(legacyFeatureHandoffs)
+        .where(eq(legacyFeatureHandoffs.domain, domain))
+    return row?.committedAt ?? null
+}
+
 /**
  * Run one platform write of a built-in domain only while platform owns it. A handoff in progress
  * holds the exclusive domain lock, so the writer skips instead of waiting for it or racing its export.

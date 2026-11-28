@@ -12,6 +12,11 @@ export type AppIncidentChange =
           readonly kind: 'open'
           readonly severity: NotificationSeverity
           readonly app: AppIncidentContext
+          /**
+           * A built-in host outage this incident may continue: set only for the installation that
+           * committed the monitoring handoff, with the key that names the exported incident.
+           */
+          readonly continues?: string
       }
     | { readonly kind: 'resolve'; readonly subject: AppIncidentSubject }
 

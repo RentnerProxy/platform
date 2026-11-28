@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { APP_INCIDENT_LIMITS, NOTIFICATION_SEVERITIES } from '@/config/notifications.config.ts'
 import type { AppIncidentResolution } from '@/lib/Notifications/Types/notifications.types.ts'
+import { handOverHostAvailabilityIncident } from './host-availability.ts'
 import { appendNotificationIncident, observeNotificationSignals } from './incident-engine.ts'
 import type {
     AppIncidentChange,
@@ -127,7 +128,7 @@ function open(
 ): AppIncidentOutcome {
     if (!configuration.enabled || configuration.pausedAfterRestore)
         return { state, result: 'unchanged' }
-    const next = structuredClone(state)
+    let next = structuredClone(state)
     const { app, severity } = change
     let current = findOpen(next, app)
     if (current) {
@@ -168,18 +169,29 @@ function open(
                 isOpenAppIncident(incident) && incident.app.installationId === app.installationId,
         ).length
         if (openCount >= APP_INCIDENT_LIMITS.openPerInstallation) return { state, result: 'limit' }
+        // A continued built-in outage keeps its start and the notices its channels already got.
+        const handover =
+            change.continues !== undefined && app.resource
+                ? handOverHostAvailabilityIncident(
+                      next,
+                      change.continues,
+                      app.resource.proxyHostId,
+                      now,
+                  )
+                : null
+        if (handover) next = handover.state
         const admitted = appendNotificationIncident(next, configuration, {
             id: makeId(),
             category: 'app_incident',
             resourceId: dedupKey(app),
             severity,
-            startedAt: now,
+            startedAt: handover?.startedAt ?? now,
             observedAt: now,
             evidence: evidenceOf(severity, app),
             failures: 1,
             recoveredAt: null,
             recoveryEvidence: null,
-            channels: [],
+            channels: handover ? [...handover.channels] : [],
             app: { ...app },
         })
         if (!admitted) return { state, result: 'saturated' }

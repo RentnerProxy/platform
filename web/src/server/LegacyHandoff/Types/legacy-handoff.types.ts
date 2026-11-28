@@ -25,9 +25,10 @@ export interface LegacyFeatureHandoffSource {
         emit: (part: AppRuntimeJsonValue) => Promise<void>,
     ): Promise<void>
     /**
-     * Remove the platform-owned state after the app committed the exact export. Make every change
-     * through the supplied transaction: a failed commit rolls them back and a retry calls `retire`
-     * again, while a committed handoff never calls it a second time.
+     * Retire the platform-owned state after the app committed the exact export: remove it, or leave
+     * it inert for a later removal step. Make every change through the supplied transaction: a
+     * failed commit rolls them back and a retry calls `retire` again, while a committed handoff
+     * never calls it a second time.
      */
     retire(transaction: AuthTransaction): Promise<void>
 }

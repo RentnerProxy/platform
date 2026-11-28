@@ -3,10 +3,12 @@ import '@tanstack/react-start/server-only'
 
 import { randomUUID } from 'node:crypto'
 import { and, eq, inArray } from 'drizzle-orm'
+import { HOST_AVAILABILITY_HANDOVER_MS } from '@/config/notifications.config.ts'
 import { hostCheckPolicies, hostDomains, proxyHosts } from '@/db/schema.ts'
 import type { HostMonitoringContext } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import type { HostMonitoringPolicy } from '@/server/HostMonitoring/Types/host-monitoring.repository.types.ts'
+import { readLegacyFeatureCommittedAtInTransaction } from '@/server/LegacyHandoff/ownership.server.ts'
 import { readHostMonitoringContextInTransaction } from '@/server/RuntimeDiagnostics/domain-diagnostics-data.ts'
 import { DomainDiagnosticsError } from '@/server/RuntimeDiagnostics/domain-diagnostics.errors.ts'
 import {
@@ -116,6 +118,10 @@ export async function reconcileHostAvailabilityInTransaction(
 ): Promise<NotificationState> {
     const incidents = state.incidents.filter((incident) => incident.host)
     if (incidents.length === 0) return state
+    // Built-in outages wait for the monitoring app only for a bounded time after its commit.
+    const committedAt = await readLegacyFeatureCommittedAtInTransaction(transaction, 'monitoring')
+    const handoverEnded =
+        committedAt !== null && now - committedAt.getTime() >= HOST_AVAILABILITY_HANDOVER_MS
     const policies = await transaction
         .select({ policy: hostCheckPolicies })
         .from(hostCheckPolicies)
@@ -143,6 +149,7 @@ export async function reconcileHostAvailabilityInTransaction(
                 const host = incident.host!
                 const policy = current.get(host.policyId)
                 return (
+                    (handoverEnded && incident.recoveredAt === null) ||
                     !policy ||
                     policy.proxyHostId !== incident.resourceId ||
                     policy.version !== host.policyVersion ||

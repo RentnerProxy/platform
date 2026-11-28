@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { APP_INCIDENT_CAPABILITY } from '@/config/notifications.config.ts'
 import { appRuntimeMessages, appRuntimeOwnedProxyHosts, proxyHosts } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { readLegacyFeatureOwnerInTransaction } from '@/server/LegacyHandoff/ownership.server.ts'
 import { observeAppIncident } from '@/server/Notifications/app-incidents.ts'
 import { resolveEffectiveNotificationConfigurationInTransaction } from '@/server/Notifications/notification-access.ts'
 import {
@@ -96,9 +97,19 @@ async function describeChange(
         change.resourceId === undefined
             ? undefined
             : await readCoveredProxyHost(transaction, principal, change.resourceId)
+    // The app that committed monitoring continues an exported open outage under its incident ID.
+    const monitoring =
+        proxyHostId === undefined
+            ? undefined
+            : await readLegacyFeatureOwnerInTransaction(transaction, 'monitoring')
+    const continues =
+        monitoring?.owner === 'app' && monitoring.installationId === installationId
+            ? incidentKey
+            : undefined
     return {
         kind: 'open',
         severity: change.severity,
+        ...(continues === undefined ? {} : { continues }),
         app: {
             installationId,
             appId,

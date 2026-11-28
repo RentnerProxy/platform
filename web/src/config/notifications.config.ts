@@ -16,6 +16,12 @@ export const APP_INCIDENT_LIMITS = {
     channelCategories: 64,
 } as const
 export const NOTIFICATION_SEVERITIES = ['warning', 'error', 'critical'] as const
+/**
+ * How long built-in host outages stay open for the monitoring app after it committed the handoff.
+ * The app continues each one by its incident ID right after commit; one it never continues is
+ * dropped silently afterwards instead of holding an incident slot.
+ */
+export const HOST_AVAILABILITY_HANDOVER_MS = 24 * 60 * 60 * 1_000
 export const NOTIFICATION_SETTINGS_KEY = 'notification_configuration_v1'
 export const NOTIFICATION_STATE_KEY = 'notification_delivery_state_v1'
 export const NOTIFICATION_SECRET_CONTEXT = 'rentnerproxy:notifications:v1:'
