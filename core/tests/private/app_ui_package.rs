@@ -679,3 +679,164 @@ fn rejects_invalid_and_over_budget_patterns() {
     patterns.push(pattern);
     assert!(compile(&document, &json!({"allOf": patterns})).is_none());
 }
+
+const GREETING_POST: &str = "/paths/~1app~1v1~1api~1greeting/post";
+
+fn results_document() -> Value {
+    let mut document = operation_document();
+    let post = document.pointer_mut(GREETING_POST).unwrap();
+    post["x-rentnerproxy-access"]["results"] = json!({
+        "capability": { "id": "proxy.hosts.read.v1", "scope": "proxyHosts" },
+        "listField": "hosts",
+        "resourceIdField": "hostId",
+    });
+    post["responses"]["200"]["content"]["application/json"]["schema"] = results_schema();
+    document
+}
+
+fn results_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "hosts": { "type": "array", "items": {
+                "type": "object",
+                "required": ["hostId"],
+                "properties": { "hostId": { "type": "string" }, "state": { "type": "string" } },
+            } },
+            "nextCursor": { "type": ["string", "null"] },
+        },
+    })
+}
+
+fn response_schema(document: &mut Value) -> &mut Value {
+    &mut document.pointer_mut(GREETING_POST).unwrap()["responses"]["200"]["content"]["application/json"]
+        ["schema"]
+}
+
+#[test]
+fn results_are_accepted_next_to_a_resource_and_reach_the_policy() {
+    let permissions = ["read".into()];
+    let operations = read_operations(&results_document(), &permissions, &capabilities());
+    let access = serde_json::to_value(&operations["greeting"].access).unwrap();
+    assert_eq!(
+        access["results"],
+        json!({
+            "capability": { "id": "proxy.hosts.read.v1", "scope": "proxyHosts" },
+            "listField": "hosts",
+            "resourceIdField": "hostId",
+        })
+    );
+    assert!(access["resource"].is_object());
+    assert!(
+        operations["greeting"]
+            .response
+            .is_valid(&json!({"hosts":[{"hostId":"a"}]}))
+    );
+
+    let mut document = results_document();
+    response_schema(&mut document)["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("nextCursor");
+    assert_eq!(
+        read_operations(&document, &permissions, &capabilities()).len(),
+        1
+    );
+    let mut document = results_document();
+    response_schema(&mut document)["properties"]["nextCursor"] = json!({"type": "string"});
+    assert_eq!(
+        read_operations(&document, &permissions, &capabilities()).len(),
+        1
+    );
+}
+
+#[test]
+fn results_accept_referenced_response_schemas() {
+    let mut document = results_document();
+    document["components"]["schemas"]["Page"] = results_schema();
+    *response_schema(&mut document) = json!({"$ref": "#/components/schemas/Page"});
+    assert_eq!(
+        read_operations(&document, &["read".into()], &capabilities()).len(),
+        1
+    );
+}
+
+#[test]
+fn results_drop_operations_with_invalid_declarations() {
+    let permissions = ["read".into()];
+    assert!(
+        read_operations(&results_document(), &permissions, &[]).is_empty(),
+        "undeclared capability"
+    );
+    let mut document = results_document();
+    document.pointer_mut(GREETING_POST).unwrap()["x-rentnerproxy-access"]["results"]["capability"]
+        ["scope"] = json!("installations");
+    assert!(read_operations(&document, &permissions, &capabilities()).is_empty());
+    for member in ["listField", "resourceIdField"] {
+        for bad in ["", "_x", "a-b", &"r".repeat(65)] {
+            let mut document = results_document();
+            document.pointer_mut(GREETING_POST).unwrap()["x-rentnerproxy-access"]["results"]
+                [member] = json!(bad);
+            assert!(
+                read_operations(&document, &permissions, &capabilities()).is_empty(),
+                "{member} {bad}"
+            );
+        }
+    }
+    for replacement in [Value::Null, json!({"unexpected": true})] {
+        let mut document = results_document();
+        document.pointer_mut(GREETING_POST).unwrap()["x-rentnerproxy-access"]["results"] =
+            replacement;
+        assert!(read_operations(&document, &permissions, &capabilities()).is_empty());
+    }
+}
+
+#[test]
+fn results_require_a_filterable_response_schema() {
+    let permissions = ["read".into()];
+    type Change = fn(&mut Value);
+    let cases: [(&str, Change); 11] = [
+        ("no list", |s| {
+            s["properties"].as_object_mut().unwrap().remove("hosts");
+        }),
+        ("list not array", |s| {
+            s["properties"]["hosts"]["type"] = json!("object")
+        }),
+        ("items not objects", |s| {
+            s["properties"]["hosts"]["items"] = json!({"type": "string"})
+        }),
+        ("id not required", |s| {
+            s["properties"]["hosts"]["items"]["required"] = json!([])
+        }),
+        ("id not string", |s| {
+            s["properties"]["hosts"]["items"]["properties"]["hostId"]["type"] = json!("integer")
+        }),
+        ("extra property", |s| {
+            s["properties"]["total"] = json!({"type": "integer"})
+        }),
+        ("open additional properties", |s| {
+            s["additionalProperties"] = json!(true)
+        }),
+        ("missing additional properties", |s| {
+            s.as_object_mut().unwrap().remove("additionalProperties");
+        }),
+        ("cursor not string", |s| {
+            s["properties"]["nextCursor"] = json!({"type": "integer"})
+        }),
+        ("not an object", |s| {
+            *s = json!({"type": "array", "items": {"type": "string"}})
+        }),
+        ("composed", |s| {
+            s["anyOf"] = json!([{"type": "object"}]);
+        }),
+    ];
+    for (name, change) in cases {
+        let mut document = results_document();
+        change(response_schema(&mut document));
+        assert!(
+            read_operations(&document, &permissions, &capabilities()).is_empty(),
+            "{name}"
+        );
+    }
+}

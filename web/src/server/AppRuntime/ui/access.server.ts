@@ -1,8 +1,9 @@
 import '@tanstack/react-start/server-only'
 
-import type { AppUiSummary } from '@/lib/AppUi/contract.ts'
+import type { AppUiPayload, AppUiSummary } from '@/lib/AppUi/contract.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import {
+    isAppRuntimeAuthorized,
     qualifyAppRuntimePermission,
     readAppUiActorInTransaction,
     readAppUiPrincipalInTransaction,
@@ -137,5 +138,62 @@ export async function executeAppUiCall(
     await authorizeAppUi(sessionId, app, signal, policy, input.payload)
     const result = await nativeAppUiCall(input, signal)
     await authorizeAppUi(sessionId, app, signal, policy, input.payload)
-    return result
+    return policy.results
+        ? await filterAppUiResultForUser(sessionId, app, signal, policy.results, result)
+        : result
+}
+
+type AppUiResultsPolicy = NonNullable<AppUiOperationPolicy['results']>
+type AppUiResultsPrincipal = Parameters<typeof isAppRuntimeAuthorized>[0]
+
+/**
+ * Keeps only the list items the principal may see. Anything but a plain object that holds the
+ * declared list (plus an optional `nextCursor`) fails closed so an app cannot leak aggregates.
+ */
+export function filterAppUiResult(
+    principal: AppUiResultsPrincipal,
+    results: AppUiResultsPolicy,
+    result: unknown,
+): AppUiPayload {
+    if (result === null || typeof result !== 'object' || Array.isArray(result))
+        throw uiProblems.invalid
+    const body = result as Record<string, unknown>
+    const { listField, resourceIdField, capability } = results
+    const keys = Object.keys(body)
+    if (
+        !Object.hasOwn(body, listField) ||
+        keys.some((key) => key !== listField && key !== 'nextCursor')
+    )
+        throw uiProblems.invalid
+    const items: unknown = body[listField]
+    if (!Array.isArray(items)) throw uiProblems.invalid
+    const visible = items.filter((item: unknown) => {
+        if (item === null || typeof item !== 'object' || Array.isArray(item)) return false
+        const id = appRecordId.safeParse(
+            Object.hasOwn(item, resourceIdField)
+                ? (item as Record<string, unknown>)[resourceIdField]
+                : undefined,
+        )
+        return id.success && isAppRuntimeAuthorized(principal, capability, id.data)
+    })
+    return {
+        [listField]: visible,
+        ...(Object.hasOwn(body, 'nextCursor') && { nextCursor: body.nextCursor }),
+    } as AppUiPayload
+}
+
+function filterAppUiResultForUser(
+    sessionId: string,
+    app: AppRuntimeIdentity,
+    signal: AbortSignal,
+    results: AppUiResultsPolicy,
+    result: unknown,
+): Promise<AppUiPayload> {
+    return withAppRuntimeErrors(() =>
+        appRuntimeTransaction(signal, async (transaction) => {
+            const actor = await readAppUiActorInTransaction(transaction, sessionId)
+            const principal = await readAppUiPrincipalInTransaction(transaction, app, actor, true)
+            return filterAppUiResult(principal, results, result)
+        }),
+    )
 }

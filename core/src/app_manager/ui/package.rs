@@ -73,12 +73,22 @@ pub(super) struct Access {
     permission_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resource: Option<Resource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    results: Option<Results>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Resource {
     capability: Capability,
+    resource_id_field: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Results {
+    capability: Capability,
+    list_field: String,
     resource_id_field: String,
 }
 
@@ -320,10 +330,11 @@ fn read_operation(
     if post["operationId"] != id {
         return None;
     }
-    if post["x-rentnerproxy-access"]
-        .get("resource")
-        .is_some_and(Value::is_null)
-    {
+    if ["resource", "results"].iter().any(|member| {
+        post["x-rentnerproxy-access"]
+            .get(member)
+            .is_some_and(Value::is_null)
+    }) {
         return None;
     }
     let access: Access = decode_member(post, "x-rentnerproxy-access").ok()?;
@@ -336,14 +347,80 @@ fn read_operation(
     {
         return None;
     }
+    let response_schema = content_schema(document, &post["responses"]["200"])?;
+    if let Some(results) = &access.results
+        && (!valid_field(&results.list_field)
+            || !valid_field(&results.resource_id_field)
+            || !capabilities.contains(&results.capability)
+            || !filterable_response(document, response_schema, results))
+    {
+        return None;
+    }
     Some(Operation {
         access,
         request: compile(document, content_schema(document, &post["requestBody"])?)?,
-        response: compile(
-            document,
-            content_schema(document, &post["responses"]["200"])?,
-        )?,
+        response: compile(document, response_schema)?,
     })
+}
+
+/// A filterable response is an object that holds only the list and an optional cursor, where the
+/// list items are objects that require the resource ID as a string.
+fn filterable_response(document: &Value, schema: &Value, results: &Results) -> bool {
+    let mut budget = Expansion {
+        nodes: MAX_SCHEMA_NODES,
+        bytes: MAX_SCHEMA_BYTES,
+        patterns: MAX_SCHEMA_PATTERNS,
+    };
+    let Some(schema) = expand_schema(document, schema, &mut budget, 0) else {
+        return false;
+    };
+    let composed = |schema: &Value| {
+        ["allOf", "anyOf", "oneOf"]
+            .iter()
+            .any(|k| schema.get(k).is_some())
+    };
+    let Some(properties) = schema["properties"].as_object() else {
+        return false;
+    };
+    if schema["type"] != "object"
+        || composed(&schema)
+        || schema["additionalProperties"] != false
+        || properties
+            .keys()
+            .any(|key| *key != results.list_field && key != "nextCursor")
+    {
+        return false;
+    }
+    if let Some(cursor) = properties.get("nextCursor") {
+        let nullable = cursor["type"] == json_array(["string", "null"])
+            || cursor["type"] == json_array(["null", "string"]);
+        if composed(cursor) || !(cursor["type"] == "string" || nullable) {
+            return false;
+        }
+    }
+    let Some(list) = properties.get(&results.list_field) else {
+        return false;
+    };
+    let item = &list["items"];
+    list["type"] == "array"
+        && !composed(list)
+        && item["type"] == "object"
+        && !composed(item)
+        && item["required"].as_array().is_some_and(|required| {
+            required
+                .iter()
+                .any(|name| name.as_str() == Some(&results.resource_id_field))
+        })
+        && item["properties"][&results.resource_id_field]["type"] == "string"
+}
+
+fn json_array<const N: usize>(values: [&str; N]) -> Value {
+    Value::Array(
+        values
+            .iter()
+            .map(|value| Value::String((*value).into()))
+            .collect(),
+    )
 }
 
 fn content_schema<'a>(document: &'a Value, mut object: &'a Value) -> Option<&'a Value> {

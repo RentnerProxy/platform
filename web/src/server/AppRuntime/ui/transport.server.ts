@@ -62,12 +62,20 @@ const nativeApp = z.strictObject({
     nativePresentation: z.unknown().optional(),
 })
 const nativeApps = z.array(nativeApp).max(256)
+const fieldName = z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,63}$/u)
 const operationPolicy = z.strictObject({
     permissionKey,
     resource: z
         .strictObject({
             capability: appCapabilitySchema,
-            resourceIdField: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,63}$/u),
+            resourceIdField: fieldName,
+        })
+        .optional(),
+    results: z
+        .strictObject({
+            capability: appCapabilitySchema,
+            listField: fieldName,
+            resourceIdField: fieldName,
         })
         .optional(),
 })
