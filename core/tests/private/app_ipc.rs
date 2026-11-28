@@ -507,6 +507,87 @@ async fn the_monitoring_class_probe_batch_reaches_the_platform_bridge() {
     task.abort();
 }
 
+#[tokio::test]
+async fn an_incident_change_reaches_the_platform_bridge_with_its_key_and_body() {
+    if env::var_os("RENTNERPROXY_APP_BOOTSTRAP_FD").is_some() {
+        return;
+    }
+    let scratch = Scratch::create(&env::temp_dir());
+    let backend = scratch.path("gateway.sock");
+    let listener = UnixListener::bind(&backend).unwrap();
+    let (forwarded, mut received) = mpsc::channel(1);
+    let backend_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let handler = service_fn(move |request: Request<hyper::body::Incoming>| {
+            let forwarded = forwarded.clone();
+            async move {
+                let (parts, body) = request.into_parts();
+                forwarded
+                    .send((parts, body.collect().await.unwrap().to_bytes()))
+                    .await
+                    .unwrap();
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::NO_CONTENT)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        });
+        server::conn::http1::Builder::new()
+            .serve_connection(TokioIo::new(stream), handler)
+            .await
+            .unwrap();
+    });
+    let socket = scratch.path("core.sock");
+    let task = tokio::spawn(gateway::serve(
+        UnixListener::bind(&socket).unwrap(),
+        test_generation(uid(), backend, uid()),
+    ));
+    let mut sender = open(&socket).await;
+    const INCIDENT: &str = "/platform/v1/incidents/disk-full";
+    // The incident key is one record ID; the route has no other method or deeper path.
+    for (method, path) in [
+        (Method::GET, INCIDENT),
+        (Method::POST, "/platform/v1/incidents"),
+        (Method::POST, "/platform/v1/incidents/disk-full/extra"),
+        (Method::POST, "/platform/v1/incidents/not%20a%20key"),
+    ] {
+        assert_problem(
+            &mut sender,
+            request(method, path, CREDENTIAL, "9", Bytes::new()),
+            StatusCode::NOT_FOUND,
+            "operationNotFound",
+        )
+        .await;
+    }
+    let payload = Bytes::from_static(
+        br#"{"status":"open","category":"disk","severity":"error","title":"Disk full","message":"No space left."}"#,
+    );
+    let response = sender
+        .send_request(request(
+            Method::POST,
+            INCIDENT,
+            CREDENTIAL,
+            "9",
+            payload.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let (parts, body) = timeout(Duration::from_secs(5), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(parts.method, Method::POST);
+    assert_eq!(parts.uri, INCIDENT);
+    assert_eq!(body, payload);
+    assert_eq!(parts.headers["idempotency-key"], "request-one");
+    assert_eq!(parts.headers["x-app-installation"], "installation");
+    backend_task.await.unwrap();
+    task.abort();
+}
+
 /// The platform's copy of the shared probe fixtures, pinned to the contract revision it builds
 /// against.
 #[test]

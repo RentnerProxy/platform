@@ -316,6 +316,7 @@
                 "upstreamProbe": "Bereikbaarheid van upstreams controleren",
                 "upstreamMonitoring": "Upstreams doorlopend bewaken",
                 "notificationsPublish": "Meldingen versturen",
+                "notificationsIncidents": "Meldingsincidenten melden",
                 "auditRecord": "Vermeldingen in het auditlogboek schrijven",
                 "eventsSubscribe": "Wijzigingsgebeurtenissen ontvangen",
                 "providerRegister": "Registreren als provider",
@@ -674,6 +675,10 @@
             "destinationSaved": "Bestemming veilig opgeslagen.",
             "destinationMissing": "Er is geen bestemming ingesteld.",
             "noCategories": "Er zijn geen gebeurteniscategorieën beschikbaar voor je account.",
+            "appCategories": "Meldingen van geïnstalleerde apps",
+            "appCategoriesHint": "Kies de storingsmeldingen die dit kanaal ontvangt. Zonder keuze ontvangt het kanaal geen appmeldingen.",
+            "appCategoriesUnavailable": "Niet meer beschikbaar",
+            "appCategoriesLoadFailed": "De incidentcategorieën van apps konden niet worden geladen.",
             "test": "Test verzenden",
             "testSent": "Testmelding verzonden.",
             "saved": "Meldingsinstellingen opgeslagen.",
@@ -699,7 +704,8 @@
                 "ddns": "Dynamische DNS",
                 "proxy_configuration": "Proxyconfiguratie",
                 "backup": "Back-ups",
-                "host_availability": "Hostuitval en herstel"
+                "host_availability": "Hostuitval en herstel",
+                "app_incident": "Meldingen van apps"
             },
             "severities": {
                 "warning": "Waarschuwing",

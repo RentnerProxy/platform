@@ -22,6 +22,7 @@ import {
 import {
     appAuditEvent,
     appAuthorizationRequest,
+    appIncidentChange,
     appNotification,
     appProxyHostChange,
     appProxyHostQuery,
@@ -32,6 +33,7 @@ import {
 import { replayAppRuntimeEventsInTransaction } from './events.server.ts'
 import { listAppProxyHosts, probeAppProxyUpstream } from './hosts.server.ts'
 import { probeAppProxyUpstreams } from './upstream-probes.server.ts'
+import { setAppRuntimeIncidentInTransaction } from './incidents.server.ts'
 import { recordAppRuntimeMessageInTransaction } from './messages.server.ts'
 import {
     cancelAppOperation,
@@ -260,6 +262,19 @@ export function executeAppRuntimeCall(
                         credentials,
                         required(idempotencyKey),
                         message,
+                    ),
+                )
+                return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } })
+            }
+            case 'setIncident': {
+                const change = parseAppInput(appIncidentChange, body)
+                await transact((transaction) =>
+                    setAppRuntimeIncidentInTransaction(
+                        transaction,
+                        credentials,
+                        required(resourceId),
+                        required(idempotencyKey),
+                        change,
                     ),
                 )
                 return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } })

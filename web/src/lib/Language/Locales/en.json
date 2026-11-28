@@ -335,6 +335,7 @@
                 "upstreamProbe": "Check upstream reachability",
                 "upstreamMonitoring": "Monitor upstreams continuously",
                 "notificationsPublish": "Send notifications",
+                "notificationsIncidents": "Raise notification incidents",
                 "auditRecord": "Write audit log entries",
                 "eventsSubscribe": "Receive change events",
                 "providerRegister": "Register as a provider",
@@ -862,6 +863,10 @@
             "destinationSaved": "Destination saved securely.",
             "destinationMissing": "No destination configured.",
             "noCategories": "No event categories are available for your account.",
+            "appCategories": "Reports from installed apps",
+            "appCategoriesHint": "Choose the incident reports this channel receives. Without a selection the channel receives no app reports.",
+            "appCategoriesUnavailable": "No longer available",
+            "appCategoriesLoadFailed": "Could not load the app incident categories.",
             "test": "Send test",
             "testSent": "Test notification sent.",
             "saved": "Notification settings saved.",
@@ -887,7 +892,8 @@
                 "ddns": "Dynamic DNS",
                 "proxy_configuration": "Proxy configuration",
                 "backup": "Backups",
-                "host_availability": "Host outages and recovery"
+                "host_availability": "Host outages and recovery",
+                "app_incident": "App incidents"
             },
             "severities": {
                 "warning": "Warning",

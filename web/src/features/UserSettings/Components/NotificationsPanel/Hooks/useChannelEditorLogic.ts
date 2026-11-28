@@ -10,6 +10,9 @@ import type {
     ChannelInput,
 } from '../Types/notifications-panel.types.ts'
 
+/** Selecting app categories subscribes to this event; it is never chosen on its own. */
+const APP_EVENT = 'app_incident'
+
 export default function useChannelEditorLogic(props: ChannelEditorProps) {
     const runAction = useAsyncAction()
     const { t, locale, language } = useTranslationStore()
@@ -19,10 +22,13 @@ export default function useChannelEditorLogic(props: ChannelEditorProps) {
         name: props.editor.channel?.name ?? '',
         kind: props.editor.channel?.kind ?? 'email',
         enabled: props.editor.channel?.enabled ?? true,
-        events: [...(props.editor.channel?.events ?? props.settings.allowedCategories)],
+        events: (props.editor.channel?.events ?? props.settings.allowedCategories).filter(
+            (category) => category !== APP_EVENT,
+        ),
         minimumSeverity: props.editor.channel?.minimumSeverity ?? 'warning',
         thresholdSeconds: String(props.editor.channel?.thresholdSeconds ?? 0),
         recovery: props.editor.channel?.recovery ?? true,
+        appCategories: [...(props.editor.channel?.appCategories ?? [])],
         replaceDestination: !props.editor.channel,
         recipients: props.editor.channel ? '' : props.email,
         url: '',
@@ -34,14 +40,15 @@ export default function useChannelEditorLogic(props: ChannelEditorProps) {
         onSubmit: async ({ value }) => {
             if (props.pending) return
             const thresholdSeconds = Number(value.thresholdSeconds)
+            // Any selected app category subscribes the channel to app incidents; none removes it.
+            const events: ChannelInput['events'] =
+                value.appCategories.length > 0 ? [...value.events, APP_EVENT] : value.events
             if (
                 !value.name.trim() ||
-                !value.events.length ||
+                !events.length ||
                 !Number.isInteger(thresholdSeconds) ||
                 thresholdSeconds < 0 ||
-                value.events.some(
-                    (category) => !props.settings.allowedCategories.includes(category),
-                )
+                events.some((category) => !props.settings.allowedCategories.includes(category))
             ) {
                 toast.error(t('account.notifications.invalidInput'), {
                     title: t('toast.titles.error'),
@@ -53,10 +60,11 @@ export default function useChannelEditorLogic(props: ChannelEditorProps) {
                 name: value.name.trim(),
                 kind: value.kind,
                 enabled: value.enabled,
-                events: value.events,
+                events,
                 minimumSeverity: value.minimumSeverity,
                 thresholdSeconds,
                 recovery: value.recovery,
+                ...(value.appCategories.length > 0 ? { appCategories: value.appCategories } : {}),
             }
             if (value.replaceDestination) {
                 if (value.kind === 'email') {
@@ -115,10 +123,27 @@ export default function useChannelEditorLogic(props: ChannelEditorProps) {
             locale,
             selectLocale: language === 'de' ? ('de' as const) : ('en' as const),
             editing: !!props.editor.channel,
-            categoryOptions: props.settings.allowedCategories.map((value) => ({
-                value,
-                label: t(`account.notifications.categories.${value}`),
-            })),
+            categoryOptions: props.settings.allowedCategories
+                .filter((value) => value !== APP_EVENT)
+                .map((value) => ({
+                    value,
+                    label: t(`account.notifications.categories.${value}`),
+                })),
+            appCategoryGroups: props.appCategories ?? [],
+            // Saved subscriptions stay visible, and clearable, once the app categories loaded.
+            unavailableAppCategories: props.appCategories
+                ? values.appCategories.filter(
+                      (key) =>
+                          !props.appCategories?.some((group) =>
+                              group.categories.some((category) => category.key === key),
+                          ),
+                  )
+                : [],
+            showAppCategories:
+                props.settings.allowedCategories.includes(APP_EVENT) &&
+                (props.appCategories === undefined
+                    ? values.appCategories.length > 0
+                    : props.appCategories.length > 0 || values.appCategories.length > 0),
             kindOptions: [
                 { value: 'email', label: t('account.notifications.email') },
                 { value: 'webhook', label: t('account.notifications.webhook') },
@@ -134,6 +159,14 @@ export default function useChannelEditorLogic(props: ChannelEditorProps) {
                 event.preventDefault()
                 runAction(() => form.handleSubmit())
             },
+            handleToggleAppCategory: (key: string, checked: boolean) =>
+                form.setFieldValue('appCategories', (previous) =>
+                    checked
+                        ? previous.includes(key)
+                            ? previous
+                            : [...previous, key]
+                        : previous.filter((item) => item !== key),
+                ),
         },
     }
 }

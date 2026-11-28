@@ -3,6 +3,7 @@ import '@tanstack/react-start/server-only'
 import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 
 import { ACTIVE_OWNER_ADVISORY_LOCK_ID } from '@/config/auth.config.ts'
+import { APP_INCIDENT_CAPABILITY } from '@/config/notifications.config.ts'
 import {
     appRuntimeDelegations,
     appRuntimeGenerations,
@@ -107,7 +108,10 @@ export async function registerAppRuntimeGenerationInTransaction(
         !permissionKeys.every(isLocalAppRuntimePermissionKey) ||
         new Set(permissionKeys).size !== permissionKeys.length ||
         !appProviderProfilesSchema.safeParse(providerProfiles).success ||
-        !appIncidentCategoriesSchema.safeParse(incidentCategories).success
+        !appIncidentCategoriesSchema.safeParse(incidentCategories).success ||
+        // An app declares categories exactly when it may raise incidents.
+        incidentCategories.length > 0 !==
+            capabilities.some(({ id }) => id === APP_INCIDENT_CAPABILITY)
     )
         throw new AppRuntimeAuthorityError('invalid_input')
 

@@ -65,6 +65,27 @@ export async function deliverNotification(
                   },
               }
             : {}),
+        ...(payload.app
+            ? {
+                  app: {
+                      appName: payload.app.appName,
+                      categoryName: payload.app.categoryName,
+                      title: payload.app.title,
+                      message: payload.app.message,
+                      ...(payload.app.resource
+                          ? {
+                                resource: {
+                                    type: 'proxyHost' as const,
+                                    ...(payload.app.resource.hostname
+                                        ? { hostname: payload.app.resource.hostname }
+                                        : {}),
+                                },
+                            }
+                          : {}),
+                      ...(payload.app.resolution ? { resolution: payload.app.resolution } : {}),
+                  },
+              }
+            : {}),
     }
     try {
         return destination.kind === 'email'

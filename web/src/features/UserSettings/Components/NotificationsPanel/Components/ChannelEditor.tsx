@@ -5,6 +5,7 @@ import OptionToggle from '@/shared/Forms/OptionToggle.tsx'
 import { ModalCancelButton, ModalSaveButton } from '@/shared/Modal/Components/ModalActions.tsx'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import useChannelEditorLogic from '../Hooks/useChannelEditorLogic.ts'
+import AppCategoryOptions from './AppCategoryOptions.tsx'
 import type { ChannelEditorProps } from '../Types/notifications-panel.types.ts'
 
 export default function ChannelEditor(props: ChannelEditorProps) {
@@ -59,7 +60,7 @@ export default function ChannelEditor(props: ChannelEditorProps) {
                         {(field) => (
                             <CustomSelect
                                 multiple
-                                required
+                                required={!state.values.appCategories.length}
                                 label={t('account.notifications.events')}
                                 value={field.state.value}
                                 options={state.categoryOptions}
@@ -68,6 +69,15 @@ export default function ChannelEditor(props: ChannelEditorProps) {
                             />
                         )}
                     </form.Field>
+                    {state.showAppCategories ? (
+                        <AppCategoryOptions
+                            groups={state.appCategoryGroups}
+                            selected={state.values.appCategories}
+                            unavailable={state.unavailableAppCategories}
+                            disabled={props.pending}
+                            onToggle={handler.handleToggleAppCategory}
+                        />
+                    ) : null}
                     <form.Field name="minimumSeverity">
                         {(field) => (
                             <CustomSelect

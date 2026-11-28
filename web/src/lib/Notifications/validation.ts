@@ -1,10 +1,12 @@
 import { z } from 'zod'
 import {
+    APP_INCIDENT_LIMITS,
     NOTIFICATION_CATEGORIES,
     NOTIFICATION_LIMITS,
     NOTIFICATION_SEVERITIES,
 } from '@/config/notifications.config.ts'
 import { HOST_MONITORING_OUTCOME_CODES } from '@/config/host-monitoring.config.ts'
+import { appIdSchema, appRecordId } from '@/lib/AppUi/identifiers.ts'
 
 export const hostAvailabilityNotificationSchema = z.strictObject({
     domain: z
@@ -17,6 +19,51 @@ export const hostAvailabilityNotificationSchema = z.strictObject({
     recoveryStartedAt: z.iso.datetime().nullable(),
     managementPath: z.literal('/proxy-hosts'),
     managementUrl: z.url().max(2_048).optional(),
+})
+
+/** A qualified app incident category: `appId/categoryId`. */
+const appIncidentCategoryKeySchema = z.string().refine((value) => {
+    const separator = value.indexOf('/')
+    return (
+        separator > 0 &&
+        appIdSchema.safeParse(value.slice(0, separator)).success &&
+        appRecordId.safeParse(value.slice(separator + 1)).success
+    )
+})
+
+/**
+ * One line of plain text, counted in code points like the App API contract: no control,
+ * surrogate, format, line or paragraph separator characters.
+ */
+export const appIncidentName = (maximum: number) =>
+    z.string().regex(new RegExp(`^[^\\p{Cc}\\p{Cs}\\p{Cf}\\p{Zl}\\p{Zp}]{1,${maximum}}$`, 'u'))
+/** A link-like run, found after lowercasing only ASCII letters, as both contract SDKs do. */
+const linkLike = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)/u
+const isLinkLike = (value: string) =>
+    linkLike.test(value.replace(/[A-Z]/gu, (letter) => letter.toLowerCase()))
+
+/** App text renders as plain text on one line and without links, exactly as the contract admits it. */
+export const appIncidentText = (maximum: number) =>
+    appIncidentName(maximum).refine((value) => !isLinkLike(value))
+
+export const appIncidentNotificationSchema = z.strictObject({
+    appName: z.string().min(1).max(97),
+    // The manifest admits category names by the plain line rule alone.
+    categoryName: appIncidentName(APP_INCIDENT_LIMITS.title),
+    title: appIncidentText(APP_INCIDENT_LIMITS.title),
+    message: appIncidentText(APP_INCIDENT_LIMITS.message),
+    resource: z
+        .strictObject({
+            type: z.literal('proxyHost'),
+            hostname: z
+                .string()
+                .min(1)
+                .max(253)
+                .regex(/^[a-z0-9.-]+$/u)
+                .optional(),
+        })
+        .optional(),
+    resolution: z.enum(['appStopped', 'grantRevoked', 'resourceUnavailable']).optional(),
 })
 
 const notificationIdSchema = z.uuid().regex(/^[a-f0-9-]+$/u)
@@ -39,6 +86,11 @@ export const notificationPolicySchema = z.strictObject({
     minimumSeverity: z.enum(NOTIFICATION_SEVERITIES),
     thresholdSeconds: z.number().int().min(0).max(86_400),
     recovery: z.boolean(),
+    appCategories: z
+        .array(appIncidentCategoryKeySchema)
+        .max(APP_INCIDENT_LIMITS.channelCategories)
+        .refine((keys) => new Set(keys).size === keys.length)
+        .optional(),
 })
 
 export const notificationDestinationSchema = z.discriminatedUnion('kind', [

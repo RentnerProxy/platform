@@ -85,6 +85,9 @@ afterEach(async () => {
     document.body.replaceChildren()
 })
 
+const toggle = (name: string) =>
+    [...document.querySelectorAll('label')].find((item) => item.textContent?.includes(name))!
+
 describe('personal notification channel editor', () => {
     test('shows recovered incidents separately from delivery failures with usable row filters', async () => {
         const container = document.createElement('div')
@@ -204,5 +207,123 @@ describe('personal notification channel editor', () => {
         ).toBe(true)
         await submit()
         expect(save.mock.calls[0]?.[1].revision).toBe(5)
+    })
+    describe('app incident categories', () => {
+        const appSettings: ChannelEditorProps['settings'] = {
+            ...settings,
+            allowedCategories: ['ddns', 'app_incident'],
+        }
+        const groups = [
+            {
+                appId: 'acme.monitor',
+                appName: 'Acme Monitor',
+                categories: [
+                    { key: 'acme.monitor/disk', name: 'Disk space' },
+                    { key: 'acme.monitor/upstream', name: 'Upstream down' },
+                ],
+            },
+            {
+                appId: 'zeta.reports',
+                appName: 'Zeta Reports',
+                categories: [{ key: 'zeta.reports/sync', name: 'Sync' }],
+            },
+        ]
+        test('lists the categories under their app and selecting one subscribes the channel', async () => {
+            const { save } = await render({ settings: appSettings, appCategories: groups })
+            expect(document.body.textContent).toContain('Acme Monitor')
+            expect(document.body.textContent).toContain('Zeta Reports')
+            expect(document.body.textContent).toContain('Disk space')
+            // The app event is implied by the categories and is never a choice of its own.
+            expect(document.body.textContent).not.toContain('App incidents')
+            await click(toggle('Disk space'))
+            await click(toggle('Sync'))
+            await submit()
+            expect(save.mock.calls[0]?.[0]).toMatchObject({
+                events: ['ddns', 'app_incident'],
+                appCategories: ['acme.monitor/disk', 'zeta.reports/sync'],
+            })
+        })
+
+        test('clearing every category removes the app event and the subscriptions', async () => {
+            const subscribed = {
+                ...channel,
+                events: ['ddns', 'app_incident'],
+                appCategories: ['acme.monitor/disk'],
+            } as const
+            const { save } = await render({
+                settings: appSettings,
+                appCategories: groups,
+                editor: { channel: subscribed, revision: 5, channels: [subscribed] },
+            })
+            await click(toggle('Disk space'))
+            await submit()
+            const saved = save.mock.calls[0]?.[0]
+            expect(saved?.events).toEqual(['ddns'])
+            expect(saved).not.toHaveProperty('appCategories')
+        })
+
+        test('a channel that only receives app categories stays valid until they are cleared', async () => {
+            const only = {
+                ...channel,
+                events: ['app_incident'],
+                appCategories: ['acme.monitor/disk'],
+            } as const
+            const { save } = await render({
+                settings: appSettings,
+                appCategories: groups,
+                editor: { channel: only, revision: 5, channels: [only] },
+            })
+            await submit()
+            expect(save.mock.calls[0]?.[0]).toMatchObject({
+                events: ['app_incident'],
+                appCategories: ['acme.monitor/disk'],
+            })
+            await click(toggle('Disk space'))
+            await submit()
+            expect(save).toHaveBeenCalledTimes(1)
+        })
+
+        test('lists subscriptions of apps that are gone so they can be cleared', async () => {
+            const stale = {
+                ...channel,
+                events: ['ddns', 'app_incident'],
+                appCategories: ['gone.app/disk', 'acme.monitor/disk'],
+            } as const
+            const { save } = await render({
+                settings: appSettings,
+                appCategories: groups,
+                editor: { channel: stale, revision: 5, channels: [stale] },
+            })
+            expect(document.body.textContent).toContain('No longer available')
+            expect(document.body.textContent).toContain('gone.app/disk')
+            await click(toggle('gone.app/disk'))
+            await submit()
+            expect(save.mock.calls[0]?.[0]).toMatchObject({
+                appCategories: ['acme.monitor/disk'],
+            })
+        })
+
+        test('keeps saved subscriptions while the categories are not loaded', async () => {
+            const stale = {
+                ...channel,
+                events: ['ddns', 'app_incident'],
+                appCategories: ['acme.monitor/disk'],
+            } as const
+            const { save } = await render({
+                settings: appSettings,
+                editor: { channel: stale, revision: 5, channels: [stale] },
+            })
+            expect(document.body.textContent).not.toContain('No longer available')
+            await submit()
+            expect(save.mock.calls[0]?.[0]).toMatchObject({
+                events: ['ddns', 'app_incident'],
+                appCategories: ['acme.monitor/disk'],
+            })
+        })
+
+        test('offers no app section to a user who may not receive app incidents', async () => {
+            await render({ appCategories: groups })
+            expect(document.body.textContent).not.toContain('Acme Monitor')
+        })
     })
 })

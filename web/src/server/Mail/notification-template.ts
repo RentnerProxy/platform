@@ -52,7 +52,24 @@ const CATEGORY_COPY = {
         nextStep:
             'Öffne den betroffenen Proxy-Host in RentnerProxy und prüfe seine Verfügbarkeitshistorie.',
     },
+    app_incident: {
+        label: 'Meldung einer App',
+        heading: 'Eine App meldet eine Störung',
+        summary: 'Eine installierte App hat eine Störung gemeldet.',
+        recovery: 'Die Störung, die eine installierte App gemeldet hatte, ist beendet.',
+        nextStep: 'Öffne die App in RentnerProxy und prüfe die gemeldete Störung.',
+    },
 } satisfies Record<NotificationCategory, NotificationMailCategoryDefinition>
+
+/** Platform copy for an incident that RentnerProxy closed because the app could no longer keep it. */
+const APP_RESOLUTION_COPY = {
+    appStopped:
+        'Die App wurde angehalten oder entfernt. RentnerProxy hat ihre Meldung deshalb beendet.',
+    grantRevoked:
+        'Der App wurde die Berechtigung zum Melden von Störungen entzogen. RentnerProxy hat ihre Meldung deshalb beendet.',
+    resourceUnavailable:
+        'Der betroffene Host ist nicht mehr verfügbar. RentnerProxy hat die Meldung deshalb beendet.',
+} as const
 
 const DATE_FORMAT = new Intl.DateTimeFormat('de-DE', {
     dateStyle: 'medium',
@@ -69,6 +86,28 @@ function createDetailRow(label: string, value: string, theme: MailTheme): string
         <th scope="row" align="left" valign="top" style="width:38%;padding:12px 0;border-bottom:1px solid ${theme.border};color:${theme.muted};font-size:13px;font-weight:400;line-height:1.5;overflow-wrap:anywhere;">${Bun.escapeHTML(label)}</th>
         <td valign="top" style="padding:12px 0 12px 16px;border-bottom:1px solid ${theme.border};color:${theme.ink};font-family:Consolas,'Liberation Mono',monospace;font-size:12px;line-height:1.6;overflow-wrap:anywhere;word-break:break-word;">${Bun.escapeHTML(value)}</td>
     </tr>`
+}
+
+/**
+ * The rows of an app incident. The app's words are plain text values, never links; the platform
+ * adds only the host name it renders itself.
+ */
+function appDetails(
+    payload: NotificationPayload,
+    label: string,
+    isRecovery: boolean,
+): [string, string][] {
+    const app = payload.app!
+    return [
+        ['Bereich', label],
+        ['App', app.appName],
+        ['Kategorie', app.categoryName],
+        ['Titel', app.title],
+        ['Meldung', app.message],
+        ...(app.resource?.hostname ? [['Host', app.resource.hostname] as [string, string]] : []),
+        ['Beginn der Störung', formatTime(payload.startedAt)],
+        [isRecovery ? 'Behoben am' : 'Letzte Meldung', formatTime(payload.occurredAt)],
+    ]
 }
 
 export function createNotificationEmailTemplate(
@@ -119,11 +158,13 @@ export function createNotificationEmailTemplate(
               : category.heading
     const summary = isTest
         ? 'Diese Testmail bestätigt, dass RentnerProxy Nachrichten an diese Adresse zustellen kann.'
-        : isRecovery || isSuccess
-          ? category.recovery
-          : isManualDns
-            ? 'Die Zertifikatserneuerung wartet auf deine manuelle DNS-Bestätigung. Dafür werden neue TXT-Werte benötigt.'
-            : category.summary
+        : isRecovery && payload.app?.resolution
+          ? APP_RESOLUTION_COPY[payload.app.resolution]
+          : isRecovery || isSuccess
+            ? category.recovery
+            : isManualDns
+              ? 'Die Zertifikatserneuerung wartet auf deine manuelle DNS-Bestätigung. Dafür werden neue TXT-Werte benötigt.'
+              : category.summary
     const nextStep = isTest
         ? 'Ereignisse und Empfänger kannst du in deinem Konto unter Benachrichtigungen anpassen.'
         : isRecovery || isSuccess
@@ -140,18 +181,20 @@ export function createNotificationEmailTemplate(
                 ['Abgeschlossen am', formatTime(payload.occurredAt)],
                 ['Ergebnis', isSuccess ? 'Erfolgreich' : 'Fehlgeschlagen'],
             ]
-          : [
-                ['Bereich', category.label],
-                ['Ressourcen-ID', payload.resourceId],
-                [
-                    isManualDns ? 'Erneuerung gestartet' : 'Beginn der Störung',
-                    formatTime(payload.startedAt),
-                ],
-                [isRecovery ? 'Behoben am' : 'Letzte Meldung', formatTime(payload.occurredAt)],
-                ...(isManualDns
-                    ? []
-                    : [['Fehlversuche', String(payload.failures)] as [string, string]]),
-            ]
+          : payload.app
+            ? appDetails(payload, category.label, isRecovery)
+            : [
+                  ['Bereich', category.label],
+                  ['Ressourcen-ID', payload.resourceId],
+                  [
+                      isManualDns ? 'Erneuerung gestartet' : 'Beginn der Störung',
+                      formatTime(payload.startedAt),
+                  ],
+                  [isRecovery ? 'Behoben am' : 'Letzte Meldung', formatTime(payload.occurredAt)],
+                  ...(isManualDns
+                      ? []
+                      : [['Fehlversuche', String(payload.failures)] as [string, string]]),
+              ]
     const managementUrl = !isTest && payload.host ? new URL('/proxy-hosts', appUrl).href : null
     if (!isTest && payload.host) {
         const summaries = {

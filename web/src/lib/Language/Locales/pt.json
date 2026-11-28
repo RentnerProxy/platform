@@ -337,6 +337,7 @@
                 "upstreamProbe": "Verificar a acessibilidade dos upstreams",
                 "upstreamMonitoring": "Monitorar os upstreams continuamente",
                 "notificationsPublish": "Enviar notificações",
+                "notificationsIncidents": "Reportar incidentes de notificação",
                 "auditRecord": "Escrever entradas no registo de auditoria",
                 "eventsSubscribe": "Receber eventos de alteração",
                 "providerRegister": "Registar-se como fornecedor",
@@ -695,6 +696,10 @@
             "destinationSaved": "Destino guardado em segurança.",
             "destinationMissing": "Não existe um destino configurado.",
             "noCategories": "Não existem categorias de eventos disponíveis para a sua conta.",
+            "appCategories": "Avisos das aplicações instaladas",
+            "appCategoriesHint": "Escolha os avisos de incidentes que este canal recebe. Sem seleção, o canal não recebe avisos de aplicações.",
+            "appCategoriesUnavailable": "Já não disponível",
+            "appCategoriesLoadFailed": "Não foi possível carregar as categorias de incidentes das aplicações.",
             "test": "Enviar teste",
             "testSent": "Notificação de teste enviada.",
             "saved": "Definições de notificações guardadas.",
@@ -720,7 +725,8 @@
                 "ddns": "DNS dinâmico",
                 "proxy_configuration": "Configuração do proxy",
                 "backup": "Backups",
-                "host_availability": "Falhas e recuperação de hosts"
+                "host_availability": "Falhas e recuperação de hosts",
+                "app_incident": "Incidentes de aplicações"
             },
             "severities": {
                 "warning": "Aviso",

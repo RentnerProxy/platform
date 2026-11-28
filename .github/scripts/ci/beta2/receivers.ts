@@ -32,7 +32,13 @@ const webhookPayload = z.strictObject({
     id: z.uuid(),
     incidentId: z.uuid(),
     type: z.enum(['incident', 'recovery', 'test']),
-    category: z.enum(['certificate_renewal', 'ddns', 'proxy_configuration', 'host_availability']),
+    category: z.enum([
+        'certificate_renewal',
+        'ddns',
+        'proxy_configuration',
+        'host_availability',
+        'app_incident',
+    ]),
     severity: z.enum(['info', 'warning', 'error', 'critical']),
     resourceId: z.string().min(1).max(512),
     code: z.enum([
@@ -40,6 +46,7 @@ const webhookPayload = z.strictObject({
         'ddns_update_failed',
         'proxy_apply_failed',
         'host_unavailable',
+        'app_incident',
         'operation_recovered',
         'notification_test',
     ]),
@@ -60,6 +67,21 @@ const webhookPayload = z.strictObject({
             recoveryStartedAt: z.iso.datetime().nullable(),
             managementPath: z.literal('/proxy-hosts'),
             managementUrl: z.url().optional(),
+        })
+        .optional(),
+    app: z
+        .strictObject({
+            appName: z.string().min(1).max(97),
+            categoryName: z.string().min(1).max(80),
+            title: z.string().min(1).max(80),
+            message: z.string().min(1).max(400),
+            resource: z
+                .strictObject({
+                    type: z.literal('proxyHost'),
+                    hostname: z.string().min(1).max(253).optional(),
+                })
+                .optional(),
+            resolution: z.enum(['appStopped', 'grantRevoked', 'resourceUnavailable']).optional(),
         })
         .optional(),
 })

@@ -38,6 +38,9 @@ await mock.module('@tanstack/react-start/server', () => ({
     getRequest: () => new Request('https://example.test'),
     getRequestIP: () => '127.0.0.1',
 }))
+await mock.module('@/server/UserSettings/Notifications/app-categories.service.ts', () => ({
+    getPersonalAppIncidentCategoriesService: runService,
+}))
 await mock.module('@/server/UserSettings/Notifications/notifications.service.ts', () => ({
     getPersonalNotificationSettingsService: runService,
     getPersonalNotificationStatusService: runService,
@@ -54,8 +57,8 @@ beforeEach(() => {
 })
 
 describe('personal notification server function boundary', () => {
-    test('uses two GET queries and strict POST mutations with no-store on every response', async () => {
-        expect(routes.map((route) => route.method)).toEqual(['GET', 'GET', 'POST', 'POST'])
+    test('uses three GET queries and strict POST mutations with no-store on every response', async () => {
+        expect(routes.map((route) => route.method)).toEqual(['GET', 'GET', 'POST', 'POST', 'GET'])
         expect(routes[2]!.validate?.({ expectedRevision: 0, channels: [] })).toEqual({
             expectedRevision: 0,
             channels: [],

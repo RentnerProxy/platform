@@ -31,7 +31,7 @@ export interface AppRuntimeProviderRegistration {
     readonly version: string
 }
 
-export interface AppIncidentCategory {
+interface AppIncidentCategory {
     readonly id: string
     readonly name: string
     readonly resource: 'proxyHost' | 'none'
