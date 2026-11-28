@@ -56,6 +56,7 @@ export default function useProxyHostManagementLogic({
     const [certificateRequestTarget, setCertificateRequestTarget] =
         useState<ProxyHostSummary | null>(null)
     const [selectedProxyHost, setSelectedProxyHost] = useState<ProxyHostSummary | null>(null)
+    const [initialApp, setInitialApp] = useState<string | undefined>()
     const [domainCheckTarget, setDomainCheckTarget] = useState<ProxyHostSummary | null>(null)
     const [monitoringTarget, setMonitoringTarget] = useState<ProxyHostSummary | null>(null)
     const [deleteTarget, setDeleteTarget] = useState<ProxyHostSummary | null>(null)
@@ -251,6 +252,15 @@ export default function useProxyHostManagementLogic({
         setDuplicateSource(null)
         setConfigTarget(null)
         setShowCreate(false)
+        setInitialApp(undefined)
+        setSelectedProxyHost(proxyHost)
+    }, [])
+    // The monitoring column opens the host with the tab of the app that owns monitoring.
+    const openAppMonitoring = useCallback((proxyHost: ProxyHostSummary, installationId: string) => {
+        setDuplicateSource(null)
+        setConfigTarget(null)
+        setShowCreate(false)
+        setInitialApp(installationId)
         setSelectedProxyHost(proxyHost)
     }, [])
     const setEditorOpen = useCallback((open: boolean) => {
@@ -362,6 +372,7 @@ export default function useProxyHostManagementLogic({
             runtimeStatus: runtimeStatusQuery.data,
             runtimeStatusError: runtimeStatusQuery.isError,
             selectedProxyHost,
+            initialApp,
             showCreate,
             duplicateSource,
             configTarget,
@@ -371,6 +382,7 @@ export default function useProxyHostManagementLogic({
         handler: {
             openDomainCheck,
             openMonitoring,
+            openAppMonitoring,
             setMonitoringOpen,
             setDomainCheckOpen,
             apply,

@@ -17,6 +17,8 @@ type ProxyHostFormInstance = ReturnType<typeof useProxyHostFormModalLogic>['form
 export interface ProxyHostFormModalProps {
     readonly canConfigureBrowserCache?: boolean
     readonly initialGuideOpen?: boolean
+    /** Open the host tab of this app first, as from the monitoring column. */
+    readonly initialApp?: string
     readonly canConfigureCompression?: boolean
     readonly canEnable: boolean
     readonly canDisable: boolean

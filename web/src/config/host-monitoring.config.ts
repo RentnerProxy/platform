@@ -96,6 +96,31 @@ export const HOST_MONITORING_DEFAULTS = {
     incidentLimit: 100,
 } as const
 
+/**
+ * How the proxy host table reads host availability from the monitoring app once the app owns the
+ * monitoring domain. Every call is bounded in count, size and time, and shared and cached briefly.
+ */
+export const HOST_MONITORING_APP = {
+    // The contract's largest `limit`: one sample per proxy host of an installation sized for 1,000 hosts.
+    providerLimit: 1_000,
+    // One provider call may take this long; a slower app counts as unavailable.
+    timeoutMs: 5_000,
+    // A successful answer is reused this long, so the table's polling costs the app one call per window.
+    cacheTtlMs: 20_000,
+    // A failed call is remembered shorter, but still bounds the calls to a failing app.
+    failureTtlMs: 5_000,
+    maxCachedInstallations: 8,
+    resultLimitBytes: 1_048_576,
+    // The built-in freshness rule at its defaults: two intervals, one timeout and a 15 s allowance.
+    staleAfterMs:
+        HOST_MONITORING_DEFAULTS.intervalSeconds * 2_000 +
+        HOST_MONITORING_DEFAULTS.timeoutMs +
+        15_000,
+    // Clock differences between the app and the platform below this are not "in the future".
+    futureSkewMs: 5_000,
+    pollIntervalMs: 20_000,
+} as const
+
 export const HOST_MONITORING_WRITE_RATE_LIMIT = {
     limit: 20,
     windowMs: 60_000,

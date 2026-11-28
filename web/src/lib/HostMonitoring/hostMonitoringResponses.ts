@@ -87,3 +87,19 @@ export const hostMonitoringHistoryResponseSchema = z.strictObject({
         .max(HOST_MONITORING_UI.historyPageLimit),
     nextCursor: z.strictObject({ checkedAt: z.iso.datetime(), id: uuid }).nullable(),
 })
+
+const appHost = z.strictObject({
+    proxyHostId: uuid,
+    state: z.enum(['healthy', 'unhealthy', 'unknown', 'stale']),
+    latencyMs: z.number().int().min(0).max(600_000).nullable(),
+    observedAt: z.iso.datetime().nullable(),
+})
+
+export const hostMonitoringAppSummaryResponseSchema = z.discriminatedUnion('status', [
+    z.strictObject({
+        status: z.literal('available'),
+        installationId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),
+        hosts: z.array(appHost).max(100),
+    }),
+    z.strictObject({ status: z.literal('unavailable') }),
+])

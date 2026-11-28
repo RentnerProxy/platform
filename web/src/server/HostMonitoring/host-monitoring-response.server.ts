@@ -33,7 +33,7 @@ function queryInput(request: Request, kind: 'policy' | 'history' | 'summary') {
     }
 }
 
-function errorResponse(error: unknown, headers: Headers): Response {
+export function errorResponse(error: unknown, headers: Headers): Response {
     if (isAuthDomainError(error)) {
         if (error.code === 'service_unavailable' || error.code === 'user_not_active')
             return Response.json({ error: 'service_unavailable' }, { status: 503, headers })
@@ -53,7 +53,9 @@ function errorResponse(error: unknown, headers: Headers): Response {
         const status =
             error.code === 'host_not_found'
                 ? 404
-                : error.code === 'conflict' || error.code === 'handed_off'
+                : error.code === 'conflict' ||
+                    error.code === 'handed_off' ||
+                    error.code === 'not_handed_off'
                   ? 409
                   : 400
         return Response.json({ error: error.code }, { status, headers })

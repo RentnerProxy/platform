@@ -11,7 +11,9 @@ import {
     hostMonitoringPolicyResponseSchema,
     hostMonitoringHistoryResponseSchema,
     hostMonitoringSummaryResponseSchema,
+    hostMonitoringAppSummaryResponseSchema,
 } from './hostMonitoringResponses.ts'
+import type { HostMonitoringAppSummary } from './Types/host-monitoring-app.types.ts'
 import type {
     HostMonitoringHistoryQuery,
     HostMonitoringPolicyView,
@@ -33,6 +35,7 @@ const publicError = z.strictObject({
         'rate_limited',
         'limit_reached',
         'handed_off',
+        'not_handed_off',
         'service_unavailable',
     ]),
 })
@@ -124,6 +127,27 @@ export async function getHostMonitoringSummary(
     )
     const requested = new Set(proxyHostIds)
     if (!result.success || result.data.summaries.some((row) => !requested.has(row.proxyHostId)))
+        throw new HostMonitoringClientError('invalid_response')
+    return result.data
+}
+
+/** The state of each host from the monitoring app, once an app owns monitoring. */
+export async function getHostMonitoringAppSummary(
+    proxyHostIds: readonly string[],
+    signal?: AbortSignal,
+): Promise<HostMonitoringAppSummary> {
+    const input = hostMonitoringSummarySchema.safeParse({ proxyHostIds: [...proxyHostIds] })
+    if (!input.success) throw new HostMonitoringClientError('invalid_input')
+    const params = new URLSearchParams({ proxyHostIds: input.data.proxyHostIds.join(',') })
+    const result = hostMonitoringAppSummaryResponseSchema.safeParse(
+        await request('app-summary?' + params, signal),
+    )
+    const requested = new Set(proxyHostIds)
+    if (
+        !result.success ||
+        (result.data.status === 'available' &&
+            result.data.hosts.some((host) => !requested.has(host.proxyHostId)))
+    )
         throw new HostMonitoringClientError('invalid_response')
     return result.data
 }

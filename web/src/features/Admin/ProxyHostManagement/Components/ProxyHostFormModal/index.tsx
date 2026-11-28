@@ -19,7 +19,7 @@ export default function ProxyHostFormModal(props: ProxyHostFormModalProps) {
     const { state, handler, refs, form, certificateRequestForm } = useProxyHostFormModalLogic(props)
     const { t } = useTranslationStore()
     const appTabs = useAppUiSlot('proxyHostTab')
-    const [selectedApp, setSelectedApp] = useState<string>()
+    const [selectedApp, setSelectedApp] = useState<string | undefined>(props.initialApp)
     const hostId = props.mode === 'edit' && props.open ? props.proxyHost?.id : undefined
     const activeApp = hostId ? appTabs.find((app) => app.installationId === selectedApp) : undefined
 

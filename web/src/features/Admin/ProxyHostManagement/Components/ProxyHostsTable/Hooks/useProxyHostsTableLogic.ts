@@ -16,6 +16,7 @@ import type { ProxyHostSummary } from '@/lib/Admin/ProxyHostManagement/Types/pro
 import type { ProxyHostsTableProps } from '../../../Types/proxy-host-table.types.ts'
 import useProxyHostsTableColumns from './useProxyHostsTableColumns.ts'
 import useHostMonitoringSummaries from '../../../Hooks/useHostMonitoringSummaries.ts'
+import useHostMonitoringAppSummaries from '../../../Hooks/useHostMonitoringAppSummaries.ts'
 
 const getProxyHostRowId = (host: ProxyHostSummary) => host.id
 
@@ -49,9 +50,22 @@ export default function useProxyHostsTableLogic(
         ]),
         disabled: props.isPending || props.loading,
     })
-    // Once an app owns monitoring, the built-in column and action are retired.
+    // Once an app owns monitoring, the built-in column and action are retired, and the column
+    // shows the app's state instead, loaded apart from the host list.
     const { onMonitoring: _retired, ...withoutMonitoring } = props
-    const hostColumns = useProxyHostsTableColumns(monitoring.handedOff ? withoutMonitoring : props)
+    const appMonitoring = useHostMonitoringAppSummaries(
+        props.proxyHosts,
+        monitoring.handedOff && Boolean(props.onMonitoring),
+    )
+    const showAppMonitoring = monitoring.handedOff && Boolean(props.onMonitoring)
+    const appColumn = useMemo(
+        () => (showAppMonitoring ? { onOpen: props.onAppMonitoring } : undefined),
+        [props.onAppMonitoring, showAppMonitoring],
+    )
+    const hostColumns = useProxyHostsTableColumns(
+        monitoring.handedOff ? withoutMonitoring : props,
+        appColumn,
+    )
     const columns = useMemo(
         () => (selection.state.enabled ? [selection.column, ...hostColumns] : hostColumns),
         [hostColumns, selection.column, selection.state.enabled],
@@ -131,7 +145,8 @@ export default function useProxyHostsTableLogic(
         table: tableLogic.table,
         state: {
             monitoringRows: monitoring.rows,
-            showMonitoring: Boolean(props.onMonitoring) && !monitoring.handedOff,
+            appMonitoring,
+            showMonitoring: Boolean(props.onMonitoring),
             bulkIds: selection.state.ids,
             bulkOpen: selection.state.open,
             bulkEnabled: selection.state.enabled,
