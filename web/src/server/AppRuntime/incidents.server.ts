@@ -3,6 +3,7 @@ import '@tanstack/react-start/server-only'
 import { randomUUID, createHash } from 'node:crypto'
 import { and, count, eq, lte, sql } from 'drizzle-orm'
 import { z } from 'zod'
+import { APP_INCIDENT_CAPABILITY } from '@/config/notifications.config.ts'
 import { appRuntimeMessages, appRuntimeOwnedProxyHosts, proxyHosts } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { observeAppIncident } from '@/server/Notifications/app-incidents.ts'
@@ -29,10 +30,7 @@ import { AppRuntimeProblem } from './problem.ts'
 import { AppRuntimeAuthorityError } from './Types/authority.types.ts'
 import type { AppRuntimeCredentials, AppRuntimePrincipal } from './Types/authority.types.ts'
 
-const INCIDENT_CAPABILITY = {
-    id: 'notifications.incidents.manage.v1',
-    scope: 'installation',
-} as const
+const INCIDENT_CAPABILITY = { id: APP_INCIDENT_CAPABILITY, scope: 'installation' } as const
 const platformHostId = z.uuid().refine((value) => value === value.toLowerCase())
 
 /**

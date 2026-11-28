@@ -11,6 +11,7 @@ import {
     updatePersonalNotificationConfigurationSchema,
     testPersonalNotificationChannelSchema,
 } from '@/lib/Notifications/validation.ts'
+import { getPersonalAppIncidentCategoriesService } from '@/server/UserSettings/Notifications/app-categories.service.ts'
 import {
     getPersonalNotificationSettingsService,
     getPersonalNotificationStatusService,
@@ -75,3 +76,14 @@ export const testPersonalNotificationChannelHandler = createServerFn({ method: '
                 : localizedActionFailure(error, 'common.requestFailed')
         }
     })
+
+export const getPersonalAppIncidentCategoriesHandler = createServerFn({ method: 'GET' }).handler(
+    async () => {
+        noStore()
+        try {
+            return await getPersonalAppIncidentCategoriesService()
+        } catch (error) {
+            return notificationQueryFailure(error)
+        }
+    },
+)

@@ -3,6 +3,7 @@ import '@tanstack/react-start/server-only'
 
 import { randomUUID } from 'node:crypto'
 import { and, inArray, sql } from 'drizzle-orm'
+import { APP_INCIDENT_CAPABILITY } from '@/config/notifications.config.ts'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import type { PermissionKey } from '@/config/Types/permissions-config.types.ts'
 import {
@@ -28,8 +29,6 @@ import {
 import type { NotificationDeliveryClaim } from './Types/notification-internal.types.ts'
 import type { AppIncidentFacts } from './Types/app-incidents.types.ts'
 import type { NotificationIncident, NotificationState } from './Types/notification-state.types.ts'
-
-const APP_INCIDENT_CAPABILITY = 'notifications.incidents.manage.v1'
 
 type OpenAppIncident = NotificationIncident & {
     app: NonNullable<NotificationIncident['app']>

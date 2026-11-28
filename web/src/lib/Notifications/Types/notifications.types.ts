@@ -30,6 +30,17 @@ export interface AppIncidentNotification {
     readonly resolution?: AppIncidentResolution | undefined
 }
 
+/** The incident categories one installed app offers, as a channel can subscribe to them. */
+export interface AppIncidentCategoryGroup {
+    readonly appId: string
+    readonly appName: string
+    readonly categories: readonly {
+        /** The qualified `appId/categoryId` key a channel stores. */
+        readonly key: string
+        readonly name: string
+    }[]
+}
+
 export interface NotificationPayload {
     readonly schemaVersion: 1
     readonly id: string

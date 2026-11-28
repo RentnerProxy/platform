@@ -37,6 +37,7 @@ import type {
     StoredNotificationChannel,
     StoredNotificationConfiguration,
 } from '@/server/Notifications/Types/notification-internal.types.ts'
+import { readSubscribableAppIncidentCategoriesInTransaction } from '@/server/Notifications/app-incident-categories.repository.ts'
 import { removeEventApps } from '@/tests/Helpers/appHostEvents.ts'
 
 const enabled = process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() !== null
@@ -49,7 +50,7 @@ const events = { id: 'app.events.subscribe', scope: 'installation' }
 const categories = [
     { id: 'disk', name: 'Disk space', resource: 'none' },
     { id: 'upstream', name: 'Upstream', resource: 'proxyHost' },
-]
+] as const
 const appId = 'test.incidents'
 const globalChannelId = '00000000-0000-4000-8000-000000000a01'
 const token = 'incident-test-bridge'
@@ -631,6 +632,25 @@ describe('app incidents through the App API', () => {
             expect((await runtime()).deliveries.map(({ payload }) => payload.type)).toEqual([
                 'incident',
             ])
+        },
+    )
+
+    integrationTest(
+        'channels can subscribe to the categories of running apps with the grant',
+        async () => {
+            const { db } = await import('@/db/index.ts')
+            await install()
+            // Neither an app without the grant nor a retired app offers its categories.
+            await install({ grants: () => [] })
+            const retired = await install()
+            expect((await retired.control('retire')).status).toBe(204)
+            const offered = await db.transaction(
+                readSubscribableAppIncidentCategoriesInTransaction,
+                {
+                    accessMode: 'read only',
+                },
+            )
+            expect(offered).toEqual([{ appId, categories }])
         },
     )
 
