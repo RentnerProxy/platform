@@ -290,6 +290,11 @@ describe('durable scheduled monitoring repository', () => {
             select p.id, statement_timestamp(), statement_timestamp(), 'upstream_timeout', 'policy_changed', statement_timestamp()
             from rentnerproxy.host_check_policies p cross join generate_series(1,12)
         `)
+            // Plan retention on the seeded volume, as autovacuum would by now. Statistics another
+            // file left after deleting its own bulk history describe empty tables and would plan
+            // these pages as if no row existed.
+            await db.execute(sql`analyze rentnerproxy.host_check_policies,
+                rentnerproxy.host_check_observations, rentnerproxy.host_check_incidents`)
             await pruneHostMonitoringHistory()
             const [first] = await db.execute<{
                 total: number
