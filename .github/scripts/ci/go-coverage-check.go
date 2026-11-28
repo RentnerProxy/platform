@@ -16,8 +16,8 @@ import (
 	"strings"
 )
 
-const modulePath = "github.com/RentnerProxy/platform/core/caddy-modules/responsecache"
-const caddyPath = "core/caddy-modules/responsecache"
+const modulePath = "github.com/RentnerProxy/platform/core/caddy-modules"
+const caddyPath = "core/caddy-modules"
 const buildinfoPath = "docker/tooling/buildinfo"
 const checkerPath = ".github/scripts/ci"
 const maximumExactInteger = uint64(1<<53 - 1)
@@ -144,7 +144,7 @@ func packageInventory(reader io.Reader) (map[string]bool, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	if !packages[caddyPath] || !packages[caddyPath+"/upstreamobserver"] {
+	if !packages[caddyPath] || !packages[caddyPath+"/responsecache"] || !packages[caddyPath+"/upstreamobserver"] {
 		return nil, errors.New("missing own Go packages in inventory")
 	}
 	return packages, nil
@@ -217,6 +217,11 @@ func makeReport(directory string, minimum uint64) (coverageReport, error) {
 	report := coverageReport{Version: 1, Minimum: minimum}
 	for _, name := range names {
 		value := totals[name]
+		if value.Total == 0 && name == caddyPath {
+			// The module root only imports its packages for xcaddy; once it
+			// holds statements, it is measured like every other package.
+			continue
+		}
 		if value.Total == 0 {
 			return coverageReport{}, fmt.Errorf("missing statement coverage for own Go package %q", name)
 		}

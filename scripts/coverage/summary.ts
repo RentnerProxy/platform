@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import {
     coverageThreshold,
     goCoverageGroupNames,
+    optionalGoCoverageGroupNames,
     rustCoverageGroupNames,
     typescriptCoverageGroups,
 } from './coverage.config.ts'
@@ -28,6 +29,7 @@ export function parseCoverageSummary(value: unknown, producer: CoverageProducer)
             : producer === 'go'
               ? goCoverageGroupNames
               : rustCoverageGroupNames
+    const optionalNames: readonly string[] = producer === 'go' ? optionalGoCoverageGroupNames : []
     const requiredMetrics =
         producer === 'typescript'
             ? (['lines', 'functions'] as const)
@@ -40,7 +42,7 @@ export function parseCoverageSummary(value: unknown, producer: CoverageProducer)
         const group = entry as Record<string, unknown>
         if (
             typeof group.name !== 'string' ||
-            !expectedNames.includes(group.name) ||
+            !(expectedNames.includes(group.name) || optionalNames.includes(group.name)) ||
             seen.has(group.name)
         )
             throw new Error('Missing or duplicate coverage group.')
@@ -64,7 +66,8 @@ export function parseCoverageSummary(value: unknown, producer: CoverageProducer)
             throw new Error('Coverage group has no instrumented code.')
         return result
     })
-    if (seen.size !== expectedNames.length) throw new Error('Required coverage groups are missing.')
+    if (expectedNames.some((name) => !seen.has(name)))
+        throw new Error('Required coverage groups are missing.')
     return results
 }
 

@@ -103,7 +103,7 @@ COPY docker/tooling/buildinfo/verify.go /tmp/verify-buildinfo.go
 COPY docker/caddy/tooling/build.sh /tmp/build-caddy.sh
 COPY docker/caddy/tooling/prepare-source.sh /tmp/prepare-caddy-source.sh
 COPY docker/caddy/patches/ /opt/rentnerproxy-caddy-patches/
-COPY core/caddy-modules/responsecache/ /opt/rentnerproxy-responsecache/
+COPY core/caddy-modules/ /opt/rentnerproxy-caddy-modules/
 WORKDIR /tmp/rentnerproxy-caddy
 RUN test "$(go env GOOS)/$(go env GOARCH)" = "$TARGETOS/$TARGETARCH" \
     && /bin/sh /tmp/build-caddy.sh

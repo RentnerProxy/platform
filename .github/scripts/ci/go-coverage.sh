@@ -16,7 +16,7 @@ go vet .github/scripts/ci/*.go
 [ -z "$(gofmt -l .github/scripts/ci/*.go)" ] || { echo 'Go coverage checker formatting differs' >&2; exit 1; }
 go tool cover -func="$report/checker.out" > "$report/checker-functions.txt"
 
-cd "$root/core/caddy-modules/responsecache"
+cd "$root/core/caddy-modules"
 go mod verify
 go list -mod=readonly ./... > "$report/caddy-packages.txt"
 go test -mod=readonly -race -count=1 -covermode=atomic -coverpkg=./... -coverprofile="$report/caddy.out" ./...
