@@ -395,27 +395,19 @@ jobs:
               run: cargo llvm-cov --locked --manifest-path core/Cargo.toml --all-features --no-report
               if: "${{ needs.changes.outputs.rust == 'true' }}"
 
-            - name: Run privileged IPC fixtures with coverage
-              run: bash .github/scripts/ci/rust-coverage.sh --privileged-app-ipc
-              if: "${{ needs.changes.outputs.rust == 'true' }}"
-
             - name: Run Rust documentation tests
               run: cargo test --locked --manifest-path core/Cargo.toml --doc
               if: "${{ needs.changes.outputs.rust == 'true' }}"
 
-            - name: Report and check Rust coverage
-              id: rust-coverage
-              if: "${{ needs.changes.outputs.rust == 'true' && (!cancelled() && steps.rust-tests.outcome != 'skipped') }}"
-              run: bash .github/scripts/ci/rust-coverage.sh
-
-            - name: Store Linux Rust coverage
-              if: "${{ needs.changes.outputs.rust == 'true' && (!cancelled() && steps.rust-coverage.outcome != 'skipped') }}"
+            # The privileged fixtures run in their own job and report the combined coverage.
+            - name: Store Rust test coverage profiles
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
-                  name: rust-coverage-linux
-                  path: core/target/coverage
+                  name: rust-test-profiles
+                  path: core/target/llvm-cov-target/*.profraw
                   if-no-files-found: error
-                  retention-days: 14
+                  retention-days: 1
 
             - name: Save Rust coverage build outputs
               if: "${{ needs.changes.outputs.rust == 'true' && (github.event_name != 'pull_request' && steps.rust-build-cache.outputs.cache-hit != 'true') }}"
@@ -440,6 +432,99 @@ jobs:
                   key: ${{ runner.os }}-cargo-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock') }}
         needs: 'changes'
         if: '${{ !cancelled() }}'
+
+    # The privileged app fixtures need most of the Rust time budget, so they run with their own
+    # limit after the Rust tests and report the coverage of both runs together.
+    rust-fixtures:
+        name: Rust privileged fixtures
+        runs-on: ubuntu-latest
+        timeout-minutes: 35
+        needs: ['changes', rust]
+        if: '${{ !cancelled() }}'
+        steps:
+            - name: 'Require successful change selection and Rust tests'
+              env:
+                  DETECTION_RESULT: '${{ needs.changes.result }}'
+                  RUST_RESULT: '${{ needs.rust.result }}'
+              run: 'test "$DETECTION_RESULT" = success && test "$RUST_RESULT" = success'
+            - name: 'Explain unaffected check'
+              if: "${{ !(needs.changes.outputs.rust == 'true') }}"
+              run: 'echo ''Rust privileged fixtures: no affected inputs; expensive verification omitted.'' >> "$GITHUB_STEP_SUMMARY"'
+            - name: Check out repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
+
+            - name: Set up Rust
+              run: |
+                  rustup toolchain install "$RUST_VERSION" --profile minimal --component llvm-tools-preview
+                  rustup override set "$RUST_VERSION"
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
+
+            - name: Restore Cargo dependency cache
+              uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: |
+                      ~/.cargo/registry/index
+                      ~/.cargo/registry/cache
+                      ~/.cargo/registry/src
+                      ~/.cargo/git/db
+                  key: ${{ runner.os }}-cargo-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock') }}
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
+
+            - name: Restore Rust coverage build outputs
+              uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: |
+                      core/target/debug
+                      core/target/llvm-cov-target/debug/.fingerprint
+                      core/target/llvm-cov-target/debug/build
+                      core/target/llvm-cov-target/debug/deps
+                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-coverage-v2-${{ env.RUST_VERSION }}-llvm-cov-0.9.1-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**') }}
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
+
+            - name: Restore Rust coverage tool
+              id: llvm-cov-cache
+              uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: ${{ runner.temp }}/cargo-llvm-cov/bin/cargo-llvm-cov
+                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-llvm-cov-0.9.1-${{ env.RUST_VERSION }}-v1
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
+
+            - name: Add Rust coverage tool to PATH
+              run: echo "$RUNNER_TEMP/cargo-llvm-cov/bin" >> "$GITHUB_PATH"
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
+
+            - name: Install Rust coverage tool
+              if: "${{ needs.changes.outputs.rust == 'true' && (steps.llvm-cov-cache.outputs.cache-hit != 'true') }}"
+              run: cargo install cargo-llvm-cov --locked --version 0.9.1 --root "$RUNNER_TEMP/cargo-llvm-cov"
+
+            - name: Download Rust test coverage profiles
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: rust-test-profiles
+                  path: core/target/llvm-cov-target
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
+
+            - name: Run privileged IPC fixtures with coverage
+              id: rust-fixtures
+              run: bash .github/scripts/ci/rust-coverage.sh --privileged-app-ipc
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
+
+            - name: Report and check Rust coverage
+              id: rust-coverage
+              if: "${{ needs.changes.outputs.rust == 'true' && (!cancelled() && steps.rust-fixtures.outcome != 'skipped') }}"
+              run: bash .github/scripts/ci/rust-coverage.sh
+
+            - name: Store Linux Rust coverage
+              if: "${{ needs.changes.outputs.rust == 'true' && (!cancelled() && steps.rust-coverage.outcome != 'skipped') }}"
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: rust-coverage-linux
+                  path: core/target/coverage
+                  if-no-files-found: error
+                  retention-days: 14
 
     build:
         name: Build
@@ -622,7 +707,7 @@ jobs:
 
     coverage:
         name: Coverage
-        needs: ['changes', web-tests, rust, caddy-response-cache]
+        needs: ['changes', web-tests, rust, rust-fixtures, caddy-response-cache]
         if: ${{ !cancelled() }}
         runs-on: ubuntu-latest
         timeout-minutes: 10
@@ -632,8 +717,9 @@ jobs:
                   DETECTION_RESULT: '${{ needs.changes.result }}'
                   TYPESCRIPT_RESULT: '${{ needs.web-tests.result }}'
                   RUST_RESULT: '${{ needs.rust.result }}'
+                  RUST_FIXTURES_RESULT: '${{ needs.rust-fixtures.result }}'
                   GO_RESULT: '${{ needs.caddy-response-cache.result }}'
-              run: 'test "$DETECTION_RESULT" = success && test "$TYPESCRIPT_RESULT" = success && test "$RUST_RESULT" = success && test "$GO_RESULT" = success'
+              run: 'test "$DETECTION_RESULT" = success && test "$TYPESCRIPT_RESULT" = success && test "$RUST_RESULT" = success && test "$RUST_FIXTURES_RESULT" = success && test "$GO_RESULT" = success'
             - name: 'Explain unaffected coverage'
               if: "${{ needs.changes.outputs.web != 'true' && needs.changes.outputs.go != 'true' && needs.changes.outputs.rust != 'true' }}"
               run: 'echo "Coverage: no affected producers; no measurements generated." >> "$GITHUB_STEP_SUMMARY"'
@@ -705,6 +791,7 @@ jobs:
             - 'typecheck'
             - 'web-tests'
             - 'rust'
+            - 'rust-fixtures'
             - 'build'
             - 'caddy-response-cache'
             - 'coverage'
