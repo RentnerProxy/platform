@@ -16,9 +16,12 @@ export const goCoverageGroupNames = [
     'all',
     '.github/scripts/ci',
     'core/caddy-modules/responsecache',
-    'core/caddy-modules/responsecache/upstreamobserver',
+    'core/caddy-modules/upstreamobserver',
     'docker/tooling/buildinfo',
 ] as const
+
+/** The Caddy module root only imports its packages for xcaddy; it is reported once it holds statements. */
+export const optionalGoCoverageGroupNames = ['core/caddy-modules'] as const
 
 export const coverageSourceRoots = [
     'web/src',

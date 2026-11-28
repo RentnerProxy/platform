@@ -189,6 +189,28 @@ describe('combined coverage requires successful complete producer reports', () =
         },
     )
 
+    test('go accepts the Caddy module root only as an extra measured group', () => {
+        const valid = summary('go')
+        const root = { name: 'core/caddy-modules', statements: { covered: 9, total: 10 } }
+        const withRoot = { ...valid, groups: [...valid.groups, root] }
+        expect(parseCoverageSummary(withRoot, 'go').map((group) => group.name)).toContain(
+            'core/caddy-modules',
+        )
+        const replacing = { ...valid, groups: [...valid.groups.slice(1), root] }
+        expect(() => parseCoverageSummary(replacing, 'go')).toThrow('missing')
+        const emptyRoot = {
+            ...valid,
+            groups: [...valid.groups, { ...root, statements: { covered: 0, total: 0 } }],
+        }
+        expect(() => parseCoverageSummary(emptyRoot, 'go')).toThrow('no instrumented code')
+        expect(() =>
+            parseCoverageSummary(
+                { ...summary('rust'), groups: [...summary('rust').groups, root] },
+                'rust',
+            ),
+        ).toThrow('duplicate')
+    })
+
     test('rejects failed or missing TypeScript test exit status even with complete coverage', () => {
         const valid = summary('typescript')
         expect(() => parseCoverageSummary({ ...valid, testExitCode: 1 }, 'typescript')).toThrow(
