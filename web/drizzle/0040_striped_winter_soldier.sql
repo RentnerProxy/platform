@@ -1,0 +1,1 @@
+ALTER TABLE "rentnerproxy"."app_runtime_generations" ADD COLUMN "incident_categories" jsonb DEFAULT '[]'::jsonb NOT NULL;
