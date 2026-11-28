@@ -374,10 +374,19 @@ async fn handle(
         {
             return Err(StatusCode::BAD_REQUEST);
         }
+        // A caller that decided on the grants of one generation names it, so a replacement
+        // in between answers 412 instead of reaching the newer generation.
+        let expected = match header_value(&parts.headers, "x-app-generation") {
+            None if parts.headers.contains_key("x-app-generation") => {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            None => None,
+            Some(value) => Some(canonical_generation(value).ok_or(StatusCode::BAD_REQUEST)?),
+        };
         let body = read_body(incoming).await?;
         return registry
             .providers
-            .invoke(installation, provider, idempotency, body)
+            .invoke(installation, provider, expected, idempotency, body)
             .await;
     }
     let (entry, "operations", Some(id)) = selection(&registry, path)? else {
@@ -564,6 +573,16 @@ fn socket_status(error: io::Error) -> StatusCode {
         }
         _ => StatusCode::SERVICE_UNAVAILABLE,
     }
+}
+
+/// A generation in canonical decimal form: no sign, no leading zero, within `u64`.
+fn canonical_generation(value: &HeaderValue) -> Option<u64> {
+    let text = value.to_str().ok()?;
+    let canonical = text == "0"
+        || (!text.is_empty()
+            && !text.starts_with('0')
+            && text.bytes().all(|byte| byte.is_ascii_digit()));
+    canonical.then(|| text.parse().ok()).flatten()
 }
 
 fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a HeaderValue> {

@@ -58,7 +58,13 @@ export async function invokeMonitoringProvider(
         signal,
         {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() },
+            headers: {
+                'Content-Type': 'application/json',
+                'Idempotency-Key': randomUUID(),
+                // Core answers 412 unless this is still the live generation whose grants and hosts
+                // the caller read, so no answer of a replacement is filtered with stale grants.
+                'X-App-Generation': String(target.generation),
+            },
             body: JSON.stringify({ profile: 'monitoring', payload: { limit } }),
         },
         HOST_MONITORING_APP.resultLimitBytes,
