@@ -1406,7 +1406,8 @@ describe('ProxyHost monitoring integration', () => {
         await waitFor(() => getRows().length === 1)
         await waitFor(() => getHostMonitoringSummaryMock.mock.calls.length === 2)
         expect(findButtonContaining(BUILT_IN_CELL)).toBeNull()
-        expect(findButtonContaining(APP_CELL)).not.toBeNull()
+        // The app column loads the new page on its own and keeps its link once it answered.
+        await waitFor(() => findButtonContaining(APP_CELL) !== null)
         // Only a summary of built-in monitoring, as after an aborted handoff, brings it back.
         await act(async () => {
             answer.resolve({
