@@ -149,7 +149,7 @@ fn fixture_response(
             if let Some(chunks) = chunks {
                 answer.add_answer(record(
                     chain.last().unwrap(),
-                    RData::TXT(TXT::new(chunks.iter().map(|x| (*x).to_owned()).collect())),
+                    RData::TXT(txt_data(chunks.iter().map(|x| (*x).to_owned()).collect())),
                 ));
             } else {
                 answer.add_authority(soa(zone));
@@ -235,7 +235,7 @@ async fn rejects_acyclic_alias_data_conflicts_in_every_section() {
     // The alias is otherwise valid and acyclic, so only the coexisting data
     // distinguishes these cases from resolves_single_and_multiple_cnames.
     let conflicts = [
-        RData::TXT(TXT::new(vec!["conflict".to_owned()])),
+        RData::TXT(txt_data(vec!["conflict".to_owned()])),
         RData::MX(MX::new(10, name("mail.example.net"))),
         RData::CAA(CAA::new_issue(false, Some(name("ca.example.net")), vec![])),
         RData::SRV(SRV::new(1, 1, 443, name("service.example.net"))),
@@ -380,7 +380,7 @@ async fn unrelated_txt_owner_cannot_satisfy_challenge() {
         if request.queries[0].query_type() == RecordType::TXT {
             answer.add_answer(record(
                 "unrelated.example.net",
-                RData::TXT(TXT::new(vec!["expected".to_owned()])),
+                RData::TXT(txt_data(vec!["expected".to_owned()])),
             ));
         }
         answer
@@ -449,4 +449,9 @@ async fn bounded_cname_hops_reject_a_ninth_alias() {
         resolve_with_resolver(ORIGINAL, ZONE, &fixture.resolver()).await,
         Err(CertificateError::DnsDelegationInvalid)
     ));
+}
+
+/// TXT record data from text values; `TXT::new` is deprecated since hickory 0.26.4.
+fn txt_data(values: Vec<String>) -> TXT {
+    TXT::try_new(values.into_iter().map(String::into_bytes)).unwrap()
 }
