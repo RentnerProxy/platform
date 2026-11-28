@@ -1998,9 +1998,9 @@ dependencies = [
 
 [[package]]
 name = "rentnerproxy-app-contracts"
-version = "1.0.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0e4005a93c66f0ec0a91e5522325474c7881e77b47d4d098392938fffff20d9"
+checksum = "2eaa9d69dba6a6e32870f46f349586c7e549fa68ed71c10e177754bc6cff18ee"
 dependencies = [
  "jsonschema",
  "serde_json",

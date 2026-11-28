@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 rentnerproxy-app-catalog = "1.0.0"
-rentnerproxy-app-contracts = "1.0.0"
+rentnerproxy-app-contracts = "1.2.0"
 rentnerproxy-app-pipeline = "1.0.0"
 rentnerproxy-artifacts = "1.0.0"
 aws-lc-rs = "1.19.0"
