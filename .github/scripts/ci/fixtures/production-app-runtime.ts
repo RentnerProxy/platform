@@ -171,19 +171,40 @@ async function verifyApp(bootstrap: Bootstrap): Promise<void> {
         const status = await handoff(providerRegistration.profile)
         assert.equal(status.status, 200)
         assert.deepEqual(await status.json(), platformOwned)
-        // No built-in feature registers a source yet, so begin must refuse without fencing.
-        const begin = await request(
-            'legacy-handoffs/' + providerRegistration.profile + '/begin',
-            undefined,
-            'begin-' + bootstrap.generation,
-            'POST',
-        )
-        assert.equal(begin.status, 404)
-        // The service refused it, not a missing broker or gateway route.
-        const refusal: unknown = await begin.json()
-        assert.ok(typeof refusal === 'object' && refusal !== null)
-        assert.equal('code' in refusal && refusal.code, 'notFound')
-        assert.equal('title' in refusal && refusal.title, 'App resource is unavailable.')
+        // Monitoring registers a source: begin fences built-in monitoring and fixes one export.
+        const begin = () =>
+            request(
+                'legacy-handoffs/' + providerRegistration.profile + '/begin',
+                undefined,
+                'begin-' + bootstrap.generation,
+                'POST',
+            )
+        const begun = await begin()
+        assert.equal(begun.status, 200)
+        const exported: unknown = await begun.json()
+        assert.ok(typeof exported === 'object' && exported !== null)
+        assert.equal('state' in exported && exported.state, 'exported')
+        const digest = 'digest' in exported ? exported.digest : undefined
+        assert.ok(typeof digest === 'string' && /^[a-f0-9]{64}$/u.test(digest))
+        // Even an empty export holds its manifest and end parts.
+        assert.ok('partCount' in exported && Number(exported.partCount) >= 2)
+        // The status shows the open handoff, and a repeated begin resumes the same export.
+        assert.deepEqual(await (await handoff(providerRegistration.profile)).json(), exported)
+        assert.deepEqual(await (await begin()).json(), exported)
+        const first = await request('legacy-handoffs/' + providerRegistration.profile + '/parts', {
+            digest,
+            sequence: 0,
+        })
+        assert.equal(first.status, 200)
+        const manifest: unknown = await first.json()
+        assert.ok(typeof manifest === 'object' && manifest !== null && 'part' in manifest)
+        assert.ok(typeof manifest.part === 'object' && manifest.part !== null)
+        assert.equal('kind' in manifest.part && manifest.part.kind, 'manifest')
+        assert.equal('format' in manifest.part && manifest.part.format, 'rentnerproxy.monitoring')
+        // The app manager's removal check aborts it, as an uninstall would; built-in monitoring
+        // is platform-owned again for the rest of the smoke.
+        await Bun.write(progressFile, 'handoff-begun-' + bootstrap.generation)
+        await awaitCommand('handoff-aborted-' + bootstrap.generation)
         assert.deepEqual(await (await handoff(providerRegistration.profile)).json(), platformOwned)
         // The manifest does not declare dns as a provider profile.
         assert.equal((await handoff('dns')).status, 403)
@@ -317,6 +338,12 @@ async function verifyManager() {
         assert.equal(response.status, 204, 'App manager control rejected ' + action)
     }
     const generationIdentity = (generation: number) => ({ ...identity, generation })
+    /** Return the monitoring handoff the app began to platform, as the removal check does. */
+    const abortHandoff = async (generation: number) => {
+        await awaitProgress('handoff-begun-' + generation)
+        await control('removable', { identity: generationIdentity(generation) })
+        await writeFile(commandFile, 'handoff-aborted-' + generation)
+    }
     const grants = (generation: number, provider: boolean) => ({
         identity: generationIdentity(generation),
         grants: [
@@ -407,6 +434,7 @@ async function verifyManager() {
         await setManagerStage('activation')
         await control('activate', lease)
         await setManagerStage('app checks')
+        await abortHandoff(1)
         await awaitProgress('ready-1')
 
         await setManagerStage('grant revocation')
@@ -432,6 +460,7 @@ async function verifyManager() {
         const updateLease = await register(2)
         const second = await launch(2)
         await control('activate', updateLease)
+        await abortHandoff(2)
         await awaitProgress('ready-2')
         assert.equal((await controlRequest('lease', { identity })).status, 401)
         assert.equal((await controlRequest('providers', staleProviders)).status, 409)
