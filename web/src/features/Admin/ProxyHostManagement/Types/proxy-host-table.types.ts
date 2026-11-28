@@ -19,6 +19,8 @@ export interface ProxyHostsTableProps {
     readonly isPending: boolean
     readonly onDomainCheck?: (host: ProxyHostSummary) => void
     readonly onMonitoring?: (host: ProxyHostSummary) => void
+    /** Open the host tab of the monitoring app, once an app owns monitoring. */
+    readonly onAppMonitoring?: (host: ProxyHostSummary, installationId: string) => void
     readonly onEdit: (host: ProxyHostSummary) => void
     readonly onDuplicate?: (host: ProxyHostSummary) => void
     readonly onConfig?: (host: ProxyHostSummary) => void

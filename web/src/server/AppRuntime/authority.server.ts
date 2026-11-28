@@ -152,6 +152,58 @@ async function readGrants(
     })
 }
 
+/**
+ * The service view of an installation's live generation: its grants and registered providers.
+ * Nothing is returned for an installation without an active generation or with an expired lease,
+ * so a caller never treats a stopped app as reachable.
+ */
+export async function readAppRuntimeLiveServiceInTransaction(
+    transaction: AuthTransaction,
+    installationId: string,
+): Promise<{
+    readonly principal: AppRuntimePrincipal
+    readonly providers: readonly { id: string; profile: string; version: string }[]
+} | null> {
+    if (!appRecordId.safeParse(installationId).success) return null
+    const [installation] = await transaction
+        .select()
+        .from(appRuntimeInstallations)
+        .where(eq(appRuntimeInstallations.id, installationId))
+    if (!installation) return null
+    const [generation] = await transaction
+        .select()
+        .from(appRuntimeGenerations)
+        .where(
+            and(
+                eq(appRuntimeGenerations.installationId, installationId),
+                eq(appRuntimeGenerations.state, 'active'),
+            ),
+        )
+    if (!generation || generation.leaseExpiresAt.getTime() <= Date.now()) return null
+    const identity = {
+        appId: installation.appId,
+        installationId,
+        generation: generation.generation,
+        uid: installation.uid,
+    }
+    if (!isAppRuntimeIdentity(identity)) return null
+    return {
+        principal: {
+            kind: 'service',
+            identity,
+            expiresAt: generation.leaseExpiresAt,
+            grants: await readGrants(transaction, generation),
+            authorizationEpoch: installation.authorizationEpoch,
+            user: null,
+            delegationId: null,
+            sessionId: null,
+            permissions: [],
+            appPermissions: [],
+        },
+        providers: generation.providerProfiles.length === 0 ? [] : (generation.providers ?? []),
+    }
+}
+
 export async function readAppRuntimeLeaseInTransaction(
     transaction: AuthTransaction,
     identity: AppRuntimeIdentity,

@@ -85,10 +85,13 @@ impl Registry {
 
     /// Invoke a provider of the installation's live generation. Its broker checks the
     /// registration, the grant and the contract, so a replaced generation answers 412.
+    /// With an expected generation, any other live generation answers 412 as well, so a
+    /// caller never receives an answer of a generation it did not authorize.
     pub(super) async fn invoke(
         &self,
         installation_id: &str,
         provider_id: &str,
+        expected_generation: Option<u64>,
         idempotency: &HeaderValue,
         body: Bytes,
     ) -> Result<Response<Body>, StatusCode> {
@@ -99,6 +102,10 @@ impl Registry {
             .get(installation_id)
             .cloned()
             .ok_or(StatusCode::NOT_FOUND)?;
+        // The endpoint was selected under the lock; a later replacement cancels it below.
+        if expected_generation.is_some_and(|generation| generation != endpoint.generation) {
+            return Err(StatusCode::PRECONDITION_FAILED);
+        }
         let _permit = endpoint
             .calls
             .try_acquire()

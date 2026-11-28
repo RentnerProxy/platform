@@ -32,6 +32,7 @@ export interface ProxyHostManagementLogicResult {
         readonly runtimeStatus: ProxyRuntimeSyncStatus | undefined
         readonly runtimeStatusError: boolean
         readonly selectedProxyHost: ProxyHostSummary | null
+        readonly initialApp: string | undefined
         readonly showCreate: boolean
         readonly duplicateSource: ProxyHostSummary | null
         readonly configTarget: ProxyHostSummary | null
@@ -47,6 +48,7 @@ export interface ProxyHostManagementLogicResult {
         readonly handleCertificateRequestSuccess: () => void
         readonly openDomainCheck: (host: ProxyHostSummary) => void
         readonly openMonitoring: (host: ProxyHostSummary) => void
+        readonly openAppMonitoring: (host: ProxyHostSummary, installationId: string) => void
         readonly setMonitoringOpen: (open: boolean) => void
         readonly setDomainCheckOpen: (open: boolean) => void
         readonly openCreate: () => void

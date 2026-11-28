@@ -15,28 +15,37 @@ import {
 } from '../Components/ProxyHostTableCells.tsx'
 import type { ProxyHostTableActionProps } from '../../../Types/proxy-host-table.types.ts'
 import ProxyHostMonitoringCell from '../Components/ProxyHostMonitoringCell.tsx'
+import ProxyHostAppMonitoringCell from '../Components/ProxyHostAppMonitoringCell.tsx'
+
+/** The monitoring app's column, shown instead of the built-in one once an app owns monitoring. */
+export interface AppMonitoringColumn {
+    readonly onOpen?: ((host: ProxyHostSummary, installationId: string) => void) | undefined
+}
 
 const dateFilter = createDateRangeFilter<ProxyHostSummary>()
 
 /** Builds permission-aware host columns, retaining scheme filtering while forwarding cells expose full pools. */
-export default function useProxyHostsTableColumns({
-    canDelete,
-    canDisable,
-    canRequestCertificate,
-    canEnable,
-    canUpdate,
-    canDuplicate,
-    isPending,
-    onConfig,
-    onDelete,
-    onDisable,
-    onDomainCheck,
-    onMonitoring,
-    onEdit,
-    onDuplicate,
-    onEnable,
-    onRequestCertificate,
-}: ProxyHostTableActionProps) {
+export default function useProxyHostsTableColumns(
+    {
+        canDelete,
+        canDisable,
+        canRequestCertificate,
+        canEnable,
+        canUpdate,
+        canDuplicate,
+        isPending,
+        onConfig,
+        onDelete,
+        onDisable,
+        onDomainCheck,
+        onMonitoring,
+        onEdit,
+        onDuplicate,
+        onEnable,
+        onRequestCertificate,
+    }: ProxyHostTableActionProps,
+    appMonitoring?: AppMonitoringColumn,
+) {
     const { t } = useTranslationStore()
 
     // TanStack renders this callback as a component, so translation refreshes must not replace it.
@@ -135,6 +144,21 @@ export default function useProxyHostsTableColumns({
             })
         }
 
+        if (appMonitoring) {
+            columns.splice(4, 0, {
+                id: 'availability',
+                header: t('admin.hostMonitoring.column'),
+                enableSorting: false,
+                enableColumnFilter: false,
+                enableGlobalFilter: false,
+                cell: ({ row }) =>
+                    createElement(ProxyHostAppMonitoringCell, {
+                        host: row.original,
+                        onOpenApp: appMonitoring.onOpen,
+                    }),
+            })
+        }
+
         if (
             canUpdate ||
             (canDuplicate && onDuplicate) ||
@@ -188,6 +212,7 @@ export default function useProxyHostsTableColumns({
         onDisable,
         onDomainCheck,
         onMonitoring,
+        appMonitoring,
         onEdit,
         onDuplicate,
         onEnable,

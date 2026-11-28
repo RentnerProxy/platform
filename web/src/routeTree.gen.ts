@@ -56,6 +56,7 @@ import { Route as ApiAdminBackupsRestoreRouteImport } from './routes/api/admin/b
 import { Route as ApiAdminBackupsStartRouteImport } from './routes/api/admin/backups/start'
 import { Route as ApiAdminBackupsStatusRouteImport } from './routes/api/admin/backups/status'
 import { Route as ApiAdminDiagnosticsDomainRouteImport } from './routes/api/admin/diagnostics/domain'
+import { Route as ApiAdminMonitoringAppSummaryRouteImport } from './routes/api/admin/monitoring/app-summary'
 import { Route as ApiAdminMonitoringHistoryRouteImport } from './routes/api/admin/monitoring/history'
 import { Route as ApiAdminMonitoringPolicyRouteImport } from './routes/api/admin/monitoring/policy'
 import { Route as ApiAdminMonitoringSummaryRouteImport } from './routes/api/admin/monitoring/summary'
@@ -310,6 +311,12 @@ const ApiAdminDiagnosticsDomainRoute =
     path: '/api/admin/diagnostics/domain',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiAdminMonitoringAppSummaryRoute =
+  ApiAdminMonitoringAppSummaryRouteImport.update({
+    id: '/api/admin/monitoring/app-summary',
+    path: '/api/admin/monitoring/app-summary',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiAdminMonitoringHistoryRoute =
   ApiAdminMonitoringHistoryRouteImport.update({
     id: '/api/admin/monitoring/history',
@@ -418,6 +425,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/backups/start': typeof ApiAdminBackupsStartRoute
   '/api/admin/backups/status': typeof ApiAdminBackupsStatusRoute
   '/api/admin/diagnostics/domain': typeof ApiAdminDiagnosticsDomainRoute
+  '/api/admin/monitoring/app-summary': typeof ApiAdminMonitoringAppSummaryRoute
   '/api/admin/monitoring/history': typeof ApiAdminMonitoringHistoryRoute
   '/api/admin/monitoring/policy': typeof ApiAdminMonitoringPolicyRoute
   '/api/admin/monitoring/summary': typeof ApiAdminMonitoringSummaryRoute
@@ -475,6 +483,7 @@ export interface FileRoutesByTo {
   '/api/admin/backups/start': typeof ApiAdminBackupsStartRoute
   '/api/admin/backups/status': typeof ApiAdminBackupsStatusRoute
   '/api/admin/diagnostics/domain': typeof ApiAdminDiagnosticsDomainRoute
+  '/api/admin/monitoring/app-summary': typeof ApiAdminMonitoringAppSummaryRoute
   '/api/admin/monitoring/history': typeof ApiAdminMonitoringHistoryRoute
   '/api/admin/monitoring/policy': typeof ApiAdminMonitoringPolicyRoute
   '/api/admin/monitoring/summary': typeof ApiAdminMonitoringSummaryRoute
@@ -536,6 +545,7 @@ export interface FileRoutesById {
   '/api/admin/backups/start': typeof ApiAdminBackupsStartRoute
   '/api/admin/backups/status': typeof ApiAdminBackupsStatusRoute
   '/api/admin/diagnostics/domain': typeof ApiAdminDiagnosticsDomainRoute
+  '/api/admin/monitoring/app-summary': typeof ApiAdminMonitoringAppSummaryRoute
   '/api/admin/monitoring/history': typeof ApiAdminMonitoringHistoryRoute
   '/api/admin/monitoring/policy': typeof ApiAdminMonitoringPolicyRoute
   '/api/admin/monitoring/summary': typeof ApiAdminMonitoringSummaryRoute
@@ -596,6 +606,7 @@ export interface FileRouteTypes {
     | '/api/admin/backups/start'
     | '/api/admin/backups/status'
     | '/api/admin/diagnostics/domain'
+    | '/api/admin/monitoring/app-summary'
     | '/api/admin/monitoring/history'
     | '/api/admin/monitoring/policy'
     | '/api/admin/monitoring/summary'
@@ -653,6 +664,7 @@ export interface FileRouteTypes {
     | '/api/admin/backups/start'
     | '/api/admin/backups/status'
     | '/api/admin/diagnostics/domain'
+    | '/api/admin/monitoring/app-summary'
     | '/api/admin/monitoring/history'
     | '/api/admin/monitoring/policy'
     | '/api/admin/monitoring/summary'
@@ -713,6 +725,7 @@ export interface FileRouteTypes {
     | '/api/admin/backups/start'
     | '/api/admin/backups/status'
     | '/api/admin/diagnostics/domain'
+    | '/api/admin/monitoring/app-summary'
     | '/api/admin/monitoring/history'
     | '/api/admin/monitoring/policy'
     | '/api/admin/monitoring/summary'
@@ -743,6 +756,7 @@ export interface RootRouteChildren {
   ApiAdminBackupsStartRoute: typeof ApiAdminBackupsStartRoute
   ApiAdminBackupsStatusRoute: typeof ApiAdminBackupsStatusRoute
   ApiAdminDiagnosticsDomainRoute: typeof ApiAdminDiagnosticsDomainRoute
+  ApiAdminMonitoringAppSummaryRoute: typeof ApiAdminMonitoringAppSummaryRoute
   ApiAdminMonitoringHistoryRoute: typeof ApiAdminMonitoringHistoryRoute
   ApiAdminMonitoringPolicyRoute: typeof ApiAdminMonitoringPolicyRoute
   ApiAdminMonitoringSummaryRoute: typeof ApiAdminMonitoringSummaryRoute
@@ -1086,6 +1100,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdminDiagnosticsDomainRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/admin/monitoring/app-summary': {
+      id: '/api/admin/monitoring/app-summary'
+      path: '/api/admin/monitoring/app-summary'
+      fullPath: '/api/admin/monitoring/app-summary'
+      preLoaderRoute: typeof ApiAdminMonitoringAppSummaryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/admin/monitoring/history': {
       id: '/api/admin/monitoring/history'
       path: '/api/admin/monitoring/history'
@@ -1298,6 +1319,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminBackupsStartRoute: ApiAdminBackupsStartRoute,
   ApiAdminBackupsStatusRoute: ApiAdminBackupsStatusRoute,
   ApiAdminDiagnosticsDomainRoute: ApiAdminDiagnosticsDomainRoute,
+  ApiAdminMonitoringAppSummaryRoute: ApiAdminMonitoringAppSummaryRoute,
   ApiAdminMonitoringHistoryRoute: ApiAdminMonitoringHistoryRoute,
   ApiAdminMonitoringPolicyRoute: ApiAdminMonitoringPolicyRoute,
   ApiAdminMonitoringSummaryRoute: ApiAdminMonitoringSummaryRoute,

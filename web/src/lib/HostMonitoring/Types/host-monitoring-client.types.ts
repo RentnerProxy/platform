@@ -10,6 +10,8 @@ export type HostMonitoringClientErrorCode =
     | 'limit_reached'
     // An app owns monitoring: the built-in controls are retired.
     | 'handed_off'
+    // Built-in monitoring still owns the domain: there is no app to ask.
+    | 'not_handed_off'
     | 'service_unavailable'
     | 'invalid_response'
     | 'aborted'

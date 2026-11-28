@@ -52,7 +52,7 @@ import type { AppOperationResult } from './Types/operations.types.ts'
 
 const platformHostId = z.uuid().refine((value) => value === value.toLowerCase())
 
-const readHosts = { id: 'proxy.hosts.read.v1', scope: 'proxyHosts' } as const
+export const readHosts = { id: 'proxy.hosts.read.v1', scope: 'proxyHosts' } as const
 const probeHosts = { id: 'diagnostics.upstream.probe.v1', scope: 'proxyHosts' } as const
 export const manageOwnedHosts = {
     id: 'proxy.hosts.manage-owned.v1',

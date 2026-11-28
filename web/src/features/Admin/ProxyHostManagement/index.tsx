@@ -106,6 +106,7 @@ export default function ProxyHostManagementPage(props: ProxyHostManagementPagePr
                     {...(state.canView
                         ? {
                               onMonitoring: handler.openMonitoring,
+                              onAppMonitoring: handler.openAppMonitoring,
                           }
                         : {})}
                     onEdit={handler.openEditor}
@@ -202,9 +203,10 @@ export default function ProxyHostManagementPage(props: ProxyHostManagementPagePr
             {state.selectedProxyHost ? (
                 <ProxyHostFormModal
                     canConfigureCompression={state.canApply}
-                    key={state.selectedProxyHost.id}
+                    key={state.selectedProxyHost.id + (state.initialApp ?? '')}
                     open
                     mode="edit"
+                    {...(state.initialApp ? { initialApp: state.initialApp } : {})}
                     proxyHost={state.selectedProxyHost}
                     canConfigureBrowserCache={state.canApply}
                     canEnable={state.canEnable}

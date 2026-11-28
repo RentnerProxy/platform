@@ -16,6 +16,7 @@ const backups = Object.fromEntries(
 const monitoring = Object.fromEntries(
     ['history', 'policy', 'summary'].map((name) => [name, endpoint(`monitoring:${name}`)]),
 )
+const monitoringApp = endpoint('monitoring:app-summary')
 const oidc = { start: endpoint('oidc:start'), callback: endpoint('oidc:callback') }
 const download = endpoint('backup:download')
 const diagnose = endpoint('diagnose')
@@ -45,6 +46,9 @@ await mock.module('@/server/RuntimeDiagnostics/domain-diagnostics-response.serve
 }))
 await mock.module('@/server/HostMonitoring/host-monitoring-response.server.ts', () => ({
     hostMonitoringHttpHandlers: monitoring,
+}))
+await mock.module('@/server/HostMonitoring/host-monitoring-app-response.server.ts', () => ({
+    hostMonitoringAppHttpHandler: monitoringApp,
 }))
 await mock.module('@/server/Auth/Oidc/oidc-provider-response.server.ts', () => ({
     handleOidcProviderRequest: providers,
@@ -134,6 +138,12 @@ const matrix: {
         methods: path === 'policy' ? ['GET', 'POST'] : ['GET'],
         handler,
     })),
+    {
+        path: '/api/admin/monitoring/app-summary',
+        source: 'api/admin/monitoring/app-summary.ts',
+        methods: ['GET'],
+        handler: monitoringApp,
+    },
     {
         path: '/api/admin/oidc/providers',
         source: 'api/admin/oidc/providers.ts',

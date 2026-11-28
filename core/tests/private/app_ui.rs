@@ -5,7 +5,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::json as value;
 use std::{
     process::Stdio,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -127,7 +127,7 @@ async fn closing_a_generation_withdraws_its_provider_endpoint() {
     let invoke = || {
         registry
             .providers
-            .invoke("closing", "monitor-main", &key, Bytes::new())
+            .invoke("closing", "monitor-main", None, &key, Bytes::new())
     };
     // While published, the call reaches the (absent) broker instead of a missing endpoint.
     assert_ne!(invoke().await.err(), Some(StatusCode::NOT_FOUND));
@@ -895,6 +895,8 @@ const PROVIDER_RESULT: &[u8] = br#"{"profile":"monitoring","payload":{"samples":
 /// A broker that answers provider invocations for one published generation.
 struct ProviderBroker {
     reply: Mutex<BrokerReply>,
+    /// Invocations that reached this broker.
+    calls: AtomicUsize,
     hold_calls: AtomicBool,
     entered: Notify,
     release: Notify,
@@ -911,6 +913,7 @@ impl ProviderBroker {
                 media: "application/json",
                 body: Bytes::from_static(PROVIDER_RESULT),
             }),
+            calls: AtomicUsize::new(0),
             hold_calls: AtomicBool::new(false),
             entered: Notify::new(),
             release: Notify::new(),
@@ -948,6 +951,7 @@ impl ProviderBroker {
 
     async fn respond(&self, request: Request<Incoming>, generation: &str) -> Response<Full<Bytes>> {
         assert_eq!(request.method(), Method::POST);
+        self.calls.fetch_add(1, Ordering::AcqRel);
         assert_eq!(request.uri().path(), "/app/v1/providers/monitor-main");
         assert_eq!(request.headers()["x-app-installation"], "monitored");
         assert_eq!(request.headers()["x-app-generation"], generation);
@@ -1106,8 +1110,37 @@ async fn assert_provider_invocations(client: &Client, registry: &Registry, app_r
     broker.release.notify_one();
     // The new generation's broker is not listening yet.
     invoke().await.assert(412);
-    let (_second_broker, _second_task) = ProviderBroker::bind(&second, "4");
+    let (second_broker, _second_task) = ProviderBroker::bind(&second, "4");
     invoke().await.assert(200);
+
+    // A caller that names the generation it authorized never reaches another one.
+    let with_generation = |generation: &'static str| {
+        let headers = format!("{PROVIDER_HEADERS}X-App-Generation: {generation}\r\n");
+        let client = client.clone();
+        async move {
+            client
+                .request("POST", PROVIDER_PATH, &headers, PROVIDER_BODY)
+                .await
+        }
+    };
+    let calls = second_broker.calls.load(Ordering::Acquire);
+    with_generation("3").await.assert(412);
+    assert_eq!(second_broker.calls.load(Ordering::Acquire), calls);
+    with_generation("4").await.assert(200);
+    assert_eq!(second_broker.calls.load(Ordering::Acquire), calls + 1);
+    for invalid in ["04", "+4", "-1", "4.0", "", "18446744073709551616"] {
+        with_generation(invalid).await.assert(400);
+    }
+    client
+        .request(
+            "POST",
+            PROVIDER_PATH,
+            &format!("{PROVIDER_HEADERS}X-App-Generation: 4\r\nX-App-Generation: 4\r\n"),
+            PROVIDER_BODY,
+        )
+        .await
+        .assert(400);
+    assert_eq!(second_broker.calls.load(Ordering::Acquire), calls + 1);
     // Dropping the replaced publication leaves the newer one in place.
     drop(first);
     invoke().await.assert(200);

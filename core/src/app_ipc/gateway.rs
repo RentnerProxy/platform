@@ -475,20 +475,21 @@ async fn invoke_provider(
 pub(super) fn provider_result_matches(invocation: &Value, outcome: &Value) -> bool {
     let (request, result) = (&invocation["payload"], &outcome["payload"]);
     let same = |name: &str| result[name] == request[name];
-    // The contract bounds the limit to an integral 1 to 100, which JSON may also write
-    // as 2.0 or 2e0, so compare it as a number.
-    let within_limit = |name: &str| {
+    // The contract bounds the limit to an integral 1 to 100, and 1 to 1,000 for the monitoring
+    // profile (App SDK 1.2), which JSON may also write as 2.0 or 2e0, so compare it as a
+    // number. A result carries no more items than requested and none above that bound.
+    let within_limit = |name: &str, bound: f64| {
         result[name]
             .as_array()
             .zip(request["limit"].as_f64())
-            .is_some_and(|(items, limit)| items.len() as f64 <= limit)
+            .is_some_and(|(items, limit)| items.len() as f64 <= limit.min(bound))
     };
     if invocation["profile"] != outcome["profile"] {
         return false;
     }
     match invocation["profile"].as_str() {
-        Some("monitoring") => within_limit("samples"),
-        Some("docker-discovery") => same("connectionId") && within_limit("observations"),
+        Some("monitoring") => within_limit("samples", 1_000.0),
+        Some("docker-discovery") => same("connectionId") && within_limit("observations", 100.0),
         Some("load-balancer") => {
             let status = &result["revisionStatus"];
             same("contributionId")
