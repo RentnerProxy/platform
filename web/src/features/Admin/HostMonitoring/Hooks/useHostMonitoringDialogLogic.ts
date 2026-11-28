@@ -179,6 +179,15 @@ export default function useHostMonitoringDialogLogic(props: HostMonitoringDialog
                     toast.warning(t('admin.hostMonitoring.conflict'), {
                         title: t('toast.titles.warning'),
                     })
+            } else if (error instanceof HostMonitoringClientError && error.code === 'handed_off') {
+                // The table drops the built-in column once the summary reports the handoff too.
+                runAction(() =>
+                    queryClient.invalidateQueries({ queryKey: hostMonitoringQueryKeys.all }),
+                )
+                if (generation.current.active)
+                    toast.error(t('admin.hostMonitoring.handedOff'), {
+                        title: t('toast.titles.error'),
+                    })
             } else {
                 if (generation.current.active)
                     toast.error(t('admin.hostMonitoring.saveError'), {

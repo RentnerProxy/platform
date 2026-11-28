@@ -50,7 +50,12 @@ function errorResponse(error: unknown, headers: Headers): Response {
         return Response.json({ error: 'rate_limited' }, { status: 429, headers })
     }
     if (error instanceof HostMonitoringError) {
-        const status = error.code === 'host_not_found' ? 404 : error.code === 'conflict' ? 409 : 400
+        const status =
+            error.code === 'host_not_found'
+                ? 404
+                : error.code === 'conflict' || error.code === 'handed_off'
+                  ? 409
+                  : 400
         return Response.json({ error: error.code }, { status, headers })
     }
     if (error instanceof ResponseBodyLimitError)

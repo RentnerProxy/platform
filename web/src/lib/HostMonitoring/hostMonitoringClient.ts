@@ -32,6 +32,7 @@ const publicError = z.strictObject({
         'invalid_input',
         'rate_limited',
         'limit_reached',
+        'handed_off',
         'service_unavailable',
     ]),
 })

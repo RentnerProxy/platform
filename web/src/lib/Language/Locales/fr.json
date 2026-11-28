@@ -4084,6 +4084,7 @@
             "close": "Fermer",
             "conflict": "Les paramètres ont changé. Votre brouillon est conservé.",
             "saveError": "Impossible d’enregistrer les paramètres de surveillance.",
+            "handedOff": "Une app gère désormais la surveillance ; ces paramètres intégrés ne peuvent plus être modifiés.",
             "saved": "Paramètres de surveillance enregistrés.",
             "invalid": "Vérifiez les paramètres et les plages autorisées.",
             "dirty": "Modifications non enregistrées",

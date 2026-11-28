@@ -5,6 +5,7 @@ const workers: unknown[] = []
 const workersById = new Map<string, Worker>()
 const admissionsById = new Map<string, () => Promise<boolean>>()
 const platformOwned = mock(async (domain: string) => domain !== 'crowdsec')
+const appOwned = mock(async (domain: string) => domain === 'crowdsec')
 const loaders: Promise<unknown>[] = []
 const validate = mock(() => {})
 const realtime = mock(() => {})
@@ -118,6 +119,7 @@ await mock.module('@/server/HostMonitoring/host-monitoring.worker.server.ts', ()
 await mock.module('@/server/Admin/NpmImport/npm-temp.ts', () => ({ pruneStaleNpmImports: prune }))
 await mock.module('@/server/LegacyHandoff/worker-admission.server.ts', () => ({
     isLegacyFeaturePlatformOwned: platformOwned,
+    isLegacyFeatureAppOwned: appOwned,
 }))
 
 test('server bootstrap validates production, binds every worker and coalesces temporary-file pruning with stop cleanup', async () => {
@@ -146,8 +148,10 @@ test('server bootstrap validates production, binds every worker and coalesces te
             ),
         )
         expect(admitted).toEqual([true, true, false])
+        // Monitoring has a handoff source: its gate follows an open handoff, so only a committed
+        // app keeps it from starting.
+        expect(appOwned.mock.calls.map(([domain]) => domain)).toEqual(['monitoring'])
         expect(platformOwned.mock.calls.map(([domain]) => domain)).toEqual([
-            'monitoring',
             'docker-discovery',
             'crowdsec',
         ])

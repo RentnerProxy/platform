@@ -6,6 +6,7 @@ import { LEGACY_HANDOFF_LIMITS } from '@/config/legacy-handoff.config.ts'
 import { legacyFeatureHandoffs } from '@/db/schema.ts'
 import { appProviderProfiles } from '@/server/AppRuntime/contract.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { signalLegacyFeatureOwnership } from './ownership-signal.server.ts'
 import type {
     LegacyFeatureDomain,
     LegacyFeatureOwner,
@@ -82,6 +83,8 @@ export async function readLegacyFeatureOwnerInTransaction(
 /**
  * Run one platform write of a built-in domain only while platform owns it. A handoff in progress
  * holds the exclusive domain lock, so the writer skips instead of waiting for it or racing its export.
+ * A skipped writer signals the domain, so a worker gate in this process re-reads ownership and
+ * stops its worker instead of polling the fence.
  */
 export async function withPlatformOwnedLegacyFeature<T>(
     transaction: AuthTransaction,
@@ -91,8 +94,13 @@ export async function withPlatformOwnedLegacyFeature<T>(
     const [lock] = await transaction.execute<{ locked: boolean }>(
         sql`select pg_try_advisory_xact_lock_shared(${domainLock(domain)}) as locked`,
     )
-    if (!lock?.locked) return { owned: false }
+    if (!lock?.locked) return fenced(domain)
     const ownership = await readLegacyFeatureOwnerInTransaction(transaction, domain)
-    if (ownership.owner !== 'platform') return { owned: false }
+    if (ownership.owner !== 'platform') return fenced(domain)
     return { owned: true, value: await run() }
+}
+
+function fenced(domain: LegacyFeatureDomain): PlatformOwnedResult<never> {
+    signalLegacyFeatureOwnership([domain])
+    return { owned: false }
 }

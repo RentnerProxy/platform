@@ -4084,6 +4084,7 @@
             "close": "Cerrar",
             "conflict": "La configuración cambió. Se conserva tu borrador.",
             "saveError": "No se pudo guardar la configuración de monitorización.",
+            "handedOff": "Ahora una app gestiona la monitorización, por lo que esta configuración integrada ya no se puede cambiar.",
             "saved": "Configuración de monitorización guardada.",
             "invalid": "Comprueba la configuración y los límites permitidos.",
             "dirty": "Cambios sin guardar",

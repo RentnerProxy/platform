@@ -4112,6 +4112,7 @@
             "close": "Zamknij",
             "conflict": "Ustawienia zostały zmienione. Szkic jest zachowany.",
             "saveError": "Nie udało się zapisać ustawień monitorowania.",
+            "handedOff": "Monitorowaniem zarządza teraz aplikacja, więc tych wbudowanych ustawień nie można już zmienić.",
             "saved": "Zapisano ustawienia monitorowania.",
             "invalid": "Sprawdź ustawienia i dozwolone zakresy wartości.",
             "dirty": "Niezapisane zmiany",

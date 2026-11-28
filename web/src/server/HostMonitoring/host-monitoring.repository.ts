@@ -13,6 +13,7 @@ import {
 } from '@/db/schema.ts'
 import { AuthDomainError } from '@/server/Auth/Core/errors.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import { withPlatformOwnedLegacyFeature } from '@/server/LegacyHandoff/ownership.server.ts'
 import { cancelHostAvailabilityForHostsInTransaction } from '@/server/Notifications/host-availability.repository.ts'
 import type {
     HostMonitoringHistory,
@@ -84,13 +85,28 @@ export async function lockHostMonitoringPolicy(
     return policy ?? null
 }
 
-// The caller holds the runtime-settings lock, before monitoring and notification locks.
+/**
+ * Reset the monitoring state of changed hosts. The caller holds the runtime-settings lock, before
+ * monitoring and notification locks. Once a handoff began the monitoring tables stay untouched,
+ * while open host availability notices of the changed hosts are still cancelled.
+ */
 export async function invalidateHostMonitoringForHostsInTransaction(
     transaction: AuthTransaction,
     proxyHostIds: readonly string[],
     reason: 'policy_changed' | 'monitoring_disabled' = 'policy_changed',
 ): Promise<void> {
     if (proxyHostIds.length === 0) return
+    await withPlatformOwnedLegacyFeature(transaction, 'monitoring', () =>
+        invalidatePoliciesInTransaction(transaction, proxyHostIds, reason),
+    )
+    await cancelHostAvailabilityForHostsInTransaction(transaction, proxyHostIds)
+}
+
+async function invalidatePoliciesInTransaction(
+    transaction: AuthTransaction,
+    proxyHostIds: readonly string[],
+    reason: 'policy_changed' | 'monitoring_disabled',
+): Promise<void> {
     await lockMonitoring(transaction)
     const policies = await transaction
         .update(hostCheckPolicies)
@@ -132,7 +148,6 @@ export async function invalidateHostMonitoringForHostsInTransaction(
                     isNull(hostCheckIncidents.closedReason),
                 ),
             )
-    await cancelHostAvailabilityForHostsInTransaction(transaction, proxyHostIds)
 }
 
 export async function saveHostMonitoringPolicy(

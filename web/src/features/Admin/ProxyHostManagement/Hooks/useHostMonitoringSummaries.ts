@@ -8,12 +8,19 @@ import {
 import { hostMonitoringQueryKeys } from '@/lib/HostMonitoring/hostMonitoringCache.ts'
 import type { ProxyHostSummary } from '@/lib/Admin/ProxyHostManagement/Types/proxy-hosts.types.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
-import type { ProxyHostMonitoringRow } from '../Types/host-monitoring-overview.types.ts'
+import type {
+    HostMonitoringSummaries,
+    ProxyHostMonitoringRow,
+} from '../Types/host-monitoring-overview.types.ts'
 
+const isHandedOff = (error: unknown) =>
+    error instanceof HostMonitoringClientError && error.code === 'handed_off'
+
+/** Rows per host, and whether an app took monitoring over so the built-in controls step aside. */
 export default function useHostMonitoringSummaries(
     hosts: readonly ProxyHostSummary[],
     enabled: boolean,
-): ReadonlyMap<string, ProxyHostMonitoringRow> {
+): HostMonitoringSummaries {
     const { t, locale } = useTranslationStore()
     const ids = useMemo(() => hosts.map((host) => host.id).toSorted(), [hosts])
     const query = useQuery({
@@ -21,7 +28,11 @@ export default function useHostMonitoringSummaries(
         queryFn: ({ signal }) => getHostMonitoringSummary(ids, signal),
         enabled: enabled && ids.length > 0,
         staleTime: 5_000,
-        refetchInterval: enabled && ids.length > 0 ? HOST_MONITORING_UI.pollIntervalMs : false,
+        // A handoff to an app is final: stop asking for built-in summaries once it is reported.
+        refetchInterval: (current) =>
+            enabled && ids.length > 0 && !isHandedOff(current.state.error)
+                ? HOST_MONITORING_UI.pollIntervalMs
+                : false,
         refetchIntervalInBackground: false,
         refetchOnWindowFocus: true,
         refetchOnReconnect: true,
@@ -29,7 +40,9 @@ export default function useHostMonitoringSummaries(
             count < 1 &&
             !(
                 error instanceof HostMonitoringClientError &&
-                (error.code === 'authentication_required' || error.code === 'permission_denied')
+                (error.code === 'authentication_required' ||
+                    error.code === 'permission_denied' ||
+                    error.code === 'handed_off')
             ),
     })
     const formatter = useMemo(
@@ -45,7 +58,8 @@ export default function useHostMonitoringSummaries(
             }),
         [locale],
     )
-    return useMemo(() => {
+    const handedOff = enabled && isHandedOff(query.error)
+    const rows = useMemo(() => {
         const policies = new Map(
             enabled && !query.isError
                 ? query.data?.summaries.map((row) => [row.proxyHostId, row.policy] as const)
@@ -94,4 +108,5 @@ export default function useHostMonitoringSummaries(
         query.isPending,
         t,
     ])
+    return useMemo(() => ({ rows, handedOff }), [rows, handedOff])
 }

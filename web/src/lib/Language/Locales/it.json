@@ -4097,6 +4097,7 @@
             "close": "Chiudi",
             "conflict": "Le impostazioni sono cambiate. La bozza viene conservata.",
             "saveError": "Impossibile salvare le impostazioni di monitoraggio.",
+            "handedOff": "Ora il monitoraggio è gestito da un’app, quindi queste impostazioni integrate non possono più essere modificate.",
             "saved": "Impostazioni di monitoraggio salvate.",
             "invalid": "Controlla le impostazioni e gli intervalli consentiti.",
             "dirty": "Modifiche non salvate",

@@ -4082,6 +4082,7 @@
             "close": "Schließen",
             "conflict": "Die Einstellungen wurden geändert. Dein Entwurf bleibt erhalten.",
             "saveError": "Die Monitoring-Einstellungen konnten nicht gespeichert werden.",
+            "handedOff": "Eine App verwaltet jetzt das Monitoring, daher lassen sich diese integrierten Einstellungen nicht mehr ändern.",
             "saved": "Monitoring-Einstellungen gespeichert.",
             "invalid": "Prüfe die Einstellungen und zulässigen Wertebereiche.",
             "dirty": "Ungespeicherte Änderungen",

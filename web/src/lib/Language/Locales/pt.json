@@ -4110,6 +4110,7 @@
             "close": "Fechar",
             "conflict": "As definições mudaram. O rascunho é mantido.",
             "saveError": "Não foi possível guardar as definições de monitorização.",
+            "handedOff": "Uma app gere agora a monitorização, por isso estas definições integradas já não podem ser alteradas.",
             "saved": "Definições de monitorização guardadas.",
             "invalid": "Verifique as definições e os intervalos permitidos.",
             "dirty": "Alterações por guardar",

@@ -1332,6 +1332,26 @@ describe('ProxyHost monitoring integration', () => {
         expect(getHostMonitoringHistoryMock).not.toHaveBeenCalled()
     })
 
+    test('a handoff to an app retires the built-in monitoring column and action', async () => {
+        getHostMonitoringSummaryMock.mockReset().mockImplementation(async () => {
+            throw new HostMonitoringClientError('handed_off')
+        })
+        await renderPage([PERMISSIONS.PROXY_HOSTS_VIEW, PERMISSIONS.PROXY_HOSTS_UPDATE])
+        await waitFor(() => getRows().length === 2)
+        await waitFor(() => !document.body.textContent?.includes('Upstream availability'))
+        expect(
+            document.querySelector('[aria-label="Open monitoring for app.example.com"]'),
+        ).toBeNull()
+        await openMenu(getButton('Open actions for app.example.com'))
+        expect(
+            [...document.querySelectorAll('[role="menuitem"]')].some((item) =>
+                item.textContent?.includes('Monitoring'),
+            ),
+        ).toBe(false)
+        // The handoff is final, so the summary is neither retried nor polled again.
+        expect(getHostMonitoringSummaryMock).toHaveBeenCalledTimes(1)
+    })
+
     test('batch refresh updates availability without replacing or closing the open action menu', async () => {
         await renderPage([PERMISSIONS.PROXY_HOSTS_VIEW])
         await waitFor(() => getRows().length === 2)

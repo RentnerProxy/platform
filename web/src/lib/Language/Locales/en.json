@@ -4082,6 +4082,7 @@
             "close": "Close",
             "conflict": "Settings changed. Your draft is preserved.",
             "saveError": "Monitoring settings could not be saved.",
+            "handedOff": "An app now manages monitoring, so these built-in settings can no longer be changed.",
             "saved": "Monitoring settings saved.",
             "invalid": "Check the settings and allowed ranges.",
             "dirty": "Unsaved changes",

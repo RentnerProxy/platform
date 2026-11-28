@@ -67,7 +67,7 @@ export default function ProxyHostsTable(props: ProxyHostsTableProps) {
                         itemLabel={t('admin.proxyHosts.table.itemLabel')}
                         action={action}
                         tableMinWidthClassName={
-                            props.onMonitoring ? 'min-w-[56rem]' : 'min-w-[44rem]'
+                            state.showMonitoring ? 'min-w-[56rem]' : 'min-w-[44rem]'
                         }
                     />
                 </div>

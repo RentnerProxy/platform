@@ -15,6 +15,7 @@ import type {
     HostMonitoringSettings,
     HostMonitoringSummary,
     HostMonitoringPolicyView,
+    SaveHostMonitoringPolicy,
 } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
@@ -23,6 +24,10 @@ import { requirePermissionInTransaction } from '@/server/Auth/Access/rbac.servic
 import { readProxyHostSummariesInTransaction } from '@/server/Admin/ProxyHostManagement/proxy-hosts.service.ts'
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
+import {
+    readLegacyFeatureOwnerInTransaction,
+    withPlatformOwnedLegacyFeature,
+} from '@/server/LegacyHandoff/ownership.server.ts'
 import { consumeRateLimit } from '@/server/Valkey/rate-limiter.service.ts'
 import {
     lockHostMonitoringPolicy,
@@ -95,6 +100,12 @@ async function readHost(transaction: AuthTransaction, actorId: string, proxyHost
     return host
 }
 
+/** Built-in data is retired once an app committed monitoring; the routes report that instead. */
+async function requireBuiltInMonitoring(transaction: AuthTransaction): Promise<void> {
+    const ownership = await readLegacyFeatureOwnerInTransaction(transaction, 'monitoring')
+    if (ownership.owner === 'app') throw new HostMonitoringError('handed_off')
+}
+
 async function prepareTransaction(transaction: AuthTransaction): Promise<Date> {
     const timeout = `${HOST_MONITORING_LIMITS.transactionTimeoutMs}ms`
     await transaction.execute(
@@ -121,6 +132,7 @@ export function createHostMonitoringService(dependencies: HostMonitoringServiceD
                         actor.id,
                         PERMISSIONS.PROXY_HOSTS_VIEW,
                     )
+                    await requireBuiltInMonitoring(transaction)
                     const rows = await readHostMonitoringSummaries(
                         transaction,
                         input.data.proxyHostIds,
@@ -153,6 +165,7 @@ export function createHostMonitoringService(dependencies: HostMonitoringServiceD
                 async (transaction) => {
                     const now = await prepareTransaction(transaction)
                     const host = await readHost(transaction, actor.id, input.data.proxyHostId)
+                    await requireBuiltInMonitoring(transaction)
                     const policy = await readHostMonitoringPolicy(transaction, host.id)
                     return policy ? policyView(policy, host, now) : null
                 },
@@ -167,6 +180,7 @@ export function createHostMonitoringService(dependencies: HostMonitoringServiceD
                 async (transaction) => {
                     await prepareTransaction(transaction)
                     const host = await readHost(transaction, actor.id, input.data.proxyHostId)
+                    await requireBuiltInMonitoring(transaction)
                     const policy = await readHostMonitoringPolicy(transaction, host.id)
                     if (!policy) return { observations: [], incidents: [], nextCursor: null }
                     const history = await readHostMonitoringHistory(transaction, policy.id, {
@@ -208,38 +222,52 @@ export function createHostMonitoringService(dependencies: HostMonitoringServiceD
                     actor.id,
                     PERMISSIONS.PROXY_HOSTS_UPDATE,
                 )
-                const host = await readHost(transaction, actor.id, input.data.proxyHostId)
-                if (!host.domains.includes(input.data.settings.domain))
-                    throw new HostMonitoringError('invalid_input')
-                const existing = await lockHostMonitoringPolicy(transaction, host.id)
-                if ((existing?.version ?? null) !== input.data.expectedVersion)
-                    throw new HostMonitoringError('conflict')
-                if (
-                    existing &&
-                    Object.entries(input.data.settings).every(
-                        ([key, value]) => existing[key as keyof HostMonitoringSettings] === value,
-                    )
+                // A policy saved after a handoff began would never reach the app's export.
+                const saved = await withPlatformOwnedLegacyFeature(transaction, 'monitoring', () =>
+                    savePolicyInTransaction(transaction, actor.id, input.data, now),
                 )
-                    return policyView(existing, host, now)
-                const policy = await saveHostMonitoringPolicy(transaction, {
-                    proxyHostId: host.id,
-                    settings: input.data.settings,
-                    existing,
-                    configuredBy: actor.id,
-                })
-                await appendAuditEventInTransactionService(transaction, {
-                    actorKind: 'user',
-                    actorUserId: actor.id,
-                    action: 'update',
-                    resource: 'host-monitoring',
-                    targetId: host.id,
-                    result: 'success',
-                    metadata: { enabled: policy.enabled },
-                })
-                return policyView(policy, host, now)
+                if (!saved.owned) throw new HostMonitoringError('handed_off')
+                return saved.value
             })
         },
     }
+}
+
+async function savePolicyInTransaction(
+    transaction: AuthTransaction,
+    actorId: string,
+    input: SaveHostMonitoringPolicy,
+    now: Date,
+): Promise<HostMonitoringPolicyView> {
+    const host = await readHost(transaction, actorId, input.proxyHostId)
+    if (!host.domains.includes(input.settings.domain))
+        throw new HostMonitoringError('invalid_input')
+    const existing = await lockHostMonitoringPolicy(transaction, host.id)
+    if ((existing?.version ?? null) !== input.expectedVersion)
+        throw new HostMonitoringError('conflict')
+    if (
+        existing &&
+        Object.entries(input.settings).every(
+            ([key, value]) => existing[key as keyof HostMonitoringSettings] === value,
+        )
+    )
+        return policyView(existing, host, now)
+    const policy = await saveHostMonitoringPolicy(transaction, {
+        proxyHostId: host.id,
+        settings: input.settings,
+        existing,
+        configuredBy: actorId,
+    })
+    await appendAuditEventInTransactionService(transaction, {
+        actorKind: 'user',
+        actorUserId: actorId,
+        action: 'update',
+        resource: 'host-monitoring',
+        targetId: host.id,
+        result: 'success',
+        metadata: { enabled: policy.enabled },
+    })
+    return policyView(policy, host, now)
 }
 
 export const hostMonitoringService = createHostMonitoringService({

@@ -4063,6 +4063,7 @@
             "close": "Sluiten",
             "conflict": "De instellingen zijn gewijzigd. Je concept blijft behouden.",
             "saveError": "De instellingen voor bewaking konden niet worden opgeslagen.",
+            "handedOff": "Een app beheert de bewaking nu, dus deze ingebouwde instellingen kunnen niet meer worden gewijzigd.",
             "saved": "Instellingen voor bewaking opgeslagen.",
             "invalid": "Controleer de instellingen en toegestane waarden.",
             "dirty": "Niet-opgeslagen wijzigingen",

@@ -11,6 +11,7 @@ export type ProxyHostsTableLogicResult = {
     readonly table: UseClientTableReturn<ProxyHostSummary>['table']
     readonly state: BulkHostTableState & {
         readonly monitoringRows: ReadonlyMap<string, ProxyHostMonitoringRow>
+        readonly showMonitoring: boolean
         readonly searchInput: string
         readonly showColumnFilters: boolean
         readonly columnFilterConfigs: TableColumnFilterConfigs

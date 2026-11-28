@@ -10,6 +10,7 @@ import {
     executeLegacyHandoffInTransaction,
     parseLegacyHandoffRequest,
 } from '@/server/LegacyHandoff/app-api.server.ts'
+import { signalLegacyFeatureOwnership } from '@/server/LegacyHandoff/ownership-signal.server.ts'
 import { legacyFeatureHandoffSources } from '@/server/LegacyHandoff/sources.server.ts'
 import type { LegacyFeatureHandoffSources } from '@/server/LegacyHandoff/Types/legacy-handoff-api.types.ts'
 import {
@@ -332,19 +333,24 @@ export function executeAppRuntimeCall(
                     body,
                     idempotencyKey,
                 )
-                return json(
-                    await appRuntimeTransaction(
-                        signal,
-                        (transaction) =>
-                            executeLegacyHandoffInTransaction(
-                                transaction,
-                                credentials,
-                                request,
-                                handoffSources,
-                            ),
-                        { isolationLevel: 'read committed' },
-                    ),
+                const result = await appRuntimeTransaction(
+                    signal,
+                    (transaction) =>
+                        executeLegacyHandoffInTransaction(
+                            transaction,
+                            credentials,
+                            request,
+                            handoffSources,
+                        ),
+                    { isolationLevel: 'read committed' },
                 )
+                // The journal change is committed: built-in workers of the domain follow it now.
+                if (
+                    request.operation === 'beginLegacyHandoff' ||
+                    request.operation === 'commitLegacyHandoff'
+                )
+                    signalLegacyFeatureOwnership([request.domain])
+                return json(result)
             }
         }
     })
