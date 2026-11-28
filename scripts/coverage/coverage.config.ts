@@ -20,6 +20,9 @@ export const goCoverageGroupNames = [
     'docker/tooling/buildinfo',
 ] as const
 
+/** The Caddy module root only imports its packages for xcaddy; it is reported once it holds statements. */
+export const optionalGoCoverageGroupNames = ['core/caddy-modules'] as const
+
 export const coverageSourceRoots = [
     'web/src',
     'scripts',
