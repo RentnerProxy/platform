@@ -9,7 +9,7 @@
 use super::distribution::{self, Distribution};
 use super::repackage::{Repackaged, generation, installation, offer, repackage};
 use super::*;
-use marketplace_artifacts::digest;
+use rentnerproxy_artifacts::digest;
 
 const NOTIFY: (&str, &str) = ("notifications.publish.v1", "installation");
 const READ: (&str, &str) = ("proxy.hosts.read.v1", "proxyHosts");

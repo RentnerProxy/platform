@@ -44,13 +44,13 @@ use std::{
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub(crate) use browse::CatalogEntry;
-use marketplace_artifacts::{invalid, parse_json, read_file};
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub(crate) use package::{UI_ASSET_LIMIT, UI_DOCUMENT_LIMIT, parse_ui_api};
 use rentnerproxy_app_contracts::{ContractError, Contracts, ManifestEnvironment};
+use rentnerproxy_artifacts::{invalid, parse_json, read_file};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(all(
@@ -223,7 +223,7 @@ impl Installer {
 
     fn prepare<R: Read>(
         &self,
-        trusted: &marketplace_app_catalog::TrustedPackageCatalog,
+        trusted: &rentnerproxy_app_catalog::TrustedPackageCatalog,
         app_id: &str,
         version: &str,
         source: PackageSource<'_>,
@@ -236,7 +236,7 @@ impl Installer {
     /// compatibility check, before `package::stage` fetches or extracts anything.
     fn prepare_gated<R: Read>(
         &self,
-        trusted: &marketplace_app_catalog::TrustedPackageCatalog,
+        trusted: &rentnerproxy_app_catalog::TrustedPackageCatalog,
         app_id: &str,
         version: &str,
         source: PackageSource<'_>,

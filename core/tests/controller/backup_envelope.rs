@@ -7,7 +7,7 @@ use std::{
 };
 
 use aws_lc_rs::digest;
-use marketplace_artifacts::digest as artifact_digest;
+use rentnerproxy_artifacts::digest as artifact_digest;
 use serde_json::Value;
 
 use crate::common::isolated_command;

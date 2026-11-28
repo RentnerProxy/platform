@@ -7,7 +7,7 @@ use std::{
 };
 
 use aws_lc_rs::digest::{Context, SHA256};
-use marketplace_artifacts::{file_identity, invalid};
+use rentnerproxy_artifacts::{file_identity, invalid};
 
 pub(super) fn check_root_path(path: &Path, directory: bool) -> io::Result<()> {
     if !path.is_absolute()

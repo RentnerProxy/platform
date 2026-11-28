@@ -5,8 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use marketplace_artifacts::invalid;
 use rentnerproxy_app_contracts::DownloadAsset;
+use rentnerproxy_artifacts::invalid;
 use reqwest::{
     StatusCode, Url,
     blocking::{Client, Response},

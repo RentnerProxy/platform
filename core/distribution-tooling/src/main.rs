@@ -5,7 +5,7 @@ mod package;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use marketplace_artifacts::{invalid, parse_json};
+use rentnerproxy_artifacts::{invalid, parse_json};
 use serde::de::DeserializeOwned;
 
 const BUNDLE_BYTES: u64 = 16 * 1024 * 1024;

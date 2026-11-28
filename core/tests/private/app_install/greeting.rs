@@ -12,8 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use marketplace_app_catalog::bootstrap_catalog;
-use marketplace_artifacts::{digest, file_identity};
+use rentnerproxy_app_catalog::bootstrap_catalog;
+use rentnerproxy_artifacts::{digest, file_identity};
 use serde_json::{Value, json};
 
 use super::{Installer, PIN, PackageSource, keys, now, refresh};

@@ -139,7 +139,7 @@ fn command(args: Vec<String>) -> io::Result<Command> {
             if !meta.is_file() || meta.uid() != 0 || meta.mode() & 0o022 != 0 {
                 return Err(bad("Expected a root-managed grants file"));
             }
-            let bytes = marketplace_artifacts::read_file(path, LIMIT as u64)?;
+            let bytes = rentnerproxy_artifacts::read_file(path, LIMIT as u64)?;
             Command::Activate {
                 installation_id: id.to_string(),
                 grants: serde_json::from_slice(&bytes)?,
