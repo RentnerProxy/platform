@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use marketplace_artifacts::digest;
+use rentnerproxy_artifacts::digest;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 

@@ -1,7 +1,7 @@
 use std::{fs, io};
 
-use marketplace_app_catalog::TrustedPackageCatalog;
-use marketplace_artifacts::{invalid, parse_json};
+use rentnerproxy_app_catalog::TrustedPackageCatalog;
+use rentnerproxy_artifacts::{invalid, parse_json};
 use serde::Serialize;
 use serde_json::Value;
 use time::OffsetDateTime;

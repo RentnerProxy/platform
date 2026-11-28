@@ -55,7 +55,7 @@ fn escalated_catalog(current: &[u8]) -> Vec<u8> {
             "unpublished {APP_ID} {ESCALATED_VERSION} {}",
             manifest["target"]
         );
-        package["archive"]["sha256"] = marketplace_artifacts::digest(identity.as_bytes()).into();
+        package["archive"]["sha256"] = rentnerproxy_artifacts::digest(identity.as_bytes()).into();
     }
     catalog["releases"].as_array_mut().unwrap().push(release);
     bump_revision(&mut catalog);
@@ -102,7 +102,7 @@ fn plant_checkpoint(
         .collect();
     let bytes = serde_json::to_vec(&json!({
         "acceptedAt": accepted_at.unix_timestamp(),
-        "pinSha256": marketplace_artifacts::digest(root),
+        "pinSha256": rentnerproxy_artifacts::digest(root),
         "files": files,
     }))
     .unwrap();
@@ -343,7 +343,7 @@ async fn privileged_published_greeting_distribution_gates() {
 
     let installation_id = format!(
         "app-{}",
-        &marketplace_artifacts::digest(APP_ID.as_bytes())[..32]
+        &rentnerproxy_artifacts::digest(APP_ID.as_bytes())[..32]
     );
     let mut authority = start_authority(&installation_id, None).await;
     let installer = InstallerFixture::new(&fixture.root);
@@ -746,7 +746,7 @@ async fn privileged_published_greeting_distribution_gates() {
             "operation": updated_view["lifecycle"],
             "generations": {"replaced": old_generation, "active": new_generation},
             "uiEntry": ui_entry,
-            "uiEntrySha256": marketplace_artifacts::digest(&ui),
+            "uiEntrySha256": rentnerproxy_artifacts::digest(&ui),
             "uiEntryChanged": ui_entry_changed,
             "nativePresentation": {"replaced": false, "active": true},
             "repeatedSubmissions": repeated_statuses,

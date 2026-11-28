@@ -5,9 +5,9 @@ use super::{
     package::COMPRESSED_LIMIT,
 };
 use crate::app_backup::valid_portable_digest;
-use marketplace_app_catalog::TrustedPackageCatalog;
-use marketplace_artifacts::{copy_file, file_identity, invalid, parse_json};
+use rentnerproxy_app_catalog::TrustedPackageCatalog;
 use rentnerproxy_app_contracts::Contracts;
+use rentnerproxy_artifacts::{copy_file, file_identity, invalid, parse_json};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,

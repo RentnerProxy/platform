@@ -588,7 +588,7 @@ async fn an_incident_change_reaches_the_platform_bridge_with_its_key_and_body() 
     task.abort();
 }
 
-/// The platform's copy of the shared probe fixtures, pinned to the contract revision it builds
+/// The platform's copy of the shared probe fixtures, pinned to the app contract version it builds
 /// against.
 #[test]
 fn the_platform_tests_classify_probes_with_the_contract_fixtures() {
